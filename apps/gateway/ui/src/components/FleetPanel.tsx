@@ -35,6 +35,7 @@ interface McpServerInfo {
   name: string;
   description: string;
   url: string;
+  headerKeys?: string[];
 }
 
 const REFRESH_MS = 10_000;
@@ -693,6 +694,11 @@ function AgentMcpDialog({ agentId, onClose }: { agentId: string; onClose: () => 
               <span className="skill-card__id">{s.id}</span>
               <div className="skill-card__desc">{s.description}</div>
               <div className="skill-card__path">{s.url}</div>
+              {s.headerKeys && s.headerKeys.length > 0 && (
+                <div className="skill-card__path">
+                  Auth headers: {s.headerKeys.join(', ')}
+                </div>
+              )}
             </div>
           </div>
         ))}

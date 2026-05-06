@@ -1769,10 +1769,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   app.get('/api/agents/:agentId/mcp-servers', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
     // Pure DB read — no runner needed. Lets admin inspect a stopped agent.
     const store = requireMcpServerStore();
     const servers = await store.listEnabled(agentId);
-    return c.json(servers);
+    // Strip header values — they may contain bearer tokens. Expose only the
+    // key names so the UI can show that auth is configured without leaking secrets.
+    return c.json(servers.map(({ headers, ...rest }) => ({
+      ...rest,
+      headerKeys: headers ? Object.keys(headers) : [],
+    })));
   });
 
   // --- agent-level: owner management endpoints ---
