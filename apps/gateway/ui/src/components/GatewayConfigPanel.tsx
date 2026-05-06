@@ -114,55 +114,58 @@ export function GatewayConfigPanel() {
         {!persistent && ' — set DATABASE_URL to persist changes'}
         {' · '}Changes require a gateway restart to take effect.
       </p>
-      {error && <p style={{ color: 'var(--color-danger, #c33)' }}>{error}</p>}
-      {info && <p style={{ color: 'var(--color-success, #2a8)' }}>{info}</p>}
+      {error && <p style={{ color: 'var(--red)' }}>{error}</p>}
+      {info && <p style={{ color: 'var(--green, #2a8)' }}>{info}</p>}
 
-      <div className="form-section">
-        <label className="form-row">
-          <span>CORS origin</span>
+      <div style={{ maxWidth: 640 }}>
+        <label className="field">
+          <span className="field__label">CORS origin</span>
           <input
             type="text"
+            className="field__input"
             value={corsOrigin}
             onChange={(e) => setCorsOrigin(e.target.value)}
             placeholder="*"
           />
         </label>
 
-        <label className="form-row">
-          <span>Auto-start agents on boot</span>
+        <label className="field" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <input
             type="checkbox"
             checked={autoStartAgents}
             onChange={(e) => setAutoStartAgents(e.target.checked)}
           />
+          <span>Auto-start agents on boot</span>
         </label>
 
-        <label className="form-row">
-          <span>Auto-provision sandbox preset</span>
+        <label className="field">
+          <span className="field__label">Auto-provision sandbox preset</span>
           <input
             type="text"
+            className="field__input"
             value={autoProvision}
             onChange={(e) => setAutoProvision(e.target.value)}
             placeholder="(empty = disabled)"
           />
         </label>
 
-        <label className="form-row form-row--stack">
-          <span>Sandbox presets (JSON)</span>
+        <label className="field">
+          <span className="field__label">Sandbox presets (JSON)</span>
           <textarea
+            className="field__input"
             value={presetsText}
             onChange={(e) => setPresetsText(e.target.value)}
             rows={14}
             spellCheck={false}
-            style={{ fontFamily: 'monospace', fontSize: '0.85em', width: '100%' }}
+            style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
           />
           {presetsError && (
-            <span style={{ color: 'var(--color-danger, #c33)' }}>{presetsError}</span>
+            <span style={{ color: 'var(--red)', fontSize: '0.8rem' }}>{presetsError}</span>
           )}
         </label>
       </div>
 
-      <div className="form-actions" style={{ marginTop: '1em', display: 'flex', gap: '0.5em' }}>
+      <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
         <button className="btn btn--primary" onClick={save} disabled={saving || !persistent}>
           {saving ? 'Saving…' : 'Save'}
         </button>

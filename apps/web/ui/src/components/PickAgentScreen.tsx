@@ -337,7 +337,7 @@ export function PickAgentScreen({ gatewayUrl, onPick, onSignOut }: Props) {
           className="btn btn--ghost btn--sm"
           type="button"
           onClick={onSignOut}
-          style={{ marginTop: 16 }}
+          style={{ marginTop: 16, marginLeft: 8 }}
         >
           Sign out
         </button>
