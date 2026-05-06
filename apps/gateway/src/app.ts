@@ -1739,6 +1739,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   app.get('/api/agents/:agentId/skills', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
     const store = requireSkillStore();
     const runner = instances.getRunner(agentId);
 
