@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.6.1 — 2026-05-07
+
+### Gateway config moved to the database
+
+Gateway-level configuration (CORS, auto-start agents, sandbox presets, auto-provision target) is now stored in the `meta` table instead of `~/.openhermit/gateway/gateway.json`. On first boot, an existing `gateway.json` is migrated into the DB and renamed to `gateway.json.imported`. New `hermit gateway config get/set/show` commands and a **Config** tab in the admin UI let operators edit the live config; changes require a gateway restart to apply.
+
+### Security hardening (#14)
+
+- Admin bearer-token comparison now uses `crypto.timingSafeEqual` to prevent timing attacks.
+- `jwtVerify` is pinned to `HS256` to block algorithm-confusion attacks.
+- Markdown rendered in chat messages is now passed through DOMPurify before `dangerouslySetInnerHTML`.
+
+### Performance (#15)
+
+- Eliminated N+1 user lookups in fleet/agent endpoints (batched `UserStore` methods).
+- Boot is parallelized: agent runners and channel starts kick off concurrently, and sandbox `listAll` is bucketed across providers.
+- Added a GIN index on `sessions.user_ids` (migration `0015_sessions_user_ids_gin.sql`).
+- Web UI bundle is code-split via `manualChunks` + `React.lazy` on `ChatShell` / `ManagePanel`; initial JS dropped from ~363 KB to ~207 KB.
+
+### Web UI: self-service token + restore flow (#18)
+
+- New **Show access tokens** panel on the agent picker exposes the JWT bearer token and the device key (with copy buttons and warning) — no more digging through devtools.
+- New **Restore from key** mode on the welcome screen accepts an exported device key JSON to recover access on a fresh browser.
+- Renamed the per-agent join field from "Access Token" to "Agent invite token" with help text to stop the JWT/invite mix-up.
+
+### SDK (#16)
+
+- `GatewayClient.registerMcpServer()` wrapper around `POST /api/admin/mcp-servers`.
+
+### UI fixes (#19)
+
+- `/admin/config` panel: replaced undefined `.form-row` classes with the existing `.field` pattern so fields stack vertically.
+- Added spacing between **Show access tokens** and **Sign out** on the agent picker.
+
+---
+
 ## 0.6.0 — 2026-05-06
 
 ### Policy v2: unified effect model + approval flow
