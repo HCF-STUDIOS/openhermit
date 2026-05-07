@@ -140,12 +140,11 @@ export const registerAgentsCommand = (program: Command): void => {
       }
     });
 
-  // --- restart (deprecated) ---
+  // --- restart ---
   agents
     .command('restart <agentId>')
-    .description('[deprecated] Evict and re-hydrate the runner')
+    .description('Evict and re-hydrate the runner (use to pick up config/skill/MCP changes)')
     .action(async (agentId: string) => {
-      console.warn(`[deprecated] \`agents restart\` — ${DEPRECATION_NOTE}`);
       try {
         const gateway = createGateway();
         const result = await gateway.manageAgent(agentId, 'restart');

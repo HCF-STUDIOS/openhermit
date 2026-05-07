@@ -390,7 +390,10 @@ function FleetActionsMenu({
       {agent.status === 'disabled' ? (
         <button role="menuitem" onClick={() => onAction(agent.agentId, 'enable')}>Enable</button>
       ) : (
-        <button role="menuitem" onClick={() => onAction(agent.agentId, 'disable')}>Disable</button>
+        <>
+          <button role="menuitem" onClick={() => onAction(agent.agentId, 'restart')}>Restart</button>
+          <button role="menuitem" onClick={() => onAction(agent.agentId, 'disable')}>Disable</button>
+        </>
       )}
       <div className="fleet-actions__divider" />
       <button role="menuitem" onClick={() => onConfig(agent.agentId)}>Config</button>
