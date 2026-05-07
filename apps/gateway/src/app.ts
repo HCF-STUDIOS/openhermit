@@ -471,7 +471,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
           agentId: m.agentId,
           role: m.role,
           ...(rec?.name ? { name: rec.name } : {}),
-          status: rec?.status === 'active' ? 'running' as const : 'stopped' as const,
+          status: rec?.status ?? 'disabled',
         };
       });
       return c.json(result);

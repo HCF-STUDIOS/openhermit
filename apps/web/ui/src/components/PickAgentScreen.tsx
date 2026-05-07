@@ -129,33 +129,39 @@ export function PickAgentScreen({ gatewayUrl, onPick, onSignOut }: Props) {
         )}
         {memberships !== null && memberships.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
-            {memberships.map((m) => (
-              <button
-                key={m.agentId}
-                type="button"
-                className="btn btn--ghost"
-                disabled={busy}
-                onClick={() => void enter(m)}
-                style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '10px 12px', textAlign: 'left',
-                }}
-              >
-                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                  <strong>{m.name ?? m.agentId}</strong>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>{m.agentId} · {m.role}</span>
-                </span>
-                <span style={{
-                  fontSize: 11,
-                  padding: '2px 8px',
-                  borderRadius: 999,
-                  background: m.status === 'running' ? 'var(--success-bg, #dcfce7)' : 'var(--surface, #f4f4f5)',
-                  color: m.status === 'running' ? 'var(--success, #166534)' : 'var(--muted)',
-                }}>
-                  {m.status}
-                </span>
-              </button>
-            ))}
+            {memberships.map((m) => {
+              const isDisabled = m.status === 'disabled';
+              return (
+                <button
+                  key={m.agentId}
+                  type="button"
+                  className="btn btn--ghost"
+                  disabled={busy || isDisabled}
+                  title={isDisabled ? 'This agent is disabled and cannot accept traffic.' : undefined}
+                  onClick={() => void enter(m)}
+                  style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '10px 12px', textAlign: 'left',
+                    opacity: isDisabled ? 0.55 : 1,
+                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                    <strong>{m.name ?? m.agentId}</strong>
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>{m.agentId} · {m.role}</span>
+                  </span>
+                  <span style={{
+                    fontSize: 11,
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    background: isDisabled ? 'var(--surface, #f4f4f5)' : 'var(--success-bg, #dcfce7)',
+                    color: isDisabled ? 'var(--muted)' : 'var(--success, #166534)',
+                  }}>
+                    {m.status}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 

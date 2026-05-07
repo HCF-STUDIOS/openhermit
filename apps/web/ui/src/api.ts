@@ -25,7 +25,7 @@ export interface AgentMembership {
   agentId: string;
   role: 'owner' | 'user' | 'guest';
   name?: string;
-  status: 'running' | 'stopped';
+  status: 'active' | 'disabled';
 }
 
 export interface SessionSummary {
