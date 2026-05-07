@@ -1,6 +1,6 @@
 # Lazy Hydration & Multi-Tenant Scaling Design
 
-**Status:** Phases 1–5 shipped on `main` (channel-state externalization + per-bot multi-agent routing deferred — see Phase 4 #4–#5).
+**Status:** Phases 1–5 shipped on `main`. Two items in the original Phase 4 list (per-bot multi-agent routing, channel-state externalization to Postgres) turned out not to be required under the single-gateway / one-bot-per-agent model and are dropped from scope; see Phase 4 #4–#5.
 **Goal:** Support 1000–2000 agents per gateway instance on a 64 GB Railway container
 
 ---
@@ -200,8 +200,13 @@ One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP as
 1. ✅ Telegram polling loop moves to gateway-level pool (`apps/gateway/src/channel-pool.ts`, PR #29).
 2. ✅ Slack Socket Mode client moves to gateway-level pool.
 3. ✅ Discord client moves to gateway-level pool.
-4. ⏸ **Deferred:** routing table `(channel_kind, connection_id, conversation_id) → agent_id`. The pool is currently keyed by `agentId` — one bot per agent, which matches today's deployment model. Needed only when N agents share one Telegram/Slack/Discord app.
-5. ⏸ **Deferred:** externalize per-agent channel state to Postgres (`chatSessions`, `lastEventIds`, `pendingApprovals`, `chatLocks`/`turnQueues`). Survives runner eviction today (in-memory on the bridge, which lives in the gateway), but **not** gateway restart, and blocks multi-gateway HA. Largest hidden cost of this phase per §5.4 — break out into its own design when prioritized.
+4. 🚫 **Out of scope.** A `(channel_kind, connection_id, conversation_id) → agent_id` routing table was on the original list to support multiple agents sharing one bot. In the actual product, each agent owns its own Telegram/Slack/Discord credentials (rows in `agent_channels`), so routing is 1:1 and already handled by `ChannelRegistry.register({apiKey, agentId})` in the pool. No use case in v1.
+5. 🚫 **Out of scope.** Externalizing per-agent channel state to Postgres turned out to be unnecessary on inspection:
+   - `chatSessions` / `channelSessions` are pure memoization — on cache miss the bridge falls back to `client.listSessions({metadata})` which already reads from the persisted `sessions` table (`apps/channels/{slack,discord,telegram}/src/bridge.ts`).
+   - `lastEventIds` is the SSE dedup cursor, reset across runner restart via the `ready` / `nextEventId` frame (PR #29).
+   - `pendingApprovals` (Telegram realtime) is valid only for the duration of one in-flight turn — that turn is in-memory by nature, so persisting the map is meaningless.
+   - Async approvals already persist via `approval_requests.short_id` (PR #28).
+   - `chatLocks` / `turnQueues` are per-conversation in-process mutexes; correct as in-memory under single-gateway. Multi-gateway HA is explicitly out of scope (see Open Questions §4) and would require its own design pass anyway.
 
 ### Phase 5 — Cleanup ✅ shipped (PR #30)
 
