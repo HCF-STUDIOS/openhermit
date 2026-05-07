@@ -18,6 +18,7 @@ export type {
 
 export type {
   AgentRecord,
+  AgentStatus,
   AgentMcpServerRecord,
   AgentSkillRecord,
   McpServerRecord,

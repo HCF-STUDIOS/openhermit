@@ -727,6 +727,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       agentId: body.agentId,
       ...(body.name ? { name: body.name } : {}),
       workspaceDir: body.workspaceDir ?? `${homeDir}/workspaces/${body.agentId}`,
+      status: 'active',
       createdAt: now,
       updatedAt: now,
     });

@@ -3,7 +3,7 @@ import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 
 import type { AgentStore } from '../interfaces.js';
-import type { AgentRecord } from '../types.js';
+import type { AgentRecord, AgentStatus } from '../types.js';
 import * as schema from '../schema.js';
 import {
   agents,
@@ -50,6 +50,7 @@ export class DbAgentStore implements AgentStore {
       agentId: agent.agentId,
       name: agent.name ?? null,
       workspaceDir: agent.workspaceDir,
+      status: agent.status,
       createdAt: agent.createdAt,
       updatedAt: agent.updatedAt,
     }).returning();
@@ -75,6 +76,14 @@ export class DbAgentStore implements AgentStore {
     if (patch.workspaceDir !== undefined) data.workspaceDir = patch.workspaceDir;
 
     const rows = await this.db.update(agents).set(data).where(eq(agents.agentId, agentId)).returning();
+    return rows[0] ? this.toRecord(rows[0]) : undefined;
+  }
+
+  async setStatus(agentId: string, status: AgentStatus): Promise<AgentRecord | undefined> {
+    const rows = await this.db.update(agents)
+      .set({ status, updatedAt: new Date().toISOString() })
+      .where(eq(agents.agentId, agentId))
+      .returning();
     return rows[0] ? this.toRecord(rows[0]) : undefined;
   }
 
@@ -280,6 +289,7 @@ export class DbAgentStore implements AgentStore {
       agentId: row.agentId,
       ...(row.name ? { name: row.name } : {}),
       workspaceDir: row.workspaceDir,
+      status: row.status as AgentStatus,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

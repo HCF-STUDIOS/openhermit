@@ -3,6 +3,7 @@ import type { SessionHistoryMessage, SessionSpec } from '@openhermit/protocol';
 import type {
   AgentMcpServerRecord,
   AgentRecord,
+  AgentStatus,
   AgentSkillRecord,
   ApprovalRequestCreateInput,
   ApprovalRequestRecord,
@@ -164,6 +165,12 @@ export interface AgentStore {
   get(agentId: string): Promise<AgentRecord | undefined>;
   list(): Promise<AgentRecord[]>;
   update(agentId: string, patch: Partial<Pick<AgentRecord, 'name' | 'workspaceDir'>>): Promise<AgentRecord | undefined>;
+  /**
+   * Update the agent's status. Returns the updated record, or undefined
+   * if the agent doesn't exist. The gateway uses this to disable/archive
+   * an agent without deleting it.
+   */
+  setStatus(agentId: string, status: AgentStatus): Promise<AgentRecord | undefined>;
   delete(agentId: string): Promise<void>;
   getBackendState(agentId: string): Promise<Record<string, unknown> | null>;
   setBackendState(agentId: string, state: Record<string, unknown>): Promise<void>;

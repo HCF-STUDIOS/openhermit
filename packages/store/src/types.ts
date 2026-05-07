@@ -11,10 +11,14 @@ export interface StoreScope {
   agentId: string;
 }
 
+export type AgentStatus = 'active' | 'disabled' | 'archived';
+
 export interface AgentRecord {
   agentId: string;
   name?: string;
   workspaceDir: string;
+  /** Source of truth for whether the gateway accepts requests for this agent. */
+  status: AgentStatus;
   createdAt: string;
   updatedAt: string;
 }
