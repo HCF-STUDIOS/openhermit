@@ -1,6 +1,6 @@
 # Channel Adapters
 
-OpenHermit includes built-in Telegram, Discord, and Slack adapters. The gateway starts enabled adapters for each running agent and registers scoped channel tokens so adapters can call back into `/api/agents/{agentId}/...`.
+OpenHermit includes built-in Telegram, Discord, and Slack adapters. At gateway boot the `ChannelPool` (`apps/gateway/src/channel-pool.ts`) starts every enabled adapter for every agent with `agents.status='active'` and registers scoped channel tokens so adapters can call back into `/api/agents/{agentId}/...`. Bridges are owned by the gateway, not by the per-agent runner — they stay alive across runner eviction and only tear down on gateway shutdown, agent disable, or explicit `disableChannel`. When an inbound message arrives, the gateway hydrates the runner on demand before dispatching.
 
 ## Implemented Adapters
 

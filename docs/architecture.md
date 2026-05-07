@@ -1,6 +1,6 @@
 # Architecture
 
-OpenHermit is a gateway-managed, multi-agent runtime. The gateway owns process lifecycle and API surface; each running agent is an in-process `AgentRunner` with its own workspace, security policy, tools, scheduler, channel adapters, MCP connections, and state scope.
+OpenHermit is a gateway-managed, multi-agent runtime. The gateway owns process lifecycle, the API surface, the channel-bridge pool, and the central cron scheduler. Per agent, an in-process `AgentRunner` carries the workspace, security policy, tools, MCP connections, and per-session state — runners hydrate on demand when traffic arrives and are LRU-evicted when idle (controlled by `OPENHERMIT_EVICTION_TTL_MINUTES`, default 30). `agents.status` ('active' / 'disabled') in the DB is the source of truth for whether traffic is accepted; the in-memory runner map is a hydration cache, not a lifecycle.
 
 ## Components
 
@@ -23,7 +23,7 @@ PostgreSQL stores (Drizzle)
 | Component | Responsibility |
 |-----------|----------------|
 | `apps/gateway` | Control plane, auth, admin API, admin UI, agent lifecycle, WebSocket attachment, channel startup |
-| `apps/agent` | Agent loop, prompt assembly, tools, sessions, events, introspection, compaction, scheduler, MCP client manager |
+| `apps/agent` | Agent loop, prompt assembly, tools, sessions, events, introspection, compaction, MCP client manager |
 | `apps/cli` | Setup, gateway lifecycle, agent management, chat TUI, config/secrets, schedules, logs/status |
 | `apps/web` | Standalone end-user chat web app |
 | `apps/channels/*` | Telegram, Discord, and Slack bridges |
@@ -89,7 +89,7 @@ On startup, the gateway:
 5. starts the Hono server and WebSocket handler
 6. boots the channel pool — bridges (Telegram/Slack/Discord) attach to gateway HTTP routes; runners hydrate lazily on first inbound traffic
 
-Agents hydrate on demand: the first request that targets an agent constructs its `AgentRunner`, syncs enabled skills into the sandbox via `runner.syncSkills`, attaches existing channel outbounds from the pool, starts the per-runner scheduler, and connects enabled MCP servers lazily through the runner. Idle runners are evicted by an LRU after `OPENHERMIT_EVICTION_TTL_MINUTES`; channel bridges in the pool stay alive across eviction.
+Agents hydrate on demand: the first request that targets an agent constructs its `AgentRunner`, syncs enabled skills into the sandbox via `runner.syncSkills`, attaches existing channel outbounds from the pool, and connects enabled MCP servers lazily through the runner. Schedules fire from a single gateway-level `CentralScheduler` that hydrates the target runner on demand at fire time. Idle runners are evicted by an LRU after `OPENHERMIT_EVICTION_TTL_MINUTES`; channel bridges in the pool stay alive across eviction.
 
 ## Agent Runtime
 

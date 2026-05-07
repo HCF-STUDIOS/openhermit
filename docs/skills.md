@@ -42,7 +42,7 @@ The gateway scans repository `skills/` at startup and upserts those built-ins in
 
 ## Runtime Loading
 
-At agent startup:
+When a runner hydrates (on the first request that targets the agent, or on `agents restart`):
 
 1. DB-managed enabled skills are resolved for the agent, including global `*` assignments.
 2. The gateway calls `runner.syncSkills`, which dispatches to each `ExecBackend`:

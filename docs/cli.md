@@ -103,10 +103,12 @@ Manage agent records.
 |------------|-------------|
 | `agents list` | List every registered agent and its status. |
 | `agents create <agentId>` | Create a new agent. Auto-seeds the `identity` / `soul` / `rules` instructions. |
-| `agents start <agentId>` | Start a stopped agent (gateway spawns the in-process `AgentRunner`). |
-| `agents stop <agentId>` | Stop a running agent. |
-| `agents restart <agentId>` | Restart. |
-| `agents delete <agentId>` | Delete the agent and all its per-agent rows (must be stopped first). |
+| `agents enable <agentId>` | Set `agents.status='active'` — gateway accepts traffic; runner hydrates on first request. |
+| `agents disable <agentId>` | Set `agents.status='disabled'` — gateway rejects traffic and evicts any hot runner. |
+| `agents restart <agentId>` | Evict and re-hydrate the runner. Useful for picking up DB-side config / skill / MCP changes. |
+| `agents start <agentId>` | **Deprecated** cache hint — pre-hydrates the runner. Lazy hydration handles this on demand; prefer `enable`. |
+| `agents stop <agentId>` | **Deprecated** cache hint — evicts the runner without disabling the agent. Prefer `disable`. |
+| `agents delete <agentId>` | Delete the agent and all its per-agent rows (must be disabled first). |
 
 Flags on `create`:
 
@@ -120,7 +122,6 @@ Flags on `create`:
 
 ```bash
 hermit agents create oncall --name "On-Call Buddy" --owner user_marcus
-hermit agents start oncall
 hermit agents list
 ```
 
@@ -412,7 +413,7 @@ hermit logs --json | jq 'select(.level=="error")'
 | Need to… | Use |
 |----------|-----|
 | Spin up the gateway | `hermit setup && hermit gateway start` |
-| Create and start an agent | `hermit agents create main && hermit agents start main` |
+| Create an agent | `hermit agents create main` (active by default; hydrates on first request) |
 | Talk to it | `hermit chat --agent main` |
 | Set a model API key | `hermit config secrets set OPENROUTER_API_KEY ... --agent main` |
 | Switch model | `hermit config set model.model google/gemini-3-flash-preview --agent main` |

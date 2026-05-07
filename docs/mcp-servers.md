@@ -11,9 +11,9 @@ MCP servers add executable external tools to an agent. Skills are prompt assets;
 
 ## Runtime
 
-`AgentRunner` creates an `McpClientManager` when MCP stores are available. Enabled servers are connected as needed, tool discovery is cached in the manager, and shutdown disconnects all clients.
+`AgentRunner` creates an `McpClientManager` when MCP stores are available. Connections are kicked off asynchronously — `connectAll()` is fire-and-forget so runner hydration never blocks on a slow or broken MCP server. Tools surface as each connection completes; a call against a still-connecting server returns `"MCP server … is still connecting. Try again in a moment."` Tool discovery is cached in the manager, and shutdown disconnects all clients.
 
-Failure to connect one MCP server does not prevent the agent from running. Status is surfaced through `mcp_status` and the gateway UI/API.
+Failure to connect one MCP server does not prevent the agent from running. Per-server status (`connecting` / `connected` / `disconnected` / `error`) is surfaced through `mcp_status` and the gateway UI/API.
 
 MCP tools are namespaced:
 
