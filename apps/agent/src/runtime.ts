@@ -99,15 +99,25 @@ export class SessionEventBroker {
    * Atomically subscribe and replay backlog events with id > afterEventId.
    * Eliminates the race between getBacklog() and subscribe().
    */
+  /** Current next-id, exposed so SSE clients can detect sequence resets across runner restarts. */
+  getNextEventId(): number {
+    return this.nextEventId;
+  }
+
   subscribeFrom(
     sessionId: string,
     afterEventId: number,
     subscriber: SessionSubscriber,
   ): () => void {
     const unsubscribe = this.subscribe(sessionId, subscriber);
+    // If the caller's cursor is >= the broker's next id, it came from a
+    // previous broker instance (e.g. the runner was evicted and re-
+    // hydrated). The new sequence restarts at 1 — filtering against the
+    // stale cursor would skip every event. Treat as a fresh subscription.
+    const effectiveAfter = afterEventId >= this.nextEventId ? 0 : afterEventId;
     const backlog = this.backlog.get(sessionId) ?? [];
     for (const envelope of backlog) {
-      if (envelope.id > afterEventId) {
+      if (envelope.id > effectiveAfter) {
         void subscriber(envelope);
       }
     }

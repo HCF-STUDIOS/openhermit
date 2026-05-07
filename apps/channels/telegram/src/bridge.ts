@@ -356,6 +356,7 @@ export class TelegramBridge implements ChannelOutbound {
     const decoder = new TextDecoder();
     let buffer = '';
     let nextLastEventId = lastEventId;
+    let sequenceResetChecked = false;
     let accumulatedText = '';
     let finalText: string | undefined;
     let error: string | undefined;
@@ -388,7 +389,25 @@ export class TelegramBridge implements ChannelOutbound {
             nextLastEventId = frame.id;
           }
 
-          if (frame.event === 'ready' || frame.event === 'ping') {
+          if (frame.event === 'ready') {
+            // Detect sequence reset: a new runner restarts ids at 1, so
+            // a stored cursor from a previous runner would skip every
+            // event. Reset the cursor when the server's next id is
+            // behind ours.
+            if (!sequenceResetChecked) {
+              sequenceResetChecked = true;
+              try {
+                const data = frame.data.length > 0
+                  ? (JSON.parse(frame.data) as { nextEventId?: number })
+                  : {};
+                if (typeof data.nextEventId === 'number' && data.nextEventId <= nextLastEventId) {
+                  nextLastEventId = 0;
+                }
+              } catch { /* ignore — fall back to stored cursor */ }
+            }
+            continue;
+          }
+          if (frame.event === 'ping') {
             continue;
           }
 

@@ -201,6 +201,7 @@ export class SlackBridge implements ChannelOutbound {
     const decoder = new TextDecoder();
     let buffer = '';
     let nextLastEventId = lastEventId;
+    let sequenceResetChecked = false;
     let accumulatedText = '';
     let finalText: string | undefined;
     let error: string | undefined;
@@ -223,7 +224,21 @@ export class SlackBridge implements ChannelOutbound {
           if (frame.id !== undefined && frame.id <= nextLastEventId) continue;
           if (frame.id !== undefined) nextLastEventId = frame.id;
 
-          if (frame.event === 'ready' || frame.event === 'ping') continue;
+          if (frame.event === 'ready') {
+            if (!sequenceResetChecked) {
+              sequenceResetChecked = true;
+              try {
+                const data = frame.data.length > 0
+                  ? (JSON.parse(frame.data) as { nextEventId?: number })
+                  : {};
+                if (typeof data.nextEventId === 'number' && data.nextEventId <= nextLastEventId) {
+                  nextLastEventId = 0;
+                }
+              } catch { /* ignore */ }
+            }
+            continue;
+          }
+          if (frame.event === 'ping') continue;
 
           const payload = frame.data.length > 0
             ? (JSON.parse(frame.data) as Record<string, unknown>)

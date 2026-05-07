@@ -1302,9 +1302,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }, SSE_PING_INTERVAL_MS);
 
       try {
+        // Include nextEventId so clients with a stored last-event cursor
+        // can detect sequence resets after runner eviction (broker is
+        // per-runner; new runner restarts ids at 1).
         await stream.writeSSE({
           event: 'ready',
-          data: JSON.stringify({ sessionId }),
+          data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
         });
         await waitForAbort(c.req.raw.signal);
       } finally {
