@@ -31,7 +31,9 @@ export const agents = pgTable('agents', {
   status: text('status').default('active').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  index('idx_agents_status').on(table.status),
+]);
 
 export const sessions = pgTable('sessions', {
   agentId: text('agent_id').notNull(),

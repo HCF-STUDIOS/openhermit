@@ -330,22 +330,9 @@ export const attachGatewayWs = (
     }
 
     const agentId = decodeURIComponent(match[1]!);
-    let runner;
-    try {
-      runner = await instances.getOrHydrate(agentId);
-    } catch (err) {
-      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
-      socket.destroy();
-      return;
-    }
 
-    if (!runner) {
-      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    // Resolve auth from the upgrade request (headers + query param).
+    // Resolve auth BEFORE hydration so unauthenticated upgrades cannot
+    // trigger expensive cold-starts.
     let auth: AuthContext | undefined;
     if (options.auth) {
       const headers = new Headers();
@@ -358,9 +345,23 @@ export const attachGatewayWs = (
       if (resolved) auth = resolved;
     }
 
-    // Reject unauthenticated WS connections
     if (!auth) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    let runner;
+    try {
+      runner = await instances.getOrHydrate(agentId);
+    } catch (err) {
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    if (!runner) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
       socket.destroy();
       return;
     }

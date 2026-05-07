@@ -166,9 +166,9 @@ export interface AgentStore {
   list(): Promise<AgentRecord[]>;
   update(agentId: string, patch: Partial<Pick<AgentRecord, 'name' | 'workspaceDir'>>): Promise<AgentRecord | undefined>;
   /**
-   * Update the agent's status. Returns the updated record, or undefined
-   * if the agent doesn't exist. The gateway uses this to disable/archive
-   * an agent without deleting it.
+   * Update the agent's status to 'active' or 'disabled'. Returns the
+   * updated record, or undefined if the agent doesn't exist. The gateway
+   * uses this to disable an agent without deleting it.
    */
   setStatus(agentId: string, status: AgentStatus): Promise<AgentRecord | undefined>;
   delete(agentId: string): Promise<void>;

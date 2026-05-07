@@ -906,6 +906,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     switch (action) {
       case 'start': {
+        if (record.status !== 'active') {
+          throw new ValidationError(`Agent ${agentId} is disabled. Run \`hermit agents enable ${agentId}\` first.`);
+        }
         if (instances.getRunner(agentId)) {
           throw new ValidationError(`Agent ${agentId} is already running.`);
         }
@@ -919,6 +922,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
 
       case 'restart': {
+        if (record.status !== 'active') {
+          throw new ValidationError(`Agent ${agentId} is disabled. Run \`hermit agents enable ${agentId}\` first.`);
+        }
         await instances.stop(agentId);
         await instances.start(agentId, record.workspaceDir);
         return c.json({ agentId, status: 'running' });
