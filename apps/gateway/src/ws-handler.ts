@@ -330,7 +330,14 @@ export const attachGatewayWs = (
     }
 
     const agentId = decodeURIComponent(match[1]!);
-    const runner = instances.getRunner(agentId);
+    let runner;
+    try {
+      runner = await instances.getOrHydrate(agentId);
+    } catch (err) {
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+      return;
+    }
 
     if (!runner) {
       socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');

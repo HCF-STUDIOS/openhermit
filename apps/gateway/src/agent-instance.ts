@@ -24,6 +24,12 @@ interface ChannelHandle {
 
 export class AgentInstanceManager {
   private runners = new Map<string, AgentRunner>();
+  /**
+   * In-flight hydrations. Concurrent {@link getOrHydrate} calls for the
+   * same cold agent share one start() invocation rather than racing —
+   * the first caller installs a Promise here, others await it.
+   */
+  private hydrating = new Map<string, Promise<AgentRunner>>();
   private langfuseClients = new Map<string, LangfuseClientLike>();
   private channelHandles = new Map<string, ChannelHandle[]>();
   private channelStatuses = new Map<string, ChannelStatus[]>();
@@ -243,16 +249,70 @@ export class AgentInstanceManager {
     return this.runners.get(agentId);
   }
 
+  /**
+   * Resolve an AgentRunner for a cold-path request, hydrating on demand.
+   *
+   * Returns:
+   *   - the existing runner if already hydrated;
+   *   - the in-flight hydration Promise if another caller is mid-start;
+   *   - a freshly hydrated runner if `agents.status = 'active'`;
+   *   - `undefined` if the agent doesn't exist or is not active.
+   *
+   * Concurrent callers for the same cold agent share one hydration via
+   * {@link hydrating}, so we never race two `start()` calls.
+   *
+   * Callers that only want to check liveness without triggering work
+   * should keep using {@link getRunner}.
+   */
+  async getOrHydrate(agentId: string): Promise<AgentRunner | undefined> {
+    const existing = this.runners.get(agentId);
+    if (existing) return existing;
+
+    const inFlight = this.hydrating.get(agentId);
+    if (inFlight) return inFlight;
+
+    if (!this.agentStore) {
+      throw new Error(
+        'AgentInstanceManager.getOrHydrate requires agentStore (call setAgentStore at startup).',
+      );
+    }
+    const record = await this.agentStore.get(agentId);
+    if (!record) return undefined;
+    if (record.status !== 'active') return undefined;
+
+    // Re-check after the await — another caller may have hydrated meanwhile.
+    const reCheck = this.runners.get(agentId);
+    if (reCheck) return reCheck;
+    const reInFlight = this.hydrating.get(agentId);
+    if (reInFlight) return reInFlight;
+
+    const promise = this.start(agentId, record.workspaceDir);
+    this.hydrating.set(agentId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.hydrating.delete(agentId);
+    }
+  }
+
   getChannelStatuses(agentId: string): ChannelStatus[] {
     return this.channelStatuses.get(agentId) ?? [];
   }
 
   /**
    * Dispatch an incoming webhook request to the named channel adapter
-   * for `agentId`. Returns 404 if the agent isn't running, the channel
-   * isn't enabled, or the adapter doesn't accept webhooks.
+   * for `agentId`. Hydrates the agent on demand if the request is for
+   * an `active` agent that isn't currently running. Returns 404 if the
+   * agent doesn't exist / is disabled / the channel isn't enabled / the
+   * adapter doesn't accept webhooks.
    */
   async dispatchWebhook(agentId: string, channelName: string, req: WebhookRequest): Promise<WebhookResponse> {
+    if (!this.runners.has(agentId)) {
+      const runner = await this.getOrHydrate(agentId);
+      if (!runner) {
+        return { status: 404, body: 'agent not available' };
+      }
+    }
     const handles = this.channelHandles.get(agentId) ?? [];
     const handle = handles.find((h) => h.name === channelName);
     if (!handle || !handle.handleWebhook) {
