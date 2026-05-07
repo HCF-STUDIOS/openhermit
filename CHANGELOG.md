@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.2 — 2026-05-07
+
+### Lazy hydration of agents (#23, #24, #25, #26, #30)
+
+The gateway no longer eagerly starts every agent at boot. Agents are now hydrated on first access, gated by a per-agent `hydrating` map that fences `start()` against double-start races. A central cron scheduler (Phase 2) keeps scheduled work running for cold agents, an LRU eviction policy (Phase 3) reclaims idle runners, and the legacy `autoStartAgents` config has been removed in favour of fully lazy hydration.
+
+### Channel bridge connection pool (#29)
+
+Per-agent channel bridges (Slack/Discord/Telegram) are hoisted into a shared connection pool, so multiple agents on the same workspace share a single upstream connection instead of each opening their own.
+
+### Async approval callback persistence (#28)
+
+Channel approval requests now persist their callback ID via `approval_requests.short_id`, so async approvals survive gateway restarts.
+
+### Fixes
+
+- **agent:** auto-ensure sandbox in the e2b and daytona file backends so file ops don't fail against a cold sandbox (#27).
+- **web:** show DB status on the agent picker and block clicks on disabled agents (#31).
+
+### Performance
+
+- **mcp:** connect MCP servers asynchronously so a slow server no longer blocks agent boot (#22).
+
+---
+
 ## 0.6.1 — 2026-05-07
 
 ### Gateway config moved to the database
