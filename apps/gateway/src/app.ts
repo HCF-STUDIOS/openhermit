@@ -1329,7 +1329,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const stat = stats.get(record.agentId) ?? {
         sessions24h: 0, errors24h: 0, skillsCount: 0, mcpCount: 0,
       };
-      const runner = instances.getRunner(record.agentId);
       const channelStatuses = instances.getChannelStatuses(record.agentId);
       const channelsEnabled = channelStatuses
         .filter((s) => s.status === 'connected')
@@ -1337,7 +1336,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       return {
         agentId: record.agentId,
         ...(record.name ? { name: record.name } : {}),
-        status: runner ? 'running' as const : 'stopped' as const,
+        status: record.status === 'active' ? 'running' as const : 'stopped' as const,
         sessions24h: stat.sessions24h,
         errors24h: stat.errors24h,
         ...(stat.lastActivity ? { lastActivity: stat.lastActivity } : {}),
