@@ -122,6 +122,15 @@ export class AgentLocalClient {
     return this.postJson(`/approvals/${encodeURIComponent(requestId)}/review`, body, headers);
   }
 
+  async reviewApprovalRequestByShortId(
+    shortId: number,
+    input: { decision: 'approved' | 'rejected'; resolution?: 'once' | 'persistent'; reason?: string; channelUserId?: string },
+  ): Promise<unknown> {
+    const { channelUserId, ...body } = input;
+    const headers = channelUserId ? { 'x-channel-user-id': channelUserId } : undefined;
+    return this.postJson(`/approvals/by-short/${encodeURIComponent(String(shortId))}/review`, body, headers);
+  }
+
   async postMessageSync(
     sessionId: string,
     message: SessionMessage,

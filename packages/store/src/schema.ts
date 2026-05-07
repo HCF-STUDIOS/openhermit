@@ -4,8 +4,10 @@ import {
   integer,
   jsonb,
   serial,
+  bigserial,
   boolean,
   index,
+  uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
 
@@ -180,6 +182,7 @@ export const sandboxes = pgTable('sandboxes', {
 
 export const approvalRequests = pgTable('approval_requests', {
   id: text('id').primaryKey(),
+  shortId: bigserial('short_id', { mode: 'number' }).notNull(),
   agentId: text('agent_id').notNull(),
   sessionId: text('session_id').notNull(),
   requesterId: text('requester_id').notNull(),
@@ -196,6 +199,7 @@ export const approvalRequests = pgTable('approval_requests', {
 }, (table) => [
   index('idx_approval_requests_agent').on(table.agentId, table.status),
   index('idx_approval_requests_lookup').on(table.agentId, table.requesterId, table.resourceType, table.resourceKey, table.status),
+  uniqueIndex('idx_approval_requests_short_id').on(table.shortId),
 ]);
 
 export const agentPolicies = pgTable('agent_policies', {

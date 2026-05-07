@@ -1087,10 +1087,10 @@ export class AgentRunner implements SessionRuntime {
     };
   }
 
-  private makeNotifyOwnerApproval(): ((requestId: string, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string) => Promise<void>) | undefined {
+  private makeNotifyOwnerApproval(): ((requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string) => Promise<void>) | undefined {
     if (this.channelOutbound.size === 0) return undefined;
 
-    return async (requestId, resourceType, resourceKey, requesterId, requesterSessionId) => {
+    return async (requestId, shortId, resourceType, resourceKey, requesterId, requesterSessionId) => {
       try {
         const config = await this.options.security.readConfig();
         const notif = config.notifications;
@@ -1139,7 +1139,7 @@ export class AgentRunner implements SessionRuntime {
           sessionId: targetSession.sessionId,
           to: outbound.to,
           text,
-          actions: [{ type: 'approval_review', requestId }],
+          actions: [{ type: 'approval_review', requestId, shortId }],
         });
       } catch {
         // Best-effort — don't break the tool call if notification fails.
@@ -1741,7 +1741,7 @@ export class AgentRunner implements SessionRuntime {
                   });
                 }
                 if (notifyOwner) {
-                  notifyOwner(request.id, 'tool', resourceKey, userId, sessionId ?? 'unknown').catch(() => {});
+                  notifyOwner(request.id, request.shortId, 'tool', resourceKey, userId, sessionId ?? 'unknown').catch(() => {});
                 }
                 return {
                   content: [{

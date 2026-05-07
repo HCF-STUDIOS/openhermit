@@ -286,6 +286,7 @@ export interface PolicyStore {
 export interface ApprovalRequestStore {
   create(input: ApprovalRequestCreateInput): Promise<ApprovalRequestRecord>;
   get(id: string): Promise<ApprovalRequestRecord | undefined>;
+  getByShortId(shortId: number): Promise<ApprovalRequestRecord | undefined>;
   list(agentId: string, status?: ApprovalStatus): Promise<ApprovalRequestRecord[]>;
   /** Find an approved request matching the given criteria (for retry flow). */
   findApproved(

@@ -2491,19 +2491,19 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json(request);
   });
 
-  app.post('/api/agents/:agentId/approvals/:id/review', async (c) => {
-    const agentId = c.req.param('agentId') ?? '';
-    await requireOwnerOrAdmin(c, agentId);
+  const resolveApprovalReview = async (
+    c: any,
+    agentId: string,
+    request: import('@openhermit/store').ApprovalRequestRecord,
+  ) => {
     const store = requireApprovalStore();
-    const id = c.req.param('id') ?? '';
     const body = await c.req.json() as Record<string, unknown>;
     const decision = body.decision as string;
     if (decision !== 'approved' && decision !== 'rejected') {
       throw new ValidationError('decision must be "approved" or "rejected"');
     }
-    const request = await store.get(id);
-    if (!request || request.agentId !== agentId) {
-      throw new NotFoundError(`Approval request not found: ${id}`);
+    if (request.agentId !== agentId) {
+      throw new NotFoundError(`Approval request not found: ${request.id}`);
     }
     if (request.status !== 'pending') {
       throw new ValidationError(`Request is already ${request.status}`);
@@ -2511,7 +2511,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const resolvedBy = (c as any).get?.('userId') ?? 'owner';
     const resolution = typeof body.resolution === 'string' ? body.resolution as 'once' | 'persistent' : undefined;
     const reason = typeof body.reason === 'string' ? body.reason : undefined;
-    const updated = await store.resolve(id, decision, resolvedBy, resolution, reason);
+    const updated = await store.resolve(request.id, decision, resolvedBy, resolution, reason);
 
     if (decision === 'approved' && resolution === 'persistent' && options.policyStore) {
       await options.policyStore.upsert({
@@ -2524,7 +2524,35 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       });
     }
 
-    return c.json(updated);
+    return updated;
+  };
+
+  app.post('/api/agents/:agentId/approvals/:id/review', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const store = requireApprovalStore();
+    const id = c.req.param('id') ?? '';
+    const request = await store.get(id);
+    if (!request || request.agentId !== agentId) {
+      throw new NotFoundError(`Approval request not found: ${id}`);
+    }
+    return c.json(await resolveApprovalReview(c, agentId, request));
+  });
+
+  app.post('/api/agents/:agentId/approvals/by-short/:shortId/review', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const store = requireApprovalStore();
+    const shortIdParam = c.req.param('shortId') ?? '';
+    const shortId = Number.parseInt(shortIdParam, 10);
+    if (!Number.isFinite(shortId)) {
+      throw new ValidationError(`Invalid short_id: ${shortIdParam}`);
+    }
+    const request = await store.getByShortId(shortId);
+    if (!request || request.agentId !== agentId) {
+      throw new NotFoundError(`Approval request not found: short_id=${shortId}`);
+    }
+    return c.json(await resolveApprovalReview(c, agentId, request));
   });
 
   // --- admin: MCP servers management ---

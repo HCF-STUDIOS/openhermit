@@ -38,8 +38,6 @@ export class TelegramBridge implements ChannelOutbound {
   private botInfo: TelegramUser | undefined;
   /** Maps short callback IDs to (sessionId, toolCallId) for real-time approval buttons. */
   private readonly pendingApprovals = new Map<string, { sessionId: string; toolCallId: string }>();
-  /** Maps short callback IDs to (requestId, decision) for async approval buttons. */
-  private readonly pendingAsyncApprovals = new Map<string, { requestId: string; decision: 'approved' | 'rejected' }>();
   private approvalSeq = 0;
   /** Per-chat message queue to serialize message handling (avoids duplicate SSE watchers). */
   private readonly chatLocks = new Map<number, Promise<void>>();
@@ -139,13 +137,10 @@ export class TelegramBridge implements ChannelOutbound {
     const buttons: { text: string; callback_data: string }[] = [];
     for (const action of actions) {
       if (action.type === 'approval_review') {
-        const approveId = String(++this.approvalSeq);
-        const rejectId = String(++this.approvalSeq);
-        this.pendingAsyncApprovals.set(approveId, { requestId: action.requestId, decision: 'approved' });
-        this.pendingAsyncApprovals.set(rejectId, { requestId: action.requestId, decision: 'rejected' });
+        const sid = String(action.shortId);
         buttons.push(
-          { text: '✅ Approve', callback_data: `aa:${approveId}` },
-          { text: '❌ Reject', callback_data: `ar:${rejectId}` },
+          { text: '✅ Approve', callback_data: `aa:${sid}` },
+          { text: '❌ Reject', callback_data: `ar:${sid}` },
         );
       }
     }
@@ -549,7 +544,7 @@ export class TelegramBridge implements ChannelOutbound {
     if (prefix === 'a' || prefix === 'r') {
       await this.handleRealtimeApproval(query, id, prefix === 'a');
     } else if (prefix === 'aa' || prefix === 'ar') {
-      await this.handleAsyncApproval(query, id);
+      await this.handleAsyncApproval(query, id, prefix === 'aa');
     }
   }
 
@@ -578,23 +573,20 @@ export class TelegramBridge implements ChannelOutbound {
     this.editApprovalMessage(query, approved);
   }
 
-  private async handleAsyncApproval(query: TelegramCallbackQuery, id: string): Promise<void> {
-    const pending = this.pendingAsyncApprovals.get(id);
-    if (!pending) {
-      await this.telegram.answerCallbackQuery(query.id, { text: 'This approval has expired.', showAlert: true });
+  private async handleAsyncApproval(query: TelegramCallbackQuery, id: string, approved: boolean): Promise<void> {
+    const shortId = Number.parseInt(id, 10);
+    if (!Number.isFinite(shortId)) {
+      await this.telegram.answerCallbackQuery(query.id, { text: 'Invalid approval id.', showAlert: true });
       return;
     }
 
-    this.pendingAsyncApprovals.delete(id);
-    const approved = pending.decision === 'approved';
-
     try {
-      const reviewInput: Parameters<typeof this.client.reviewApprovalRequest>[1] = {
-        decision: pending.decision,
+      const reviewInput: Parameters<typeof this.client.reviewApprovalRequestByShortId>[1] = {
+        decision: approved ? 'approved' : 'rejected',
         resolution: 'once',
       };
       if (query.from?.id) reviewInput.channelUserId = String(query.from.id);
-      await this.client.reviewApprovalRequest(pending.requestId, reviewInput);
+      await this.client.reviewApprovalRequestByShortId(shortId, reviewInput);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.log(`async approval review failed: ${msg}`);

@@ -175,6 +175,7 @@ export interface ChannelOutboundResult {
 export interface ChannelMessageAction {
   type: 'approval_review';
   requestId: string;
+  shortId: number;
   label?: string;
 }
 

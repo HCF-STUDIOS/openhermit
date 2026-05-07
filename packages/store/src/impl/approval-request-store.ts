@@ -53,8 +53,9 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
       resolvedAt: null,
       ttlMinutes: input.ttlMinutes ?? 60,
     };
-    await this.db.insert(approvalRequests).values(row);
-    return toRecord(row);
+    const [inserted] = await this.db.insert(approvalRequests).values(row).returning();
+    if (!inserted) throw new Error('approval request insert returned no row');
+    return toRecord(inserted);
   }
 
   async get(id: string): Promise<ApprovalRequestRecord | undefined> {
@@ -62,6 +63,15 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
       .select()
       .from(approvalRequests)
       .where(eq(approvalRequests.id, id))
+      .limit(1);
+    return rows[0] ? toRecord(rows[0]) : undefined;
+  }
+
+  async getByShortId(shortId: number): Promise<ApprovalRequestRecord | undefined> {
+    const rows = await this.db
+      .select()
+      .from(approvalRequests)
+      .where(eq(approvalRequests.shortId, shortId))
       .limit(1);
     return rows[0] ? toRecord(rows[0]) : undefined;
   }
@@ -155,6 +165,7 @@ function isExpired(record: ApprovalRequestRecord): boolean {
 function toRecord(row: typeof approvalRequests.$inferSelect): ApprovalRequestRecord {
   return {
     id: row.id,
+    shortId: Number(row.shortId),
     agentId: row.agentId,
     sessionId: row.sessionId,
     requesterId: row.requesterId,

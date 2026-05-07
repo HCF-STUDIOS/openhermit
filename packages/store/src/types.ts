@@ -72,6 +72,7 @@ export type ApprovalResolution = 'once' | 'persistent';
 
 export interface ApprovalRequestRecord {
   id: string;
+  shortId: number;
   agentId: string;
   sessionId: string;
   requesterId: string;
