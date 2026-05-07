@@ -122,15 +122,31 @@ export class AgentInstanceManager {
 
   /**
    * Create and start an in-process AgentRunner for the given agent.
+   *
+   * Synchronously fences via {@link hydrating} so the boot loop and a
+   * concurrent {@link getOrHydrate} can't both fall into `_doStart` —
+   * `runners.set` happens after the AgentRunner.create await, leaving a
+   * window where two callers each see an empty Map.
    */
-  async start(
-    agentId: string,
-    workspaceDir: string,
-  ): Promise<AgentRunner> {
+  async start(agentId: string, workspaceDir: string): Promise<AgentRunner> {
     if (this.runners.has(agentId)) {
       throw new Error(`AgentRunner for "${agentId}" is already running.`);
     }
+    const inFlight = this.hydrating.get(agentId);
+    if (inFlight) return inFlight;
+    const promise = this._doStart(agentId, workspaceDir);
+    this.hydrating.set(agentId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.hydrating.delete(agentId);
+    }
+  }
 
+  private async _doStart(
+    agentId: string,
+    workspaceDir: string,
+  ): Promise<AgentRunner> {
     // 1. Workspace
     const workspace = new AgentWorkspace(workspaceDir);
     log(`[${agentId}] initialising workspace: ${workspaceDir}`);
@@ -283,13 +299,8 @@ export class AgentInstanceManager {
     const reInFlight = this.hydrating.get(agentId);
     if (reInFlight) return reInFlight;
 
-    const promise = this.start(agentId, record.workspaceDir);
-    this.hydrating.set(agentId, promise);
-    try {
-      return await promise;
-    } finally {
-      this.hydrating.delete(agentId);
-    }
+    // start() handles the hydrating-map fence itself.
+    return this.start(agentId, record.workspaceDir);
   }
 
   getChannelStatuses(agentId: string): ChannelStatus[] {
