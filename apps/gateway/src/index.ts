@@ -37,7 +37,6 @@ import {
 import { AgentInstanceManager } from './agent-instance.js';
 import { ChannelPool } from './channel-pool.js';
 import { CentralScheduler } from './central-scheduler.js';
-import { syncSkillMounts } from './skill-mounts.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
 import { createGatewayApp } from './app.js';
 import { loadGatewayConfig } from './config.js';
@@ -434,54 +433,13 @@ export const main = async (): Promise<void> => {
     logger: logStartup,
   });
 
-  // Start agents from database after server is listening (channels need the gateway URL).
-  if (agentStore && config.autoStartAgents) {
-    const dbAgents = await agentStore.list();
-    // Pre-load all sandbox rows in a single query so we don't N+1 on boot.
-    // Group by agentId; the host-claim invariant below still walks agents
-    // sequentially because it's a serial first-wins decision.
-    const sandboxByAgent = new Map<string, Array<{ type: string }>>();
-    if (sandboxStore) {
-      const allSandboxes = await sandboxStore.listAll();
-      for (const row of allSandboxes) {
-        const arr = sandboxByAgent.get(row.agentId);
-        if (arr) arr.push(row);
-        else sandboxByAgent.set(row.agentId, [row]);
-      }
-    }
-    // Defensive: if DB tampering produced multiple host sandboxes, only the
-    // first agent encountered claims the host backend in this pass. The
-    // create-time check (POST /sandboxes) is the primary guard.
-    let hostClaimed: string | undefined;
-    for (const agent of dbAgents) {
-      try {
-        if (sandboxStore) {
-          const rows = sandboxByAgent.get(agent.agentId) ?? [];
-          const wantsHost = rows.some((r) => r.type === 'host');
-          if (wantsHost && hostClaimed && hostClaimed !== agent.agentId) {
-            logStartup(`skipping agent ${agent.agentId}: host backend already in use by ${hostClaimed}`);
-            continue;
-          }
-          if (wantsHost) hostClaimed = agent.agentId;
-        }
-        await instances.start(agent.agentId, agent.workspaceDir);
-        logStartup(`started agent: ${agent.agentId}`);
-      } catch (error) {
-        logStartup(`failed to start agent ${agent.agentId}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    // Sync platform skills into each agent's exec backends.
-    if (skillStore) {
-      for (const agent of dbAgents) {
-        const runner = instances.getRunner(agent.agentId);
-        if (runner) {
-          await syncSkillMounts(agent.agentId, runner, skillStore);
-        }
-      }
-    }
-    logStartup(`${dbAgents.length} agent(s) loaded`);
-  } else if (agentStore && !config.autoStartAgents) {
-    logStartup('autoStartAgents disabled — agents will not be started automatically');
+  // Agents hydrate lazily on first request — no boot-time iteration.
+  // Channel pool already loaded all bridges above so inbound traffic
+  // works before any runner exists. The host-backend single-claim
+  // invariant is enforced at sandbox-create time (POST /sandboxes).
+  if (agentStore) {
+    const count = (await agentStore.list()).length;
+    logStartup(`${count} agent(s) registered (lazy hydration)`);
   }
 
   // Re-entrancy guard: SIGINT + SIGTERM can both fire in quick succession

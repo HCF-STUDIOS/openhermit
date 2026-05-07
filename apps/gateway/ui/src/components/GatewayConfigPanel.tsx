@@ -4,7 +4,6 @@ import { api } from '../api';
 interface GatewayConfig {
   ui?: boolean;
   cors?: { origin?: string };
-  autoStartAgents?: boolean;
   sandboxPresets?: Record<string, { type: string; config: Record<string, unknown> }>;
   autoProvisionSandbox?: string | null;
 }
@@ -24,7 +23,6 @@ export function GatewayConfigPanel() {
   const [saving, setSaving] = useState(false);
 
   const [corsOrigin, setCorsOrigin] = useState('');
-  const [autoStartAgents, setAutoStartAgents] = useState(true);
   const [autoProvision, setAutoProvision] = useState('');
   const [presetsText, setPresetsText] = useState('');
   const [presetsError, setPresetsError] = useState('');
@@ -32,7 +30,6 @@ export function GatewayConfigPanel() {
   const applyConfig = useCallback((cfg: GatewayConfig) => {
     setConfig(cfg);
     setCorsOrigin(cfg.cors?.origin ?? '*');
-    setAutoStartAgents(cfg.autoStartAgents ?? true);
     setAutoProvision(cfg.autoProvisionSandbox ?? '');
     setPresetsText(JSON.stringify(cfg.sandboxPresets ?? {}, null, 2));
     setPresetsError('');
@@ -73,7 +70,6 @@ export function GatewayConfigPanel() {
     const next: GatewayConfig = {
       ...(config ?? {}),
       cors: { origin: corsOrigin },
-      autoStartAgents,
       sandboxPresets: presets as GatewayConfig['sandboxPresets'],
       autoProvisionSandbox: autoProvision.trim() === '' ? null : autoProvision.trim(),
     };
@@ -127,15 +123,6 @@ export function GatewayConfigPanel() {
             onChange={(e) => setCorsOrigin(e.target.value)}
             placeholder="*"
           />
-        </label>
-
-        <label className="field" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            checked={autoStartAgents}
-            onChange={(e) => setAutoStartAgents(e.target.checked)}
-          />
-          <span>Auto-start agents on boot</span>
         </label>
 
         <label className="field">

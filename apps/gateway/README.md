@@ -7,8 +7,7 @@ Current responsibilities:
 - load `~/.openhermit/gateway/.env` and `~/.openhermit/gateway/gateway.json`
 - connect Drizzle-backed PostgreSQL stores when `DATABASE_URL` is set
 - register built-in skills from `skills/`
-- manage agent records and in-process `AgentRunner` instances
-- auto-start registered agents when `autoStartAgents` is enabled
+- manage agent records and in-process `AgentRunner` instances (lazy hydration on first request)
 - expose agent routes under `/agents/{agentId}/...`
 - expose admin/owner management routes under `/api/...`
 - serve the admin UI at `/admin/` when enabled
@@ -23,8 +22,7 @@ The gateway listens on `GATEWAY_PORT`, then `PORT`, then `4000`, bound to `127.0
 ```json
 {
   "ui": true,
-  "cors": { "origin": "*" },
-  "autoStartAgents": true
+  "cors": { "origin": "*" }
 }
 ```
 

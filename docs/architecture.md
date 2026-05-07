@@ -87,10 +87,9 @@ On startup, the gateway:
 3. opens PostgreSQL stores if `DATABASE_URL` is available
 4. scans and registers built-in skills from `skills/`
 5. starts the Hono server and WebSocket handler
-6. auto-starts registered agents when `autoStartAgents` is true
-7. syncs enabled skills into each started agent's sandbox via `runner.syncSkills`
+6. boots the channel pool — bridges (Telegram/Slack/Discord) attach to gateway HTTP routes; runners hydrate lazily on first inbound traffic
 
-Each started agent initializes workspace/security, creates an `AgentRunner`, registers channel tokens, starts enabled built-in channels, starts the scheduler, and connects enabled MCP servers lazily through the runner.
+Agents hydrate on demand: the first request that targets an agent constructs its `AgentRunner`, syncs enabled skills into the sandbox via `runner.syncSkills`, attaches existing channel outbounds from the pool, starts the per-runner scheduler, and connects enabled MCP servers lazily through the runner. Idle runners are evicted by an LRU after `OPENHERMIT_EVICTION_TTL_MINUTES`; channel bridges in the pool stay alive across eviction.
 
 ## Agent Runtime
 

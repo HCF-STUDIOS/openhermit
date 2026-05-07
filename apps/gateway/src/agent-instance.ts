@@ -215,6 +215,16 @@ export class AgentInstanceManager {
       }
     }
 
+    // 7. Sync platform skills into the runner's exec backends.
+    if (this.skillStore) {
+      try {
+        const enabled = await this.skillStore.listEnabled(agentId);
+        await runner.syncSkills(enabled.map((s) => ({ id: s.id, sourcePath: s.path })));
+      } catch (err) {
+        log(`[${agentId}] skill sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     // 8. Start background timers (stale-session sweep, etc.). Schedule
     //    firing happens at the gateway level (see CentralScheduler).
     runner.startBackgroundTimers();

@@ -11,7 +11,6 @@ export interface SandboxPreset {
 export interface GatewayConfig {
   ui: boolean;
   cors: { origin: string };
-  autoStartAgents: boolean;
   /** Named sandbox presets, keyed by preset name. */
   sandboxPresets: Record<string, SandboxPreset>;
   /**
@@ -33,7 +32,6 @@ const DEFAULT_PRESETS: Record<string, SandboxPreset> = {
 const DEFAULT_CONFIG: GatewayConfig = {
   ui: true,
   cors: { origin: '*' },
-  autoStartAgents: true,
   sandboxPresets: DEFAULT_PRESETS,
   autoProvisionSandbox: 'docker-ubuntu',
 };
@@ -107,9 +105,6 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
     cors: {
       origin: getCorsOrigin(raw) ?? DEFAULT_CONFIG.cors.origin,
     },
-    autoStartAgents: typeof raw.autoStartAgents === 'boolean'
-      ? raw.autoStartAgents
-      : DEFAULT_CONFIG.autoStartAgents,
     sandboxPresets: presets,
     autoProvisionSandbox: autoProvision,
   };
