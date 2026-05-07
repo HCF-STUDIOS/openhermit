@@ -2275,6 +2275,37 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (body.type === 'once' && (!body.runAt || typeof body.runAt !== 'string')) {
       throw new ValidationError('runAt is required for once schedules');
     }
+
+    // Resolve creator identity. Owner-mode requests use auth.userId.
+    // Admin-mode has no userId, so default to the agent's earliest owner
+    // (deterministic) — otherwise scheduled runs fall through to guest.
+    // Callers may override via body.createdBy; we validate the override
+    // has a role on this agent so it can't be used to impersonate.
+    let createdBy: string | undefined;
+    if (typeof body.createdBy === 'string' && body.createdBy.length > 0) {
+      if (!userStore) {
+        throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+      }
+      const role = await userStore.getAgentRole({ agentId }, body.createdBy);
+      if (!role) {
+        throw new ValidationError(`createdBy user ${body.createdBy} has no role on agent ${agentId}`);
+      }
+      createdBy = body.createdBy;
+    } else if (auth.userId) {
+      createdBy = auth.userId;
+    } else if (userStore) {
+      const members = await userStore.listByAgent({ agentId });
+      const owners = members
+        .filter((m) => m.role === 'owner')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      createdBy = owners[0]?.userId;
+    }
+    if (!createdBy) {
+      throw new ValidationError(
+        `Cannot determine schedule owner for agent ${agentId}: no owner found. Pass createdBy in the request body.`,
+      );
+    }
+
     const schedule = await store.create({ agentId }, {
       ...(typeof body.id === 'string' ? { scheduleId: body.id } : {}),
       type: body.type as 'cron' | 'once',
@@ -2283,11 +2314,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       prompt: body.prompt,
       ...(body.delivery ? { delivery: body.delivery as any } : {}),
       ...(body.policy ? { policy: body.policy as any } : {}),
-      // Persist the actual creator's userId when available so the
-      // central scheduler runs the job under their identity. Admin-mode
-      // requests have no userId — leave it unset; resolveSessionUser
-      // then treats the run as a system principal.
-      ...(auth.userId ? { createdBy: auth.userId } : {}),
+      createdBy,
     });
     return c.json(schedule, 201);
   });
