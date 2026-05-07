@@ -1,16 +1,16 @@
 # Lazy Hydration & Multi-Tenant Scaling Design
 
-**Status:** Draft — not yet implemented
+**Status:** Phases 1–5 shipped on `main` (channel-state externalization + per-bot multi-agent routing deferred — see Phase 4 #4–#5).
 **Goal:** Support 1000–2000 agents per gateway instance on a 64 GB Railway container
 
 ---
 
-## Background
+## Background (historical — pre-refactor)
 
-Today the gateway eagerly hydrates every agent at boot:
+Before this work the gateway eagerly hydrated every agent at boot:
 
-- `apps/gateway/src/index.ts:375-420` — on startup (when `autoStartAgents=true`), iterates every row in `agents` and calls `instances.start()`.
-- `AgentInstanceManager.runners: Map<agentId, AgentRunner>` is populated forever; there is no idle eviction, no LRU, no TTL.
+- `apps/gateway/src/index.ts` iterated every row in `agents` on startup (under `autoStartAgents=true`) and called `instances.start()`.
+- `AgentInstanceManager.runners: Map<agentId, AgentRunner>` was populated forever; there was no idle eviction, no LRU, no TTL.
 - Per-agent in-process resources held by the runner: scheduler timers, MCP client connections, channel adapters (Slack Socket Mode WebSocket, Discord WebSocket, Telegram polling loop), session event broker, workspace/container manager.
 
 Per-agent baseline ≈ 6–15 MB. With 1000–2000 agents this is 10–20 GB of always-hot memory plus full event-loop pressure even when most agents are idle.
@@ -151,16 +151,14 @@ Assumptions: idle TTL 30 min, ~5 % of agents active in a 30 min window, average 
 
 ## Implementation Plan
 
-### Prerequisite (separate PR, lands on `main` first)
+### Prerequisite — MCP async loading ✅ shipped
 
-**MCP async loading.** Independently valuable — fixes today's "one bad MCP server stalls agent boot" and slow gateway startup, in the same spirit as the existing lazy sandbox provisioning. Not coupled to the lazy-hydration refactor and shipped as its own PR.
+Lives in `apps/agent/src/mcp-client.ts`. Independently valuable — fixed "one bad MCP server stalls agent boot" and slow gateway startup. Required for sub-second cold hydration.
 
-1. Runner construction returns immediately without awaiting MCP `connect()`.
-2. Each MCP client connects in the background; tool list is recomputed as connections complete.
-3. Agent observes connection state (`pending` / `connected` / `failed`); system prompt / tool surface reflects what is currently available.
-4. Tool calls against a not-yet-connected server return a clear, recoverable error ("MCP server X still connecting").
-
-This PR lands first because it is the prerequisite for sub-second hydration latency in the lazy branch — without it, every cold hydration would block on synchronous MCP `connect()`, exposing users to slow first messages.
+1. ✅ `connectAll()` is fire-and-forget; runner construction does not await MCP `connect()`.
+2. ✅ Each client connects in the background; `getToolsets()` filters on `status === 'connected'` so the tool surface grows as connections complete.
+3. ✅ `getStatus()` exposes per-server `'connecting' | 'connected' | 'disconnected' | 'error'` plus `lastError` / `connectedAt`.
+4. ✅ Tool calls on a still-connecting server return `"MCP server … is still connecting. Try again in a moment."`
 
 ### Lazy-hydration branch
 
@@ -199,17 +197,17 @@ One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP as
 
 ### Phase 4 — Channel connection pooling
 
-1. Telegram polling loop moves to gateway-level pool.
-2. Slack Socket Mode client moves to gateway-level pool.
-3. Discord client moves to gateway-level pool.
-4. Channel routing table `(channel_kind, connection_id, conversation_id) → agent_id`.
-5. Externalize per-agent channel state (`chatSessions`, `lastEventIds`, approvals) to Postgres.
+1. ✅ Telegram polling loop moves to gateway-level pool (`apps/gateway/src/channel-pool.ts`, PR #29).
+2. ✅ Slack Socket Mode client moves to gateway-level pool.
+3. ✅ Discord client moves to gateway-level pool.
+4. ⏸ **Deferred:** routing table `(channel_kind, connection_id, conversation_id) → agent_id`. The pool is currently keyed by `agentId` — one bot per agent, which matches today's deployment model. Needed only when N agents share one Telegram/Slack/Discord app.
+5. ⏸ **Deferred:** externalize per-agent channel state to Postgres (`chatSessions`, `lastEventIds`, `pendingApprovals`, `chatLocks`/`turnQueues`). Survives runner eviction today (in-memory on the bridge, which lives in the gateway), but **not** gateway restart, and blocks multi-gateway HA. Largest hidden cost of this phase per §5.4 — break out into its own design when prioritized.
 
-### Phase 5 — Cleanup
+### Phase 5 — Cleanup ✅ shipped (PR #30)
 
-1. Delete `autoStartAgents` config and the boot-time iteration in `index.ts`.
-2. Update `docs/architecture.md`, `docs/channel-adapter.md`, `docs/storage-model.md`.
-3. End-to-end test: 100+ agents hydrating concurrently, evicting, re-hydrating; cron fires across restart; channel pools survive runner churn.
+1. ✅ Deleted `autoStartAgents` config and the boot-time iteration in `index.ts`.
+2. ✅ Updated `apps/gateway/README.md` and `docs/architecture.md`. (Other doc passes done as needed.)
+3. ⏸ Formal end-to-end load test (100+ agents hydrating concurrently) not run; smoke-tested manually on test.openhermit.ai.
 
 ## Open Questions
 
