@@ -2260,7 +2260,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   app.post('/api/agents/:agentId/schedules', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    await requireOwnerOrAdmin(c, agentId);
+    const auth = await requireOwnerOrAdmin(c, agentId);
     const store = requireScheduleStore();
     const body = await c.req.json() as Record<string, unknown>;
     if (!body.type || (body.type !== 'cron' && body.type !== 'once')) {
@@ -2283,7 +2283,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       prompt: body.prompt,
       ...(body.delivery ? { delivery: body.delivery as any } : {}),
       ...(body.policy ? { policy: body.policy as any } : {}),
-      createdBy: 'owner',
+      // Persist the actual creator's userId when available so the
+      // central scheduler runs the job under their identity. Admin-mode
+      // requests have no userId — leave it unset; resolveSessionUser
+      // then treats the run as a system principal.
+      ...(auth.userId ? { createdBy: auth.userId } : {}),
     });
     return c.json(schedule, 201);
   });

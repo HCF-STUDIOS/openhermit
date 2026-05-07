@@ -179,7 +179,7 @@ One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP as
 
 1. `CentralScheduler` in gateway scans `schedules` every 10 s
    (`apps/gateway/src/central-scheduler.ts`).
-2. On hit: `getOrHydrate(agentId)` → `runner.runScheduledJob(schedule)` → mark row.
+2. On hit: `getOrHydrate(agentId)` → `runner.runScheduledJob(schedule, sessionId)` → mark row.
 3. Per-runner `Scheduler` removed; `runScheduledJob` is the runner's only
    public scheduling surface.
 4. Cron `next_run_at` is computed lazily — bootstrap pass on each tick

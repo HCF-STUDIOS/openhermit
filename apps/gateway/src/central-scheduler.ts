@@ -1,5 +1,5 @@
 import { Cron } from 'croner';
-import type { ScheduleRecord, ScheduleStore } from '@openhermit/store';
+import type { ScheduleRecord, ScheduleStatus, ScheduleStore } from '@openhermit/store';
 
 import type { AgentInstanceManager } from './agent-instance.js';
 
@@ -88,18 +88,27 @@ export class CentralScheduler {
   private async bootstrapCron(schedule: ScheduleRecord): Promise<void> {
     if (!schedule.cronExpression) return;
     const scope = { agentId: schedule.agentId };
+    const key = `${schedule.agentId}/${schedule.scheduleId}`;
     try {
       const job = new Cron(schedule.cronExpression, { timezone: 'UTC' });
       const next = job.nextRun();
       if (next) {
         await this.store.setNextRun(scope, schedule.scheduleId, next.toISOString());
       } else {
-        this.log(`schedule ${schedule.agentId}/${schedule.scheduleId}: cron "${schedule.cronExpression}" yields no next run`);
+        // Valid syntax but no future fire (e.g. cron with a fixed past
+        // date). Park the row so listAllOrphanedCron stops returning it.
+        this.log(`schedule ${key}: cron "${schedule.cronExpression}" yields no next run; marking failed`);
+        await this.store.update(scope, schedule.scheduleId, { status: 'failed' as ScheduleStatus })
+          .catch((err) => this.log(`schedule ${key}: park-failed update failed: ${describe(err)}`));
       }
     } catch (err) {
-      this.log(`schedule ${schedule.agentId}/${schedule.scheduleId}: invalid cron "${schedule.cronExpression}": ${describe(err)}`);
-      await this.store.markRun(scope, schedule.scheduleId, null, 'invalid cron expression')
-        .catch((markErr) => this.log(`schedule ${schedule.scheduleId}: markRun(invalid) failed: ${describe(markErr)}`));
+      this.log(`schedule ${key}: invalid cron "${schedule.cronExpression}": ${describe(err)}`);
+      // Park the row in 'failed' so we don't re-scan it every tick.
+      // markRun records the error message; update flips status.
+      await this.store.markRun(scope, schedule.scheduleId, null, `invalid cron expression: ${describe(err)}`)
+        .catch((markErr) => this.log(`schedule ${key}: markRun(invalid) failed: ${describe(markErr)}`));
+      await this.store.update(scope, schedule.scheduleId, { status: 'failed' as ScheduleStatus })
+        .catch((updErr) => this.log(`schedule ${key}: park-invalid update failed: ${describe(updErr)}`));
     }
   }
 
@@ -129,9 +138,13 @@ export class CentralScheduler {
       }
 
       if (!runner) {
-        // Agent missing or disabled — skip silently. Do not mutate the
-        // row; if the agent comes back, the schedule resumes naturally.
-        this.log(`schedule ${key}: agent unavailable (missing or disabled), skipping`);
+        // Agent missing or disabled. Push next_run_at forward 5 min so
+        // we don't busy-poll the row every tick; the schedule resumes
+        // when the agent is enabled again.
+        this.log(`schedule ${key}: agent unavailable (missing or disabled), backing off 5m`);
+        const retryAt = new Date(Date.now() + 5 * 60_000).toISOString();
+        await this.store.setNextRun(scope, schedule.scheduleId, retryAt)
+          .catch((err) => this.log(`schedule ${key}: setNextRun(unavailable) failed: ${describe(err)}`));
         return;
       }
 
