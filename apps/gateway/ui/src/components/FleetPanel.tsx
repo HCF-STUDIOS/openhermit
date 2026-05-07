@@ -391,7 +391,7 @@ function FleetActionsMenu({
         <button role="menuitem" onClick={() => onAction(agent.agentId, 'enable')}>Enable</button>
       ) : (
         <>
-          <button role="menuitem" onClick={() => onAction(agent.agentId, 'restart')}>Restart</button>
+          <button role="menuitem" onClick={() => onAction(agent.agentId, 'restart')}>Reload</button>
           <button role="menuitem" onClick={() => onAction(agent.agentId, 'disable')}>Disable</button>
         </>
       )}
