@@ -1339,7 +1339,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       return {
         agentId: record.agentId,
         ...(record.name ? { name: record.name } : {}),
-        status: record.status === 'active' ? 'running' as const : 'stopped' as const,
+        status: record.status,
         sessions24h: stat.sessions24h,
         errors24h: stat.errors24h,
         ...(stat.lastActivity ? { lastActivity: stat.lastActivity } : {}),

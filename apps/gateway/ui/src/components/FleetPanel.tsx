@@ -8,7 +8,7 @@ import { ConfigDialog } from './ConfigDialog';
 interface FleetAgent {
   agentId: string;
   name?: string;
-  status: 'running' | 'stopped';
+  status: 'active' | 'disabled';
   sessions24h: number;
   errors24h: number;
   lastActivity?: string;
@@ -140,7 +140,7 @@ export function FleetPanel() {
   };
 
   const totals = useMemo(() => ({
-    running: fleet.filter((a) => a.status === 'running').length,
+    active: fleet.filter((a) => a.status === 'active').length,
     sessions: fleet.reduce((acc, a) => acc + a.sessions24h, 0),
     errors: fleet.reduce((acc, a) => acc + a.errors24h, 0),
   }), [fleet]);
@@ -151,7 +151,7 @@ export function FleetPanel() {
         <h2>
           Agents
           <span className="fleet__sub">
-            &nbsp;· {totals.running}/{fleet.length} running · {totals.sessions} sessions/24h · {totals.errors} errors/24h
+            &nbsp;· {totals.active}/{fleet.length} active · {totals.sessions} sessions/24h · {totals.errors} errors/24h
           </span>
         </h2>
         <div className="panel__header-actions">
@@ -225,7 +225,7 @@ export function FleetPanel() {
                   </div>
                 </td>
                 <td>
-                  <span className={`badge badge--${a.status}`}>{a.status}</span>
+                  <span className={`badge badge--${a.status === 'active' ? 'active' : 'stopped'}`}>{a.status}</span>
                 </td>
                 <td className="fleet-cell-relative">{formatRelative(a.lastActivity)}</td>
                 <td className="fleet-table__num">{a.sessions24h}</td>
@@ -387,13 +387,10 @@ function FleetActionsMenu({
       style={{ position: 'fixed', top, right }}
       onClick={(e) => e.stopPropagation()}
     >
-      {agent.status === 'stopped' ? (
-        <button role="menuitem" onClick={() => onAction(agent.agentId, 'start')}>Start</button>
+      {agent.status === 'disabled' ? (
+        <button role="menuitem" onClick={() => onAction(agent.agentId, 'enable')}>Enable</button>
       ) : (
-        <>
-          <button role="menuitem" onClick={() => onAction(agent.agentId, 'restart')}>Restart</button>
-          <button role="menuitem" onClick={() => onAction(agent.agentId, 'stop')}>Stop</button>
-        </>
+        <button role="menuitem" onClick={() => onAction(agent.agentId, 'disable')}>Disable</button>
       )}
       <div className="fleet-actions__divider" />
       <button role="menuitem" onClick={() => onConfig(agent.agentId)}>Config</button>
@@ -401,7 +398,7 @@ function FleetActionsMenu({
       <button role="menuitem" onClick={() => onMcp(agent.agentId)}>MCP</button>
       <button role="menuitem" onClick={() => onSecrets(agent.agentId)}>Secrets</button>
       <button role="menuitem" onClick={() => onSecurity(agent.agentId)}>Security</button>
-      {agent.status === 'stopped' && (
+      {agent.status === 'disabled' && (
         <>
           <div className="fleet-actions__divider" />
           <button

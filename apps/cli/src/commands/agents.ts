@@ -106,11 +106,16 @@ export const registerAgentsCommand = (program: Command): void => {
       }
     });
 
-  // --- start ---
+  const DEPRECATION_NOTE =
+    'Runners hydrate on demand and are evicted by LRU; manual start/stop is rarely needed. ' +
+    'Use `hermit agents enable/disable` to control whether an agent accepts traffic.';
+
+  // --- start (deprecated) ---
   agents
     .command('start <agentId>')
-    .description('Hydrate the agent runner into memory (cache management; agents auto-hydrate on demand)')
+    .description('[deprecated] Pre-hydrate the runner into memory')
     .action(async (agentId: string) => {
+      console.warn(`[deprecated] \`agents start\` — ${DEPRECATION_NOTE}`);
       try {
         const gateway = createGateway();
         const result = await gateway.manageAgent(agentId, 'start');
@@ -120,11 +125,12 @@ export const registerAgentsCommand = (program: Command): void => {
       }
     });
 
-  // --- stop ---
+  // --- stop (deprecated) ---
   agents
     .command('stop <agentId>')
-    .description('Evict the runner from memory (cache management; agent stays enabled)')
+    .description('[deprecated] Evict the runner from memory')
     .action(async (agentId: string) => {
+      console.warn(`[deprecated] \`agents stop\` — ${DEPRECATION_NOTE}`);
       try {
         const gateway = createGateway();
         const result = await gateway.manageAgent(agentId, 'stop');
@@ -134,11 +140,12 @@ export const registerAgentsCommand = (program: Command): void => {
       }
     });
 
-  // --- restart ---
+  // --- restart (deprecated) ---
   agents
     .command('restart <agentId>')
-    .description('Evict and re-hydrate the runner (cache management)')
+    .description('[deprecated] Evict and re-hydrate the runner')
     .action(async (agentId: string) => {
+      console.warn(`[deprecated] \`agents restart\` — ${DEPRECATION_NOTE}`);
       try {
         const gateway = createGateway();
         const result = await gateway.manageAgent(agentId, 'restart');
