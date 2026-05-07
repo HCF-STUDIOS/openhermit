@@ -166,7 +166,7 @@ This PR lands first because it is the prerequisite for sub-second hydration late
 
 One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP async PR is merged). All phases below land together; no partial merges.
 
-### Phase 1 — `agents.status` + lazy hydration (HTTP / WS / webhook)
+### Phase 1 — `agents.status` + lazy hydration (HTTP / WS / webhook) ✅ shipped
 
 1. Migration: add `agents.status` column (register in `_journal.json`).
 2. Schema: update `packages/store/src/schema.ts`.
@@ -175,12 +175,19 @@ One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP as
 5. Replace `resolveRunner` call sites in HTTP / WS / webhook handlers with `getOrHydrate`.
 6. `PATCH /api/agents/:id { status }` endpoint; on transition to `disabled`, actively `instances.stop(agentId)` in-process.
 
-### Phase 2 — Central cron scheduler
+### Phase 2 — Central cron scheduler ✅ shipped
 
-1. Add `CentralScheduler` in gateway; scan `schedules` every 5–10 s.
-2. On hit: `getOrHydrate(agentId)` → invoke fire → update row.
-3. Remove per-runner `Scheduler` from `agent-runner.ts`.
-4. Verify catchup behavior across gateway restart.
+1. `CentralScheduler` in gateway scans `schedules` every 10 s
+   (`apps/gateway/src/central-scheduler.ts`).
+2. On hit: `getOrHydrate(agentId)` → `runner.runScheduledJob(schedule)` → mark row.
+3. Per-runner `Scheduler` removed; `runScheduledJob` is the runner's only
+   public scheduling surface.
+4. Cron `next_run_at` is computed lazily — bootstrap pass on each tick
+   handles rows where `next_run_at IS NULL`. Catchup across gateway
+   restart is automatic (overdue rows are simply due).
+5. Trade-off: cron precision drops to one tick interval (~10 s) —
+   accepted for v1; in-process Cron timers can be re-added later if a
+   specific schedule needs sub-second precision.
 
 ### Phase 3 — LRU eviction
 

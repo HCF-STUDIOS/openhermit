@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, isNull, sql } from 'drizzle-orm';
 import pg from 'pg';
 
 import type { ScheduleStore } from '../interfaces.js';
@@ -100,12 +100,38 @@ export class DbScheduleStore implements ScheduleStore {
     return rows.map((r) => this.rowToRecord(r));
   }
 
+  async listAllDue(now: string): Promise<ScheduleRecord[]> {
+    const rows = await this.db.select().from(schedules)
+      .where(and(
+        eq(schedules.status, 'active'),
+        sql`${schedules.nextRunAt} <= ${now}`,
+      ));
+    return rows.map((r) => this.rowToRecord(r));
+  }
+
+  async listAllOrphanedCron(): Promise<ScheduleRecord[]> {
+    const rows = await this.db.select().from(schedules)
+      .where(and(
+        eq(schedules.status, 'active'),
+        eq(schedules.type, 'cron'),
+        isNull(schedules.nextRunAt),
+      ));
+    return rows.map((r) => this.rowToRecord(r));
+  }
+
   async update(scope: StoreScope, scheduleId: string, input: ScheduleUpdateInput): Promise<ScheduleRecord> {
     const now = new Date().toISOString();
     const data: Record<string, unknown> = { updatedAt: now };
     if (input.status !== undefined) data.status = input.status;
-    if (input.cronExpression !== undefined) data.cronExpression = input.cronExpression;
-    if (input.runAt !== undefined) data.runAt = input.runAt;
+    if (input.cronExpression !== undefined) {
+      data.cronExpression = input.cronExpression;
+      // Force recompute by central scheduler on next tick.
+      data.nextRunAt = null;
+    }
+    if (input.runAt !== undefined) {
+      data.runAt = input.runAt;
+      data.nextRunAt = input.runAt;
+    }
     if (input.prompt !== undefined) data.prompt = input.prompt;
     if (input.delivery !== undefined) data.delivery = input.delivery;
     if (input.policy !== undefined) data.policy = input.policy;
@@ -144,6 +170,13 @@ export class DbScheduleStore implements ScheduleStore {
         updatedAt: now,
       }).where(where);
     }
+  }
+
+  async setNextRun(scope: StoreScope, scheduleId: string, nextRunAt: string | null): Promise<void> {
+    await this.db.update(schedules).set({
+      nextRunAt,
+      updatedAt: new Date().toISOString(),
+    }).where(and(eq(schedules.agentId, scope.agentId), eq(schedules.scheduleId, scheduleId)));
   }
 
   async startRun(scope: StoreScope, scheduleId: string, sessionId: string, prompt: string): Promise<ScheduleRunRecord> {

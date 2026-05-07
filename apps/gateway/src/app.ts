@@ -2285,8 +2285,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       ...(body.policy ? { policy: body.policy as any } : {}),
       createdBy: 'owner',
     });
-    const runner = instances.getRunner(agentId);
-    if (runner) await runner.reloadScheduler();
     return c.json(schedule, 201);
   });
 
@@ -2305,8 +2303,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (typeof body.runAt === 'string') patch.runAt = body.runAt;
     if (body.delivery !== undefined) patch.delivery = body.delivery;
     const updated = await store.update({ agentId }, scheduleId, patch as any);
-    const runner = instances.getRunner(agentId);
-    if (runner) await runner.reloadScheduler();
     return c.json(updated);
   });
 
@@ -2318,8 +2314,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const existing = await store.get({ agentId }, scheduleId);
     if (!existing) throw new NotFoundError(`Schedule not found: ${scheduleId}`);
     await store.delete({ agentId }, scheduleId);
-    const runner = instances.getRunner(agentId);
-    if (runner) await runner.reloadScheduler();
     return c.json({ ok: true });
   });
 
@@ -2330,9 +2324,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const scheduleId = c.req.param('scheduleId');
     const existing = await store.get({ agentId }, scheduleId);
     if (!existing) throw new NotFoundError(`Schedule not found: ${scheduleId}`);
+    // "Trigger now" — flip to active and force next_run_at to now so
+    // the central scheduler fires it on the next tick.
     await store.update({ agentId }, scheduleId, { status: 'active' } as any);
-    const runner = instances.getRunner(agentId);
-    if (runner) await runner.reloadScheduler();
+    await store.setNextRun({ agentId }, scheduleId, new Date().toISOString());
     return c.json({ ok: true, triggered: scheduleId });
   });
 

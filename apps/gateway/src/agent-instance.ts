@@ -234,12 +234,9 @@ export class AgentInstanceManager {
       }
     }
 
-    // 8. Start the scheduler for cron/once jobs.
-    try {
-      await runner.startScheduler();
-    } catch (error) {
-      log(`[${agentId}] failed to start scheduler: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    // 8. Start background timers (stale-session sweep, etc.). Schedule
+    //    firing happens at the gateway level (see CentralScheduler).
+    runner.startBackgroundTimers();
 
     return runner;
   }

@@ -156,8 +156,6 @@ const createScheduleCreateTool = (context: ToolContext): PolicyAwareTool<typeof 
       ...(context.currentUserId ? { createdBy: context.currentUserId } : {}),
     });
 
-    // Notify scheduler to reload
-    context.onScheduleChange?.();
 
     return {
       content: asTextContent(`Schedule created: ${schedule.scheduleId} (${schedule.type}, ${schedule.status})\n`),
@@ -190,7 +188,6 @@ const createScheduleUpdateTool = (context: ToolContext): PolicyAwareTool<typeof 
 
     const updated = await context.scheduleStore.update(context.storeScope, args.id, patch);
 
-    context.onScheduleChange?.();
 
     return {
       content: asTextContent(`Schedule updated: ${updated.scheduleId} (status: ${updated.status})\n`),
@@ -217,7 +214,6 @@ const createScheduleDeleteTool = (context: ToolContext): PolicyAwareTool<typeof 
 
     await context.scheduleStore.delete(context.storeScope, args.id);
 
-    context.onScheduleChange?.();
 
     return {
       content: asTextContent(`Schedule deleted: ${args.id}\n`),
@@ -249,7 +245,6 @@ const createScheduleTriggerTool = (context: ToolContext): PolicyAwareTool<typeof
     });
     await context.scheduleStore.markRun(context.storeScope, args.id, now);
 
-    context.onScheduleChange?.();
 
     return {
       content: asTextContent(`Schedule "${args.id}" triggered. It will execute on the next scheduler tick.\n`),

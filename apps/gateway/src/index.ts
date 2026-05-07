@@ -35,6 +35,7 @@ import {
 } from '@openhermit/shared';
 
 import { AgentInstanceManager } from './agent-instance.js';
+import { CentralScheduler } from './central-scheduler.js';
 import { syncSkillMounts } from './skill-mounts.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
 import { createGatewayApp } from './app.js';
@@ -349,6 +350,20 @@ export const main = async (): Promise<void> => {
     logStartup('admin UI enabled at /admin/');
   }
 
+  // Central scheduler: cross-agent scan of `schedules.next_run_at`. Each
+  // due fire hydrates the agent on demand. Replaces the per-runner
+  // Scheduler so eviction (Phase 3) doesn't drop cron jobs.
+  let centralScheduler: CentralScheduler | undefined;
+  if (scheduleStore) {
+    centralScheduler = new CentralScheduler(scheduleStore, instances, {
+      log: logStartup,
+    });
+    centralScheduler.start();
+    logStartup('central scheduler started');
+  } else {
+    logStartup('central scheduler skipped (no schedule store)');
+  }
+
   const rawPort = process.env.GATEWAY_PORT ?? process.env.PORT;
   const port = rawPort ? Number.parseInt(rawPort, 10) : 4000;
 
@@ -432,6 +447,7 @@ export const main = async (): Promise<void> => {
     shuttingDown = true;
     logStartup('shutting down...');
 
+    await centralScheduler?.stop();
     await instances.stopAll();
     await agentStore?.close();
     await skillStore?.close();

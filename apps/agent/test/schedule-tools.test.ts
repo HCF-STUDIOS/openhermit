@@ -49,9 +49,12 @@ const createMockStore = (overrides: Partial<ScheduleStore> = {}): ScheduleStore 
   get: async (_scope, id) => makeRecord({ scheduleId: id }),
   list: async () => [],
   listDue: async () => [],
+  listAllDue: async () => [],
+  listAllOrphanedCron: async () => [],
   update: async (_scope, id, input) => makeRecord({ scheduleId: id, ...(input as Partial<ScheduleRecord>) }),
   delete: async () => {},
   markRun: async () => {},
+  setNextRun: async () => {},
   startRun: async () => makeRunRecord(),
   finishRun: async () => makeRunRecord(),
   listRuns: async () => [],
@@ -245,12 +248,3 @@ test('schedule_create throws when no scheduleStore configured', async (t) => {
   }
 });
 
-test('schedule_create calls onScheduleChange callback', async (t) => {
-  let called = false;
-  const { tools } = await setupContext(t, {}, {
-    onScheduleChange: () => { called = true; },
-  });
-  const tool = findTool(tools, 'schedule_create');
-  await tool.execute('call-1', { type: 'cron', prompt: 'test', cron_expression: '0 * * * *' });
-  assert.equal(called, true);
-});

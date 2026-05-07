@@ -77,7 +77,7 @@ import { buildToolResultPreview, persistToolResult } from './agent-runner/tool-r
 import { createWebProvider, type WebProvider } from './web/index.js';
 import { runIntrospection } from './introspection/index.js';
 import { loadSkillIndex } from './skills.js';
-import { Scheduler, type SchedulerHost } from './core/scheduler.js';
+import type { ScheduleRecord } from '@openhermit/store';
 import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
 import {
@@ -116,7 +116,6 @@ export class AgentRunner implements SessionRuntime {
 
   private workspaceIdleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  private scheduler: Scheduler | undefined;
   private staleSessionTimer: ReturnType<typeof setInterval> | undefined;
   private mcpClientManager: McpClientManager | undefined;
 
@@ -159,75 +158,68 @@ export class AgentRunner implements SessionRuntime {
     return runner;
   }
 
-  async startScheduler(): Promise<void> {
-    const host: SchedulerHost = {
-      openSession: async (sessionId, source, userId) => {
-        await this.openSession({
-          sessionId,
-          source,
-          ...(userId ? { metadata: { schedule_user_id: userId } } : {}),
-        });
-      },
-      postMessage: async (sessionId, text, metadata) => {
-        // If this is a scheduled job firing, run the schedule.fired@v1
-        // transform first — plugins can rewrite the prompt before it
-        // hits the model, e.g. add a [delivery] preamble or veto-by-substitute.
-        let finalText = text;
-        const scheduleId = metadata?.schedule_id;
-        const scheduleType = metadata?.schedule_type;
-        if (typeof scheduleId === 'string' && (scheduleType === 'cron' || scheduleType === 'once')) {
-          const out = await this.bus.transform('schedule.fired@v1', {
-            agentId: this.scope.agentId,
-            scheduleId,
-            type: scheduleType,
-            prompt: text,
-            sessionId,
-          });
-          finalText = out.prompt;
-        }
-        await this.postMessage(sessionId, { text: finalText, ...(metadata ? { metadata } : {}) });
-      },
-      postSystemMessage: async (sessionId, text) => {
-        await this.store.messages.appendLogEntry(this.scope, sessionId, {
-          ts: new Date().toISOString(),
-          role: 'system',
-          type: 'schedule_notification',
-          message: text,
-        });
-      },
-      deactivateSession: async (sessionId) => {
-        const session = this.sessions.get(sessionId);
-        if (session) {
-          session.status = 'inactive';
-          this.clearIdleSummaryTimer(session);
-          this.persistSessionIndex(session);
-          this.sessions.delete(sessionId);
-        } else {
-          await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
-        }
-        await this.bus.emit('session.closed@v1', {
-          agentId: this.scope.agentId,
-          sessionId,
-          reason: 'idle',
-        });
-      },
-    };
-
-    this.scheduler = new Scheduler(this.scope, this.store.schedules, host, {
-      log: (message) => this.logRuntime(message),
-    });
-    await this.scheduler.start();
-    this.logRuntime('scheduler started');
-
+  /**
+   * Start the periodic stale-session sweep. Scheduling itself lives in
+   * the gateway-level central scheduler (see
+   * `apps/gateway/src/central-scheduler.ts`); the runner only exposes
+   * `runScheduledJob` so the central scheduler can drive a fire.
+   */
+  startBackgroundTimers(): void {
     void this.markStaleSessions();
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
     this.staleSessionTimer = setInterval(() => void this.markStaleSessions(), ONE_DAY_MS);
     this.staleSessionTimer.unref?.();
   }
 
-  /** Reload the scheduler (e.g. after schedules are created/updated/deleted via admin API). */
-  async reloadScheduler(): Promise<void> {
-    await this.scheduler?.reload();
+  /**
+   * Fire a single scheduled job. Called by the central scheduler. The
+   * caller owns row bookkeeping (`startRun` / `markRun` / `finishRun`);
+   * this method only opens the session, runs the prompt, and tears the
+   * session down for one-off schedules.
+   */
+  async runScheduledJob(schedule: ScheduleRecord, sessionId: string): Promise<void> {
+    await this.openSession({
+      sessionId,
+      source: { kind: 'schedule', interactive: false },
+      ...(schedule.createdBy ? { metadata: { schedule_user_id: schedule.createdBy } } : {}),
+    });
+
+    let prompt = schedule.prompt;
+    if (schedule.delivery.kind === 'session' && schedule.delivery.sessionId) {
+      prompt += `\n\n[Delivery] After completing the task, if necessary, use session_send to send the result to session "${schedule.delivery.sessionId}".`;
+    }
+
+    // Plugins may rewrite the prompt via the schedule.fired@v1 transform.
+    const transformed = await this.bus.transform('schedule.fired@v1', {
+      agentId: this.scope.agentId,
+      scheduleId: schedule.scheduleId,
+      type: schedule.type,
+      prompt,
+      sessionId,
+    });
+
+    const metadata = {
+      schedule_id: schedule.scheduleId,
+      schedule_type: schedule.type,
+    };
+    await this.postMessage(sessionId, { text: transformed.prompt, metadata });
+
+    if (schedule.type === 'once') {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        session.status = 'inactive';
+        this.clearIdleSummaryTimer(session);
+        this.persistSessionIndex(session);
+        this.sessions.delete(sessionId);
+      } else {
+        await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
+      }
+      await this.bus.emit('session.closed@v1', {
+        agentId: this.scope.agentId,
+        sessionId,
+        reason: 'idle',
+      });
+    }
   }
 
   /**
@@ -375,11 +367,6 @@ export class AgentRunner implements SessionRuntime {
       } catch (err) {
         this.logRuntime(`session.closed hook error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
-
-    if (this.scheduler) {
-      await this.scheduler.stop();
-      this.scheduler = undefined;
     }
 
     if (this.staleSessionTimer) {
@@ -1587,7 +1574,6 @@ export class AgentRunner implements SessionRuntime {
         scheduleStore: this.store.schedules,
         ...(this.options.policyStore ? { policyStore: this.options.policyStore } : {}),
         ...(this.options.approvalRequestStore ? { approvalRequestStore: this.options.approvalRequestStore } : {}),
-        ...(this.scheduler ? { onScheduleChange: () => this.scheduler?.reload() } : {}),
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),

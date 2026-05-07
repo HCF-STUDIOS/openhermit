@@ -218,9 +218,26 @@ export interface ScheduleStore {
   get(scope: StoreScope, scheduleId: string): Promise<ScheduleRecord | undefined>;
   list(scope: StoreScope, options?: { status?: string }): Promise<ScheduleRecord[]>;
   listDue(scope: StoreScope, now: string): Promise<ScheduleRecord[]>;
+  /**
+   * Cross-agent scan for active schedules whose `next_run_at` is set and
+   * has elapsed. Used by the gateway's central scheduler.
+   */
+  listAllDue(now: string): Promise<ScheduleRecord[]>;
+  /**
+   * Cross-agent scan for active cron schedules that have not yet been
+   * scheduled (`next_run_at IS NULL`). The central scheduler computes
+   * their next run on first sight and persists it via `markRun`.
+   */
+  listAllOrphanedCron(): Promise<ScheduleRecord[]>;
   update(scope: StoreScope, scheduleId: string, input: ScheduleUpdateInput): Promise<ScheduleRecord>;
   delete(scope: StoreScope, scheduleId: string): Promise<void>;
   markRun(scope: StoreScope, scheduleId: string, nextRunAt: string | null, error?: string): Promise<void>;
+  /**
+   * Update only `next_run_at` (and `updated_at`). Used by the central
+   * scheduler to bootstrap newly created cron rows without bumping
+   * `run_count` or touching `last_run_at`.
+   */
+  setNextRun(scope: StoreScope, scheduleId: string, nextRunAt: string | null): Promise<void>;
   startRun(scope: StoreScope, scheduleId: string, sessionId: string, prompt: string): Promise<ScheduleRunRecord>;
   finishRun(scope: StoreScope, runId: number, status: 'completed' | 'failed', error?: string): Promise<ScheduleRunRecord>;
   listRuns(scope: StoreScope, scheduleId: string, limit?: number): Promise<ScheduleRunRecord[]>;

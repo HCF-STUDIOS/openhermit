@@ -4,5 +4,4 @@ export * from './security.js';
 export * from './container-manager.js';
 export * from './exec-backend.js';
 export * from './backends/index.js';
-export * from './scheduler.js';
 export * from './policy.js';
