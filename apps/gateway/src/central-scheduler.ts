@@ -152,7 +152,7 @@ export class CentralScheduler {
       const run = await this.store.startRun(scope, fresh.scheduleId, sessionId, fresh.prompt);
 
       try {
-        await runner.runScheduledJob(fresh, sessionId);
+        await this.instances.withBusy(schedule.agentId, () => runner.runScheduledJob(fresh, sessionId));
 
         const nextRunAt = this.computeNextOnSuccess(fresh);
         await this.store.markRun(scope, fresh.scheduleId, nextRunAt);

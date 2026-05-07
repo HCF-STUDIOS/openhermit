@@ -368,6 +368,7 @@ export const attachGatewayWs = (
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       log(`[ws] client connected for agent ${agentId} (${auth!.mode}:${auth!.channelUserId || 'channel'})`);
+      instances.wsConnect(agentId);
 
       const conn: WsConnection = {
         ws,
@@ -381,6 +382,7 @@ export const attachGatewayWs = (
       };
 
       ws.on('message', (data) => {
+        instances.touch(agentId);
         let parsed: unknown;
         try {
           parsed = JSON.parse(String(data));
@@ -403,6 +405,7 @@ export const attachGatewayWs = (
           unsub();
         }
         conn.subscriptions.clear();
+        instances.wsDisconnect(agentId);
       });
 
       ws.on('error', () => {

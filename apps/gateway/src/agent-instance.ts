@@ -22,6 +22,14 @@ interface ChannelHandle {
   handleWebhook?: (req: WebhookRequest) => Promise<WebhookResponse>;
 }
 
+export interface EvictionOptions {
+  /** Idle threshold; runners untouched for this long are evictable. */
+  idleTTLMs: number;
+  /** How often to scan. */
+  tickIntervalMs: number;
+  log?: (message: string) => void;
+}
+
 export class AgentInstanceManager {
   private runners = new Map<string, AgentRunner>();
   /**
@@ -33,6 +41,14 @@ export class AgentInstanceManager {
   private langfuseClients = new Map<string, LangfuseClientLike>();
   private channelHandles = new Map<string, ChannelHandle[]>();
   private channelStatuses = new Map<string, ChannelStatus[]>();
+
+  /** Last activity timestamp per agent, used by LRU eviction. */
+  private lastActivityAt = new Map<string, number>();
+  /** Live WebSocket connection count per agent. */
+  private wsConnections = new Map<string, number>();
+  /** Per-agent busy counter — long-running ops increment to fence eviction. */
+  private busy = new Map<string, number>();
+  private evictionTimer: ReturnType<typeof setInterval> | undefined;
 
   /** Gateway base URL used for channel adapters to connect back. */
   private gatewayBaseUrl: string | undefined;
@@ -254,12 +270,53 @@ export class AgentInstanceManager {
     //    firing happens at the gateway level (see CentralScheduler).
     runner.startBackgroundTimers();
 
+    this.touch(agentId);
     return runner;
   }
 
   /** Retrieve a running AgentRunner by agent ID, if one exists. */
   getRunner(agentId: string): AgentRunner | undefined {
-    return this.runners.get(agentId);
+    const runner = this.runners.get(agentId);
+    if (runner) this.touch(agentId);
+    return runner;
+  }
+
+  /** Mark the agent as recently active so eviction skips it. */
+  touch(agentId: string): void {
+    if (this.runners.has(agentId)) {
+      this.lastActivityAt.set(agentId, Date.now());
+    }
+  }
+
+  /** Increment the live WS connection count for `agentId` (also touches). */
+  wsConnect(agentId: string): void {
+    this.wsConnections.set(agentId, (this.wsConnections.get(agentId) ?? 0) + 1);
+    this.touch(agentId);
+  }
+
+  /** Decrement the live WS connection count for `agentId`. */
+  wsDisconnect(agentId: string): void {
+    const current = this.wsConnections.get(agentId) ?? 0;
+    if (current <= 1) this.wsConnections.delete(agentId);
+    else this.wsConnections.set(agentId, current - 1);
+  }
+
+  /**
+   * Run `fn` while marking the agent busy so eviction skips it. Use for
+   * long ops (scheduled jobs, batch tool calls) that hold the runner
+   * past the idle TTL without producing per-step touch events.
+   */
+  async withBusy<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+    this.busy.set(agentId, (this.busy.get(agentId) ?? 0) + 1);
+    this.touch(agentId);
+    try {
+      return await fn();
+    } finally {
+      const n = this.busy.get(agentId) ?? 0;
+      if (n <= 1) this.busy.delete(agentId);
+      else this.busy.set(agentId, n - 1);
+      this.touch(agentId);
+    }
   }
 
   /**
@@ -279,7 +336,10 @@ export class AgentInstanceManager {
    */
   async getOrHydrate(agentId: string): Promise<AgentRunner | undefined> {
     const existing = this.runners.get(agentId);
-    if (existing) return existing;
+    if (existing) {
+      this.touch(agentId);
+      return existing;
+    }
 
     const inFlight = this.hydrating.get(agentId);
     if (inFlight) return inFlight;
@@ -326,6 +386,7 @@ export class AgentInstanceManager {
     if (!handle || !handle.handleWebhook) {
       return { status: 404, body: 'channel not active or does not accept webhooks' };
     }
+    this.touch(agentId);
     return handle.handleWebhook(req);
   }
 
@@ -465,7 +526,71 @@ export class AgentInstanceManager {
     }
 
     this.runners.delete(agentId);
+    this.lastActivityAt.delete(agentId);
+    this.wsConnections.delete(agentId);
+    this.busy.delete(agentId);
     log(`[${agentId}] runner stopped`);
+  }
+
+  /**
+   * Start the LRU eviction ticker. Periodically scans hydrated runners
+   * and stops those idle longer than `idleTTLMs`.
+   *
+   * Skipped (kept warm):
+   *   - agents with active channel handles (telegram/slack/discord polling
+   *     loops would lose messages if torn down);
+   *   - agents with live WebSocket connections.
+   *
+   * Schedules don't keep agents warm — the central scheduler hydrates on
+   * demand at fire time, so an evicted scheduled agent re-hydrates within
+   * one tick.
+   */
+  startEviction(options: EvictionOptions): void {
+    if (this.evictionTimer) return;
+    const log = options.log ?? (() => {});
+    const tick = (): void => void this.evictionTick(options.idleTTLMs, log);
+    this.evictionTimer = setInterval(tick, options.tickIntervalMs);
+    this.evictionTimer.unref?.();
+  }
+
+  stopEviction(): void {
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = undefined;
+    }
+  }
+
+  private async evictionTick(
+    idleTTLMs: number,
+    log: (message: string) => void,
+  ): Promise<void> {
+    const now = Date.now();
+    const candidates: string[] = [];
+    for (const agentId of this.runners.keys()) {
+      const handles = this.channelHandles.get(agentId);
+      if (handles && handles.length > 0) continue;
+      if ((this.wsConnections.get(agentId) ?? 0) > 0) continue;
+      if ((this.busy.get(agentId) ?? 0) > 0) continue;
+      const last = this.lastActivityAt.get(agentId) ?? now;
+      if (now - last < idleTTLMs) continue;
+      candidates.push(agentId);
+    }
+    for (const agentId of candidates) {
+      // Re-check guards immediately before stopping in case a request
+      // arrived between the scan and now.
+      const handles = this.channelHandles.get(agentId);
+      if (handles && handles.length > 0) continue;
+      if ((this.wsConnections.get(agentId) ?? 0) > 0) continue;
+      if ((this.busy.get(agentId) ?? 0) > 0) continue;
+      const last = this.lastActivityAt.get(agentId) ?? now;
+      if (now - last < idleTTLMs) continue;
+      log(`[${agentId}] evicting idle runner (idle ${Math.round((now - last) / 1000)}s)`);
+      try {
+        await this.stop(agentId);
+      } catch (err) {
+        log(`[${agentId}] eviction failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /** Stop every managed agent. */

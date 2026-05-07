@@ -189,11 +189,13 @@ One long-lived feature branch `feat/lazy-hydration` off `main` (after the MCP as
    accepted for v1; in-process Cron timers can be re-added later if a
    specific schedule needs sub-second precision.
 
-### Phase 3 — LRU eviction
+### Phase 3 — LRU eviction ✅ shipped
 
-1. Track `lastActivityAt` on each runner.
-2. Eviction ticker: every minute, evict runners idle > TTL with no active sessions / WS subscribers / pending tool calls.
-3. Active-aware: never evict a runner that holds a streaming session or open WS subscription.
+1. `AgentInstanceManager` tracks `lastActivityAt` per agent. `touch()` is called from `_doStart`, `getRunner` (read-touch), `getOrHydrate` cache hits, `dispatchWebhook`, and each WS message.
+2. Eviction ticker scans hydrated runners every 60s; agents idle past `OPENHERMIT_EVICTION_TTL_MS` (default 30 min) are stopped.
+3. Skip-guards: agents with active channel handles (telegram/slack/discord polling), live WS connections, or non-zero `busy` counter are kept warm.
+4. Long-running ops wrap themselves in `withBusy(agentId, fn)`; central scheduler does this around `runScheduledJob` so jobs that exceed the TTL aren't evicted mid-run.
+5. `OPENHERMIT_EVICTION_TTL_MS=0` disables eviction.
 
 ### Phase 4 — Channel connection pooling
 
