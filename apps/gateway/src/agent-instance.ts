@@ -7,20 +7,13 @@ import {
   createLangfuseShutdownHandler,
   type LangfuseClientLike,
 } from '@openhermit/agent/langfuse';
-import { startChannels, startSingleChannel, stopChannels, type ChannelStatus, type WebhookRequest, type WebhookResponse } from '@openhermit/agent/channels';
 import type { AgentConfigStore, AgentStore, ApprovalRequestStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillStore } from '@openhermit/store';
 
-import type { ChannelRegistry } from './auth.js';
+import type { ChannelPool } from './channel-pool.js';
 
 const log = (message: string): void => {
   console.log(`[openhermit-gateway] ${message}`);
 };
-
-interface ChannelHandle {
-  name: string;
-  stop: () => Promise<void>;
-  handleWebhook?: (req: WebhookRequest) => Promise<WebhookResponse>;
-}
 
 export interface EvictionOptions {
   /** Idle threshold; runners untouched for this long are evictable. */
@@ -39,8 +32,6 @@ export class AgentInstanceManager {
    */
   private hydrating = new Map<string, Promise<AgentRunner>>();
   private langfuseClients = new Map<string, LangfuseClientLike>();
-  private channelHandles = new Map<string, ChannelHandle[]>();
-  private channelStatuses = new Map<string, ChannelStatus[]>();
 
   /** Last activity timestamp per agent, used by LRU eviction. */
   private lastActivityAt = new Map<string, number>();
@@ -50,12 +41,14 @@ export class AgentInstanceManager {
   private busy = new Map<string, number>();
   private evictionTimer: ReturnType<typeof setInterval> | undefined;
 
-  /** Gateway base URL used for channel adapters to connect back. */
-  private gatewayBaseUrl: string | undefined;
   /** Admin token forwarded to channel adapters for gateway auth. */
   private adminToken: string | undefined;
-  /** Shared channel registry for external channel token auth. */
-  private channelRegistry: ChannelRegistry | undefined;
+  /**
+   * Channel connection pool — owns bridge lifecycle independent of
+   * runners. Optional during early boot wiring; must be set before any
+   * runner hydrates so the runner can pick up live outbounds.
+   */
+  private channelPool: ChannelPool | undefined;
   /** Shared skill store for DB-managed skills. */
   private skillStore: SkillStore | undefined;
   /** Shared MCP server store for DB-managed MCP servers. */
@@ -70,19 +63,16 @@ export class AgentInstanceManager {
   private sandboxStore: SandboxStore | undefined;
   /** DB-backed policy store (tool/resource access grants). */
   private policyStore: PolicyStore | undefined;
-  /** DB-backed channel store (builtin + external rows, encrypted tokens). */
-  private channelStore: import('@openhermit/store').DbAgentChannelStore | undefined;
-
-  setGatewayBaseUrl(url: string): void {
-    this.gatewayBaseUrl = url;
-  }
-
   setAdminToken(token: string | undefined): void {
     this.adminToken = token;
   }
 
-  setChannelRegistry(registry: ChannelRegistry): void {
-    this.channelRegistry = registry;
+  setChannelPool(pool: ChannelPool): void {
+    this.channelPool = pool;
+  }
+
+  getChannelPool(): ChannelPool | undefined {
+    return this.channelPool;
   }
 
   setSkillStore(store: SkillStore): void {
@@ -121,10 +111,6 @@ export class AgentInstanceManager {
 
   setApprovalRequestStore(store: ApprovalRequestStore): void {
     this.approvalRequestStore = store;
-  }
-
-  setChannelStore(store: import('@openhermit/store').DbAgentChannelStore): void {
-    this.channelStore = store;
   }
 
   getConfigStore(): AgentConfigStore | undefined {
@@ -216,53 +202,16 @@ export class AgentInstanceManager {
     this.runners.set(agentId, runner);
     log(`[${agentId}] runner started`);
 
-    // 6. Load channel rows (builtin + external) from DB. Each row's encrypted
-    //    token is registered in ChannelRegistry; for enabled builtin rows we
-    //    additionally boot the in-process bridge using row.config.
-    if (this.channelStore && this.gatewayBaseUrl) {
-      try {
-        const allActive = await this.channelStore.loadActive();
-        const myChannels = allActive.filter((c) => c.agentId === agentId);
-
-        if (this.channelRegistry) {
-          for (const ch of myChannels) {
-            this.channelRegistry.register({
-              channelId: ch.id,
-              apiKey: ch.token,
-              namespace: ch.namespace,
-              agentId,
-            });
-          }
-        }
-
-        const enabledBuiltins = myChannels.filter((c) => c.kind === 'builtin' && c.enabled);
-        if (enabledBuiltins.length > 0) {
-          const agentBaseUrl = `${this.gatewayBaseUrl}/api/agents/${encodeURIComponent(agentId)}`;
-          const channelsConfig: Record<string, unknown> = {};
-          const agentTokens: Record<string, string> = {};
-          for (const ch of enabledBuiltins) {
-            // Resolve ${{SECRET}} placeholders before handing config to the bridge.
-            const resolved = await security.expandSecrets({ ...ch.config, enabled: true });
-            channelsConfig[ch.channelType] = resolved;
-            agentTokens[ch.channelType] = ch.token;
-          }
-
-          const { handles, statuses } = await startChannels(channelsConfig as never, {
-            agentBaseUrl,
-            agentTokens,
-            logger: (channel, msg) => log(`[${agentId}] [${channel}] ${msg}`),
-          });
-          if (statuses.length > 0) this.channelStatuses.set(agentId, statuses);
-          if (handles.length > 0) {
-            this.channelHandles.set(agentId, handles);
-            for (const handle of handles) {
-              if (handle.outbound) runner.registerChannelOutbound(handle.outbound);
-            }
-            log(`[${agentId}] started ${handles.length} channel(s): ${handles.map((h) => h.name).join(', ')}`);
-          }
-        }
-      } catch (error) {
-        log(`[${agentId}] failed to load/start channels: ${error instanceof Error ? error.message : String(error)}`);
+    // 6. Wire outbounds from the gateway-level channel pool. Bridges are
+    //    owned by the pool and persist across runner eviction; we just
+    //    register their send-callbacks on this freshly hydrated runner.
+    if (this.channelPool) {
+      const handles = this.channelPool.getOutbounds(agentId);
+      for (const handle of handles) {
+        if (handle.outbound) runner.registerChannelOutbound(handle.outbound);
+      }
+      if (handles.length > 0) {
+        log(`[${agentId}] attached ${handles.length} pool channel(s): ${handles.map((h) => h.name).join(', ')}`);
       }
     }
 
@@ -363,131 +312,6 @@ export class AgentInstanceManager {
     return this.start(agentId, record.workspaceDir);
   }
 
-  getChannelStatuses(agentId: string): ChannelStatus[] {
-    return this.channelStatuses.get(agentId) ?? [];
-  }
-
-  /**
-   * Dispatch an incoming webhook request to the named channel adapter
-   * for `agentId`. Hydrates the agent on demand if the request is for
-   * an `active` agent that isn't currently running. Returns 404 if the
-   * agent doesn't exist / is disabled / the channel isn't enabled / the
-   * adapter doesn't accept webhooks.
-   */
-  async dispatchWebhook(agentId: string, channelName: string, req: WebhookRequest): Promise<WebhookResponse> {
-    if (!this.runners.has(agentId)) {
-      const runner = await this.getOrHydrate(agentId);
-      if (!runner) {
-        return { status: 404, body: 'agent not available' };
-      }
-    }
-    const handles = this.channelHandles.get(agentId) ?? [];
-    const handle = handles.find((h) => h.name === channelName);
-    if (!handle || !handle.handleWebhook) {
-      return { status: 404, body: 'channel not active or does not accept webhooks' };
-    }
-    this.touch(agentId);
-    return handle.handleWebhook(req);
-  }
-
-  async stopSingleChannel(agentId: string, channelName: string, log: (msg: string) => void): Promise<void> {
-    const handles = this.channelHandles.get(agentId) ?? [];
-    const idx = handles.findIndex((h) => h.name === channelName);
-    if (idx !== -1) {
-      const handle = handles[idx]!;
-      try {
-        await handle.stop();
-      } catch (err) {
-        log(`[${agentId}] error stopping ${channelName}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      handles.splice(idx, 1);
-      if (handles.length === 0) this.channelHandles.delete(agentId);
-
-      const runner = this.runners.get(agentId);
-      if (runner) {
-        runner.getChannelOutbound().delete(channelName);
-      }
-    }
-
-    if (this.channelRegistry) {
-      this.channelRegistry.unregister(`${agentId}:${channelName}:builtin`);
-    }
-
-    const statuses = this.channelStatuses.get(agentId) ?? [];
-    const sIdx = statuses.findIndex((s) => s.name === channelName);
-    if (sIdx !== -1) statuses.splice(sIdx, 1);
-
-    log(`[${agentId}] stopped channel: ${channelName}`);
-  }
-
-  /**
-   * Start a single builtin channel (used by the enable-channel API). The
-   * row in agent_channels must already be enabled and have config; we
-   * just spawn the in-process bridge and register the row's token in the
-   * live ChannelRegistry.
-   */
-  async startSingleChannel(agentId: string, channelName: string, log: (msg: string) => void): Promise<ChannelStatus> {
-    const runner = this.runners.get(agentId);
-    if (!runner || !this.gatewayBaseUrl) {
-      return { name: channelName, status: 'error', error: 'Agent not running' };
-    }
-    if (!this.channelStore) {
-      return { name: channelName, status: 'error', error: 'Channel store not configured' };
-    }
-
-    const row = await this.channelStore.findBuiltin(agentId, channelName);
-    if (!row || !row.enabled) {
-      return { name: channelName, status: 'error', error: `Builtin channel ${channelName} is not enabled` };
-    }
-
-    // Decrypt the token via loadActive (we don't expose decrypt directly).
-    const all = await this.channelStore.loadActive();
-    const loaded = all.find((c) => c.id === row.id);
-    if (!loaded) {
-      return { name: channelName, status: 'error', error: 'Failed to decrypt channel token' };
-    }
-
-    const agentBaseUrl = `${this.gatewayBaseUrl}/api/agents/${encodeURIComponent(agentId)}`;
-    if (this.channelRegistry) {
-      this.channelRegistry.register({
-        channelId: row.id,
-        apiKey: loaded.token,
-        namespace: row.namespace,
-        agentId,
-      });
-    }
-
-    const resolvedRow = await runner.security.expandSecrets({ ...row.config, enabled: true });
-    const channelsConfig: Record<string, unknown> = { [channelName]: resolvedRow };
-
-    const { handle, status } = await startSingleChannel(channelName, channelsConfig as never, {
-      agentBaseUrl,
-      agentTokens: { [channelName]: loaded.token },
-      logger: (channel, msg) => log(`[${agentId}] [${channel}] ${msg}`),
-    });
-
-    if (handle) {
-      const handles = this.channelHandles.get(agentId) ?? [];
-      handles.push(handle);
-      this.channelHandles.set(agentId, handles);
-      if (handle.outbound) {
-        runner.registerChannelOutbound(handle.outbound);
-      }
-      log(`[${agentId}] started channel: ${channelName}`);
-    }
-
-    const statuses = this.channelStatuses.get(agentId) ?? [];
-    const existingIdx = statuses.findIndex((s) => s.name === channelName);
-    if (existingIdx !== -1) {
-      statuses[existingIdx] = status;
-    } else {
-      statuses.push(status);
-    }
-    this.channelStatuses.set(agentId, statuses);
-
-    return status;
-  }
-
   /** Get all running agent IDs. */
   getRunningAgentIds(): string[] {
     return [...this.runners.keys()];
@@ -498,23 +322,16 @@ export class AgentInstanceManager {
     return [...this.runners.keys()];
   }
 
-  /** Stop a single agent, flushing Langfuse and cleaning up resources. */
+  /**
+   * Stop a single agent's runner. Channel bridges are NOT torn down —
+   * they're owned by ChannelPool and persist across runner eviction so
+   * a hot agent can be evicted without dropping inbound messages.
+   */
   async stop(agentId: string): Promise<void> {
     const runner = this.runners.get(agentId);
     if (!runner) {
       return;
     }
-
-    // Unregister channel tokens.
-    this.channelRegistry?.unregisterByAgent(agentId);
-
-    // Stop channels first.
-    const handles = this.channelHandles.get(agentId);
-    if (handles) {
-      await stopChannels(handles);
-      this.channelHandles.delete(agentId);
-    }
-    this.channelStatuses.delete(agentId);
 
     await runner.shutdown();
 
@@ -537,13 +354,13 @@ export class AgentInstanceManager {
    * and stops those idle longer than `idleTTLMs`.
    *
    * Skipped (kept warm):
-   *   - agents with active channel handles (telegram/slack/discord polling
-   *     loops would lose messages if torn down);
-   *   - agents with live WebSocket connections.
+   *   - agents with live WebSocket connections;
+   *   - agents currently busy (long-running ops).
    *
-   * Schedules don't keep agents warm — the central scheduler hydrates on
-   * demand at fire time, so an evicted scheduled agent re-hydrates within
-   * one tick.
+   * Channels no longer keep agents warm — bridges are owned by
+   * ChannelPool, so an evicted runner re-hydrates on the next inbound
+   * message via the gateway HTTP route. Schedules also don't keep
+   * agents warm — the central scheduler hydrates on demand at fire time.
    */
   startEviction(options: EvictionOptions): void {
     if (this.evictionTimer) return;
@@ -567,8 +384,6 @@ export class AgentInstanceManager {
     const now = Date.now();
     const candidates: string[] = [];
     for (const agentId of this.runners.keys()) {
-      const handles = this.channelHandles.get(agentId);
-      if (handles && handles.length > 0) continue;
       if ((this.wsConnections.get(agentId) ?? 0) > 0) continue;
       if ((this.busy.get(agentId) ?? 0) > 0) continue;
       const last = this.lastActivityAt.get(agentId) ?? now;
@@ -578,8 +393,6 @@ export class AgentInstanceManager {
     for (const agentId of candidates) {
       // Re-check guards immediately before stopping in case a request
       // arrived between the scan and now.
-      const handles = this.channelHandles.get(agentId);
-      if (handles && handles.length > 0) continue;
       if ((this.wsConnections.get(agentId) ?? 0) > 0) continue;
       if ((this.busy.get(agentId) ?? 0) > 0) continue;
       const last = this.lastActivityAt.get(agentId) ?? now;

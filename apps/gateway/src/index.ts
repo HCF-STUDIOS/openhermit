@@ -35,6 +35,7 @@ import {
 } from '@openhermit/shared';
 
 import { AgentInstanceManager } from './agent-instance.js';
+import { ChannelPool } from './channel-pool.js';
 import { CentralScheduler } from './central-scheduler.js';
 import { syncSkillMounts } from './skill-mounts.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
@@ -158,13 +159,11 @@ export const main = async (): Promise<void> => {
   logStartup(`config loaded (source: ${configSource})`);
 
   // Auth configuration (secrets stay in env). ChannelRegistry is seeded
-  // per-agent inside AgentInstanceManager.start() — every channel row
-  // (builtin or external) lives in the same agent_channels table and
-  // takes the same registration path.
+  // by ChannelPool.start() at gateway boot — every channel row (builtin
+  // or external) lives in the same agent_channels table and takes the
+  // same registration path.
   const channels = new ChannelRegistry();
   if (agentChannelStore) {
-    instances.setChannelStore(agentChannelStore);
-
     // One-shot backfill: for every existing agent, make sure each
     // BUILTIN_CHANNELS kind has a row. If the agent's old
     // config_json.channels.X document has values, copy them into the
@@ -395,11 +394,39 @@ export const main = async (): Promise<void> => {
 
   const { server, info } = await listen(app.fetch, port, host);
 
-  // Channel adapters connect back to the gateway from inside the host. Use
-  // 127.0.0.1 even when the public listener is 0.0.0.0 / a specific IP.
-  instances.setGatewayBaseUrl(`http://127.0.0.1:${info.port}`);
   instances.setAdminToken(adminToken);
-  instances.setChannelRegistry(channels);
+
+  // Boot the channel pool — owns Telegram/Slack/Discord bridges
+  // independently of runners. Channels stay alive across runner
+  // eviction; the bridge calls back via HTTP, hydrating the runner on
+  // demand for inbound messages.
+  let channelPool: ChannelPool | undefined;
+  if (agentChannelStore && agentStore && configStore) {
+    const secretStore = instances.getSecretStore();
+    if (secretStore) {
+      channelPool = new ChannelPool({
+        agentStore,
+        channelStore: agentChannelStore,
+        configStore,
+        secretStore,
+        channelRegistry: channels,
+        // Channel adapters connect back from inside the host. Use
+        // 127.0.0.1 even when the public listener is 0.0.0.0.
+        gatewayBaseUrl: `http://127.0.0.1:${info.port}`,
+        getRunner: (agentId) => instances.getRunner(agentId),
+        log: logStartup,
+      });
+      instances.setChannelPool(channelPool);
+      try {
+        await channelPool.start();
+        logStartup('channel pool started');
+      } catch (err) {
+        logStartup(`channel pool start failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      logStartup('channel pool skipped (no secret store available)');
+    }
+  }
 
   attachGatewayWs(server as import('node:http').Server, {
     instances,
@@ -469,6 +496,7 @@ export const main = async (): Promise<void> => {
 
     await centralScheduler?.stop();
     instances.stopEviction();
+    await channelPool?.stopAll();
     await instances.stopAll();
     await agentStore?.close();
     await skillStore?.close();

@@ -1329,7 +1329,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const stat = stats.get(record.agentId) ?? {
         sessions24h: 0, errors24h: 0, skillsCount: 0, mcpCount: 0,
       };
-      const channelStatuses = instances.getChannelStatuses(record.agentId);
+      const channelStatuses = instances.getChannelPool()?.getStatuses(record.agentId) ?? [];
       const channelsEnabled = channelStatuses
         .filter((s) => s.status === 'connected')
         .map((s) => s.name);
@@ -2085,7 +2085,18 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     });
     const rawBody = await c.req.text();
 
-    const result = await instances.dispatchWebhook(agentId, row.channelType, { headers, rawBody });
+    // Hydrate the runner first so the bridge's downstream HTTP callbacks
+    // hit a hot agent (rather than paying cold-start latency on every
+    // inbound message).
+    const runner = await instances.getOrHydrate(agentId);
+    if (!runner) {
+      return new Response('agent not available', { status: 404 });
+    }
+    const pool = instances.getChannelPool();
+    if (!pool) {
+      return new Response('channel pool not available', { status: 503 });
+    }
+    const result = await pool.dispatchWebhook(agentId, row.channelType, { headers, rawBody });
     return new Response(result.body ?? '', {
       status: result.status,
       headers: result.headers ?? {},
@@ -2097,7 +2108,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     await requireOwnerOrAdmin(c, agentId);
     const store = requireAgentChannelStore();
     const rows = await store.listForAgent(agentId);
-    const runtimeStatuses = instances.getChannelStatuses(agentId);
+    const runtimeStatuses = instances.getChannelPool()?.getStatuses(agentId) ?? [];
 
     // Secret presence — needed by the UI to indicate whether a channel
     // can actually start. Only available when agent is running.
@@ -2217,11 +2228,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     // Builtin channel runtime side-effects: enable → start, disable → stop.
     if (existing.kind === 'builtin' && body.enabled !== undefined) {
+      const pool = instances.getChannelPool();
+      if (!pool) {
+        throw new Error('channel pool not available');
+      }
       if (body.enabled) {
-        const status = await instances.startSingleChannel(agentId, existing.channelType, log);
+        const status = await pool.enableChannel(agentId, existing.channelType);
         return c.json({ ...updated, runtimeStatus: status.status, error: status.error });
       } else {
-        await instances.stopSingleChannel(agentId, existing.channelType, log);
+        await pool.disableChannel(agentId, existing.channelType);
       }
     }
 
@@ -2244,7 +2259,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       throw new NotFoundError(`Channel ${channelId} not found on agent ${agentId}.`);
     }
     if (existing.kind === 'builtin' && existing.enabled) {
-      await instances.stopSingleChannel(agentId, existing.channelType, log);
+      await instances.getChannelPool()?.disableChannel(agentId, existing.channelType);
     }
     if (existing.kind === 'builtin') {
       await store.delete(channelId);
