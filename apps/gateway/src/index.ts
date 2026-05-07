@@ -366,20 +366,20 @@ export const main = async (): Promise<void> => {
 
   // LRU eviction: scan hydrated runners every minute, stop ones that
   // have been idle past the TTL with no active channels and no live WS
-  // subscribers. OPENHERMIT_EVICTION_TTL_MS=0 disables eviction.
-  const evictionTTLMs = (() => {
-    const raw = process.env.OPENHERMIT_EVICTION_TTL_MS;
-    if (raw === undefined) return 30 * 60_000;
+  // subscribers. OPENHERMIT_EVICTION_TTL_MINUTES=0 disables eviction.
+  const evictionTTLMinutes = (() => {
+    const raw = process.env.OPENHERMIT_EVICTION_TTL_MINUTES;
+    if (raw === undefined) return 30;
     const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 30 * 60_000;
+    return Number.isFinite(parsed) ? parsed : 30;
   })();
-  if (evictionTTLMs > 0) {
+  if (evictionTTLMinutes > 0) {
     instances.startEviction({
-      idleTTLMs: evictionTTLMs,
+      idleTTLMs: evictionTTLMinutes * 60_000,
       tickIntervalMs: 60_000,
       log: logStartup,
     });
-    logStartup(`LRU eviction enabled (idle TTL ${Math.round(evictionTTLMs / 1000)}s)`);
+    logStartup(`LRU eviction enabled (idle TTL ${evictionTTLMinutes}m)`);
   } else {
     logStartup('LRU eviction disabled');
   }
