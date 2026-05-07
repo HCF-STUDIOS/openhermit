@@ -925,8 +925,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
 
       case 'delete': {
+        if (record.status !== 'disabled') {
+          throw new ValidationError(`Agent ${agentId} must be disabled before deletion. Run \`hermit agents disable ${agentId}\` first.`);
+        }
         if (instances.getRunner(agentId)) {
-          throw new ValidationError(`Agent ${agentId} is still running. Stop it first.`);
+          await instances.stop(agentId);
         }
         await agentStore.delete(agentId);
         log(`agent deleted: ${agentId}`);
@@ -951,18 +954,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         return c.json({ agentId, status: 'disabled' });
       }
 
-      case 'archive': {
-        await agentStore.setStatus(agentId, 'archived');
-        if (instances.getRunner(agentId)) {
-          await instances.stop(agentId);
-        }
-        log(`agent archived: ${agentId}`);
-        return c.json({ agentId, status: 'archived' });
-      }
-
       default:
         throw new ValidationError(
-          `Unknown lifecycle action: ${action}. Valid actions: start, stop, restart, delete, enable, disable, archive`,
+          `Unknown lifecycle action: ${action}. Valid actions: start, stop, restart, delete, enable, disable`,
         );
     }
   });

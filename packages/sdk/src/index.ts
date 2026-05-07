@@ -317,7 +317,7 @@ export class GatewayClient {
 
   async manageAgent(
     agentId: string,
-    action: 'start' | 'stop' | 'restart',
+    action: 'start' | 'stop' | 'restart' | 'enable' | 'disable',
   ): Promise<AgentInfo> {
     return this.postJson(gatewayRoutes.agentManage(agentId, action), {});
   }

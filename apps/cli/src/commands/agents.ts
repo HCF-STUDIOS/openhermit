@@ -78,10 +78,38 @@ export const registerAgentsCommand = (program: Command): void => {
       }
     });
 
+  // --- enable ---
+  agents
+    .command('enable <agentId>')
+    .description('Enable an agent (accept incoming requests)')
+    .action(async (agentId: string) => {
+      try {
+        const gateway = createGateway();
+        const result = await gateway.manageAgent(agentId, 'enable');
+        console.log(`Agent ${result.agentId}: ${result.status}`);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  // --- disable ---
+  agents
+    .command('disable <agentId>')
+    .description('Disable an agent (reject requests, evict from memory)')
+    .action(async (agentId: string) => {
+      try {
+        const gateway = createGateway();
+        const result = await gateway.manageAgent(agentId, 'disable');
+        console.log(`Agent ${result.agentId}: ${result.status}`);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
   // --- start ---
   agents
     .command('start <agentId>')
-    .description('Start a stopped agent')
+    .description('Hydrate the agent runner into memory (cache management; agents auto-hydrate on demand)')
     .action(async (agentId: string) => {
       try {
         const gateway = createGateway();
@@ -95,7 +123,7 @@ export const registerAgentsCommand = (program: Command): void => {
   // --- stop ---
   agents
     .command('stop <agentId>')
-    .description('Stop a running agent')
+    .description('Evict the runner from memory (cache management; agent stays enabled)')
     .action(async (agentId: string) => {
       try {
         const gateway = createGateway();
@@ -109,7 +137,7 @@ export const registerAgentsCommand = (program: Command): void => {
   // --- restart ---
   agents
     .command('restart <agentId>')
-    .description('Restart an agent')
+    .description('Evict and re-hydrate the runner (cache management)')
     .action(async (agentId: string) => {
       try {
         const gateway = createGateway();
@@ -123,17 +151,10 @@ export const registerAgentsCommand = (program: Command): void => {
   // --- delete ---
   agents
     .command('delete <agentId>')
-    .description('Delete an agent and all its data (must be stopped first)')
+    .description('Delete an agent and all its data (must be disabled first)')
     .action(async (agentId: string) => {
       try {
         const gateway = createGateway();
-
-        const health = await gateway.agentHealth(agentId);
-        if (health.status === 'running') {
-          console.error(`Agent ${agentId} is still running. Stop it first with: hermit agents stop ${agentId}`);
-          process.exit(1);
-        }
-
         await gateway.deleteAgent(agentId);
         console.log(`Agent deleted: ${agentId}`);
       } catch (error) {

@@ -61,7 +61,7 @@ runners.get(agentId)?
 
 ```sql
 ALTER TABLE agents ADD COLUMN status text NOT NULL DEFAULT 'active';
--- 'active' | 'disabled' | 'archived'
+-- 'active' | 'disabled'
 ```
 
 - Single source of truth; survives gateway restart with no recovery state.

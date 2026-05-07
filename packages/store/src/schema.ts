@@ -26,7 +26,7 @@ export const agents = pgTable('agents', {
   /**
    * Source of truth for whether this agent accepts requests. The gateway's
    * in-memory runner Map is just a hydration cache; this column decides
-   * policy. Values: 'active' | 'disabled' | 'archived'.
+   * policy. Values: 'active' | 'disabled'.
    */
   status: text('status').default('active').notNull(),
   createdAt: text('created_at').notNull(),

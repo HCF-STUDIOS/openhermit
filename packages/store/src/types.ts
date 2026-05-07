@@ -11,7 +11,7 @@ export interface StoreScope {
   agentId: string;
 }
 
-export type AgentStatus = 'active' | 'disabled' | 'archived';
+export type AgentStatus = 'active' | 'disabled';
 
 export interface AgentRecord {
   agentId: string;
