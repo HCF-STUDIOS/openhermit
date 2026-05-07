@@ -257,20 +257,27 @@ export class HostFileBackend implements FileBackend {
  */
 export class E2BFileBackend implements FileBackend {
   sandbox: import('e2b').Sandbox | null = null;
+  ensureSandbox: (() => Promise<void>) | null = null;
 
   private get sb(): import('e2b').Sandbox {
     if (!this.sandbox) throw new ValidationError('E2B sandbox is not connected. Call ensure() first.');
     return this.sandbox;
   }
 
+  private async ready(): Promise<void> {
+    if (!this.sandbox && this.ensureSandbox) await this.ensureSandbox();
+  }
+
   async read(filePath: string): Promise<FileReadResult> {
     requireAbsolutePath(filePath);
+    await this.ready();
     const bytes = await this.sb.files.read(filePath, { format: 'bytes' });
     return { data: Buffer.from(bytes) };
   }
 
   async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
     requireAbsolutePath(filePath);
+    await this.ready();
     if (mode === 'create') {
       const exists = await this.sb.files.exists(filePath);
       if (exists) throw new ValidationError(`File already exists (mode=create): ${filePath}`);
@@ -294,6 +301,7 @@ export class E2BFileBackend implements FileBackend {
 
   async list(dirPath: string): Promise<DirEntry[]> {
     requireAbsolutePath(dirPath);
+    await this.ready();
     const entries = await this.sb.files.list(dirPath);
     return entries.map((e) => ({
       name: e.name,
@@ -304,6 +312,7 @@ export class E2BFileBackend implements FileBackend {
 
   async stat(filePath: string): Promise<FileStat | null> {
     requireAbsolutePath(filePath);
+    await this.ready();
     try {
       const info = await this.sb.files.getInfo(filePath);
       return {
@@ -318,6 +327,7 @@ export class E2BFileBackend implements FileBackend {
 
   async delete(filePath: string): Promise<void> {
     requireAbsolutePath(filePath);
+    await this.ready();
     await this.sb.files.remove(filePath);
   }
 }
@@ -330,20 +340,27 @@ export class E2BFileBackend implements FileBackend {
  */
 export class DaytonaFileBackend implements FileBackend {
   sandbox: import('@daytonaio/sdk').Sandbox | null = null;
+  ensureSandbox: (() => Promise<void>) | null = null;
 
   private get sb(): import('@daytonaio/sdk').Sandbox {
     if (!this.sandbox) throw new ValidationError('Daytona sandbox is not connected. Call ensure() first.');
     return this.sandbox;
   }
 
+  private async ready(): Promise<void> {
+    if (!this.sandbox && this.ensureSandbox) await this.ensureSandbox();
+  }
+
   async read(filePath: string): Promise<FileReadResult> {
     requireAbsolutePath(filePath);
+    await this.ready();
     const raw = await this.sb.fs.downloadFile(filePath);
     return { data: Buffer.from(raw) };
   }
 
   async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
     requireAbsolutePath(filePath);
+    await this.ready();
     const dir = path.posix.dirname(filePath);
     if (dir !== '/') {
       try { await this.sb.fs.createFolder(dir, '755'); } catch { /* may exist */ }
@@ -372,6 +389,7 @@ export class DaytonaFileBackend implements FileBackend {
 
   async list(dirPath: string): Promise<DirEntry[]> {
     requireAbsolutePath(dirPath);
+    await this.ready();
     const entries = await this.sb.fs.listFiles(dirPath);
     return entries.map((e) => ({
       name: e.name,
@@ -382,6 +400,7 @@ export class DaytonaFileBackend implements FileBackend {
 
   async stat(filePath: string): Promise<FileStat | null> {
     requireAbsolutePath(filePath);
+    await this.ready();
     try {
       const info = await this.sb.fs.getFileDetails(filePath);
       return {
@@ -396,6 +415,7 @@ export class DaytonaFileBackend implements FileBackend {
 
   async delete(filePath: string): Promise<void> {
     requireAbsolutePath(filePath);
+    await this.ready();
     await this.sb.fs.deleteFile(filePath);
   }
 }

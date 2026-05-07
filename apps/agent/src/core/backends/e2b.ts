@@ -69,6 +69,7 @@ class E2BExecBackend implements ExecBackend {
     this.username = config.username ?? E2B_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? E2B_DEFAULT_AGENT_HOME;
     this.files = new E2BFileBackend();
+    this.files.ensureSandbox = () => this.ensure();
   }
 
   async ensure(): Promise<void> {

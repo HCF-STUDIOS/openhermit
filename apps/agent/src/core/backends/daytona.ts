@@ -86,6 +86,7 @@ class DaytonaExecBackend implements ExecBackend {
     this.username = config.username ?? DAYTONA_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? DAYTONA_DEFAULT_AGENT_HOME;
     this.files = new DaytonaFileBackend();
+    this.files.ensureSandbox = () => this.ensure();
   }
 
   async ensure(): Promise<void> {
