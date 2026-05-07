@@ -247,9 +247,9 @@ export class AgentRunner implements SessionRuntime {
     const mcpServers = await this.options.mcpServerStore.listEnabled(this.scope.agentId);
     if (mcpServers.length > 0) {
       this.mcpClientManager = new McpClientManager();
-      await this.mcpClientManager.connectAll(mcpServers);
+      this.mcpClientManager.connectAll(mcpServers);
     }
-    this.logRuntime(`mcp: reloaded (${mcpServers.length} server(s) enabled)`);
+    this.logRuntime(`mcp: reloading (${mcpServers.length} server(s) enabled, connecting in background)`);
   }
 
   /** Register a channel outbound adapter (called after channel startup). */
@@ -1604,7 +1604,12 @@ export class AgentRunner implements SessionRuntime {
           this.mcpClientManager = new McpClientManager();
           const mcpServers = await this.options.mcpServerStore.listEnabled(this.scope.agentId);
           if (mcpServers.length > 0) {
-            await this.mcpClientManager.connectAll(mcpServers);
+            // Fire-and-forget: connections proceed in the background. The
+            // current turn will only see tools from servers that have
+            // already finished connecting; subsequent turns pick up the
+            // rest as they become ready. The mcp_status tool surfaces
+            // pending/failed connections so the agent can explain delays.
+            this.mcpClientManager.connectAll(mcpServers);
           }
         }
         const toolHookCtx = {

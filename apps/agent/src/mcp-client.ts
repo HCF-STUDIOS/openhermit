@@ -6,10 +6,12 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { McpServerRecord } from '@openhermit/store';
 import { asTextContent, type Toolset } from './tools/shared.js';
 
+export type McpConnectionStatusValue = 'connecting' | 'connected' | 'disconnected' | 'error';
+
 export interface McpConnectionStatus {
   serverId: string;
   serverName: string;
-  status: 'connected' | 'disconnected' | 'error';
+  status: McpConnectionStatusValue;
   toolCount: number;
   lastError?: string;
   connectedAt?: string;
@@ -24,59 +26,86 @@ interface McpToolInfo {
 interface McpConnectionState {
   serverId: string;
   serverName: string;
-  status: 'connected' | 'disconnected' | 'error';
+  status: McpConnectionStatusValue;
   client?: Client;
   transport?: StreamableHTTPClientTransport;
   tools: McpToolInfo[];
   lastError?: string;
   connectedAt?: string;
+  /** Resolves when the in-flight connect attempt for this state finishes (success or error). */
+  ready?: Promise<void>;
 }
 
 export class McpClientManager {
   private connections = new Map<string, McpConnectionState>();
 
-  async connectAll(servers: McpServerRecord[]): Promise<void> {
-    await Promise.all(servers.map((s) => this.connect(s)));
+  /**
+   * Start connecting to all servers in parallel. Returns immediately —
+   * connections continue in the background. Each server's status moves
+   * through `connecting` → `connected` | `error` and is observable via
+   * {@link getStatus}. Callers that want to await completion can use
+   * {@link connect} per-server or {@link whenAllSettled}.
+   */
+  connectAll(servers: McpServerRecord[]): void {
+    for (const s of servers) void this.connect(s);
   }
 
+  /**
+   * Connect (or reconnect) to a single server. Returns a Promise that
+   * resolves once the attempt has settled. Errors are captured into the
+   * connection state rather than thrown, so `await connect()` never
+   * rejects — the caller should inspect {@link getStatus} after.
+   */
   async connect(server: McpServerRecord): Promise<void> {
     await this.disconnect(server.id);
 
     const state: McpConnectionState = {
       serverId: server.id,
       serverName: server.name,
-      status: 'disconnected',
+      status: 'connecting',
       tools: [],
     };
     this.connections.set(server.id, state);
 
-    try {
-      const headers: Record<string, string> = {
-        ...server.headers,
-      };
-      const transport = new StreamableHTTPClientTransport(
-        new URL(server.url),
-        { requestInit: { headers } },
-      );
-      const client = new Client({ name: 'openhermit', version: '0.2.0' });
-      await client.connect(transport as Transport);
+    state.ready = (async () => {
+      try {
+        const headers: Record<string, string> = {
+          ...server.headers,
+        };
+        const transport = new StreamableHTTPClientTransport(
+          new URL(server.url),
+          { requestInit: { headers } },
+        );
+        const client = new Client({ name: 'openhermit', version: '0.2.0' });
+        await client.connect(transport as Transport);
 
-      const { tools } = await client.listTools();
+        const { tools } = await client.listTools();
 
-      state.client = client;
-      state.transport = transport;
-      state.status = 'connected';
-      state.connectedAt = new Date().toISOString();
-      state.tools = tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema as Record<string, unknown>,
-      }));
-    } catch (err) {
-      state.status = 'error';
-      state.lastError = err instanceof Error ? err.message : String(err);
-      console.warn(`[mcp] failed to connect to ${server.id}: ${state.lastError}`);
-    }
+        if (this.connections.get(server.id) !== state) return;
+
+        state.client = client;
+        state.transport = transport;
+        state.status = 'connected';
+        state.connectedAt = new Date().toISOString();
+        state.tools = tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema as Record<string, unknown>,
+        }));
+      } catch (err) {
+        if (this.connections.get(server.id) !== state) return;
+        state.status = 'error';
+        state.lastError = err instanceof Error ? err.message : String(err);
+        console.warn(`[mcp] failed to connect to ${server.id}: ${state.lastError}`);
+      }
+    })();
+
+    await state.ready;
+  }
+
+  /** Await all in-flight connection attempts (does not throw). Useful for tests. */
+  async whenAllSettled(): Promise<void> {
+    await Promise.all([...this.connections.values()].map((s) => s.ready ?? Promise.resolve()));
   }
 
   async disconnect(serverId: string): Promise<void> {
@@ -136,9 +165,18 @@ export class McpClientManager {
       description: mcpTool.description ?? `MCP tool from ${state.serverName}`,
       parameters: Type.Unsafe(mcpTool.inputSchema),
       execute: async (_toolCallId, params) => {
-        if (!state.client || state.status !== 'connected') {
+        if (state.status === 'connecting') {
           return {
-            content: asTextContent(`MCP server "${state.serverName}" is not connected.`),
+            content: asTextContent(
+              `MCP server "${state.serverName}" is still connecting. Try again in a moment.`,
+            ),
+            details: {},
+          };
+        }
+        if (!state.client || state.status !== 'connected') {
+          const detail = state.lastError ? ` (last error: ${state.lastError})` : '';
+          return {
+            content: asTextContent(`MCP server "${state.serverName}" is not connected${detail}.`),
             details: {},
           };
         }
