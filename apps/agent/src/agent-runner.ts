@@ -1759,11 +1759,12 @@ export class AgentRunner implements SessionRuntime {
                     resourceType: 'tool',
                     resourceKey: t.name,
                     toolCallId,
+                    ...(args !== undefined ? { args } : {}),
                     mode: 'async',
                   });
                 }
                 if (notifyOwner) {
-                  notifyOwner(request.id, request.shortId, 'tool', resourceKey, userId, sessionId ?? 'unknown').catch(() => {});
+                  notifyOwner(request.id, request.shortId, 'tool', resourceKey, userId, sessionId ?? 'unknown', args).catch(() => {});
                 }
                 return {
                   content: [{
