@@ -5,6 +5,8 @@ interface RowState {
   key: string;
   /** Server-supplied masked preview. */
   masked: string;
+  /** Whether this secret is injected into sandbox env at exec time. */
+  passThrough: boolean;
   /** Current edit-in-progress value; empty until the user types. */
   draft: string;
   /** This row is currently mid-PUT/DELETE. */
@@ -16,6 +18,7 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
   const [rows, setRows] = useState<RowState[]>([]);
   const [newKey, setNewKey] = useState('');
   const [newValue, setNewValue] = useState('');
+  const [newPassThrough, setNewPassThrough] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -30,6 +33,7 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
       Object.keys(map).sort().map((k) => ({
         key: k,
         masked: map[k]?.masked ?? '',
+        passThrough: map[k]?.passThrough ?? false,
         draft: '',
         busy: false,
       })),
@@ -54,12 +58,28 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
     try {
       await api(`/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(key)}`, {
         method: 'PUT',
-        body: { value: row.draft },
+        body: { value: row.draft, passThrough: row.passThrough },
       });
       await loadFromServer();
     } catch (err) {
       setError((err as Error).message);
       updateRow(key, { busy: false });
+    }
+  };
+
+  const togglePassThrough = async (key: string, next: boolean) => {
+    setError('');
+    updateRow(key, { busy: true, passThrough: next });
+    try {
+      await api(`/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        body: { passThrough: next },
+      });
+      await loadFromServer();
+    } catch (err) {
+      setError((err as Error).message);
+      // Revert optimistic toggle on failure.
+      updateRow(key, { busy: false, passThrough: !next });
     }
   };
 
@@ -89,10 +109,11 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
     try {
       await api(`/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(k)}`, {
         method: 'PUT',
-        body: { value: newValue },
+        body: { value: newValue, passThrough: newPassThrough },
       });
       setNewKey('');
       setNewValue('');
+      setNewPassThrough(false);
       await loadFromServer();
     } catch (err) {
       setError((err as Error).message);
@@ -123,6 +144,15 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
               disabled={r.busy}
               onChange={(e) => updateRow(r.key, { draft: e.target.value })}
             />
+            <label className="secret-row__passthrough" title="Inject into sandbox env at exec time">
+              <input
+                type="checkbox"
+                checked={r.passThrough}
+                disabled={r.busy}
+                onChange={(e) => void togglePassThrough(r.key, e.target.checked)}
+              />
+              <span>Pass through</span>
+            </label>
             <button
               className="btn btn--sm btn--primary"
               type="button"
@@ -159,6 +189,15 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
             onChange={(e) => setNewValue(e.target.value)}
             disabled={adding}
           />
+          <label className="secret-row__passthrough" title="Inject into sandbox env at exec time">
+            <input
+              type="checkbox"
+              checked={newPassThrough}
+              disabled={adding}
+              onChange={(e) => setNewPassThrough(e.target.checked)}
+            />
+            <span>Pass through</span>
+          </label>
           <button
             className="btn btn--sm btn--primary"
             type="button"

@@ -382,6 +382,19 @@ dialog::backdrop { background: rgba(9, 9, 11, 0.4); }
 
 .secret-row__value:focus { outline: none; border-color: var(--accent); }
 
+.secret-row__passthrough {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.secret-row__passthrough input[type="checkbox"] { margin: 0; cursor: pointer; }
+
 .secrets-add {
   display: flex;
   gap: 0.5rem;
