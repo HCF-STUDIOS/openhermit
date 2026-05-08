@@ -23,11 +23,13 @@ export function SecretsDialog({ agentId, onClose }: { agentId: string; onClose: 
   useEffect(() => { dialogRef.current?.showModal(); }, []);
 
   const loadFromServer = async () => {
-    const map = await api<Record<string, string>>(`/api/agents/${encodeURIComponent(agentId)}/secrets`);
+    const map = await api<Record<string, { masked: string; passThrough: boolean }>>(
+      `/api/agents/${encodeURIComponent(agentId)}/secrets`,
+    );
     setRows(
       Object.keys(map).sort().map((k) => ({
         key: k,
-        masked: map[k] ?? '',
+        masked: map[k]?.masked ?? '',
         draft: '',
         busy: false,
       })),
