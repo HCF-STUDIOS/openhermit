@@ -220,8 +220,8 @@ export function FleetPanel() {
                 </td>
                 <td>
                   <div className="fleet-cell-agent">
-                    <span className="fleet-cell-agent__id">{a.agentId}</span>
-                    {a.name && <span className="fleet-cell-agent__name">{a.name}</span>}
+                    <span className="fleet-cell-agent__id">{a.name || a.agentId}</span>
+                    {a.name && <span className="fleet-cell-agent__name">{a.agentId}</span>}
                   </div>
                 </td>
                 <td>
