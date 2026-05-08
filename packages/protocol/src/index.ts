@@ -151,6 +151,7 @@ export type OutboundEvent =
       resourceType: string;
       resourceKey: string;
       toolCallId?: string;
+      args?: unknown;
       mode: 'realtime' | 'async';
     }
   | {
@@ -161,6 +162,7 @@ export type OutboundEvent =
       resourceKey: string;
       requesterId: string;
       requesterSessionId: string;
+      args?: unknown;
       mode: 'realtime' | 'async';
     }
   | {

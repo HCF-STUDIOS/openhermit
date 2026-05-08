@@ -108,6 +108,7 @@ const checkFilePath = async (
   sandboxAlias: string,
   mode: FileMode,
   path: string,
+  args?: unknown,
 ): Promise<void> => {
   if (!context.policyStore || !context.agentId) return;
 
@@ -134,7 +135,7 @@ const checkFilePath = async (
       sandbox: sandboxAlias,
       mode,
       path,
-    });
+    }, args);
   }
 };
 
@@ -147,7 +148,7 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'read', args.path);
+    await checkFilePath(context, backend.id, 'read', args.path, args);
     const { data } = await backend.files.read(args.path);
     if (data.byteLength > MAX_READ_BYTES && !args.offset && !args.limit) {
       throw new ValidationError(
@@ -201,7 +202,7 @@ export const createFileWriteTool = (context: ToolContext): PolicyAwareTool<typeo
   parameters: FileWriteParams,
   execute: async (_id, args: FileWriteArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'write', args.path);
+    await checkFilePath(context, backend.id, 'write', args.path, args);
     const mode: FileWriteMode = args.mode ?? 'overwrite';
     const encoding = args.encoding ?? 'utf8';
     const data =
@@ -222,7 +223,7 @@ export const createFileListTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileListParams,
   execute: async (_id, args: FileListArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'read', args.path);
+    await checkFilePath(context, backend.id, 'read', args.path, args);
     const entries = await backend.files.list(args.path);
     return {
       content: asTextContent(formatJson(entries)),
@@ -239,7 +240,7 @@ export const createFileStatTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileStatParams,
   execute: async (_id, args: FileStatArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'read', args.path);
+    await checkFilePath(context, backend.id, 'read', args.path, args);
     const stat = await backend.files.stat(args.path);
     return {
       content: asTextContent(stat ? formatJson(stat) : 'null\n'),
@@ -257,7 +258,7 @@ export const createFileEditTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileEditParams,
   execute: async (_id, args: FileEditArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'write', args.path);
+    await checkFilePath(context, backend.id, 'write', args.path, args);
     const { data } = await backend.files.read(args.path);
     const original = data.toString('utf8');
 
@@ -297,7 +298,7 @@ export const createFileDeleteTool = (context: ToolContext): PolicyAwareTool<type
   parameters: FileDeleteParams,
   execute: async (_id, args: FileDeleteArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'write', args.path);
+    await checkFilePath(context, backend.id, 'write', args.path, args);
     await backend.files.delete(args.path);
     return {
       content: asTextContent(`Deleted ${args.path}.\n`),

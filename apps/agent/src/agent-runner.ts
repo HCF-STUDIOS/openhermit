@@ -1103,10 +1103,10 @@ export class AgentRunner implements SessionRuntime {
     };
   }
 
-  private makeNotifyOwnerApproval(): ((requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string) => Promise<void>) | undefined {
+  private makeNotifyOwnerApproval(): ((requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string, args?: unknown) => Promise<void>) | undefined {
     if (this.channelOutbound.size === 0) return undefined;
 
-    return async (requestId, shortId, resourceType, resourceKey, requesterId, requesterSessionId) => {
+    return async (requestId, shortId, resourceType, resourceKey, requesterId, requesterSessionId, args) => {
       try {
         const config = await this.options.security.readConfig();
         const notif = config.notifications;
@@ -1140,6 +1140,7 @@ export class AgentRunner implements SessionRuntime {
           resourceKey,
           requesterId,
           requesterSessionId,
+          ...(args !== undefined ? { args } : {}),
           mode: 'async',
         });
 
@@ -1707,6 +1708,7 @@ export class AgentRunner implements SessionRuntime {
                   resourceType: 'tool',
                   resourceKey: t.name,
                   toolCallId,
+                  ...(args !== undefined ? { args } : {}),
                   mode: 'realtime',
                 });
                 void eventBroker.publish({
@@ -1717,6 +1719,7 @@ export class AgentRunner implements SessionRuntime {
                   resourceKey: t.name,
                   requesterId: userId ?? 'unknown',
                   requesterSessionId: sessionId,
+                  ...(args !== undefined ? { args } : {}),
                   mode: 'realtime',
                 });
               }

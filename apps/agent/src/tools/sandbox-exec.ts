@@ -69,7 +69,7 @@ export const createSandboxExecTool = (
             sandbox: backend.id,
             command: args.command,
             ...(args.cwd ? { cwd: args.cwd } : {}),
-          });
+          }, args);
         }
       }
     }

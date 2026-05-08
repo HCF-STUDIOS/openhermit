@@ -67,7 +67,7 @@ export interface ToolContext {
   hookBus?: import('../events.js').AgentEventBus;
   /** When set, called after an async ApprovalRequest is created to notify
    *  the owner via their configured notification channel. */
-  notifyOwnerApproval?: (requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string) => Promise<void>;
+  notifyOwnerApproval?: (requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string, args?: unknown) => Promise<void>;
   /** Publish an SSE event to the session's event stream. */
   publishEvent?: (event: Record<string, unknown>) => void;
 }
@@ -118,6 +118,7 @@ export const checkApprovalOrRequest = async (
   resourceType: string,
   resourceKey: string,
   scope?: Record<string, unknown>,
+  args?: unknown,
 ): Promise<void> => {
   if (!context.approvalRequestStore || !context.storeScope || !context.currentUserId) {
     throw new ValidationError(
@@ -180,12 +181,13 @@ export const checkApprovalOrRequest = async (
       requestId: request.id,
       resourceType,
       resourceKey,
+      ...(args !== undefined ? { args } : {}),
       mode: 'async',
     });
   }
 
   if (context.notifyOwnerApproval) {
-    context.notifyOwnerApproval(request.id, request.shortId, resourceType, resourceKey, context.currentUserId, context.sessionId ?? 'unknown').catch(() => {});
+    context.notifyOwnerApproval(request.id, request.shortId, resourceType, resourceKey, context.currentUserId, context.sessionId ?? 'unknown', args).catch(() => {});
   }
 
   throw new ApprovalRequiredError(request.id, resourceType, resourceKey);
