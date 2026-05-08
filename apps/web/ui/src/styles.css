@@ -1214,7 +1214,7 @@ h2 { font-size: 14px; font-weight: 600; }
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 640px;
+  width: 100%;
   padding: 16px 20px;
 }
 
@@ -1225,7 +1225,7 @@ h2 { font-size: 14px; font-weight: 600; }
 
 .secrets-row {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) 1fr auto;
+  grid-template-columns: minmax(160px, 220px) 1fr auto auto;
   gap: 8px;
   align-items: center;
   padding: 6px 8px;
@@ -1258,7 +1258,7 @@ h2 { font-size: 14px; font-weight: 600; }
 
 .secrets-panel__add {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) 1fr auto;
+  grid-template-columns: minmax(160px, 220px) 1fr auto auto;
   gap: 8px;
   align-items: center;
   padding: 6px 8px;
