@@ -647,7 +647,7 @@ dialog::backdrop { background: rgba(9, 9, 11, 0.4); }
   gap: 1px;
   line-height: 1.25;
   min-width: 0;
-  max-width: 220px;
+  max-width: 240px;
 }
 
 .fleet-cell-agent__id {
@@ -749,7 +749,7 @@ dialog::backdrop { background: rgba(9, 9, 11, 0.4); }
   word-break: break-word;
 }
 
-.fleet-cell-agent { min-width: 0; max-width: 200px; }
+.fleet-cell-agent { min-width: 0; max-width: 240px; }
 
 /* --- Fleet cards (mobile-only render path) --- */
 
