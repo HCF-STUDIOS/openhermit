@@ -312,6 +312,82 @@ export class GatewayClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  /**
+   * Mint a user JWT via the admin-only trusted-issuer path. For external
+   * platforms that authenticate their users elsewhere and want to hand
+   * them a gateway token without going through device-key.
+   *
+   * The caller's `adminToken` is the trust boundary — never expose it to
+   * end users. Pick a stable `channel` namespace for your platform (e.g.
+   * "my-platform"); the same `(channel, channelUserId)` always resolves
+   * to the same gateway user.
+   */
+  static async issueUserToken(input: {
+    baseUrl: string;
+    adminToken: string;
+    channel: string;
+    channelUserId: string;
+    displayName?: string;
+    fetch?: FetchLike;
+  }): Promise<{
+    token: string;
+    expiresAt: number;
+    userId: string;
+    isNewDevice: boolean;
+    displayName?: string;
+  }> {
+    const fetchImpl = input.fetch ?? fetch;
+    const url = joinUrl(input.baseUrl, '/api/admin/auth/issue-token');
+    const body: Record<string, unknown> = {
+      channel: input.channel,
+      channelUserId: input.channelUserId,
+    };
+    if (input.displayName !== undefined) body.displayName = input.displayName;
+
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${input.adminToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `issueUserToken failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+
+    return (await response.json()) as {
+      token: string;
+      expiresAt: number;
+      userId: string;
+      isNewDevice: boolean;
+      displayName?: string;
+    };
+  }
+
   async listAgents(): Promise<AgentInfo[]> {
     return this.getJson(gatewayRoutes.agents);
   }

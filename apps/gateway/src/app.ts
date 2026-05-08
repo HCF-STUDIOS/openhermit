@@ -444,6 +444,79 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     });
 
     /**
+     * Admin-only token mint for trusted issuers. Lets a third-party platform
+     * that has already authenticated its own user hand them a gateway JWT
+     * without going through device-key. Body:
+     *   { channel, channelUserId, displayName? }
+     * The caller chooses a stable `channel` namespace for their platform
+     * (e.g. "my-platform"); `channelUserId` should be the platform's own
+     * user id. Same `(channel, channelUserId)` always resolves to the same
+     * gateway user, so this composes with channel webhooks using the same
+     * namespace.
+     */
+    app.post('/api/admin/auth/issue-token', async (c) => {
+      requireAdmin(c.req.header('authorization'));
+      if (!userStore) {
+        throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+      }
+      const body = await c.req.json().catch(() => ({})) as {
+        channel?: string;
+        channelUserId?: string;
+        displayName?: string;
+      };
+      if (!body.channel || typeof body.channel !== 'string') {
+        throw new ValidationError('channel is required.');
+      }
+      if (body.channel === 'admin') {
+        // 'admin' is reserved for the static admin token path; minting a
+        // JWT with this channel would be confusing in audit views.
+        throw new ValidationError('channel "admin" is reserved.');
+      }
+      if (!body.channelUserId || typeof body.channelUserId !== 'string') {
+        throw new ValidationError('channelUserId is required.');
+      }
+
+      let userId = await userStore.resolve(body.channel, body.channelUserId);
+      let created = false;
+      if (!userId) {
+        const id = `usr-${crypto.randomBytes(6).toString('hex')}`;
+        const now = new Date().toISOString();
+        await userStore.upsert({
+          userId: id,
+          ...(body.displayName ? { name: body.displayName } : {}),
+          createdAt: now,
+          updatedAt: now,
+        });
+        await userStore.linkIdentity({
+          userId: id,
+          channel: body.channel,
+          channelUserId: body.channelUserId,
+          createdAt: now,
+        });
+        userId = id;
+        created = true;
+      } else if (body.displayName) {
+        const existing = await userStore.get(userId);
+        if (existing && existing.name !== body.displayName) {
+          await userStore.upsert({ ...existing, name: body.displayName });
+        }
+      }
+
+      const { token, expiresAt } = await signJwt(authOptions.jwt, {
+        channel: body.channel,
+        channelUserId: body.channelUserId,
+      });
+
+      return c.json({
+        token,
+        expiresAt,
+        userId,
+        isNewDevice: created,
+        ...(body.displayName ? { displayName: body.displayName } : {}),
+      });
+    });
+
+    /**
      * Agents the JWT subject is a member of. Powers the web "pick agent"
      * screen so users can jump straight back into agents they've already
      * joined.
