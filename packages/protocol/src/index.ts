@@ -429,8 +429,10 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
     }
   }
 
-  if (value.metadata !== undefined && !isRecord(value.metadata)) {
-    return false;
+  if (value.metadata !== undefined) {
+    if (!isRecord(value.metadata) || Array.isArray(value.metadata)) {
+      return false;
+    }
   }
 
   return true;
