@@ -332,11 +332,18 @@ export interface AgentChannelSecretKey {
   placeholder: string;
 }
 
+export type AgentChannelRuntimeStatus =
+  | 'running'
+  | 'stopped'
+  | 'error'
+  | 'disabled'
+  | 'unknown';
+
 export interface AgentChannelListEntry extends AgentChannel {
   /** All required secret keys present on the agent. */
   secretsSet: boolean;
-  /** Live bridge status: 'running' | 'stopped' | 'error' | 'disabled' | 'unknown'. */
-  runtimeStatus: string;
+  /** Live bridge status. */
+  runtimeStatus: AgentChannelRuntimeStatus;
   /** Builtin channels expose the secret keys they need. */
   secretKeys?: AgentChannelSecretKey[];
   /** Present when runtimeStatus === 'error'. */
@@ -556,7 +563,7 @@ export class GatewayClient {
       label?: string | null;
       config?: Record<string, unknown>;
     },
-  ): Promise<AgentChannel & { runtimeStatus?: string; error?: string }> {
+  ): Promise<AgentChannel & { runtimeStatus?: AgentChannelRuntimeStatus; error?: string }> {
     return this.patchJson(
       `/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(channelId)}`,
       input,
