@@ -469,10 +469,12 @@ export class AgentRunner implements SessionRuntime {
       ...(persisted?.metadata ?? {}),
       ...(spec.metadata ?? {}),
     };
-    // customInstruction is set ONCE at session creation. On reopen we
-    // restore the persisted value so callers can't mutate it later.
-    const effectiveCustomInstruction =
-      persisted?.customInstruction ?? spec.customInstruction;
+    // customInstruction is set ONCE at session creation. On reopen the
+    // persisted row is authoritative — even if it stored no instruction,
+    // we must not let a later spec inject one (immutability).
+    const effectiveCustomInstruction = persisted
+      ? persisted.customInstruction
+      : spec.customInstruction;
     const effectiveSpec: SessionSpec = {
       ...spec,
       source: persisted?.source ?? spec.source,
