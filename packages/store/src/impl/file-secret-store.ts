@@ -32,7 +32,7 @@ const readJsonSafe = async (filePath: string): Promise<Record<string, SecretEntr
       } else if (v && typeof v === 'object' && typeof (v as { value?: unknown }).value === 'string') {
         out[k] = {
           value: (v as { value: string }).value,
-          passThrough: Boolean((v as { passThrough?: unknown }).passThrough),
+          passThrough: (v as { passThrough?: unknown }).passThrough === true,
         };
       }
     }
