@@ -242,6 +242,21 @@ export class AgentSecurity {
     return this.secretStore.list(this.agentId);
   }
 
+  /**
+   * Return the subset of secrets flagged with `passThrough: true`, as a
+   * plain env-var map. Used by the agent runner to inject these into
+   * every exec backend so tools running inside the sandbox can read them
+   * via process.env. Returns an empty map when no secrets are flagged.
+   */
+  async getPassThroughEnv(): Promise<Record<string, string>> {
+    const entries = await this.secretStore.listEntries(this.agentId);
+    const out: Record<string, string> = {};
+    for (const [name, entry] of Object.entries(entries)) {
+      if (entry.passThrough) out[name] = entry.value;
+    }
+    return out;
+  }
+
   async readConfig(): Promise<AgentRuntimeConfig> {
     // Reload policy + secrets on every config read so changes take
     // effect without an agent restart.

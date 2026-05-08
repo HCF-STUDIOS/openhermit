@@ -716,13 +716,31 @@ export const reviewApprovalRequest = (id: string, data: {
   body: data,
 });
 
-// Secrets — server returns values masked (e.g. "abcd********wxyz").
-// Use setAgentSecret / deleteAgentSecret for per-key edits.
-export const fetchAgentSecrets = () => apiFetch<Record<string, string>>('/secrets');
-export const setAgentSecret = (name: string, value: string) =>
+// Secrets — server returns each entry as { masked, passThrough }. When
+// passThrough is true, the secret is injected as an env var into the
+// agent's sandboxes at startup. Use setAgentSecret / deleteAgentSecret
+// for per-key edits.
+export interface AgentSecretEntry {
+  masked: string;
+  passThrough: boolean;
+}
+export const fetchAgentSecrets = () =>
+  apiFetch<Record<string, AgentSecretEntry>>('/secrets');
+export const setAgentSecret = (
+  name: string,
+  value: string,
+  options?: { passThrough?: boolean },
+) =>
   apiFetch<{ ok: boolean }>(`/secrets/${encodeURIComponent(name)}`, {
     method: 'PUT',
-    body: { value },
+    body: options?.passThrough !== undefined
+      ? { value, passThrough: options.passThrough }
+      : { value },
+  });
+export const setAgentSecretPassThrough = (name: string, passThrough: boolean) =>
+  apiFetch<{ ok: boolean }>(`/secrets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: { passThrough },
   });
 export const deleteAgentSecret = (name: string) =>
   apiFetch<{ ok: boolean }>(`/secrets/${encodeURIComponent(name)}`, {

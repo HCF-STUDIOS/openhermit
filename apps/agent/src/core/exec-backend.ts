@@ -120,6 +120,13 @@ export interface BackendFactoryContext {
   containerManager: DockerContainerManager;
   agentId: string;
   workspaceDir: string;
+  /**
+   * Per-agent secrets flagged with `passThrough: true` — injected as env
+   * vars into every sandbox (host shell, e2b, daytona, …) at startup so
+   * tools running inside the sandbox can read them via process.env.
+   * Backends merge this into their existing env config.
+   */
+  passThroughEnv?: Record<string, string>;
   getRuntimeState?: () => Promise<Record<string, unknown> | null>;
   setRuntimeState?: (state: Record<string, unknown>) => Promise<void>;
   markActive?: (patch: {

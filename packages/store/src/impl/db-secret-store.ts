@@ -2,7 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, asc, eq } from 'drizzle-orm';
 import pg from 'pg';
 
-import type { SecretStore } from '../interfaces.js';
+import type { SecretEntry, SecretStore } from '../interfaces.js';
 import * as schema from '../schema.js';
 import { agentSecrets } from '../schema.js';
 import {
@@ -48,13 +48,23 @@ export class DbSecretStore implements SecretStore {
   }
 
   async list(agentId: string): Promise<Record<string, string>> {
+    const entries = await this.listEntries(agentId);
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(entries)) out[k] = v.value;
+    return out;
+  }
+
+  async listEntries(agentId: string): Promise<Record<string, SecretEntry>> {
     const rows = await this.db.select().from(agentSecrets)
       .where(eq(agentSecrets.agentId, agentId))
       .orderBy(asc(agentSecrets.name));
-    const out: Record<string, string> = {};
+    const out: Record<string, SecretEntry> = {};
     for (const row of rows) {
       try {
-        out[row.name] = decrypt(this.key, row.valueCiphertext);
+        out[row.name] = {
+          value: decrypt(this.key, row.valueCiphertext),
+          passThrough: row.passThrough,
+        };
       } catch {
         // Decryption failure — usually means the key changed. Skip the
         // entry rather than crash the whole list (admin can rotate /
@@ -75,14 +85,33 @@ export class DbSecretStore implements SecretStore {
     }
   }
 
-  async set(agentId: string, name: string, value: string): Promise<void> {
+  async set(
+    agentId: string,
+    name: string,
+    value: string,
+    options?: { passThrough?: boolean },
+  ): Promise<void> {
     const ciphertext = encrypt(this.key, value);
     const now = new Date().toISOString();
+    const passThrough = options?.passThrough;
     await this.db.insert(agentSecrets)
-      .values({ agentId, name, valueCiphertext: ciphertext, createdAt: now, updatedAt: now })
+      .values({
+        agentId,
+        name,
+        valueCiphertext: ciphertext,
+        passThrough: passThrough ?? false,
+        createdAt: now,
+        updatedAt: now,
+      })
       .onConflictDoUpdate({
         target: [agentSecrets.agentId, agentSecrets.name],
-        set: { valueCiphertext: ciphertext, updatedAt: now },
+        set: {
+          valueCiphertext: ciphertext,
+          updatedAt: now,
+          // Only overwrite passThrough if caller explicitly set it; otherwise
+          // preserve the existing flag on a value-only update.
+          ...(passThrough !== undefined ? { passThrough } : {}),
+        },
       });
   }
 

@@ -35,7 +35,7 @@ class HostExecBackend implements ExecBackend {
     }
     this.agentHome = config.cwd ?? home;
     this.shell = config.shell ?? 'sh';
-    this.env = config.env;
+    this.env = { ...(context.passThroughEnv ?? {}), ...(config.env ?? {}) };
     this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     this.files = new HostFileBackend(this.agentHome, this.agentHome);
   }

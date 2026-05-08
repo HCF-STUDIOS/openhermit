@@ -356,17 +356,28 @@ export class GatewayClient {
   }
 
   /**
-   * Returns the agent's secrets with values **masked** server-side
-   * (e.g. "abcd********wxyz"). Use setAgentSecret to write a new value.
+   * Returns the agent's secrets, each as `{ masked, passThrough }`. The
+   * value is **masked** server-side (e.g. "abcd********wxyz"); the
+   * `passThrough` flag controls whether the secret is injected as an env
+   * var into the agent's sandboxes at startup.
    */
-  async getAgentSecrets(agentId: string): Promise<Record<string, string>> {
+  async getAgentSecrets(
+    agentId: string,
+  ): Promise<Record<string, { masked: string; passThrough: boolean }>> {
     return this.getJson(`/api/agents/${encodeURIComponent(agentId)}/secrets`);
   }
 
-  async setAgentSecret(agentId: string, name: string, value: string): Promise<void> {
+  async setAgentSecret(
+    agentId: string,
+    name: string,
+    value: string,
+    options?: { passThrough?: boolean },
+  ): Promise<void> {
+    const body: Record<string, unknown> = { value };
+    if (options?.passThrough !== undefined) body.passThrough = options.passThrough;
     await this.putJson(
       `/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(name)}`,
-      { value },
+      body,
     );
   }
 

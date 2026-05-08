@@ -102,7 +102,9 @@ export const registerConfigCommand = (program: Command): void => {
         }
         // Values returned by the gateway are already masked.
         for (const key of keys) {
-          console.log(`  ${key} = ${map[key]}`);
+          const entry = map[key]!;
+          const flag = entry.passThrough ? ' [pass-through]' : '';
+          console.log(`  ${key} = ${entry.masked}${flag}`);
         }
       } catch (error) {
         handleError(error);
@@ -112,12 +114,28 @@ export const registerConfigCommand = (program: Command): void => {
   secrets
     .command('set <key> <value>')
     .description('Set a secret (e.g. ANTHROPIC_API_KEY sk-...)')
+    .option('--pass-through', 'Inject this secret as an env var into the agent\'s sandboxes at startup')
+    .option('--no-pass-through', 'Do not inject this secret into sandboxes (default)')
     .action(async function (this: Command, key: string, value: string) {
       const agentId = resolveAgentId(this);
+      // Commander gives us `passThrough: true` for --pass-through,
+      // `passThrough: false` for --no-pass-through, and `undefined` if
+      // neither was passed (preserve existing flag on the server).
+      const opts = this.opts() as { passThrough?: boolean };
       try {
         const gateway = createGateway();
-        await gateway.setAgentSecret(agentId, key, value);
-        console.log(`Secret set: ${key}`);
+        await gateway.setAgentSecret(
+          agentId,
+          key,
+          value,
+          opts.passThrough !== undefined ? { passThrough: opts.passThrough } : undefined,
+        );
+        const flag = opts.passThrough === true
+          ? ' (pass-through enabled)'
+          : opts.passThrough === false
+            ? ' (pass-through disabled)'
+            : '';
+        console.log(`Secret set: ${key}${flag}`);
       } catch (error) {
         handleError(error);
       }

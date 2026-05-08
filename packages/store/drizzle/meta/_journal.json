@@ -127,6 +127,13 @@
       "when": 1778500000000,
       "tag": "0017_approval_short_id",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778600000000,
+      "tag": "0018_secret_pass_through",
+      "breakpoints": true
     }
   ]
 }

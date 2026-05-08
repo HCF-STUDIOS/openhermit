@@ -263,10 +263,12 @@ export class AgentRunner implements SessionRuntime {
   private async ensureExecBackendManager(config: AgentConfig): Promise<ExecBackendManager> {
     if (this.execBackendManager) return this.execBackendManager;
 
+    const passThroughEnv = await this.options.security.getPassThroughEnv();
     const ctxBase = {
       containerManager: this.containerManager,
       agentId: this.scope.agentId,
       workspaceDir: this.options.workspace.root,
+      passThroughEnv,
     };
 
     if (this.options.sandboxStore) {

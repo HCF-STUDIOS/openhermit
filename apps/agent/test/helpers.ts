@@ -55,27 +55,38 @@ class MemoryAgentConfigStore implements AgentConfigStore {
  * In-memory SecretStore for tests.
  */
 class MemorySecretStore implements SecretStore {
-  private store = new Map<string, Record<string, string>>();
+  private store = new Map<string, Record<string, { value: string; passThrough: boolean }>>();
 
-  private bucket(agentId: string): Record<string, string> {
+  private bucket(agentId: string): Record<string, { value: string; passThrough: boolean }> {
     let m = this.store.get(agentId);
     if (!m) { m = {}; this.store.set(agentId, m); }
     return m;
   }
   async list(agentId: string): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.bucket(agentId))) out[k] = v.value;
+    return out;
+  }
+  async listEntries(agentId: string): Promise<Record<string, { value: string; passThrough: boolean }>> {
     return { ...this.bucket(agentId) };
   }
   async get(agentId: string, name: string): Promise<string | undefined> {
-    return this.bucket(agentId)[name];
+    return this.bucket(agentId)[name]?.value;
   }
-  async set(agentId: string, name: string, value: string): Promise<void> {
-    this.bucket(agentId)[name] = value;
+  async set(agentId: string, name: string, value: string, options?: { passThrough?: boolean }): Promise<void> {
+    const existing = this.bucket(agentId)[name];
+    this.bucket(agentId)[name] = {
+      value,
+      passThrough: options?.passThrough ?? existing?.passThrough ?? false,
+    };
   }
   async delete(agentId: string, name: string): Promise<void> {
     delete this.bucket(agentId)[name];
   }
   async setAll(agentId: string, secrets: Record<string, string>): Promise<void> {
-    this.store.set(agentId, { ...secrets });
+    const next: Record<string, { value: string; passThrough: boolean }> = {};
+    for (const [k, v] of Object.entries(secrets)) next[k] = { value: v, passThrough: false };
+    this.store.set(agentId, next);
   }
 }
 

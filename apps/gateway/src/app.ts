@@ -1699,10 +1699,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!secretStore) {
       throw new OpenHermitError('Secret store is not configured.', 'not_configured', 500);
     }
-    const all = await secretStore.list(agentId);
-    const masked: Record<string, string> = {};
-    for (const [k, v] of Object.entries(all)) masked[k] = maskSecret(v);
-    return c.json(masked);
+    const all = await secretStore.listEntries(agentId);
+    const out: Record<string, { masked: string; passThrough: boolean }> = {};
+    for (const [k, entry] of Object.entries(all)) {
+      out[k] = { masked: maskSecret(entry.value), passThrough: entry.passThrough };
+    }
+    return c.json(out);
   });
 
   // Bulk PUT was removed: clients sometimes echoed back the masked GET
@@ -1716,14 +1718,31 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!name) throw new ValidationError('Secret name required.');
     const body = await c.req.json() as Record<string, unknown>;
     const value = body.value;
-    if (typeof value !== 'string') {
-      throw new ValidationError('Body must be { value: string }.');
+    const passThroughRaw = body.passThrough;
+    if (passThroughRaw !== undefined && typeof passThroughRaw !== 'boolean') {
+      throw new ValidationError('passThrough must be a boolean if provided.');
     }
     const secretStore = instances.getSecretStore();
     if (!secretStore) {
       throw new OpenHermitError('Secret store is not configured.', 'not_configured', 500);
     }
-    await secretStore.set(agentId, name, value);
+    if (typeof value === 'string') {
+      await secretStore.set(
+        agentId,
+        name,
+        value,
+        passThroughRaw !== undefined ? { passThrough: passThroughRaw } : undefined,
+      );
+    } else if (value === undefined && typeof passThroughRaw === 'boolean') {
+      // Flag-only update: keep the existing ciphertext, flip passThrough.
+      const existing = await secretStore.get(agentId, name);
+      if (existing === undefined) {
+        throw new ValidationError(`Secret "${name}" does not exist; cannot toggle passThrough on a non-existent secret.`);
+      }
+      await secretStore.set(agentId, name, existing, { passThrough: passThroughRaw });
+    } else {
+      throw new ValidationError('Body must be { value: string, passThrough?: boolean } or { passThrough: boolean } for an existing secret.');
+    }
     await reloadRunnerSecurity(agentId);
     return c.json({ ok: true });
   });

@@ -204,10 +204,24 @@ export interface AgentConfigStore {
  * tomorrow may be DB-backed; either way callers go through this
  * interface and never read the file directly.
  */
+/** Secret entry with metadata. */
+export interface SecretEntry {
+  value: string;
+  /**
+   * When true, the secret is injected as an environment variable into the
+   * agent's sandboxes at startup so tools running inside can read it via
+   * process.env. Default false.
+   */
+  passThrough: boolean;
+}
+
 export interface SecretStore {
+  /** Returns name → plaintext value (passThrough flag dropped). */
   list(agentId: string): Promise<Record<string, string>>;
+  /** Returns name → { value, passThrough } records. */
+  listEntries(agentId: string): Promise<Record<string, SecretEntry>>;
   get(agentId: string, name: string): Promise<string | undefined>;
-  set(agentId: string, name: string, value: string): Promise<void>;
+  set(agentId: string, name: string, value: string, options?: { passThrough?: boolean }): Promise<void>;
   delete(agentId: string, name: string): Promise<void>;
   /** Bulk replacement — used by PUT /api/agents/:id/secrets. */
   setAll(agentId: string, secrets: Record<string, string>): Promise<void>;

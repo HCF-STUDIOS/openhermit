@@ -54,6 +54,7 @@ class E2BExecBackend implements ExecBackend {
   private readonly template: string;
   private readonly timeoutMs: number;
   private readonly sandboxTimeoutMs: number;
+  private readonly envs: Record<string, string> | undefined;
 
   private sandbox: import('e2b').Sandbox | null = null;
 
@@ -68,6 +69,8 @@ class E2BExecBackend implements ExecBackend {
     this.sandboxTimeoutMs = config.sandbox_timeout_ms ?? E2B_DEFAULT_SANDBOX_TIMEOUT_MS;
     this.username = config.username ?? E2B_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? E2B_DEFAULT_AGENT_HOME;
+    const passEnv = context.passThroughEnv;
+    this.envs = passEnv && Object.keys(passEnv).length > 0 ? { ...passEnv } : undefined;
     this.files = new E2BFileBackend();
     this.files.ensureSandbox = () => this.ensure();
   }
@@ -106,6 +109,7 @@ class E2BExecBackend implements ExecBackend {
       apiKey,
       timeoutMs: this.sandboxTimeoutMs,
       metadata: { agentId: this.context.agentId },
+      ...(this.envs ? { envs: this.envs } : {}),
     });
     this.files.sandbox = this.sandbox;
 
@@ -135,6 +139,7 @@ class E2BExecBackend implements ExecBackend {
       const result = await this.sandbox!.commands.run(command, {
         cwd: opts?.cwd ?? this.agentHome,
         timeoutMs: this.timeoutMs,
+        ...(this.envs ? { envs: this.envs } : {}),
       });
       return {
         stdout: result.stdout,

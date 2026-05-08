@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
-import { fetchAgentSecrets, setAgentSecret, deleteAgentSecret } from '../api';
+import {
+  fetchAgentSecrets,
+  setAgentSecret,
+  setAgentSecretPassThrough,
+  deleteAgentSecret,
+} from '../api';
 
 interface RowState {
   key: string;
   /** Server-supplied masked preview. */
   masked: string;
+  /** Whether this secret is injected as an env var into sandboxes. */
+  passThrough: boolean;
   /** Current edit-in-progress value; empty until the user types. */
   draft: string;
   /** This row is currently mid-PUT/DELETE. */
@@ -17,6 +24,7 @@ export function SecretsPanel() {
   const [error, setError] = useState('');
   const [newKey, setNewKey] = useState('');
   const [newValue, setNewValue] = useState('');
+  const [newPassThrough, setNewPassThrough] = useState(false);
   const [adding, setAdding] = useState(false);
 
   const loadFromServer = async () => {
@@ -24,7 +32,8 @@ export function SecretsPanel() {
     setRows(
       Object.keys(map).sort().map((k) => ({
         key: k,
-        masked: map[k] ?? '',
+        masked: map[k]?.masked ?? '',
+        passThrough: map[k]?.passThrough ?? false,
         draft: '',
         busy: false,
       })),
@@ -47,11 +56,23 @@ export function SecretsPanel() {
     setError('');
     updateRow(key, { busy: true });
     try {
-      await setAgentSecret(key, row.draft);
+      await setAgentSecret(key, row.draft, { passThrough: row.passThrough });
       await loadFromServer();
     } catch (err) {
       setError((err as Error).message);
       updateRow(key, { busy: false });
+    }
+  };
+
+  const togglePassThrough = async (key: string, next: boolean) => {
+    setError('');
+    updateRow(key, { passThrough: next, busy: true });
+    try {
+      await setAgentSecretPassThrough(key, next);
+      await loadFromServer();
+    } catch (err) {
+      setError((err as Error).message);
+      updateRow(key, { passThrough: !next, busy: false });
     }
   };
 
@@ -77,9 +98,10 @@ export function SecretsPanel() {
     setError('');
     setAdding(true);
     try {
-      await setAgentSecret(k, newValue);
+      await setAgentSecret(k, newValue, { passThrough: newPassThrough });
       setNewKey('');
       setNewValue('');
+      setNewPassThrough(false);
       await loadFromServer();
     } catch (err) {
       setError((err as Error).message);
@@ -100,7 +122,10 @@ export function SecretsPanel() {
           values are never returned to the browser; the placeholder shows how
           the server has masked the current value. Each row saves
           independently — type a new value and click <strong>Save</strong> on
-          that row, or <strong>Delete</strong> to remove the secret.
+          that row, or <strong>Delete</strong> to remove the secret. Toggle
+          <strong> Pass to sandbox</strong> to inject the secret as an
+          environment variable into this agent's sandboxes at startup
+          (takes effect on the next sandbox start).
         </p>
       </div>
 
@@ -120,6 +145,15 @@ export function SecretsPanel() {
                 disabled={r.busy}
                 autoComplete="off"
               />
+              <label className="secrets-row__passthrough" title="Inject as env var into sandboxes">
+                <input
+                  type="checkbox"
+                  checked={r.passThrough}
+                  disabled={r.busy}
+                  onChange={(e) => void togglePassThrough(r.key, e.target.checked)}
+                />
+                <span>Pass to sandbox</span>
+              </label>
               <div className="secrets-row__actions">
                 <button
                   type="button"
@@ -160,6 +194,15 @@ export function SecretsPanel() {
           onChange={(e) => setNewValue(e.target.value)}
           disabled={adding}
         />
+        <label className="secrets-panel__passthrough" title="Inject as env var into sandboxes">
+          <input
+            type="checkbox"
+            checked={newPassThrough}
+            disabled={adding}
+            onChange={(e) => setNewPassThrough(e.target.checked)}
+          />
+          <span>Pass to sandbox</span>
+        </label>
         <button
           type="button"
           className="btn btn--primary"

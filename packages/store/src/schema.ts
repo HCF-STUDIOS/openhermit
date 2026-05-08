@@ -128,6 +128,13 @@ export const agentSecrets = pgTable('agent_secrets', {
   agentId: text('agent_id').notNull(),
   name: text('name').notNull(),
   valueCiphertext: text('value_ciphertext').notNull(),
+  /**
+   * When true, the secret's plaintext value is injected into sandboxes as
+   * an environment variable at startup. Tools running inside the sandbox
+   * can then read it via `process.env[NAME]`. Default false — secrets are
+   * only used for agent config interpolation.
+   */
+  passThrough: boolean('pass_through').default(false).notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
