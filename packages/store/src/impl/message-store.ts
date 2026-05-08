@@ -21,6 +21,9 @@ const mapEventRowToHistoryMessage = (row: {
     const message: SessionHistoryMessage = { ts: row.ts, role: 'user', content: row.content ?? '' };
     if (typeof payload?.messageId === 'string') message.messageId = payload.messageId;
     if (Array.isArray(payload?.attachments)) message.attachments = payload.attachments as SessionAttachment[];
+    if (payload && typeof payload.metadata === 'object' && payload.metadata !== null && !Array.isArray(payload.metadata)) {
+      message.metadata = payload.metadata as Record<string, unknown>;
+    }
     return message;
   }
 

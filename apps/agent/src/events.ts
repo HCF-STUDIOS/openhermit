@@ -64,6 +64,9 @@ export interface SessionMessageReceivedPayload {
   senderUserId?: string;
   senderRole?: 'owner' | 'user' | 'guest';
   senderChannel?: string;
+  /** Caller-supplied per-message metadata. Plugins may inspect this and
+   *  rewrite `text` accordingly (e.g. prepend a context note for the model). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface PromptAssemblePayload {

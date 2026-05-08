@@ -157,6 +157,7 @@ const handleRequest = async (
           ...(p.messageId !== undefined ? { messageId: p.messageId } : {}),
           ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
           ...(p.sender !== undefined ? { sender: p.sender } : {}),
+          ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
         };
         if (!isSessionMessage(message)) {
           sendError(ws, id, 'INVALID_PARAMS', 'Invalid message params.');

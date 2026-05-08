@@ -885,6 +885,7 @@ export class AgentRunner implements SessionRuntime {
       ...(session.resolvedUserId ? { senderUserId: session.resolvedUserId } : {}),
       ...(session.resolvedUserRole ? { senderRole: session.resolvedUserRole } : {}),
       ...(message.sender?.channel ? { senderChannel: message.sender.channel } : {}),
+      ...(message.metadata ? { metadata: message.metadata } : {}),
     });
     if (transformed.text !== message.text) {
       message = { ...message, text: transformed.text };

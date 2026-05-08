@@ -1176,6 +1176,7 @@ export class AgentWsClient {
     sessionId: string;
     text: string;
     messageId?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<{ sessionId: string; messageId?: string }> {
     return this.request('session.message', params) as Promise<{ sessionId: string; messageId?: string }>;
   }

@@ -72,6 +72,9 @@ export interface SessionHistoryMessage {
   introspection?: boolean;
   introspectionPhase?: 'start' | 'end';
   introspectionSummary?: string;
+  /** Per-message metadata supplied by the caller on user turns. Persisted
+   *  alongside the log entry; surfaced for plugins/tools, not the model. */
+  metadata?: Record<string, unknown>;
 }
 
 export type SessionStatus = 'idle' | 'running' | 'awaiting_approval' | 'inactive';
@@ -421,7 +424,13 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
       return false;
     }
 
-    return value.attachments.every(isAttachment);
+    if (!value.attachments.every(isAttachment)) {
+      return false;
+    }
+  }
+
+  if (value.metadata !== undefined && !isRecord(value.metadata)) {
+    return false;
   }
 
   return true;
