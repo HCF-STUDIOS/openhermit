@@ -1,22 +1,55 @@
 {
   "name": "@openhermit/sdk",
-  "private": true,
   "version": "0.2.0",
+  "description": "TypeScript SDK for the OpenHermit gateway and agent APIs.",
+  "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
-  "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.typecheck.json --pretty false",
-    "test": "npm run build && node --import tsx --test test/*.test.ts"
+  "files": [
+    "dist/index.js",
+    "dist/index.js.map",
+    "dist/index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HCF-S/openhermit.git",
+    "directory": "packages/sdk"
   },
-  "dependencies": {
+  "homepage": "https://github.com/HCF-S/openhermit/tree/main/packages/sdk",
+  "bugs": "https://github.com/HCF-S/openhermit/issues",
+  "keywords": [
+    "openhermit",
+    "agent",
+    "ai",
+    "claude",
+    "sdk",
+    "gateway"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.typecheck.json --pretty false",
+    "test": "npm run build && node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
     "@openhermit/protocol": "0.2.0",
-    "@openhermit/shared": "0.2.0"
+    "@openhermit/shared": "0.2.0",
+    "tsup": "^8.5.1"
   }
 }
