@@ -35,7 +35,10 @@ class HostExecBackend implements ExecBackend {
     }
     this.agentHome = config.cwd ?? home;
     this.shell = config.shell ?? 'sh';
-    this.env = { ...(context.passThroughEnv ?? {}), ...(config.env ?? {}) };
+    // Pass-through secrets are read fresh in exec() via the provider so
+    // toggles take effect immediately. config.env (static, agent-defined)
+    // still wins on key conflicts.
+    this.env = config.env;
     this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     this.files = new HostFileBackend(this.agentHome, this.agentHome);
   }
@@ -57,10 +60,12 @@ class HostExecBackend implements ExecBackend {
     const startedAt = Date.now();
     const cwd = opts?.cwd ?? this.agentHome;
 
+    const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
+
     return new Promise<ExecResult>((resolve, reject) => {
       const child = spawn(this.shell, ['-lc', command], {
         cwd,
-        env: { ...process.env, ...(this.env ?? {}) },
+        env: { ...process.env, ...passEnv, ...(this.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 

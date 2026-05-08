@@ -121,12 +121,12 @@ export interface BackendFactoryContext {
   agentId: string;
   workspaceDir: string;
   /**
-   * Per-agent secrets flagged with `passThrough: true` — injected as env
-   * vars into every sandbox (host shell, e2b, daytona, …) at startup so
-   * tools running inside the sandbox can read them via process.env.
-   * Backends merge this into their existing env config.
+   * Live fetch of per-agent secrets flagged `passThrough: true`. Backends
+   * call this on every exec to pick up additions/removals/edits without
+   * recreating the sandbox. Returns env-var-name → value; should be cheap
+   * (one DB roundtrip via SecretStore.listEntries).
    */
-  passThroughEnv?: Record<string, string>;
+  passThroughEnvProvider?: () => Promise<Record<string, string>>;
   getRuntimeState?: () => Promise<Record<string, unknown> | null>;
   setRuntimeState?: (state: Record<string, unknown>) => Promise<void>;
   markActive?: (patch: {
