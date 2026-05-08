@@ -15,6 +15,10 @@ export interface RunnerSession extends SessionDescriptor {
   idleSummaryTimer: ReturnType<typeof setTimeout> | undefined;
   latestAssistantText: string | undefined;
   lastUserMessageText?: string;
+  /** messageId of the user message that triggered the in-flight turn. Used
+   *  to stamp every outbound event for that turn so callers can dedup on
+   *  retries. Cleared at agent_end. */
+  currentTurnMessageId?: string;
   approvalGate: ApprovalGate;
   status: SessionStatus;
   messageCount: number;

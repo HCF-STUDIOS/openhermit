@@ -997,6 +997,11 @@ export class AgentRunner implements SessionRuntime {
       try {
         await this.refreshAgentConfiguration(session);
         session.latestAssistantText = undefined;
+        if (message.messageId !== undefined) {
+          session.currentTurnMessageId = message.messageId;
+        } else {
+          delete session.currentTurnMessageId;
+        }
         if (this.options.langfuse && session.langfuseTurnContext) {
           startTurnTrace(
             this.options.langfuse,
@@ -1172,6 +1177,7 @@ export class AgentRunner implements SessionRuntime {
         tool: toolName,
         toolCallId,
         ...(args !== undefined ? { args } : {}),
+        ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
       });
 
       await this.queueSideEffect(session, async () => {
@@ -2279,6 +2285,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'thinking_delta',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.delta,
+            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
           });
         }
 
@@ -2287,6 +2294,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'thinking_final',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.content,
+            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
           });
         }
 
@@ -2295,6 +2303,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'text_delta',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.delta,
+            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
           });
         }
 
@@ -2370,6 +2379,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'text_final',
             sessionId: session.spec.sessionId,
             text: thinkingText,
+            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
           });
         }
 
@@ -2429,6 +2439,7 @@ export class AgentRunner implements SessionRuntime {
           isError: event.isError,
           ...(publishText ? { text: publishText } : {}),
           ...(resultDetails !== undefined ? { details: resultDetails } : {}),
+          ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
         });
 
         void this.queueSideEffect(session, async () => {
@@ -2502,6 +2513,7 @@ export class AgentRunner implements SessionRuntime {
               type: 'text_final',
               sessionId: session.spec.sessionId,
               text: finalText,
+              ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
             });
           }
 
@@ -2509,6 +2521,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'agent_end',
             sessionId: session.spec.sessionId,
           });
+          delete session.currentTurnMessageId;
         })();
 
         if (this.options.langfuse && session.langfuseTurnContext) {
