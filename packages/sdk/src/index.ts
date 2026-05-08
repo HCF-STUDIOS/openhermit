@@ -301,6 +301,53 @@ export interface GatewayClientOptions {
   fetch?: FetchLike;
 }
 
+// ── Agent channel types ──────────────────────────────────────────────
+
+export type AgentChannelKind = 'builtin' | 'external';
+
+export interface AgentChannel {
+  id: string;
+  agentId: string;
+  kind: AgentChannelKind;
+  /** Adapter type: 'external', 'telegram', 'discord', 'slack', ... */
+  channelType: string;
+  /** Unique routing namespace per agent. */
+  namespace: string;
+  label: string | null;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  /** Visible token prefix for UI display; full token only via createExternalChannel. */
+  tokenPrefix: string;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** Builtin-channel secret-key descriptor surfaced by listAgentChannels. */
+export interface AgentChannelSecretKey {
+  key: string;
+  label: string;
+  placeholder: string;
+}
+
+export interface AgentChannelListEntry extends AgentChannel {
+  /** All required secret keys present on the agent. */
+  secretsSet: boolean;
+  /** Live bridge status: 'running' | 'stopped' | 'error' | 'disabled' | 'unknown'. */
+  runtimeStatus: string;
+  /** Builtin channels expose the secret keys they need. */
+  secretKeys?: AgentChannelSecretKey[];
+  /** Present when runtimeStatus === 'error'. */
+  error?: string;
+}
+
+export interface CreatedAgentChannel extends AgentChannel {
+  /** Plaintext token. Returned ONLY at creation time. */
+  token: string;
+}
+
 export class GatewayClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -460,6 +507,69 @@ export class GatewayClient {
   async deleteAgentSecret(agentId: string, name: string): Promise<void> {
     await this.deleteJson(
       `/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(name)}`,
+    );
+  }
+
+  // --- channels (per-agent) ---
+
+  /**
+   * List channels on an agent. Includes both builtin slots (telegram,
+   * discord, slack — auto-seeded on agent create) and external channels
+   * (created via `createExternalChannel`). The plaintext token is never
+   * returned here; only `tokenPrefix` for display.
+   */
+  async listAgentChannels(agentId: string): Promise<AgentChannelListEntry[]> {
+    return this.getJson(`/api/agents/${encodeURIComponent(agentId)}/channels`);
+  }
+
+  /**
+   * Create an external channel and return its plaintext token. The token
+   * is only returned here — `listAgentChannels` will not re-derive it.
+   * Builtin channels (telegram/discord/slack) are not created via this
+   * method; they're seeded on agent create and configured by `updateAgentChannel`.
+   */
+  async createExternalChannel(
+    agentId: string,
+    input: {
+      namespace: string;
+      label?: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    },
+  ): Promise<CreatedAgentChannel> {
+    return this.postJson(
+      `/api/agents/${encodeURIComponent(agentId)}/channels`,
+      input,
+    );
+  }
+
+  /**
+   * Patch a channel — toggle `enabled`, change `label`, or replace
+   * `config`. For builtin channels, flipping `enabled` boots / stops the
+   * in-process bridge (response then includes `runtimeStatus` / `error`).
+   */
+  async updateAgentChannel(
+    agentId: string,
+    channelId: string,
+    input: {
+      enabled?: boolean;
+      label?: string | null;
+      config?: Record<string, unknown>;
+    },
+  ): Promise<AgentChannel & { runtimeStatus?: string; error?: string }> {
+    return this.patchJson(
+      `/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(channelId)}`,
+      input,
+    );
+  }
+
+  /**
+   * Delete a channel. External rows are soft-deleted (revoked); builtin
+   * rows are hard-deleted and re-seeded on next agent create / boot.
+   */
+  async deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
+    await this.deleteJson(
+      `/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(channelId)}`,
     );
   }
 
@@ -822,6 +932,43 @@ export class GatewayClient {
       );
     }
 
+    return (await response.json()) as T;
+  }
+
+  private async patchJson<T>(path: string, body: unknown): Promise<T> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(joinUrl(this.baseUrl, path), {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${joinUrl(this.baseUrl, path)}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
     return (await response.json()) as T;
   }
 
