@@ -325,6 +325,18 @@ export interface AgentChannel {
   revokedAt: string | null;
 }
 
+/** Provider/model catalog entry returned by GET /api/providers. */
+export interface ProviderModel {
+  id: string;
+  /** True for thinking-only / thinking-capable models in pi-ai. */
+  reasoning: boolean;
+}
+
+export interface ProviderCatalogEntry {
+  provider: string;
+  models: ProviderModel[];
+}
+
 /** Builtin-channel secret-key descriptor surfaced by listAgentChannels. */
 export interface AgentChannelSecretKey {
   key: string;
@@ -444,6 +456,15 @@ export class GatewayClient {
 
   async listAgents(): Promise<AgentInfo[]> {
     return this.getJson(gatewayRoutes.agents);
+  }
+
+  /**
+   * Snapshot of providers and models registered in the gateway's
+   * pi-ai catalog. Used to populate provider/model pickers without
+   * baking the registry into the client.
+   */
+  async listProviders(): Promise<ProviderCatalogEntry[]> {
+    return this.getJson<ProviderCatalogEntry[]>('/api/providers');
   }
 
   async createAgent(request: CreateAgentRequest): Promise<AgentInfo> {
