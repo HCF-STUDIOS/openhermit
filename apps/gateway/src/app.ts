@@ -1716,6 +1716,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const name = c.req.param('name') ?? '';
     await requireOwnerOrAdmin(c, agentId);
     if (!name) throw new ValidationError('Secret name required.');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new ValidationError(
+        'Secret name must be a valid POSIX env-var identifier (letters, digits, underscore; not starting with a digit).',
+      );
+    }
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new ValidationError('Body must be a JSON object.');
