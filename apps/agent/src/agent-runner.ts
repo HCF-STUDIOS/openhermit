@@ -1895,6 +1895,9 @@ export class AgentRunner implements SessionRuntime {
     const { compactionSummary, entries } =
       await this.store.messages.listSessionEntriesSinceLastCompaction(this.scope, sessionId);
 
+    const session = this.sessions.get(sessionId);
+    const isGroup = session?.spec.source.type === 'group';
+
     const messages: AgentMessage[] = [];
 
     // If there was a previous compaction, inject its summary as a context block.
@@ -1918,7 +1921,11 @@ export class AgentRunner implements SessionRuntime {
 
       if (entry.role === 'user' && typeof entry.content === 'string') {
         lastAssistant = null;
-        messages.push({ role: 'user', content: entry.content, timestamp: ts });
+        const userName = typeof entry.userName === 'string' ? entry.userName : undefined;
+        const content = isGroup && userName
+          ? `[${userName}] ${entry.content}`
+          : entry.content;
+        messages.push({ role: 'user', content, timestamp: ts });
         continue;
       }
 
