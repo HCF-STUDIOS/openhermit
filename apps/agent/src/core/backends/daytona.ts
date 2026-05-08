@@ -6,12 +6,6 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, DaytonaExecBackendConfig } from '../exec-backend.js';
 import { DaytonaFileBackend } from './file-backend.js';
 import { registerExecBackend } from '../exec-backend.js';
-import {
-  buildWriteEnvFileCommand,
-  envFingerprint,
-  REMOVE_ENV_FILE_COMMAND,
-  wrapWithEnvSource,
-} from './passthrough-env.js';
 
 const DAYTONA_DEFAULT_USERNAME = 'daytona';
 const DAYTONA_DEFAULT_AGENT_HOME = '/home/daytona';
@@ -74,8 +68,6 @@ class DaytonaExecBackend implements ExecBackend {
   private readonly autoStopMinutes: number;
   private readonly envVars: Record<string, string> | undefined;
   private readonly resources: { cpu?: number; memory?: number } | undefined;
-  /** Fingerprint of the last pass-through env we wrote into the sandbox. */
-  private lastPassEnvFingerprint = '';
 
   private sandbox: import('@daytonaio/sdk').Sandbox | null = null;
 
@@ -89,10 +81,9 @@ class DaytonaExecBackend implements ExecBackend {
     this.image = config.image;
     this.timeoutMs = config.timeout_ms ?? DAYTONA_DEFAULT_TIMEOUT_MS;
     this.autoStopMinutes = config.auto_stop_interval_minutes ?? DAYTONA_DEFAULT_AUTO_STOP_MINUTES;
-    // Pass-through secrets are written into a sandbox-side env file at exec
-    // time via `passThroughEnvProvider`, so toggles take effect without
-    // recreating the sandbox. Only static, agent-defined env is baked in
-    // at create time.
+    // Pass-through secrets are read fresh on every exec via the provider so
+    // toggles take effect without recreating the sandbox. Only static,
+    // agent-defined env is baked in at create time.
     this.envVars = config.env && Object.keys(config.env).length > 0 ? config.env : undefined;
     this.resources = config.resources;
     this.username = config.username ?? DAYTONA_DEFAULT_USERNAME;
@@ -172,11 +163,11 @@ class DaytonaExecBackend implements ExecBackend {
     const startedAt = Date.now();
     try {
       const timeoutSec = Math.max(1, Math.ceil(this.timeoutMs / 1000));
-      const wrapped = await this.applyPassThroughEnvAndWrap(command);
+      const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
       const response = await this.sandbox!.process.executeCommand(
-        wrapped,
+        command,
         opts?.cwd ?? this.agentHome,
-        undefined,
+        Object.keys(passEnv).length > 0 ? passEnv : undefined,
         timeoutSec,
       );
       const output = response.result ?? '';
@@ -247,38 +238,6 @@ class DaytonaExecBackend implements ExecBackend {
     } else {
       await this.context.setRuntimeState({ ...current, daytona_pending_skills: pending });
     }
-  }
-
-  private async applyPassThroughEnvAndWrap(command: string): Promise<string> {
-    const env = (await this.context.passThroughEnvProvider?.()) ?? {};
-    const fingerprint = envFingerprint(env);
-    if (fingerprint !== this.lastPassEnvFingerprint) {
-      try {
-        const timeoutSec = Math.max(1, Math.ceil(this.timeoutMs / 1000));
-        if (Object.keys(env).length > 0) {
-          await this.sandbox!.process.executeCommand(
-            buildWriteEnvFileCommand(env),
-            this.agentHome,
-            undefined,
-            timeoutSec,
-          );
-        } else if (this.lastPassEnvFingerprint !== '') {
-          await this.sandbox!.process.executeCommand(
-            REMOVE_ENV_FILE_COMMAND,
-            this.agentHome,
-            undefined,
-            timeoutSec,
-          );
-        }
-        this.lastPassEnvFingerprint = fingerprint;
-      } catch (err) {
-        console.warn(
-          `[exec-backend][daytona][${this.id}] failed to sync passthrough env file: ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
-      }
-    }
-    return Object.keys(env).length > 0 ? wrapWithEnvSource(command) : command;
   }
 
   async shutdown(): Promise<void> {

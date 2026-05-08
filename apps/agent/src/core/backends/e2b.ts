@@ -6,12 +6,6 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, E2BExecBackendConfig } from '../exec-backend.js';
 import { E2BFileBackend } from './file-backend.js';
 import { registerExecBackend } from '../exec-backend.js';
-import {
-  buildWriteEnvFileCommand,
-  envFingerprint,
-  REMOVE_ENV_FILE_COMMAND,
-  wrapWithEnvSource,
-} from './passthrough-env.js';
 
 const E2B_DEFAULT_USERNAME = 'user';
 const E2B_DEFAULT_AGENT_HOME = '/home/user';
@@ -60,8 +54,6 @@ class E2BExecBackend implements ExecBackend {
   private readonly template: string;
   private readonly timeoutMs: number;
   private readonly sandboxTimeoutMs: number;
-  /** Fingerprint of the last pass-through env we wrote into the sandbox. */
-  private lastPassEnvFingerprint = '';
 
   private sandbox: import('e2b').Sandbox | null = null;
 
@@ -140,10 +132,11 @@ class E2BExecBackend implements ExecBackend {
 
     const startedAt = Date.now();
     try {
-      const wrapped = await this.applyPassThroughEnvAndWrap(command);
-      const result = await this.sandbox!.commands.run(wrapped, {
+      const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
+      const result = await this.sandbox!.commands.run(command, {
         cwd: opts?.cwd ?? this.agentHome,
         timeoutMs: this.timeoutMs,
+        ...(Object.keys(passEnv).length > 0 ? { envs: passEnv } : {}),
       });
       return {
         stdout: result.stdout,
@@ -220,31 +213,6 @@ class E2BExecBackend implements ExecBackend {
     } else {
       await this.context.setRuntimeState({ ...current, e2b_pending_skills: pending });
     }
-  }
-
-  private async applyPassThroughEnvAndWrap(command: string): Promise<string> {
-    const env = (await this.context.passThroughEnvProvider?.()) ?? {};
-    const fingerprint = envFingerprint(env);
-    if (fingerprint !== this.lastPassEnvFingerprint) {
-      try {
-        if (Object.keys(env).length > 0) {
-          await this.sandbox!.commands.run(buildWriteEnvFileCommand(env), {
-            timeoutMs: this.timeoutMs,
-          });
-        } else if (this.lastPassEnvFingerprint !== '') {
-          await this.sandbox!.commands.run(REMOVE_ENV_FILE_COMMAND, {
-            timeoutMs: this.timeoutMs,
-          });
-        }
-        this.lastPassEnvFingerprint = fingerprint;
-      } catch (err) {
-        console.warn(
-          `[exec-backend][e2b][${this.id}] failed to sync passthrough env file: ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
-      }
-    }
-    return Object.keys(env).length > 0 ? wrapWithEnvSource(command) : command;
   }
 
   async shutdown(): Promise<void> {
