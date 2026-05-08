@@ -475,6 +475,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       if (!body.channelUserId || typeof body.channelUserId !== 'string') {
         throw new ValidationError('channelUserId is required.');
       }
+      if (body.displayName !== undefined && typeof body.displayName !== 'string') {
+        throw new ValidationError('displayName must be a string if provided.');
+      }
 
       let userId = await userStore.resolve(body.channel, body.channelUserId);
       let created = false;
