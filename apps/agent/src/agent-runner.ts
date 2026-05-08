@@ -2488,6 +2488,8 @@ export class AgentRunner implements SessionRuntime {
 
         });
 
+        const turnMessageId = session.currentTurnMessageId;
+        delete session.currentTurnMessageId;
         void (async () => {
           // For channel-bound sessions, run the channel.message.out@v1
           // transform so plugins can scrub/rewrite outbound text (e.g.
@@ -2513,7 +2515,7 @@ export class AgentRunner implements SessionRuntime {
               type: 'text_final',
               sessionId: session.spec.sessionId,
               text: finalText,
-              ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+              ...(turnMessageId !== undefined ? { messageId: turnMessageId } : {}),
             });
           }
 
@@ -2521,7 +2523,6 @@ export class AgentRunner implements SessionRuntime {
             type: 'agent_end',
             sessionId: session.spec.sessionId,
           });
-          delete session.currentTurnMessageId;
         })();
 
         if (this.options.langfuse && session.langfuseTurnContext) {
