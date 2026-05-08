@@ -52,6 +52,7 @@ export const buildSystemPrompt = async (
   currentUser?: CurrentUserContext,
   skills?: SkillIndexEntry[],
   hook?: PromptAssembleHookContext,
+  customInstruction?: string,
 ): Promise<string> => {
   const keyedSections: { key: string; content: string }[] = [];
 
@@ -69,6 +70,14 @@ export const buildSystemPrompt = async (
     instructionText = '(no instructions configured)';
   }
   keyedSections.push({ key: 'instructions', content: `## Instructions\n\n${instructionText}` });
+
+  // 2b. SESSION INSTRUCTION (per-session addendum, set once at create)
+  if (customInstruction && customInstruction.trim()) {
+    keyedSections.push({
+      key: 'session-instruction',
+      content: `## Session Instruction\n\n${customInstruction.trim()}`,
+    });
+  }
 
   // 3. PRINCIPLES
   keyedSections.push({ key: 'principles', content: PRINCIPLES });

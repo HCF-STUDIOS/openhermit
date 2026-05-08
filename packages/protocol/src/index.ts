@@ -24,6 +24,13 @@ export interface SessionSpec {
   sessionId: string;
   source: SessionSource;
   metadata?: Record<string, MetadataValue>;
+  /**
+   * Optional per-session prompt addendum stored on the session row at
+   * create time. When non-empty, the runner appends it to the system
+   * prompt as a dedicated section after agent-level instructions.
+   * Immutable for the life of the session.
+   */
+  customInstruction?: string;
 }
 
 export interface SessionAttachment {
@@ -380,6 +387,10 @@ export const isSessionSpec = (value: unknown): value is SessionSpec => {
         return false;
       }
     }
+  }
+
+  if (value.customInstruction !== undefined && typeof value.customInstruction !== 'string') {
+    return false;
   }
 
   return true;

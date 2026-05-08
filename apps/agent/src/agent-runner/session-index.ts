@@ -23,6 +23,9 @@ export const createPersistedSessionIndexEntry = (
     : {}),
   ...(session.spec.metadata ? { metadata: session.spec.metadata } : {}),
   ...(session.userIds.length > 0 ? { userIds: session.userIds } : {}),
+  ...(session.spec.customInstruction
+    ? { customInstruction: session.spec.customInstruction }
+    : {}),
 });
 
 /**

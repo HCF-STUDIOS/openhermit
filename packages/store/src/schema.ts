@@ -56,6 +56,8 @@ export const sessions = pgTable('sessions', {
   status: text('status').default('idle').notNull(),
   type: text('type').default('direct').notNull(),
   userIds: jsonb('user_ids').$type<string[]>().default([]).notNull(),
+  /** Caller-supplied per-session prompt addendum, set once at create. */
+  customInstruction: text('custom_instruction'),
 }, (table) => [
   primaryKey({ columns: [table.agentId, table.sessionId] }),
   index('idx_sessions_agent').on(table.agentId, table.lastActivityAt),

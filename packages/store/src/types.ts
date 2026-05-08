@@ -127,6 +127,8 @@ export interface PersistedSessionIndexEntry {
   metadata?: Record<string, MetadataValue>;
   type?: SessionType;
   userIds?: string[];
+  /** Per-session prompt addendum, set once at create. */
+  customInstruction?: string;
 }
 
 export interface SessionLogEntry {

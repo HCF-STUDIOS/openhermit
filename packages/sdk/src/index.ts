@@ -1167,6 +1167,7 @@ export class AgentWsClient {
     sessionId: string;
     source: { kind: string; interactive: boolean; platform?: string; type?: string };
     metadata?: Record<string, unknown>;
+    customInstruction?: string;
   }): Promise<{ sessionId: string }> {
     return this.request('session.open', params as Record<string, unknown>) as Promise<{ sessionId: string }>;
   }

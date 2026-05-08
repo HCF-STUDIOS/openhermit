@@ -105,6 +105,11 @@ expects a user JWT.
 For talking to a running agent over HTTP/SSE/WS as a user.
 
 - `openSession(spec)` / `listSessions(query?)` / `listSessionMessages(sessionId)`.
+  - `spec.customInstruction?: string` — optional per-session prompt addendum.
+    Stored once on the session row at create time and appended to the system
+    prompt as a dedicated section after agent-level instructions. Immutable
+    for the lifetime of the session (subsequent `openSession` calls for the
+    same `sessionId` ignore the field).
 - `postMessage(...)` / `appendMessage(...)` — non-streaming.
 - `postMessageSync(...)` — wait for the assistant turn to complete.
 - `postMessageStream(...)` — async iterable of session events (SSE under the hood).

@@ -134,6 +134,13 @@
       "when": 1778600000000,
       "tag": "0018_secret_pass_through",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1778700000000,
+      "tag": "0019_session_custom_instruction",
+      "breakpoints": true
     }
   ]
 }

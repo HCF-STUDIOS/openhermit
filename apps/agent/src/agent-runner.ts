@@ -469,11 +469,18 @@ export class AgentRunner implements SessionRuntime {
       ...(persisted?.metadata ?? {}),
       ...(spec.metadata ?? {}),
     };
+    // customInstruction is set ONCE at session creation. On reopen we
+    // restore the persisted value so callers can't mutate it later.
+    const effectiveCustomInstruction =
+      persisted?.customInstruction ?? spec.customInstruction;
     const effectiveSpec: SessionSpec = {
       ...spec,
       source: persisted?.source ?? spec.source,
       ...(Object.keys(mergedMetadata).length > 0
         ? { metadata: mergedMetadata }
+        : {}),
+      ...(effectiveCustomInstruction
+        ? { customInstruction: effectiveCustomInstruction }
         : {}),
     };
     const createdAt = persisted?.createdAt ?? now;
@@ -1502,6 +1509,7 @@ export class AgentRunner implements SessionRuntime {
       ...(channelUserId ? { channelUserId } : {}),
       ...(spec.source.type ? { sessionType: spec.source.type } : {}),
       sourceKind: spec.source.kind,
+      ...(spec.customInstruction ? { customInstruction: spec.customInstruction } : {}),
     });
   }
 
@@ -1522,6 +1530,7 @@ export class AgentRunner implements SessionRuntime {
     channelUserId?: string;
     sessionType?: import('@openhermit/protocol').SessionType;
     sourceKind?: string;
+    customInstruction?: string;
   }): Promise<Agent> {
     const webProvider = this.resolveWebProvider(input.config);
 
@@ -1786,6 +1795,7 @@ export class AgentRunner implements SessionRuntime {
         agentId: this.scope.agentId,
         sessionId: input.contextSessionId,
       },
+      input.customInstruction,
     );
     const systemPrompt = input.extraSystemPrompt
       ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
@@ -1845,6 +1855,7 @@ export class AgentRunner implements SessionRuntime {
       ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
       ...(session.spec.source.type ? { sessionType: session.spec.source.type } : {}),
       sourceKind: session.spec.source.kind,
+      ...(session.spec.customInstruction ? { customInstruction: session.spec.customInstruction } : {}),
     });
     session.agent.state.model = resolveModel(config);
     session.agent.state.systemPrompt = refreshedAgent.state.systemPrompt;

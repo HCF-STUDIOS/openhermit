@@ -46,6 +46,7 @@ export class DbSessionStore implements SessionStore {
       interactive: entry.source.interactive ? 1 : 0,
       createdAt: entry.createdAt,
       type: entry.type ?? entry.source.type ?? 'direct',
+      customInstruction: entry.customInstruction ?? null,
     };
     // Runtime-mutable fields — re-written every persistSessionIndex.
     const runtime = {
@@ -126,6 +127,10 @@ export class DbSessionStore implements SessionStore {
 
     const userIds = (row.userIds ?? []) as string[];
     if (userIds.length > 0) entry.userIds = userIds;
+
+    if (row.customInstruction !== null && row.customInstruction !== undefined) {
+      entry.customInstruction = row.customInstruction;
+    }
 
     return entry;
   }
