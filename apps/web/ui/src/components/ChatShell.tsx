@@ -474,10 +474,13 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     };
   }, [handleEvent, loadSession]);
 
+  const isInbox = currentSessionId === 'inbox';
   const currentSession = sessions.find(s => s.sessionId === currentSessionId);
-  const sessionTitle = currentSession?.description || currentSession?.lastMessagePreview || currentSessionId || 'No session';
+  const sessionTitle = isInbox
+    ? 'Inbox'
+    : (currentSession?.description || currentSession?.lastMessagePreview || currentSessionId || 'No session');
   const isWebSession = !currentSession || currentSession.source?.kind === 'api' && currentSession.source?.platform === 'web';
-  const readOnly = currentSession != null && !isWebSession;
+  const readOnly = isInbox || (currentSession != null && !isWebSession);
 
   // On mobile, only one of sidebar / detail shows at a time. "List" mode
   // is when the user is in chat view but hasn't selected a session yet;
@@ -526,6 +529,17 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             >
               New Session
             </button>
+            {isOwner && (
+              <button
+                className={`btn btn--ghost${currentSessionId === 'inbox' && view === 'chat' ? ' is-active' : ''}`}
+                onClick={() => {
+                  if (view === 'manage') setView('chat');
+                  void selectSessionById('inbox');
+                }}
+              >
+                Inbox
+              </button>
+            )}
             {isOwner && (
               <button
                 className={`btn btn--ghost${view === 'manage' ? ' is-active' : ''}`}
@@ -605,7 +619,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
 
             {readOnly ? (
               <div className="composer composer--readonly">
-                <span>Read-only — this session was created via {currentSession.source?.platform || currentSession.source?.kind || 'another channel'}</span>
+                <span>
+                  {isInbox
+                    ? 'Read-only — inbox is the owner notification feed'
+                    : `Read-only — this session was created via ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`}
+                </span>
               </div>
             ) : (
               <Composer onSend={sendMessage} disabled={sending || !currentSessionId} />
