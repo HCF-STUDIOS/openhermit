@@ -97,9 +97,9 @@ export class TelegramBridge implements ChannelOutbound {
   /**
    * Send a message to a Telegram chat via the Bot API.
    * Implements `ChannelOutbound.send()`. The caller is responsible for
-   * recording the `channel_message_sent` session event (the tool does this
-   * via the store; the bridge reply path already has the assistant message
-   * recorded by the agent runtime).
+   * recording the assistant log entry in the target session (the tool does
+   * this via the store; the bridge reply path already has the assistant
+   * message recorded by the agent runtime).
    */
   async send(params: { sessionId: string; to: string; text: string; actions?: ChannelMessageAction[] }): Promise<ChannelOutboundResult> {
     const chatId = Number(params.to);

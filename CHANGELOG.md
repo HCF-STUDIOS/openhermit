@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.8 — 2026-05-09
+
+### Breaking: drop `channel_message_sent`
+
+Proactive sends from `session_send` were recorded as a synthetic `channel_message_sent` log entry whose `text` field made the row invisible to LLM history replay (which keys off `content`). The wire `OutboundEvent.channel_message_sent` type existed in the protocol but was never published. Both have been removed.
+
+- **Removed** `channel_message_sent` from `OutboundEventBody` (wire). Zero publishers, zero subscribers — pure dead code.
+- **Changed** `session_send` to record deliveries as a normal assistant log entry: `{ role: 'assistant', content: text, metadata: { source: 'session_send', fromSession, channel, to, messageId } }`. The receiver session's LLM history replay now sees proactive sends as ordinary assistant turns.
+- **Added** explicit `metadata?: Record<string, unknown>` slot on `SessionLogEntry`. Existing `[key: string]: unknown` permits it; this just documents the convention so future derivative fields land in `metadata` instead of scattering at the entry root.
+- Migration `0021_drop_channel_message_sent.sql` rewrites existing rows in place: `event_type` becomes `'assistant'`, `text` is folded into `content`, delivery details move under `payload.metadata`.
+
+Released as a patch since the SDK is still in 0.x.
+
+---
+
 ## 0.6.7 — 2026-05-09
 
 ### Breaking: unified approval event naming

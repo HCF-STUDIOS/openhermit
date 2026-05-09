@@ -308,16 +308,20 @@ export const createSessionSendTool = (context: ToolContext): PolicyAwareTool<typ
       };
     }
 
-    // Record the delivery as a session log entry.
+    // Record the delivery as a normal assistant message in the target session.
+    // Delivery details (source channel, recipient, originating session) live in
+    // metadata so they don't pollute the conversation body.
     await context.messageStore.appendLogEntry(context.storeScope, sessionId, {
       ts: new Date().toISOString(),
       role: 'assistant',
-      type: 'channel_message_sent',
-      channel: outbound.adapter.channel,
-      to: outbound.to,
-      text,
-      messageId: result.messageId,
-      fromSession: context.sessionId,
+      content: text,
+      metadata: {
+        source: 'session_send',
+        ...(context.sessionId ? { fromSession: context.sessionId } : {}),
+        channel: outbound.adapter.channel,
+        to: outbound.to,
+        ...(result.messageId ? { messageId: result.messageId } : {}),
+      },
     });
 
     return {

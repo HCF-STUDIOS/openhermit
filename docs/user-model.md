@@ -148,7 +148,7 @@ Session tools:
 - `session_summary`
 - `session_send`
 
-`session_send` sends proactive messages through registered channel outbound adapters and records `channel_message_sent` events.
+`session_send` sends proactive messages through registered channel outbound adapters. The delivery is recorded in the target session as a normal assistant log entry, with delivery details (source channel, recipient, messageId, originating session) folded into `metadata.source = 'session_send'`.
 
 ## Merge Semantics
 

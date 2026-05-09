@@ -150,7 +150,6 @@ Current event types:
 - `approval_requested` — new request opened (`mode: 'realtime' | 'async'`)
 - `approval_pending` — async-only notification routed to the owner's session
 - `approval_resolved` — request closed (`decision`, optional `resolution`)
-- `channel_message_sent`
 - `user_message`
 - `agent_start`
 - `agent_end`

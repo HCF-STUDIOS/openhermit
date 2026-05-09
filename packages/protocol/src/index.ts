@@ -179,14 +179,6 @@ export type OutboundEventBody =
       reviewerId?: string;
       mode: 'realtime' | 'async';
     }
-  | {
-      type: 'channel_message_sent';
-      sessionId: string;
-      channel: string;
-      to: string;
-      text: string;
-      messageId?: string;
-    }
   | { type: 'user_message'; sessionId: string; text: string; name?: string }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
@@ -211,8 +203,9 @@ export interface ChannelMessageAction {
 
 /**
  * Interface for channel adapters that support outbound (proactive) messaging.
- * Implementations send the message via the channel API and record it as a
- * `channel_message_sent` event in the target session.
+ * Implementations send the message via the channel API. The caller (e.g. the
+ * `session_send` tool) is responsible for recording the delivery as an
+ * assistant log entry in the target session.
  */
 export interface ChannelOutbound {
   readonly channel: string;

@@ -44,7 +44,7 @@ The runtime applies channel-agnostic group behavior:
 
 ## Outbound Messages
 
-Adapters register `ChannelOutbound` implementations. The `session_send` tool can send proactive messages through them, and the runtime records `channel_message_sent`.
+Adapters register `ChannelOutbound` implementations. The `session_send` tool can send proactive messages through them; the delivery is recorded in the target session as a normal assistant log entry whose `metadata.source = 'session_send'` carries the channel/to/messageId/fromSession details.
 
 ## Configuration
 

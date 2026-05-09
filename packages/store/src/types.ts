@@ -135,6 +135,12 @@ export interface SessionLogEntry {
   ts: string;
   role: 'system' | 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'error';
   type?: string;
+  /**
+   * Free-form metadata bag for derivative info that isn't part of the message
+   * body itself (delivery source, action affordances, etc.). Prefer placing
+   * non-core fields here over scattering them on the entry root.
+   */
+  metadata?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
