@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — 2026-05-09
+## 0.6.5 — 2026-05-09
 
 ### Breaking: outbound event identifiers (#51)
 
@@ -9,6 +9,8 @@ The `messageId` field on outbound events `text_delta`, `text_final`, `thinking_d
 - **Renamed** `messageId` → `correlationId` on those six events. Same semantics: the inbound user-message id that triggered the turn.
 - **Added** `eventId: string` to every outbound event. Per-event unique (UUID) — minted by the runtime. Use this for persistence dedup.
 - SDK consumers reading the event stream must update field references (`event.messageId` → `event.correlationId`, plus optionally use `event.eventId`).
+
+Released as a patch since the SDK is still in 0.x and the misnamed field shipped only one patch ago in 0.3.3.
 
 `SessionMessage.messageId` (inbound), `ChannelOutboundResult.messageId`, and `channel_message_sent.messageId` are unchanged — those are unrelated identifiers.
 
