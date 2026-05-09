@@ -167,6 +167,26 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         }
         continue;
       }
+      if (entry.role === 'approval') {
+        if (entry.approvalPhase === 'requested') {
+          historyItems.push({
+            type: 'approval',
+            toolName: entry.approvalResourceKey || entry.approvalResourceType || 'approval',
+            toolCallId: entry.approvalRequestId || '',
+            args: entry.approvalArgs,
+            resolved: false,
+          });
+        } else if (entry.approvalPhase === 'resolved' && entry.approvalRequestId) {
+          for (let i = historyItems.length - 1; i >= 0; i--) {
+            const it = historyItems[i];
+            if (it.type === 'approval' && it.toolCallId === entry.approvalRequestId) {
+              historyItems[i] = { ...it, resolved: true, approved: entry.approvalDecision === 'approved' };
+              break;
+            }
+          }
+        }
+        continue;
+      }
       if (entry.role === 'error') { historyItems.push({ type: 'event', text: entry.content, isError: true }); continue; }
       if (entry.role === 'assistant' && entry.thinking) {
         historyItems.push({ type: 'thinking', text: entry.thinking, streaming: false });
@@ -304,6 +324,30 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
           resolved: false,
         }]);
         break;
+
+      case 'approval_pending':
+        setItems(prev => [...collapseThinking(dropPlaceholder(prev)), {
+          type: 'approval',
+          toolName: (event.resourceKey as string) || (event.resourceType as string) || 'approval',
+          toolCallId: (event.requestId as string) || '',
+          args: event.args,
+          resolved: false,
+        }]);
+        break;
+
+      case 'approval_resolved': {
+        const reqId = event.requestId as string | undefined;
+        const decision = event.decision as 'approved' | 'rejected' | undefined;
+        if (!reqId) break;
+        setItems(prev => {
+          const idx = prev.findLastIndex(i => i.type === 'approval' && i.toolCallId === reqId);
+          if (idx < 0) return prev;
+          const updated = [...prev];
+          updated[idx] = { ...(updated[idx] as Extract<ChatItem, { type: 'approval' }>), resolved: true, approved: decision === 'approved' };
+          return updated;
+        });
+        break;
+      }
 
       case 'text_delta':
         streamingTextRef.current += event.text as string;

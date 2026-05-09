@@ -71,6 +71,23 @@ const mapEventRowToHistoryMessage = (row: {
     };
   }
 
+  if (row.eventType === 'approval_requested' || row.eventType === 'approval_resolved') {
+    const meta = asRecord(payload?.metadata);
+    const message: SessionHistoryMessage = {
+      ts: row.ts,
+      role: 'approval' as const,
+      content: '',
+      approvalPhase: row.eventType === 'approval_requested' ? 'requested' : 'resolved',
+    };
+    if (typeof payload?.requestId === 'string') message.approvalRequestId = payload.requestId;
+    if (typeof payload?.resourceType === 'string') message.approvalResourceType = payload.resourceType;
+    if (typeof payload?.resourceKey === 'string') message.approvalResourceKey = payload.resourceKey;
+    if (payload?.args !== undefined) message.approvalArgs = payload.args;
+    if (payload?.decision === 'approved' || payload?.decision === 'rejected') message.approvalDecision = payload.decision;
+    if (typeof meta?.shortId === 'string') message.approvalShortId = meta.shortId;
+    return message;
+  }
+
   return { ts: row.ts, role: 'error', content: row.content ?? '' };
 };
 
@@ -127,7 +144,7 @@ export class DbMessageStore implements MessageStore {
       .where(and(
         eq(sessionEvents.agentId, scope.agentId),
         eq(sessionEvents.sessionId, sessionId),
-        sql`(${sessionEvents.content} IS NOT NULL OR ${sessionEvents.eventType} IN ('tool_call', 'tool_result', 'introspection_start', 'introspection_end'))`,
+        sql`(${sessionEvents.content} IS NOT NULL OR ${sessionEvents.eventType} IN ('tool_call', 'tool_result', 'introspection_start', 'introspection_end', 'approval_requested', 'approval_resolved'))`,
       ))
       .orderBy(asc(sessionEvents.ts), asc(sessionEvents.id));
 

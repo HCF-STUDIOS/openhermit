@@ -2663,6 +2663,28 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       });
     }
 
+    // Fan out approval_resolved to the requester's session (so the
+    // agent can unblock / retry) and the inbox (so the owner UI marks
+    // the card done). Without this, telegram callbacks and the web
+    // inbox would resolve the DB row but the agent would never see
+    // the decision, leading to repeated approval prompts.
+    try {
+      const runtime = await instances.getOrHydrate(agentId);
+      if (runtime) {
+        await runtime.publishApprovalResolved({
+          requestId: request.id,
+          resourceType: request.resourceType,
+          resourceKey: request.resourceKey,
+          requesterSessionId: request.sessionId,
+          decision,
+          ...(resolution ? { resolution } : {}),
+          reviewerId: resolvedBy,
+        });
+      }
+    } catch (err) {
+      log(`approval review fan-out failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     return updated;
   };
 

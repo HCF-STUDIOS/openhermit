@@ -1265,6 +1265,52 @@ export class AgentRunner implements SessionRuntime {
     }
   }
 
+  /**
+   * Fan out an `approval_resolved` event + log entry to both the
+   * requester's session (so the agent can unblock / retry) and the
+   * inbox (so the owner UI marks the card done). Used by the gateway
+   * HTTP review endpoint, called by telegram callback buttons and the
+   * web inbox.
+   */
+  async publishApprovalResolved(payload: {
+    requestId: string;
+    resourceType: string;
+    resourceKey: string;
+    requesterSessionId?: string | undefined;
+    decision: 'approved' | 'rejected';
+    resolution?: 'once' | 'persistent' | undefined;
+    reviewerId?: string | undefined;
+  }): Promise<void> {
+    const baseEvent = {
+      type: 'approval_resolved' as const,
+      requestId: payload.requestId,
+      resourceType: payload.resourceType,
+      resourceKey: payload.resourceKey,
+      decision: payload.decision,
+      ...(payload.resolution ? { resolution: payload.resolution } : {}),
+      ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
+      mode: 'async' as const,
+    };
+
+    void this.events.publish({ ...baseEvent, sessionId: 'inbox' });
+    if (payload.requesterSessionId && payload.requesterSessionId !== 'unknown') {
+      void this.events.publish({ ...baseEvent, sessionId: payload.requesterSessionId });
+    }
+
+    const targets = ['inbox' as const, ...(payload.requesterSessionId && payload.requesterSessionId !== 'unknown' ? [payload.requesterSessionId] : [])];
+    for (const sessionId of targets) {
+      await this.recordApprovalResolved(sessionId, {
+        requestId: payload.requestId,
+        resourceType: payload.resourceType,
+        resourceKey: payload.resourceKey,
+        decision: payload.decision,
+        ...(payload.resolution ? { resolution: payload.resolution } : {}),
+        ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
+        mode: 'async',
+      });
+    }
+  }
+
   private async recordApprovalResolved(
     sessionId: string,
     payload: {

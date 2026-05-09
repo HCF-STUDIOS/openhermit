@@ -54,6 +54,13 @@ export interface HistoryMessage {
   introspection?: boolean;
   introspectionPhase?: 'start' | 'end';
   introspectionSummary?: string;
+  approvalPhase?: 'requested' | 'resolved';
+  approvalRequestId?: string;
+  approvalResourceType?: string;
+  approvalResourceKey?: string;
+  approvalArgs?: unknown;
+  approvalDecision?: 'approved' | 'rejected';
+  approvalShortId?: string;
 }
 
 export interface OutboundEvent {
