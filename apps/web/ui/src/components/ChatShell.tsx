@@ -65,6 +65,28 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   const skipPushRef = useRef(false);
   const pendingSentTexts = useRef<string[]>([]);
 
+  // Inbox badge: track open approval requests + last-seen timestamp.
+  // pendingRef maps requestId → ts the inbox row was created. seenAtRef is
+  // the last time the user opened the inbox; anything with ts > seenAt is
+  // unread. Persisted in localStorage so the badge survives reloads.
+  const inboxSeenKey = `inbox-seen-at:${connection.agentId}`;
+  const [inboxUnread, setInboxUnread] = useState(0);
+  const inboxPendingRef = useRef<Map<string, string>>(new Map());
+  const inboxSeenAtRef = useRef<string>(localStorage.getItem(inboxSeenKey) ?? '');
+  const recomputeInboxBadge = useCallback(() => {
+    const seenAt = inboxSeenAtRef.current;
+    let count = 0;
+    for (const ts of inboxPendingRef.current.values()) {
+      if (!seenAt || ts > seenAt) count += 1;
+    }
+    setInboxUnread(count);
+  }, []);
+  const markInboxSeen = useCallback(() => {
+    inboxSeenAtRef.current = new Date().toISOString();
+    localStorage.setItem(inboxSeenKey, inboxSeenAtRef.current);
+    setInboxUnread(0);
+  }, [inboxSeenKey]);
+
   currentSessionRef.current = currentSessionId;
 
   // Sync URL when view/session/tab changes
@@ -203,7 +225,8 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     const allSessions = await ws.listSessions();
     const sess = allSessions.find(s => s.sessionId === sessionId);
     await ws.subscribe(sessionId, sess?.lastEventId ?? 0);
-  }, []);
+    if (sessionId === 'inbox') markInboxSeen();
+  }, [markInboxSeen]);
 
   const selectSessionById = useCallback(async (sessionId: string) => {
     const ws = wsRef.current;
@@ -222,6 +245,22 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   }, [loadSession]);
 
   const handleEvent = useCallback((_eventId: number, sessionId: string, event: OutboundEvent) => {
+    // Inbox runs a side-channel subscription independent of the visible
+    // session so we can keep the sidebar badge live. Update tracking state
+    // here before deciding whether the chat view also wants the event.
+    if (sessionId === 'inbox') {
+      const reqId = typeof event.requestId === 'string' ? event.requestId : undefined;
+      if (event.type === 'approval_pending' && reqId) {
+        if (!inboxPendingRef.current.has(reqId)) {
+          inboxPendingRef.current.set(reqId, new Date().toISOString());
+        }
+        if (currentSessionRef.current === 'inbox') markInboxSeen();
+        else recomputeInboxBadge();
+      } else if (event.type === 'approval_resolved' && reqId) {
+        inboxPendingRef.current.delete(reqId);
+        recomputeInboxBadge();
+      }
+    }
     if (sessionId !== currentSessionRef.current) return;
 
     const dropPlaceholder = (items: ChatItem[]) => items.filter(i => !(i.type === 'thinking' && !i.text));
@@ -543,6 +582,24 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
           fetchAgentInfo().then(info => setAgentName(info.name)).catch(() => {}),
         ]);
         setSessions(list);
+        // Owner-side inbox side-channel: prime pending set from history,
+        // then subscribe so live approval_pending events update the badge
+        // even when the user is not viewing /chat/inbox.
+        if (isOwner) {
+          try {
+            const history = await client.getHistory('inbox');
+            for (const m of history) {
+              const reqId = m.actions?.find(a => a.type === 'approval_review')?.requestId as string | undefined;
+              if (reqId) inboxPendingRef.current.set(reqId, m.ts ?? '');
+              const resolvedId = m.metadata?.resolvedRequestId as string | undefined;
+              if (resolvedId) inboxPendingRef.current.delete(resolvedId);
+            }
+            recomputeInboxBadge();
+            await client.subscribe('inbox', 0);
+          } catch {
+            // owner without inbox row, or transient — badge stays at 0.
+          }
+        }
         // Only auto-load when the URL itself names a valid session.
         // Refreshing /  ̄or any non-/chat/:id path keeps the user on the
         // sessions list — don't jump them into a session they didn't pick.
@@ -559,7 +616,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
       client.close();
       wsRef.current = null;
     };
-  }, [handleEvent, loadSession]);
+  }, [handleEvent, loadSession, isOwner, recomputeInboxBadge]);
 
   const isInbox = currentSessionId === 'inbox';
   const currentSession = sessions.find(s => s.sessionId === currentSessionId);
@@ -622,6 +679,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                   <rect x="3" y="5" width="18" height="14" rx="2" />
                   <path d="m3 7 9 6 9-6" />
                 </svg>
+                {inboxUnread > 0 && (
+                  <span className="sidebar__icon-badge" aria-label={`${inboxUnread} unread`}>
+                    {inboxUnread > 99 ? '99+' : inboxUnread}
+                  </span>
+                )}
               </button>
             )}
           </div>

@@ -79,6 +79,7 @@ body {
 }
 
 .sidebar__icon-btn {
+  position: relative;
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -93,6 +94,22 @@ body {
   transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 .sidebar__icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+.sidebar__icon-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e11d48;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
 .sidebar__icon-btn.is-active {
   color: var(--accent);
   border-color: var(--accent);
