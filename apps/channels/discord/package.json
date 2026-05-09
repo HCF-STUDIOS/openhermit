@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@openhermit/sdk": "0.3.2",
+    "@openhermit/sdk": "0.3.3",
     "@openhermit/shared": "0.2.0",
     "discord.js": "^14.16.3"
   }
