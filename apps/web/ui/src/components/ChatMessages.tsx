@@ -82,6 +82,7 @@ interface Props {
   items: ChatItem[];
   agentName?: string;
   loading?: boolean;
+  emptyMessage?: string;
   onApproval: (toolCallId: string, approved: boolean) => Promise<void>;
 }
 
@@ -238,7 +239,7 @@ function groupIntoTurns(items: ChatItem[]): Turn[] {
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
-export function ChatMessages({ items, agentName, loading, onApproval }: Props) {
+export function ChatMessages({ items, agentName, loading, emptyMessage, onApproval }: Props) {
   const containerRef = useRef<HTMLElement>(null);
   const displayAgentName = agentName || 'Assistant';
 
@@ -259,7 +260,7 @@ export function ChatMessages({ items, agentName, loading, onApproval }: Props) {
   if (items.length === 0) {
     return (
       <section className="chat__messages" ref={containerRef}>
-        <div className="empty-state">Start a conversation or select a session from the sidebar.</div>
+        <div className="empty-state">{emptyMessage ?? 'Start a conversation or select a session from the sidebar.'}</div>
       </section>
     );
   }

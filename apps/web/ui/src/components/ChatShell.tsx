@@ -623,7 +623,13 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
               <p className="chat__status">{status}</p>
             </header>
 
-            <ChatMessages items={items} agentName={agentName ?? undefined} loading={loadingHistory} onApproval={handleApproval} />
+            <ChatMessages
+              items={items}
+              agentName={agentName ?? undefined}
+              loading={loadingHistory}
+              emptyMessage={isInbox ? 'No notifications yet.' : undefined}
+              onApproval={handleApproval}
+            />
 
             {readOnly ? (
               <div className="composer composer--readonly">
