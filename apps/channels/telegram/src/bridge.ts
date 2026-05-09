@@ -457,8 +457,8 @@ export class TelegramBridge implements ChannelOutbound {
             continue;
           }
 
-          if (frame.event === 'tool_approval_required') {
-            const toolName = String(payload.toolName ?? 'unknown');
+          if (frame.event === 'approval_requested' && payload.mode === 'realtime') {
+            const toolName = String(payload.resourceKey ?? 'unknown');
             const toolCallId = String(payload.toolCallId ?? '');
             const args = payload.args as Record<string, unknown> | undefined;
             void this.sendApprovalPrompt(chatId, sessionId, toolName, toolCallId, args).catch(() => undefined);

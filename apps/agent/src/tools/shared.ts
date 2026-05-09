@@ -145,6 +145,30 @@ export const checkApprovalOrRequest = async (
       ...(scope ? { scope } : {}),
     });
 
+    if (context.publishEvent && context.sessionId) {
+      context.publishEvent({
+        type: 'approval_requested',
+        sessionId: context.sessionId,
+        requestId: request.id,
+        resourceType,
+        resourceKey,
+        ...(args !== undefined ? { args } : {}),
+        mode: 'realtime',
+      });
+    }
+    if (context.messageStore && context.storeScope && context.sessionId) {
+      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+        ts: new Date().toISOString(),
+        role: 'system',
+        type: 'approval_requested',
+        requestId: request.id,
+        resourceType,
+        resourceKey,
+        ...(args !== undefined ? { args } : {}),
+        mode: 'realtime',
+      });
+    }
+
     const decision = await context.approvalCallback(
       `${resourceType}:${resourceKey}`,
       request.id,
@@ -155,6 +179,34 @@ export const checkApprovalOrRequest = async (
     context.approvalRequestStore
       .resolve(request.id, dbDecision, context.currentUserId, 'once')
       .catch(() => {});
+
+    if (context.publishEvent && context.sessionId) {
+      context.publishEvent({
+        type: 'approval_resolved',
+        sessionId: context.sessionId,
+        requestId: request.id,
+        resourceType,
+        resourceKey,
+        decision,
+        resolution: 'once',
+        reviewerId: context.currentUserId,
+        mode: 'realtime',
+      });
+    }
+    if (context.messageStore && context.storeScope && context.sessionId) {
+      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+        ts: new Date().toISOString(),
+        role: 'system',
+        type: 'approval_resolved',
+        requestId: request.id,
+        resourceType,
+        resourceKey,
+        decision,
+        resolution: 'once',
+        reviewerId: context.currentUserId,
+        mode: 'realtime',
+      });
+    }
 
     if (decision === 'rejected' || decision === 'timed_out' || decision === 'cancelled') {
       throw new ValidationError(
@@ -178,6 +230,18 @@ export const checkApprovalOrRequest = async (
     context.publishEvent({
       type: 'approval_requested',
       sessionId: context.sessionId,
+      requestId: request.id,
+      resourceType,
+      resourceKey,
+      ...(args !== undefined ? { args } : {}),
+      mode: 'async',
+    });
+  }
+  if (context.messageStore && context.storeScope && context.sessionId) {
+    await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+      ts: new Date().toISOString(),
+      role: 'system',
+      type: 'approval_requested',
       requestId: request.id,
       resourceType,
       resourceKey,

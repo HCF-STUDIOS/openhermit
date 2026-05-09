@@ -147,13 +147,6 @@ export type OutboundEventBody =
       correlationId?: string;
     }
   | {
-      type: 'tool_approval_required';
-      sessionId: string;
-      toolName: string;
-      toolCallId: string;
-      args?: unknown;
-    }
-  | {
       type: 'approval_requested';
       sessionId: string;
       requestId?: string;
@@ -172,6 +165,18 @@ export type OutboundEventBody =
       requesterId: string;
       requesterSessionId: string;
       args?: unknown;
+      mode: 'async';
+    }
+  | {
+      type: 'approval_resolved';
+      sessionId: string;
+      requestId?: string;
+      resourceType: string;
+      resourceKey: string;
+      toolCallId?: string;
+      decision: 'approved' | 'rejected' | 'timed_out' | 'cancelled';
+      resolution?: 'once' | 'persistent';
+      reviewerId?: string;
       mode: 'realtime' | 'async';
     }
   | {

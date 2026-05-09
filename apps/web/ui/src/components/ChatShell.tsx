@@ -296,10 +296,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         });
         break;
 
-      case 'tool_approval_required':
+      case 'approval_requested':
+        if (event.mode !== 'realtime') break;
         setItems(prev => [...collapseThinking(dropPlaceholder(prev)), {
           type: 'approval',
-          toolName: event.toolName as string,
+          toolName: event.resourceKey as string,
           toolCallId: event.toolCallId as string,
           args: event.args,
           resolved: false,

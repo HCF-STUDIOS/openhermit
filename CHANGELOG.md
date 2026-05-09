@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.7 — 2026-05-09
+
+### Breaking: unified approval event naming
+
+Approval-related events used a mix of legacy tool-specific and new resource-based names. Cleaned up to a single set:
+
+- **Removed** `tool_approval_required` (wire). Consumers must listen for `approval_requested` with `mode === 'realtime'` and read the tool name from `resourceKey` (instead of `toolName`).
+- **Added** `approval_resolved` (wire) — fires when a request is resolved, in both realtime (after the gate decides) and async (after the owner runs `approval_review`) modes. Carries `decision`, optional `resolution`, and `reviewerId`.
+- `approval_pending` is now `mode: 'async'` only — realtime mode no longer emits a redundant pending event (requester is the same as the reviewer).
+- DB `session_events` rows previously written as `tool_approval_requested` / `tool_approval_resolved` are now written as `approval_requested` / `approval_resolved`. Migration `0020_approval_event_rename.sql` renames existing rows. The DB payload is also generic (`resourceType`, `resourceKey`, optional `toolCallId`) instead of tool-specific.
+- Async non-tool resources (file/exec/etc.) now also persist `approval_requested` / `approval_resolved` to the requester's `session_events` for audit symmetry. Previously only the tool-specific path wrote DB rows.
+- `approval_pending` continues to be wire-only — its lifecycle is captured by the `approval_requests` table.
+
+Released as a patch since the SDK is still in 0.x.
+
+---
+
 ## 0.6.6 — 2026-05-09
 
 ### Outbound `agent_start` event

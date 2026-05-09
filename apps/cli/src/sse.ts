@@ -104,8 +104,8 @@ export const waitForAssistantTurn = async (
             ? (JSON.parse(frame.data) as Record<string, unknown>)
             : {};
 
-        if (frame.event === 'tool_approval_required') {
-          const toolName = String(payload.toolName ?? 'unknown');
+        if (frame.event === 'approval_requested' && payload.mode === 'realtime') {
+          const toolName = String(payload.resourceKey ?? 'unknown');
           const toolCallId = String(payload.toolCallId ?? '');
 
           let approved = false;
@@ -304,8 +304,8 @@ export const streamAssistantTurn = async (
         continue;
       }
 
-      if (event.type === 'tool_approval_required') {
-        const toolName = String(event.toolName ?? 'unknown');
+      if (event.type === 'approval_requested' && event.mode === 'realtime') {
+        const toolName = String(event.resourceKey ?? 'unknown');
         const toolCallId = String(event.toolCallId ?? '');
 
         let approved = false;

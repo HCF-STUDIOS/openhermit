@@ -115,6 +115,38 @@ export const createApprovalReviewTool = (context: ToolContext): PolicyAwareTool<
       });
     }
 
+    // Notify the requester's session that their request was resolved.
+    const requesterSessionId = request.sessionId;
+    if (requesterSessionId && requesterSessionId !== 'unknown') {
+      if (context.publishEvent) {
+        context.publishEvent({
+          type: 'approval_resolved',
+          sessionId: requesterSessionId,
+          requestId: request.id,
+          resourceType: request.resourceType,
+          resourceKey: request.resourceKey,
+          decision: args.decision,
+          ...(resolution ? { resolution } : {}),
+          reviewerId,
+          mode: 'async',
+        });
+      }
+      if (context.messageStore && context.storeScope) {
+        await context.messageStore.appendLogEntry(context.storeScope, requesterSessionId, {
+          ts: new Date().toISOString(),
+          role: 'system',
+          type: 'approval_resolved',
+          requestId: request.id,
+          resourceType: request.resourceType,
+          resourceKey: request.resourceKey,
+          decision: args.decision,
+          ...(resolution ? { resolution } : {}),
+          reviewerId,
+          mode: 'async',
+        });
+      }
+    }
+
     const label = args.decision === 'approved'
       ? `Approved${resolution === 'persistent' ? ' (persistent — allow policy created)' : ' (one-time)'}`
       : 'Rejected';

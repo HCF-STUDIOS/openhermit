@@ -192,17 +192,19 @@ interface ApprovalRequest {
 
 1. `checkApprovalOrRequest` detects `approvalCallback` is available.
 2. An `ApprovalRequest` is created (for audit).
-3. The UI shows an inline approve/reject prompt (ApprovalGate component).
-4. The owner decides; the request is resolved and the tool proceeds or throws.
+3. `approval_requested` (mode=`realtime`) is emitted on the wire and persisted to `session_events`.
+4. The UI shows an inline approve/reject prompt (ApprovalGate component).
+5. The owner decides; the request is resolved.
+6. `approval_resolved` (mode=`realtime`, with `decision` + `resolution`) is emitted and persisted.
 
 **Async approval** — when the requester is on a non-owner channel (e.g. guest on Telegram):
 
 1. No `approvalCallback` available (owner isn't in the session).
 2. An `ApprovalRequest` is created with status `pending`.
-3. An `approval_requested` SSE event is emitted to the session.
-4. The owner is notified via their configured channel (e.g. Telegram) with approve/reject buttons.
+3. `approval_requested` (mode=`async`) is emitted to the requester's session and persisted.
+4. The owner is notified via their configured channel: an `approval_pending` (mode=`async`) wire event is emitted to the owner's session **and** a channel message with an `approval_review` action button is sent. `approval_pending` is wire-only — it is not persisted (the request lifecycle lives in `approval_requests`).
 5. `ApprovalRequiredError` is thrown — the agent tells the user to wait and **stops** (does not attempt workarounds).
-6. When the owner approves, the request is resolved. The user can retry.
+6. When the owner runs `approval_review`, the request is resolved. `approval_resolved` (mode=`async`) is emitted to the **requester's** session and persisted there, so the requester's UI can clear the pending state. The user can retry.
 
 ### Resolution types
 

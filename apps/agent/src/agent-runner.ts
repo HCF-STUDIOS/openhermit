@@ -1071,20 +1071,8 @@ export class AgentRunner implements SessionRuntime {
     sessionId: string,
     gate: ApprovalGate,
   ): ApprovalCallback {
-    return async (toolName, toolCallId, args) => {
+    return async (_toolName, toolCallId, _args) => {
       const session = this.sessions.get(sessionId);
-
-      if (session) {
-        await this.recordApprovalRequested(session, toolName, toolCallId, args);
-      }
-
-      await this.events.publish({
-        type: 'tool_approval_required',
-        sessionId,
-        toolName,
-        toolCallId,
-        ...(args !== undefined ? { args } : {}),
-      });
 
       if (session) {
         session.status = 'awaiting_approval';
@@ -1096,7 +1084,6 @@ export class AgentRunner implements SessionRuntime {
       if (session) {
         session.status = 'running';
         session.updatedAt = new Date().toISOString();
-        await this.recordApprovalResolved(session, toolName, toolCallId, decision);
       }
 
       return decision;
@@ -1195,43 +1182,73 @@ export class AgentRunner implements SessionRuntime {
   }
 
   private async recordApprovalRequested(
-    session: RunnerSession,
-    toolName: string,
-    toolCallId: string,
-    args: unknown,
+    sessionId: string,
+    payload: {
+      requestId?: string;
+      resourceType: string;
+      resourceKey: string;
+      toolCallId?: string;
+      args?: unknown;
+      mode: 'realtime' | 'async';
+    },
   ): Promise<void> {
     const ts = new Date().toISOString();
-
-    await this.queueSideEffect(session, async () => {
-      await this.store.messages.appendLogEntry(this.scope,session.spec.sessionId, {
+    const session = this.sessions.get(sessionId);
+    const write = async () => {
+      await this.store.messages.appendLogEntry(this.scope, sessionId, {
         ts,
         role: 'system',
-        type: 'tool_approval_requested',
-        toolName,
-        toolCallId,
-        ...(args !== undefined ? { args } : {}),
+        type: 'approval_requested',
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+        resourceType: payload.resourceType,
+        resourceKey: payload.resourceKey,
+        ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+        ...(payload.args !== undefined ? { args: payload.args } : {}),
+        mode: payload.mode,
       });
-    });
+    };
+    if (session) {
+      await this.queueSideEffect(session, write);
+    } else {
+      await write();
+    }
   }
 
   private async recordApprovalResolved(
-    session: RunnerSession,
-    toolName: string,
-    toolCallId: string,
-    decision: ApprovalDecision,
+    sessionId: string,
+    payload: {
+      requestId?: string;
+      resourceType: string;
+      resourceKey: string;
+      toolCallId?: string;
+      decision: ApprovalDecision;
+      resolution?: 'once' | 'persistent';
+      reviewerId?: string;
+      mode: 'realtime' | 'async';
+    },
   ): Promise<void> {
     const ts = new Date().toISOString();
-
-    await this.queueSideEffect(session, async () => {
-      await this.store.messages.appendLogEntry(this.scope,session.spec.sessionId, {
+    const session = this.sessions.get(sessionId);
+    const write = async () => {
+      await this.store.messages.appendLogEntry(this.scope, sessionId, {
         ts,
         role: 'system',
-        type: 'tool_approval_resolved',
-        toolName,
-        toolCallId,
-        decision,
+        type: 'approval_resolved',
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+        resourceType: payload.resourceType,
+        resourceKey: payload.resourceKey,
+        ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+        decision: payload.decision,
+        ...(payload.resolution ? { resolution: payload.resolution } : {}),
+        ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
+        mode: payload.mode,
       });
-    });
+    };
+    if (session) {
+      await this.queueSideEffect(session, write);
+    } else {
+      await write();
+    }
   }
 
   /**
@@ -1711,14 +1728,11 @@ export class AgentRunner implements SessionRuntime {
                   ...(args !== undefined ? { args } : {}),
                   mode: 'realtime',
                 });
-                void eventBroker.publish({
-                  type: 'approval_pending',
-                  sessionId,
+                await this.recordApprovalRequested(sessionId, {
                   ...(requestId ? { requestId } : {}),
                   resourceType: 'tool',
                   resourceKey: t.name,
-                  requesterId: userId ?? 'unknown',
-                  requesterSessionId: sessionId,
+                  toolCallId,
                   ...(args !== undefined ? { args } : {}),
                   mode: 'realtime',
                 });
@@ -1727,6 +1741,30 @@ export class AgentRunner implements SessionRuntime {
               if (requestId && approvalStore) {
                 const dbDecision = decision === 'approved' ? 'approved' : 'rejected';
                 approvalStore.resolve(requestId, dbDecision, userId ?? 'system', 'once').catch(() => {});
+              }
+              if (sessionId) {
+                void eventBroker.publish({
+                  type: 'approval_resolved',
+                  sessionId,
+                  ...(requestId ? { requestId } : {}),
+                  resourceType: 'tool',
+                  resourceKey: t.name,
+                  toolCallId,
+                  decision,
+                  resolution: 'once',
+                  ...(userId ? { reviewerId: userId } : {}),
+                  mode: 'realtime',
+                });
+                await this.recordApprovalResolved(sessionId, {
+                  ...(requestId ? { requestId } : {}),
+                  resourceType: 'tool',
+                  resourceKey: t.name,
+                  toolCallId,
+                  decision,
+                  resolution: 'once',
+                  ...(userId ? { reviewerId: userId } : {}),
+                  mode: 'realtime',
+                });
               }
               if (decision === 'rejected' || decision === 'timed_out' || decision === 'cancelled') {
                 if (input.onToolCall) await input.onToolCall(t.name, toolCallId, args);
@@ -1755,6 +1793,14 @@ export class AgentRunner implements SessionRuntime {
                   void eventBroker.publish({
                     type: 'approval_requested',
                     sessionId,
+                    requestId: request.id,
+                    resourceType: 'tool',
+                    resourceKey: t.name,
+                    toolCallId,
+                    ...(args !== undefined ? { args } : {}),
+                    mode: 'async',
+                  });
+                  await this.recordApprovalRequested(sessionId, {
                     requestId: request.id,
                     resourceType: 'tool',
                     resourceKey: t.name,
