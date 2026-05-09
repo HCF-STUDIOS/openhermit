@@ -121,12 +121,21 @@ export const isCallerIdentity = (value: unknown): value is CallerIdentity =>
   typeof value.channel === 'string' &&
   typeof value.channelUserId === 'string';
 
-export type OutboundEvent =
-  | { type: 'thinking_delta'; sessionId: string; text: string; messageId?: string }
-  | { type: 'thinking_final'; sessionId: string; text: string; messageId?: string }
-  | { type: 'text_delta'; sessionId: string; text: string; messageId?: string }
-  | { type: 'text_final'; sessionId: string; text: string; messageId?: string }
-  | { type: 'tool_call'; sessionId: string; tool: string; toolCallId: string; args?: unknown; messageId?: string }
+/**
+ * Body of an outbound event without the per-event identifier. Producers emit
+ * this shape; the runtime mints `eventId` before delivering to consumers.
+ *
+ * `correlationId` (where present) is the inbound user-message id that
+ * triggered the turn. It is NOT a per-event id — multiple events in the same
+ * turn share the same `correlationId`. Consumers persisting events by id
+ * MUST use `eventId` (added by the runtime), not `correlationId`.
+ */
+export type OutboundEventBody =
+  | { type: 'thinking_delta'; sessionId: string; text: string; correlationId?: string }
+  | { type: 'thinking_final'; sessionId: string; text: string; correlationId?: string }
+  | { type: 'text_delta'; sessionId: string; text: string; correlationId?: string }
+  | { type: 'text_final'; sessionId: string; text: string; correlationId?: string }
+  | { type: 'tool_call'; sessionId: string; tool: string; toolCallId: string; args?: unknown; correlationId?: string }
   | {
       type: 'tool_result';
       sessionId: string;
@@ -135,7 +144,7 @@ export type OutboundEvent =
       isError: boolean;
       text?: string;
       details?: unknown;
-      messageId?: string;
+      correlationId?: string;
     }
   | {
       type: 'tool_approval_required';
@@ -176,6 +185,8 @@ export type OutboundEvent =
   | { type: 'user_message'; sessionId: string; text: string; name?: string }
   | { type: 'agent_end'; sessionId: string }
   | { type: 'error'; sessionId: string; message: string };
+
+export type OutboundEvent = OutboundEventBody & { eventId: string };
 
 // ── Channel Outbound ──────────────────────────────────────────────────
 
@@ -444,13 +455,13 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
 export const createTextFinalEvent = (
   sessionId: string,
   text: string,
-): OutboundEvent => ({
+): OutboundEventBody => ({
   type: 'text_final',
   sessionId,
   text,
 });
 
-export const createAgentEndEvent = (sessionId: string): OutboundEvent => ({
+export const createAgentEndEvent = (sessionId: string): OutboundEventBody => ({
   type: 'agent_end',
   sessionId,
 });

@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import {
   type OutboundEvent,
+  type OutboundEventBody,
   type SessionHistoryMessage,
   type SessionListQuery,
   type SessionMessage,
@@ -124,18 +126,19 @@ export class SessionEventBroker {
     return unsubscribe;
   }
 
-  async publish(event: OutboundEvent): Promise<void> {
+  async publish(event: OutboundEventBody): Promise<void> {
+    const fullEvent: OutboundEvent = { ...event, eventId: randomUUID() };
     const envelope: SessionEventEnvelope = {
       id: this.nextEventId,
-      event,
+      event: fullEvent,
     };
     this.nextEventId += 1;
 
-    const sessionBacklog = this.backlog.get(event.sessionId) ?? [];
+    const sessionBacklog = this.backlog.get(fullEvent.sessionId) ?? [];
     sessionBacklog.push(envelope);
-    this.backlog.set(event.sessionId, sessionBacklog.slice(-100));
+    this.backlog.set(fullEvent.sessionId, sessionBacklog.slice(-100));
 
-    const sessionSubscribers = this.subscribers.get(event.sessionId);
+    const sessionSubscribers = this.subscribers.get(fullEvent.sessionId);
 
     if (!sessionSubscribers) {
       return;

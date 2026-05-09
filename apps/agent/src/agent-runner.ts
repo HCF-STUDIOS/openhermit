@@ -998,9 +998,9 @@ export class AgentRunner implements SessionRuntime {
         await this.refreshAgentConfiguration(session);
         session.latestAssistantText = undefined;
         if (message.messageId !== undefined) {
-          session.currentTurnMessageId = message.messageId;
+          session.currentTurnCorrelationId = message.messageId;
         } else {
-          delete session.currentTurnMessageId;
+          delete session.currentTurnCorrelationId;
         }
         if (this.options.langfuse && session.langfuseTurnContext) {
           startTurnTrace(
@@ -1178,7 +1178,7 @@ export class AgentRunner implements SessionRuntime {
         tool: toolName,
         toolCallId,
         ...(args !== undefined ? { args } : {}),
-        ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+        ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
       });
 
       await this.queueSideEffect(session, async () => {
@@ -2296,7 +2296,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'thinking_delta',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.delta,
-            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+            ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
           });
         }
 
@@ -2305,7 +2305,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'thinking_final',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.content,
-            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+            ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
           });
         }
 
@@ -2314,7 +2314,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'text_delta',
             sessionId: session.spec.sessionId,
             text: event.assistantMessageEvent.delta,
-            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+            ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
           });
         }
 
@@ -2390,7 +2390,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'text_final',
             sessionId: session.spec.sessionId,
             text: thinkingText,
-            ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+            ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
           });
         }
 
@@ -2450,7 +2450,7 @@ export class AgentRunner implements SessionRuntime {
           isError: event.isError,
           ...(publishText ? { text: publishText } : {}),
           ...(resultDetails !== undefined ? { details: resultDetails } : {}),
-          ...(session.currentTurnMessageId ? { messageId: session.currentTurnMessageId } : {}),
+          ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
         });
 
         void this.queueSideEffect(session, async () => {
@@ -2499,8 +2499,8 @@ export class AgentRunner implements SessionRuntime {
 
         });
 
-        const turnMessageId = session.currentTurnMessageId;
-        delete session.currentTurnMessageId;
+        const turnCorrelationId = session.currentTurnCorrelationId;
+        delete session.currentTurnCorrelationId;
         void (async () => {
           // For channel-bound sessions, run the channel.message.out@v1
           // transform so plugins can scrub/rewrite outbound text (e.g.
@@ -2526,7 +2526,7 @@ export class AgentRunner implements SessionRuntime {
               type: 'text_final',
               sessionId: session.spec.sessionId,
               text: finalText,
-              ...(turnMessageId !== undefined ? { messageId: turnMessageId } : {}),
+              ...(turnCorrelationId !== undefined ? { correlationId: turnCorrelationId } : {}),
             });
           }
 
