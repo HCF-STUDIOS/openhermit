@@ -33,6 +33,12 @@ const mapEventRowToHistoryMessage = (row: {
     if (typeof payload?.model === 'string') message.model = payload.model;
     if (typeof payload?.stopReason === 'string') message.stopReason = payload.stopReason;
     if (typeof payload?.thinking === 'string') message.thinking = payload.thinking;
+    if (Array.isArray(payload?.actions)) {
+      message.actions = payload.actions as NonNullable<SessionHistoryMessage['actions']>;
+    }
+    if (payload && typeof payload.metadata === 'object' && payload.metadata !== null && !Array.isArray(payload.metadata)) {
+      message.metadata = payload.metadata as Record<string, unknown>;
+    }
     return message;
   }
 
@@ -69,23 +75,6 @@ const mapEventRowToHistoryMessage = (row: {
       introspectionPhase: 'end' as const,
       introspectionSummary: (payload?.summary as string) ?? '',
     };
-  }
-
-  if (row.eventType === 'approval_requested' || row.eventType === 'approval_resolved') {
-    const meta = asRecord(payload?.metadata);
-    const message: SessionHistoryMessage = {
-      ts: row.ts,
-      role: 'approval' as const,
-      content: '',
-      approvalPhase: row.eventType === 'approval_requested' ? 'requested' : 'resolved',
-    };
-    if (typeof payload?.requestId === 'string') message.approvalRequestId = payload.requestId;
-    if (typeof payload?.resourceType === 'string') message.approvalResourceType = payload.resourceType;
-    if (typeof payload?.resourceKey === 'string') message.approvalResourceKey = payload.resourceKey;
-    if (payload?.args !== undefined) message.approvalArgs = payload.args;
-    if (payload?.decision === 'approved' || payload?.decision === 'rejected') message.approvalDecision = payload.decision;
-    if (typeof meta?.shortId === 'string') message.approvalShortId = meta.shortId;
-    return message;
   }
 
   return { ts: row.ts, role: 'error', content: row.content ?? '' };
@@ -144,7 +133,7 @@ export class DbMessageStore implements MessageStore {
       .where(and(
         eq(sessionEvents.agentId, scope.agentId),
         eq(sessionEvents.sessionId, sessionId),
-        sql`(${sessionEvents.content} IS NOT NULL OR ${sessionEvents.eventType} IN ('tool_call', 'tool_result', 'introspection_start', 'introspection_end', 'approval_requested', 'approval_resolved'))`,
+        sql`(${sessionEvents.content} IS NOT NULL OR ${sessionEvents.eventType} IN ('tool_call', 'tool_result', 'introspection_start', 'introspection_end'))`,
       ))
       .orderBy(asc(sessionEvents.ts), asc(sessionEvents.id));
 

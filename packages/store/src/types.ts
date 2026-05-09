@@ -136,9 +136,15 @@ export interface SessionLogEntry {
   role: 'system' | 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'error';
   type?: string;
   /**
+   * Inline interactive affordances (e.g. approval Approve/Reject buttons)
+   * surfaced on this message. Promoted from metadata so renderers don't
+   * have to reach into a free-form bag to find them.
+   */
+  actions?: { type: string; [key: string]: unknown }[];
+  /**
    * Free-form metadata bag for derivative info that isn't part of the message
-   * body itself (delivery source, action affordances, etc.). Prefer placing
-   * non-core fields here over scattering them on the entry root.
+   * body itself (delivery source, etc.). Prefer placing non-core fields here
+   * over scattering them on the entry root.
    */
   metadata?: Record<string, unknown>;
   [key: string]: unknown;

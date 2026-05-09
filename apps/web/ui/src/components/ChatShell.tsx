@@ -167,32 +167,34 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         }
         continue;
       }
-      if (entry.role === 'approval') {
-        if (entry.approvalPhase === 'requested') {
-          historyItems.push({
-            type: 'approval',
-            toolName: entry.approvalResourceKey || entry.approvalResourceType || 'approval',
-            toolCallId: entry.approvalRequestId || '',
-            args: entry.approvalArgs,
-            resolved: false,
-          });
-        } else if (entry.approvalPhase === 'resolved' && entry.approvalRequestId) {
-          for (let i = historyItems.length - 1; i >= 0; i--) {
-            const it = historyItems[i];
-            if (it.type === 'approval' && it.toolCallId === entry.approvalRequestId) {
-              historyItems[i] = { ...it, resolved: true, approved: entry.approvalDecision === 'approved' };
-              break;
-            }
+      if (entry.role === 'error') { historyItems.push({ type: 'event', text: entry.content, isError: true }); continue; }
+      // Resolution follow-up: assistant message carrying
+      // metadata.resolvedRequestId. Mark the prior assistant message's
+      // actions resolved instead of pushing a duplicate body — the
+      // resolution status renders on the original message.
+      if (entry.role === 'assistant' && entry.metadata && typeof entry.metadata.resolvedRequestId === 'string') {
+        const reqId = entry.metadata.resolvedRequestId;
+        const decision = entry.metadata.decision;
+        for (let i = historyItems.length - 1; i >= 0; i--) {
+          const it = historyItems[i];
+          if (it.type === 'assistant' && it.actions?.some(a => a.type === 'approval_review' && a.requestId === reqId)) {
+            historyItems[i] = { ...it, actionsResolved: true, actionsApproved: decision === 'approved' };
+            break;
           }
         }
         continue;
       }
-      if (entry.role === 'error') { historyItems.push({ type: 'event', text: entry.content, isError: true }); continue; }
       if (entry.role === 'assistant' && entry.thinking) {
         historyItems.push({ type: 'thinking', text: entry.thinking, streaming: false });
       }
       if (entry.role === 'assistant' && !entry.content) { if (entry.name) setAgentName(entry.name); continue; }
-      historyItems.push({ type: entry.role as 'user' | 'assistant', text: entry.content, streaming: false, name: entry.name });
+      historyItems.push({
+        type: entry.role as 'user' | 'assistant',
+        text: entry.content,
+        streaming: false,
+        name: entry.name,
+        ...(entry.role === 'assistant' && entry.actions && entry.actions.length > 0 ? { actions: entry.actions } : {}),
+      });
       if (entry.role === 'assistant' && entry.name) setAgentName(entry.name);
     }
     flushIntrospection();
@@ -325,27 +327,37 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         }]);
         break;
 
-      case 'approval_pending':
+      case 'approval_pending': {
+        const requestId = (event.requestId as string) || '';
+        const shortId = typeof event.shortId === 'number' ? event.shortId : Number(event.shortId);
+        const requesterId = (event.requesterId as string) || 'unknown';
+        const resourceType = (event.resourceType as string) || 'tool';
+        const resourceKey = (event.resourceKey as string) || '';
+        const text = `🔔 Approval required\n\n`
+          + `User \`${requesterId}\` needs approval for ${resourceType}/${resourceKey}.\n`
+          + `Request ID: ${requestId}`;
         setItems(prev => [...collapseThinking(dropPlaceholder(prev)), {
-          type: 'approval',
-          toolName: (event.resourceKey as string) || (event.resourceType as string) || 'approval',
-          toolCallId: (event.requestId as string) || '',
-          args: event.args,
-          resolved: false,
+          type: 'assistant',
+          text,
+          streaming: false,
+          actions: [{ type: 'approval_review', requestId, shortId }],
         }]);
         break;
+      }
 
       case 'approval_resolved': {
         const reqId = event.requestId as string | undefined;
         const decision = event.decision as 'approved' | 'rejected' | undefined;
         if (!reqId) break;
-        setItems(prev => {
-          const idx = prev.findLastIndex(i => i.type === 'approval' && i.toolCallId === reqId);
-          if (idx < 0) return prev;
-          const updated = [...prev];
-          updated[idx] = { ...(updated[idx] as Extract<ChatItem, { type: 'approval' }>), resolved: true, approved: decision === 'approved' };
-          return updated;
-        });
+        setItems(prev => prev.map(item => {
+          if (item.type === 'assistant' && item.actions?.some(a => a.type === 'approval_review' && a.requestId === reqId)) {
+            return { ...item, actionsResolved: true, actionsApproved: decision === 'approved' };
+          }
+          if (item.type === 'approval' && item.toolCallId === reqId) {
+            return { ...item, resolved: true, approved: decision === 'approved' };
+          }
+          return item;
+        }));
         break;
       }
 
@@ -464,6 +476,27 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
       alert(error instanceof Error ? error.message : String(error));
     }
   }, [refreshSessions]);
+
+  const handleMessageAction = useCallback(async (action: { type: string; [k: string]: unknown }, approved: boolean) => {
+    if (action.type !== 'approval_review') return;
+    const shortId = typeof action.shortId === 'number' ? action.shortId : Number(action.shortId);
+    const requestId = typeof action.requestId === 'string' ? action.requestId : undefined;
+    if (!Number.isFinite(shortId)) return;
+    try {
+      await apiFetch(`/approvals/by-short/${shortId}/review`, {
+        method: 'POST',
+        body: { decision: approved ? 'approved' : 'rejected', resolution: 'once' },
+      });
+      setItems(prev => prev.map(item =>
+        item.type === 'assistant'
+          && item.actions?.some(a => a.type === 'approval_review' && a.requestId === requestId)
+          ? { ...item, actionsResolved: true, actionsApproved: approved }
+          : item
+      ));
+    } catch (error) {
+      setItems(prev => [...prev, { type: 'event', text: error instanceof Error ? error.message : String(error), isError: true }]);
+    }
+  }, []);
 
   const handleApproval = useCallback(async (toolCallId: string, approved: boolean) => {
     const ws = wsRef.current;
@@ -673,6 +706,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
               loading={loadingHistory}
               emptyMessage={isInbox ? 'No notifications yet.' : undefined}
               onApproval={handleApproval}
+              onMessageAction={handleMessageAction}
             />
 
             {readOnly ? (

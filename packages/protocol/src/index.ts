@@ -50,7 +50,7 @@ export interface SessionMessage {
   mentioned?: boolean;
 }
 
-export type SessionHistoryRole = 'user' | 'assistant' | 'error' | 'tool' | 'introspection' | 'approval';
+export type SessionHistoryRole = 'user' | 'assistant' | 'error' | 'tool' | 'introspection';
 
 export interface SessionHistoryMessage {
   ts: string;
@@ -75,14 +75,9 @@ export interface SessionHistoryMessage {
   /** Per-message metadata supplied by the caller on user turns. Persisted
    *  alongside the log entry; surfaced for plugins/tools, not the model. */
   metadata?: Record<string, unknown>;
-  /** Approval-specific fields, populated when role === 'approval'. */
-  approvalPhase?: 'requested' | 'resolved';
-  approvalRequestId?: string;
-  approvalResourceType?: string;
-  approvalResourceKey?: string;
-  approvalArgs?: unknown;
-  approvalDecision?: 'approved' | 'rejected';
-  approvalShortId?: string;
+  /** Inline interactive affordances rendered with this message
+   *  (e.g. approval Approve/Reject buttons on owner inbox notifications). */
+  actions?: ChannelMessageAction[];
 }
 
 export type SessionStatus = 'idle' | 'running' | 'awaiting_approval' | 'inactive';

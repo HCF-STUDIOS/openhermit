@@ -133,17 +133,19 @@ export const createApprovalReviewTool = (context: ToolContext): PolicyAwareTool<
     }
     if (context.messageStore && context.storeScope) {
       try {
+        const verb = args.decision === 'approved' ? '✅ Approved' : '✗ Rejected';
         await context.messageStore.appendLogEntry(context.storeScope, 'inbox', {
           ts: new Date().toISOString(),
-          role: 'system',
-          type: 'approval_resolved',
-          requestId: request.id,
-          resourceType: request.resourceType,
-          resourceKey: request.resourceKey,
-          decision: args.decision,
-          ...(resolution ? { resolution } : {}),
-          reviewerId,
-          mode: 'async',
+          role: 'assistant',
+          content: `${verb} by owner: ${request.resourceType}/${request.resourceKey}.`,
+          metadata: {
+            resolvedRequestId: request.id,
+            resourceType: request.resourceType,
+            resourceKey: request.resourceKey,
+            decision: args.decision,
+            ...(resolution ? { resolution } : {}),
+            reviewerId,
+          },
         });
       } catch (err) {
         console.error('[approval] failed to persist approval_resolved (inbox)', err);

@@ -69,9 +69,11 @@ const renderMarkdown = (text: string, streaming = false): string => {
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
+export type MessageAction = { type: string; [key: string]: unknown };
+
 export type ChatItem =
   | { type: 'user'; text: string; streaming: false; name?: string }
-  | { type: 'assistant'; text: string; streaming: boolean; name?: string }
+  | { type: 'assistant'; text: string; streaming: boolean; name?: string; actions?: MessageAction[]; actionsResolved?: boolean; actionsApproved?: boolean }
   | { type: 'event'; text: string; isError: boolean }
   | { type: 'tool'; tool: string; toolCallId?: string; args?: unknown; phase: 'running' | 'done'; isError?: boolean; result?: string }
   | { type: 'approval'; toolName: string; toolCallId: string; args?: unknown; resolved: boolean; approved?: boolean }
@@ -84,6 +86,7 @@ interface Props {
   loading?: boolean;
   emptyMessage?: string;
   onApproval: (toolCallId: string, approved: boolean) => Promise<void>;
+  onMessageAction?: (action: MessageAction, approved: boolean) => Promise<void>;
 }
 
 // ─── Components ────────────────────────────────────────────────────────────
@@ -239,7 +242,7 @@ function groupIntoTurns(items: ChatItem[]): Turn[] {
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
-export function ChatMessages({ items, agentName, loading, emptyMessage, onApproval }: Props) {
+export function ChatMessages({ items, agentName, loading, emptyMessage, onApproval, onMessageAction }: Props) {
   const containerRef = useRef<HTMLElement>(null);
   const displayAgentName = agentName || 'Assistant';
 
@@ -312,7 +315,33 @@ export function ChatMessages({ items, agentName, loading, emptyMessage, onApprov
               switch (item.type) {
                 case 'assistant':
                   return (
-                    <div key={ii} className="message__body" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, item.streaming) }} />
+                    <div key={ii}>
+                      <div className="message__body" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, item.streaming) }} />
+                      {item.actions && item.actions.length > 0 && (
+                        <div className="message__actions">
+                          {item.actionsResolved ? (
+                            <div className="message__actions-status">
+                              {item.actionsApproved ? '✅ Approved' : '✗ Rejected'}
+                            </div>
+                          ) : (
+                            item.actions.map((action, ai) => (
+                              <div key={ai} className="message__actions-row">
+                                <button
+                                  className="btn btn--primary"
+                                  onClick={() => onMessageAction && void onMessageAction(action, true)}
+                                  disabled={!onMessageAction}
+                                >Approve</button>
+                                <button
+                                  className="btn btn--ghost"
+                                  onClick={() => onMessageAction && void onMessageAction(action, false)}
+                                  disabled={!onMessageAction}
+                                >Reject</button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 case 'tool':
                   return <ToolCard key={ii} item={item} />;

@@ -1115,18 +1115,17 @@ export class AgentRunner implements SessionRuntime {
         try {
           await this.store.messages.appendLogEntry(this.scope, 'inbox', {
             ts,
-            role: 'system',
-            type: 'approval_requested',
-            requestId,
-            resourceType,
-            resourceKey,
-            ...(args !== undefined ? { args } : {}),
-            mode: 'async',
+            role: 'assistant',
+            content: text,
+            actions: [{ type: 'approval_review', requestId, shortId }],
             metadata: {
               requesterId,
               requesterSessionId,
+              resourceType,
+              resourceKey,
+              requestId,
               shortId,
-              actions: [{ type: 'approval_review', requestId, shortId }],
+              ...(args !== undefined ? { args } : {}),
             },
           });
         } catch (err) {
@@ -1328,6 +1327,27 @@ export class AgentRunner implements SessionRuntime {
     const session = this.sessions.get(sessionId);
     const write = async () => {
       try {
+        if (sessionId === 'inbox') {
+          // Inbox is a chat with the owner — render the resolution as a
+          // follow-up assistant message that the renderer can use to
+          // decommission the prior approval card.
+          const verb = payload.decision === 'approved' ? '✅ Approved' : '✗ Rejected';
+          const content = `${verb} by owner: ${payload.resourceType}/${payload.resourceKey}.`;
+          await this.store.messages.appendLogEntry(this.scope, sessionId, {
+            ts,
+            role: 'assistant',
+            content,
+            metadata: {
+              resolvedRequestId: payload.requestId,
+              resourceType: payload.resourceType,
+              resourceKey: payload.resourceKey,
+              decision: payload.decision,
+              ...(payload.resolution ? { resolution: payload.resolution } : {}),
+              ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
+            },
+          });
+          return;
+        }
         await this.store.messages.appendLogEntry(this.scope, sessionId, {
           ts,
           role: 'system',
