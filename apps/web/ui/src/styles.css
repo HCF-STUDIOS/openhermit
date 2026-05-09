@@ -60,14 +60,43 @@ body {
 
 .sidebar__top { padding: 16px; border-bottom: 1px solid var(--line); }
 
+.sidebar__brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .sidebar__brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
   text-decoration: none;
   color: inherit;
   cursor: pointer;
+  min-width: 0;
+}
+
+.sidebar__icon-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.sidebar__icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+.sidebar__icon-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .sidebar__brand:hover .sidebar__brand-name { color: var(--accent); }

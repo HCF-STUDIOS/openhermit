@@ -500,25 +500,44 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     <div className={`shell shell--${mobileMode}`}>
       <aside className="sidebar">
         <div className="sidebar__top">
-          <a
-            className="sidebar__brand"
-            href="/"
-            aria-label="OpenHermit home"
-            onClick={(e) => {
-              e.preventDefault();
-              setView('chat');
-              setCurrentSessionId(null);
-              if (window.location.pathname !== '/') {
-                history.pushState(null, '', '/');
-              }
-            }}
-          >
-            <img src="/logo.png" alt="" className="sidebar__logo" />
-            <div>
-              <h1 className="sidebar__brand-name">OpenHermit</h1>
-              <p className="sidebar__meta">Agent: {agentName || connection.agentId}</p>
-            </div>
-          </a>
+          <div className="sidebar__brand-row">
+            <a
+              className="sidebar__brand"
+              href="/"
+              aria-label="OpenHermit home"
+              onClick={(e) => {
+                e.preventDefault();
+                setView('chat');
+                setCurrentSessionId(null);
+                if (window.location.pathname !== '/') {
+                  history.pushState(null, '', '/');
+                }
+              }}
+            >
+              <img src="/logo.png" alt="" className="sidebar__logo" />
+              <div>
+                <h1 className="sidebar__brand-name">OpenHermit</h1>
+                <p className="sidebar__meta">Agent: {agentName || connection.agentId}</p>
+              </div>
+            </a>
+            {isOwner && (
+              <button
+                type="button"
+                className={`sidebar__icon-btn${currentSessionId === 'inbox' && view === 'chat' ? ' is-active' : ''}`}
+                aria-label="Inbox"
+                title="Inbox"
+                onClick={() => {
+                  if (view === 'manage') setView('chat');
+                  void selectSessionById('inbox');
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="5" width="18" height="14" rx="2" />
+                  <path d="m3 7 9 6 9-6" />
+                </svg>
+              </button>
+            )}
+          </div>
           <div className="sidebar__buttons">
             <button
               className="btn btn--primary"
@@ -529,17 +548,6 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             >
               New Session
             </button>
-            {isOwner && (
-              <button
-                className={`btn btn--ghost${currentSessionId === 'inbox' && view === 'chat' ? ' is-active' : ''}`}
-                onClick={() => {
-                  if (view === 'manage') setView('chat');
-                  void selectSessionById('inbox');
-                }}
-              >
-                Inbox
-              </button>
-            )}
             {isOwner && (
               <button
                 className={`btn btn--ghost${view === 'manage' ? ' is-active' : ''}`}
