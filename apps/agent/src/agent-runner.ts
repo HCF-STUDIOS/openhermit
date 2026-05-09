@@ -1195,17 +1195,21 @@ export class AgentRunner implements SessionRuntime {
     const ts = new Date().toISOString();
     const session = this.sessions.get(sessionId);
     const write = async () => {
-      await this.store.messages.appendLogEntry(this.scope, sessionId, {
-        ts,
-        role: 'system',
-        type: 'approval_requested',
-        ...(payload.requestId ? { requestId: payload.requestId } : {}),
-        resourceType: payload.resourceType,
-        resourceKey: payload.resourceKey,
-        ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
-        ...(payload.args !== undefined ? { args: payload.args } : {}),
-        mode: payload.mode,
-      });
+      try {
+        await this.store.messages.appendLogEntry(this.scope, sessionId, {
+          ts,
+          role: 'system',
+          type: 'approval_requested',
+          ...(payload.requestId ? { requestId: payload.requestId } : {}),
+          resourceType: payload.resourceType,
+          resourceKey: payload.resourceKey,
+          ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+          ...(payload.args !== undefined ? { args: payload.args } : {}),
+          mode: payload.mode,
+        });
+      } catch (err) {
+        console.error('[approval] failed to persist approval_requested', err);
+      }
     };
     if (session) {
       await this.queueSideEffect(session, write);
@@ -1230,19 +1234,23 @@ export class AgentRunner implements SessionRuntime {
     const ts = new Date().toISOString();
     const session = this.sessions.get(sessionId);
     const write = async () => {
-      await this.store.messages.appendLogEntry(this.scope, sessionId, {
-        ts,
-        role: 'system',
-        type: 'approval_resolved',
-        ...(payload.requestId ? { requestId: payload.requestId } : {}),
-        resourceType: payload.resourceType,
-        resourceKey: payload.resourceKey,
-        ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
-        decision: payload.decision,
-        ...(payload.resolution ? { resolution: payload.resolution } : {}),
-        ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
-        mode: payload.mode,
-      });
+      try {
+        await this.store.messages.appendLogEntry(this.scope, sessionId, {
+          ts,
+          role: 'system',
+          type: 'approval_resolved',
+          ...(payload.requestId ? { requestId: payload.requestId } : {}),
+          resourceType: payload.resourceType,
+          resourceKey: payload.resourceKey,
+          ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+          decision: payload.decision,
+          ...(payload.resolution ? { resolution: payload.resolution } : {}),
+          ...(payload.reviewerId ? { reviewerId: payload.reviewerId } : {}),
+          mode: payload.mode,
+        });
+      } catch (err) {
+        console.error('[approval] failed to persist approval_resolved', err);
+      }
     };
     if (session) {
       await this.queueSideEffect(session, write);
@@ -1738,11 +1746,17 @@ export class AgentRunner implements SessionRuntime {
                 });
               }
               const decision = await input.approvalCallback(t.name, toolCallId, args);
+              let resolvedOk = true;
               if (requestId && approvalStore) {
                 const dbDecision = decision === 'approved' ? 'approved' : 'rejected';
-                approvalStore.resolve(requestId, dbDecision, userId ?? 'system', 'once').catch(() => {});
+                try {
+                  await approvalStore.resolve(requestId, dbDecision, userId ?? 'system', 'once');
+                } catch (err) {
+                  resolvedOk = false;
+                  console.error('[approval] failed to resolve approval request', err);
+                }
               }
-              if (sessionId) {
+              if (resolvedOk && sessionId) {
                 void eventBroker.publish({
                   type: 'approval_resolved',
                   sessionId,

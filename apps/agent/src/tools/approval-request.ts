@@ -132,18 +132,22 @@ export const createApprovalReviewTool = (context: ToolContext): PolicyAwareTool<
         });
       }
       if (context.messageStore && context.storeScope) {
-        await context.messageStore.appendLogEntry(context.storeScope, requesterSessionId, {
-          ts: new Date().toISOString(),
-          role: 'system',
-          type: 'approval_resolved',
-          requestId: request.id,
-          resourceType: request.resourceType,
-          resourceKey: request.resourceKey,
-          decision: args.decision,
-          ...(resolution ? { resolution } : {}),
-          reviewerId,
-          mode: 'async',
-        });
+        try {
+          await context.messageStore.appendLogEntry(context.storeScope, requesterSessionId, {
+            ts: new Date().toISOString(),
+            role: 'system',
+            type: 'approval_resolved',
+            requestId: request.id,
+            resourceType: request.resourceType,
+            resourceKey: request.resourceKey,
+            decision: args.decision,
+            ...(resolution ? { resolution } : {}),
+            reviewerId,
+            mode: 'async',
+          });
+        } catch (err) {
+          console.error('[approval] failed to persist approval_resolved (requester)', err);
+        }
       }
     }
 

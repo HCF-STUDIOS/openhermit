@@ -1,6 +1,6 @@
 # Access Policy
 
-> **Status: Phase 0–3 implemented (0.6.0).** Effect model, approval flow, and simplified tool policy are live. Circles (Phase 4) not yet built.
+> **Status: Phase 0–3 implemented.** Effect model, approval flow, and simplified tool policy are live. Circles (Phase 4) not yet built.
 
 OpenHermit gates all caller-visible resources through a unified access-policy model. Every tool call, file operation, exec command, and MCP tool invocation passes through a single `evaluateAccess` decision point.
 

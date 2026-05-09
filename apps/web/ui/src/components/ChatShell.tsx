@@ -7,13 +7,11 @@ import { Composer } from './Composer';
 // hot chat path.
 const ManagePanel = lazy(() => import('./ManagePanel').then((m) => ({ default: m.ManagePanel })));
 
+type View = 'chat' | 'manage';
 type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'policies';
 
 const createSessionId = () =>
   `web:${new Date().toISOString().slice(0, 10)}-${crypto.randomUUID().slice(0, 8)}`;
-
-type View = 'chat' | 'manage';
-type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'policies';
 
 const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'skills', 'mcp', 'schedules', 'policies'];
 

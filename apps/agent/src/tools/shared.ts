@@ -157,16 +157,20 @@ export const checkApprovalOrRequest = async (
       });
     }
     if (context.messageStore && context.storeScope && context.sessionId) {
-      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
-        ts: new Date().toISOString(),
-        role: 'system',
-        type: 'approval_requested',
-        requestId: request.id,
-        resourceType,
-        resourceKey,
-        ...(args !== undefined ? { args } : {}),
-        mode: 'realtime',
-      });
+      try {
+        await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+          ts: new Date().toISOString(),
+          role: 'system',
+          type: 'approval_requested',
+          requestId: request.id,
+          resourceType,
+          resourceKey,
+          ...(args !== undefined ? { args } : {}),
+          mode: 'realtime',
+        });
+      } catch (err) {
+        console.error('[approval] failed to persist approval_requested', err);
+      }
     }
 
     const decision = await context.approvalCallback(
@@ -176,11 +180,15 @@ export const checkApprovalOrRequest = async (
     );
 
     const dbDecision = decision === 'approved' ? 'approved' : 'rejected';
-    context.approvalRequestStore
-      .resolve(request.id, dbDecision, context.currentUserId, 'once')
-      .catch(() => {});
+    let resolved = false;
+    try {
+      await context.approvalRequestStore.resolve(request.id, dbDecision, context.currentUserId, 'once');
+      resolved = true;
+    } catch (err) {
+      console.error('[approval] failed to resolve approval request', err);
+    }
 
-    if (context.publishEvent && context.sessionId) {
+    if (resolved && context.publishEvent && context.sessionId) {
       context.publishEvent({
         type: 'approval_resolved',
         sessionId: context.sessionId,
@@ -193,19 +201,23 @@ export const checkApprovalOrRequest = async (
         mode: 'realtime',
       });
     }
-    if (context.messageStore && context.storeScope && context.sessionId) {
-      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
-        ts: new Date().toISOString(),
-        role: 'system',
-        type: 'approval_resolved',
-        requestId: request.id,
-        resourceType,
-        resourceKey,
-        decision,
-        resolution: 'once',
-        reviewerId: context.currentUserId,
-        mode: 'realtime',
-      });
+    if (resolved && context.messageStore && context.storeScope && context.sessionId) {
+      try {
+        await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+          ts: new Date().toISOString(),
+          role: 'system',
+          type: 'approval_resolved',
+          requestId: request.id,
+          resourceType,
+          resourceKey,
+          decision,
+          resolution: 'once',
+          reviewerId: context.currentUserId,
+          mode: 'realtime',
+        });
+      } catch (err) {
+        console.error('[approval] failed to persist approval_resolved', err);
+      }
     }
 
     if (decision === 'rejected' || decision === 'timed_out' || decision === 'cancelled') {
@@ -238,16 +250,20 @@ export const checkApprovalOrRequest = async (
     });
   }
   if (context.messageStore && context.storeScope && context.sessionId) {
-    await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
-      ts: new Date().toISOString(),
-      role: 'system',
-      type: 'approval_requested',
-      requestId: request.id,
-      resourceType,
-      resourceKey,
-      ...(args !== undefined ? { args } : {}),
-      mode: 'async',
-    });
+    try {
+      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+        ts: new Date().toISOString(),
+        role: 'system',
+        type: 'approval_requested',
+        requestId: request.id,
+        resourceType,
+        resourceKey,
+        ...(args !== undefined ? { args } : {}),
+        mode: 'async',
+      });
+    } catch (err) {
+      console.error('[approval] failed to persist approval_requested (async)', err);
+    }
   }
 
   if (context.notifyOwnerApproval) {
