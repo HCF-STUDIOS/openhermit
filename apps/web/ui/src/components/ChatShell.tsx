@@ -336,12 +336,19 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         const text = `🔔 Approval required\n\n`
           + `User \`${requesterId}\` needs approval for ${resourceType}/${resourceKey}.\n`
           + `Request ID: ${requestId}`;
-        setItems(prev => [...collapseThinking(dropPlaceholder(prev)), {
-          type: 'assistant',
-          text,
-          streaming: false,
-          actions: [{ type: 'approval_review', requestId, shortId }],
-        }]);
+        setItems(prev => {
+          // Replay safety: subscribe(lastEventId=0) on inbox replays the
+          // approval_pending event we already rendered from history.
+          const dup = prev.some(i => i.type === 'assistant'
+            && i.actions?.some(a => a.type === 'approval_review' && a.requestId === requestId));
+          if (dup) return prev;
+          return [...collapseThinking(dropPlaceholder(prev)), {
+            type: 'assistant',
+            text,
+            streaming: false,
+            actions: [{ type: 'approval_review', requestId, shortId }],
+          }];
+        });
         break;
       }
 
