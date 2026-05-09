@@ -539,7 +539,10 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         // Only auto-load when the URL itself names a valid session.
         // Refreshing /  ̄or any non-/chat/:id path keeps the user on the
         // sessions list — don't jump them into a session they didn't pick.
-        if (initialSessionId && list.some((s: SessionSummary) => s.sessionId === initialSessionId)) {
+        // Inbox is intentionally hidden from listSessions, so it never
+        // satisfies the .some() check — load it directly when the URL
+        // names it.
+        if (initialSessionId && (initialSessionId === 'inbox' || list.some((s: SessionSummary) => s.sessionId === initialSessionId))) {
           await loadSession(client, initialSessionId);
         }
       })
