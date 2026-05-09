@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.6 — 2026-05-09
+
+### Outbound `agent_start` event
+
+Added `agent_start` to `OutboundEvent` so SDK consumers see an explicit turn-start signal that mirrors the `agent_start` log entry already written to the message store. Carries `correlationId` (the inbound user-message id, same as the rest of the turn's events). Additive — non-breaking.
+
+---
+
 ## 0.6.5 — 2026-05-09
 
 ### Breaking: outbound event identifiers (#51)

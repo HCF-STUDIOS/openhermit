@@ -2280,6 +2280,11 @@ export class AgentRunner implements SessionRuntime {
     switch (event.type) {
       case 'agent_start': {
         const ts = new Date().toISOString();
+        void this.events.publish({
+          type: 'agent_start',
+          sessionId: session.spec.sessionId,
+          ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
+        });
         void this.queueSideEffect(session, async () => {
           await this.store.messages.appendLogEntry(this.scope,session.spec.sessionId, {
             ts,

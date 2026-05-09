@@ -183,6 +183,7 @@ export type OutboundEventBody =
       messageId?: string;
     }
   | { type: 'user_message'; sessionId: string; text: string; name?: string }
+  | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
   | { type: 'error'; sessionId: string; message: string };
 
