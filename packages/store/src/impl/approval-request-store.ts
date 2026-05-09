@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 import pg from 'pg';
 
 import type { ApprovalRequestStore } from '../interfaces.js';
@@ -90,6 +90,9 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
     resourceType: string,
     resourceKey: string,
   ): Promise<ApprovalRequestRecord | undefined> {
+    // Pick the most recent approved record; an older row may be expired
+    // even when a fresher one is still valid, and without ORDER BY the
+    // backend was free to hand back the wrong one and force a re-prompt.
     const rows = await this.db
       .select()
       .from(approvalRequests)
@@ -102,6 +105,7 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
           eq(approvalRequests.status, 'approved'),
         ),
       )
+      .orderBy(desc(approvalRequests.createdAt))
       .limit(1);
     if (!rows[0]) return undefined;
     const record = toRecord(rows[0]);
