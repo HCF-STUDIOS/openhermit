@@ -115,6 +115,41 @@ export const createApprovalReviewTool = (context: ToolContext): PolicyAwareTool<
       });
     }
 
+    // Also fan-out to the inbox session so the owner-side UI marks
+    // the card as resolved. Requester-side fan-out below is separate
+    // and unchanged.
+    if (context.publishEvent) {
+      context.publishEvent({
+        type: 'approval_resolved',
+        sessionId: 'inbox',
+        requestId: request.id,
+        resourceType: request.resourceType,
+        resourceKey: request.resourceKey,
+        decision: args.decision,
+        ...(resolution ? { resolution } : {}),
+        reviewerId,
+        mode: 'async',
+      });
+    }
+    if (context.messageStore && context.storeScope) {
+      try {
+        await context.messageStore.appendLogEntry(context.storeScope, 'inbox', {
+          ts: new Date().toISOString(),
+          role: 'system',
+          type: 'approval_resolved',
+          requestId: request.id,
+          resourceType: request.resourceType,
+          resourceKey: request.resourceKey,
+          decision: args.decision,
+          ...(resolution ? { resolution } : {}),
+          reviewerId,
+          mode: 'async',
+        });
+      } catch (err) {
+        console.error('[approval] failed to persist approval_resolved (inbox)', err);
+      }
+    }
+
     // Notify the requester's session that their request was resolved.
     const requesterSessionId = request.sessionId;
     if (requesterSessionId && requesterSessionId !== 'unknown') {

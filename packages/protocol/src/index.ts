@@ -539,6 +539,7 @@ export type WsErrorCode =
   | 'SESSION_NOT_FOUND'
   | 'NOT_SUBSCRIBED'
   | 'UNAUTHORIZED'
+  | 'INBOX_READ_ONLY'
   | 'INTERNAL_ERROR';
 
 export interface WsEvent {

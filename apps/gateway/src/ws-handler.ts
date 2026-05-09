@@ -151,6 +151,10 @@ const handleRequest = async (
           sendError(ws, id, 'INVALID_PARAMS', 'Missing sessionId.');
           return;
         }
+        if (sessionId === 'inbox') {
+          sendError(ws, id, 'INBOX_READ_ONLY', 'Inbox session is read-only.');
+          return;
+        }
         await requireSessionAccess(conn, runtime, callerUserId, sessionId);
         const message = {
           text: p.text,

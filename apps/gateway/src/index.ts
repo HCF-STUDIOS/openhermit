@@ -9,6 +9,7 @@ import { createAdaptorServer } from '@hono/node-server';
 
 import {
   DbAgentStore,
+  DbSessionStore,
   DbInstructionStore,
   DbAgentConfigStore,
   DbMcpServerStore,
@@ -122,6 +123,7 @@ export const main = async (): Promise<void> => {
   let policyStore: DbPolicyStore | undefined;
   let approvalRequestStore: DbApprovalRequestStore | undefined;
   let metaStore: DbMetaStore | undefined;
+  let sessionStore: DbSessionStore | undefined;
   if (process.env.DATABASE_URL) {
     try {
       await runMigrations();
@@ -137,6 +139,7 @@ export const main = async (): Promise<void> => {
       policyStore = await DbPolicyStore.open();
       approvalRequestStore = await DbApprovalRequestStore.open();
       metaStore = await DbMetaStore.open();
+      sessionStore = await DbSessionStore.open();
       if (process.env.OPENHERMIT_SECRETS_KEY) {
         agentChannelStore = await DbAgentChannelStore.open();
       }
@@ -333,6 +336,7 @@ export const main = async (): Promise<void> => {
     ...(policyStore ? { policyStore } : {}),
     ...(approvalRequestStore ? { approvalRequestStore } : {}),
     ...(metaStore ? { metaStore } : {}),
+    ...(sessionStore ? { sessionStore } : {}),
     sandboxPresets: config.sandboxPresets,
     autoProvisionSandbox: config.autoProvisionSandbox,
     channelRegistry: channels,
@@ -460,6 +464,7 @@ export const main = async (): Promise<void> => {
     await skillStore?.close();
     await scheduleStore?.close();
     await mcpServerStore?.close();
+    await sessionStore?.close();
 
     server.close(() => {
       logStartup('server closed');

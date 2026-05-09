@@ -30,6 +30,7 @@ import type {
   DbAgentChannelStore,
   SandboxStore,
 } from '@openhermit/store';
+import { buildInboxSessionEntry } from '@openhermit/store';
 import type { SandboxPreset } from './config.js';
 import { defaultGatewayConfig, parseGatewayConfig, saveGatewayConfig, META_KEY } from './config.js';
 import type { ChannelRegistry } from './auth.js';
@@ -214,6 +215,7 @@ export interface GatewayAppOptions {
   policyStore?: DbPolicyStore | undefined;
   approvalRequestStore?: DbApprovalRequestStore | undefined;
   metaStore?: import('@openhermit/store').DbMetaStore | undefined;
+  sessionStore?: import('@openhermit/store').DbSessionStore | undefined;
   /** Named sandbox presets, keyed by preset name. */
   sandboxPresets?: Record<string, SandboxPreset> | undefined;
   /** Default preset to use when an agent is created without an explicit `sandbox` field. Null disables auto-provisioning. */
@@ -821,6 +823,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       updatedAt: now,
     });
 
+    // Eager-create the per-agent inbox session row so web UI subscribers
+    // never race against lazy hydration. See docs/inbox-design.md.
+    if (options.sessionStore) {
+      await options.sessionStore.upsert(
+        { agentId: record.agentId },
+        buildInboxSessionEntry(now),
+      );
+    }
+
     // Canonical agent config + security policy live in the DB.
     if (!configStore) {
       throw new OpenHermitError(
@@ -1090,6 +1101,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const sessionId = c.req.param('sessionId') ?? '';
     const auth = requireAuth(c, agentId);
     enforceSessionNamespace(auth, sessionId);
+    if (sessionId === 'inbox') {
+      throw new OpenHermitError(
+        'Inbox session is read-only.',
+        'inbox_read_only',
+        403,
+      );
+    }
     const runtime = await resolveRunner(instances, agentId);
 
     // Verify caller is a participant (user mode only; channels handle identity per-message)

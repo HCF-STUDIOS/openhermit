@@ -58,6 +58,27 @@ export type {
 
 export { STANDALONE_AGENT_ID, standaloneScope } from './types.js';
 
+/**
+ * Reserved session id for the per-agent owner inbox feed (read-only).
+ * See `docs/inbox-design.md`.
+ */
+export const INBOX_SESSION_ID = 'inbox';
+
+/**
+ * Build a fresh inbox session entry for eager creation on agent register.
+ */
+export const buildInboxSessionEntry = (now: string): import('./types.js').PersistedSessionIndexEntry => ({
+  sessionId: INBOX_SESSION_ID,
+  source: { kind: 'inbox', interactive: false, platform: 'inbox' },
+  status: 'idle',
+  createdAt: now,
+  lastActivityAt: now,
+  messageCount: 0,
+  completedTurnCount: 0,
+  metadata: {},
+  userIds: [],
+});
+
 export {
   DbInternalStateStore,
   DbSessionStore,

@@ -20,7 +20,7 @@ export interface JsonErrorBody {
   };
 }
 
-export type OpenHermitStatusCode = 400 | 401 | 404 | 409 | 500;
+export type OpenHermitStatusCode = 400 | 401 | 403 | 404 | 409 | 500;
 
 export class OpenHermitError extends Error {
   constructor(

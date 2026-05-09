@@ -1,13 +1,35 @@
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, ne, lt, desc, sql } from 'drizzle-orm';
+import pg from 'pg';
 import type { MetadataValue, SessionStatus, SessionType } from '@openhermit/protocol';
 
 import type { SessionStore } from '../interfaces.js';
 import type { PersistedSessionIndexEntry, StoreScope } from '../types.js';
+import * as schema from '../schema.js';
 import { sessionEvents, sessions } from '../schema.js';
 import type { DrizzleDb } from './index.js';
 
 export class DbSessionStore implements SessionStore {
+  private pool?: pg.Pool;
+
   constructor(private readonly db: DrizzleDb) {}
+
+  static async open(databaseUrl?: string): Promise<DbSessionStore> {
+    const url = databaseUrl ?? process.env.DATABASE_URL;
+    if (!url) {
+      throw new Error('DATABASE_URL environment variable is required');
+    }
+    const pool = new pg.Pool({ connectionString: url });
+    await pool.query('SELECT 1');
+    const db = drizzle(pool, { schema });
+    const store = new DbSessionStore(db);
+    store.pool = pool;
+    return store;
+  }
+
+  async close(): Promise<void> {
+    await this.pool?.end();
+  }
 
   async waitForIdle(): Promise<void> {}
 

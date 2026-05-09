@@ -128,8 +128,19 @@ export interface WebConfig {
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high';
 
 export interface OwnerNotificationConfig {
-  channel: string;
+  /**
+   * Legacy single-channel target. Kept for back-compat with
+   * pre-inbox configs; new deployments should prefer `channels`.
+   */
+  channel?: string;
   session_id?: string;
+  /**
+   * Optional list of channel namespaces (e.g. ['telegram']) to push
+   * notifications to in addition to the canonical inbox session. Each
+   * entry is best-effort: if the owner has no live session on that
+   * channel, the push is silently skipped.
+   */
+  channels?: string[];
 }
 
 export interface AgentRuntimeConfig {
