@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { Type, type Static } from '@mariozechner/pi-ai';
 import { ValidationError } from '@openhermit/shared';
 
@@ -105,9 +107,12 @@ const MAX_READ_BYTES = 5 * 1024 * 1024;
  * to contain `.openhermit/skills/` (e.g. a user-supplied workspace tree)
  * doesn't silently inherit the bypass.
  */
-const isSkillPath = (backend: ExecBackend, path: string): boolean => {
+const isSkillPath = (backend: ExecBackend, rawPath: string): boolean => {
+  if (!path.posix.isAbsolute(rawPath)) return false;
+  const normalized = path.posix.normalize(rawPath);
+  if (normalized.split('/').includes('..')) return false;
   const skillsRoot = `${backend.agentHome.replace(/\/$/, '')}/.openhermit/skills/`;
-  return path.startsWith(skillsRoot);
+  return normalized.startsWith(skillsRoot);
 };
 
 const resolveBackend = (context: ToolContext, alias?: string): ExecBackend => {
@@ -160,7 +165,7 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   name: 'file_read',
   label: 'Read File',
   description:
-    'Read a file from a sandbox by absolute path. Use offset (1-based line number) and limit (line count) to read a range of lines from large files. Returns text by default; use encoding=base64 for binary files. Hard cap of 5 MiB.',
+    'Read a file from a sandbox by absolute path. Use offset (1-based line number) and limit (line count) to read a range of lines from large files. Returns text by default; use encoding=base64 for binary files. Hard cap of 5 MiB (skill files under <agentHome>/.openhermit/skills/ are exempt and bypass file policies).',
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
