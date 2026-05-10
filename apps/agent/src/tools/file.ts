@@ -165,7 +165,7 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   name: 'file_read',
   label: 'Read File',
   description:
-    'Read a file from a sandbox by absolute path. Use offset (1-based line number) and limit (line count) to read a range of lines from large files. Returns text by default; use encoding=base64 for binary files. Hard cap of 5 MiB (skill files under <agentHome>/.openhermit/skills/ are exempt and bypass file policies).',
+    'Read a file from a sandbox by absolute path. Use offset (1-based line number) and limit (line count) to read a range of lines from large files. Returns text by default; use encoding=base64 for binary files. Hard cap of 5 MiB.',
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
