@@ -100,11 +100,15 @@ const MAX_READ_BYTES = 5 * 1024 * 1024;
  * commonly forbid reads under `~/.openhermit/`, so without an exception the
  * agent gets blocked and can't follow its own SKILL.md instructions.
  *
- * Treat any path containing the `/.openhermit/skills/` segment as a skill
- * read: bypass the file-policy check and the size/result truncation caps.
+ * Anchor the check to the backend's agentHome rather than matching the
+ * substring anywhere in the path — that way an unrelated path that happens
+ * to contain `.openhermit/skills/` (e.g. a user-supplied workspace tree)
+ * doesn't silently inherit the bypass.
  */
-const isSkillPath = (path: string): boolean =>
-  path.includes('/.openhermit/skills/');
+const isSkillPath = (backend: ExecBackend, path: string): boolean => {
+  const skillsRoot = `${backend.agentHome.replace(/\/$/, '')}/.openhermit/skills/`;
+  return path.startsWith(skillsRoot);
+};
 
 const resolveBackend = (context: ToolContext, alias?: string): ExecBackend => {
   if (!context.execBackendManager) {
@@ -160,7 +164,7 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    const skillRead = isSkillPath(args.path);
+    const skillRead = isSkillPath(backend, args.path);
     if (!skillRead) {
       await checkFilePath(context, backend.id, 'read', args.path, args);
     }
