@@ -236,12 +236,31 @@ export class AgentRunner implements SessionRuntime {
       await this.mcpClientManager.disconnectAll();
       this.mcpClientManager = undefined;
     }
-    const mcpServers = await this.options.mcpServerStore.listEnabled(this.scope.agentId);
+    const mcpServers = await this.loadEnabledMcpServers();
     if (mcpServers.length > 0) {
       this.mcpClientManager = new McpClientManager();
       this.mcpClientManager.connectAll(mcpServers);
     }
     this.logRuntime(`mcp: reloading (${mcpServers.length} server(s) enabled, connecting in background)`);
+  }
+
+  /**
+   * Load enabled MCP servers for this agent and resolve `${{SECRET}}`
+   * placeholders in their headers against the agent's secret store. Lets
+   * operators store an MCP server config like
+   * `Authorization: Bearer ${{MY_API_TOKEN}}` and have each agent supply
+   * its own token at connect time.
+   */
+  private async loadEnabledMcpServers() {
+    if (!this.options.mcpServerStore) return [];
+    const servers = await this.options.mcpServerStore.listEnabled(this.scope.agentId);
+    return Promise.all(
+      servers.map(async (server) =>
+        server.headers
+          ? { ...server, headers: await this.options.security.expandSecrets(server.headers) }
+          : server,
+      ),
+    );
   }
 
   /** Register a channel outbound adapter (called after channel startup). */
@@ -1746,7 +1765,7 @@ export class AgentRunner implements SessionRuntime {
       if (this.options.mcpServerStore) {
         if (!this.mcpClientManager) {
           this.mcpClientManager = new McpClientManager();
-          const mcpServers = await this.options.mcpServerStore.listEnabled(this.scope.agentId);
+          const mcpServers = await this.loadEnabledMcpServers();
           if (mcpServers.length > 0) {
             // Fire-and-forget: connections proceed in the background. The
             // current turn will only see tools from servers that have
