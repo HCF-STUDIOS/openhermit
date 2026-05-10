@@ -200,15 +200,16 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
     const endIdx = args.limit != null ? Math.min(startIdx + args.limit, totalLines) : totalLines;
     const selectedLines = allLines.slice(startIdx, endIdx);
 
-    // Number each line so the agent can reference positions.
-    const numbered = selectedLines
-      .map((line, i) => `${startIdx + i + 1}\t${line}`)
-      .join('\n');
+    // Number each line so the agent can reference positions. Skill files are
+    // returned verbatim — line numbers would just be noise in SKILL.md.
+    const rendered = skillRead
+      ? selectedLines.join('\n')
+      : selectedLines.map((line, i) => `${startIdx + i + 1}\t${line}`).join('\n');
 
     return {
       content: skillRead
-        ? [{ type: 'text' as const, text: numbered }]
-        : asTextContent(numbered),
+        ? [{ type: 'text' as const, text: rendered }]
+        : asTextContent(rendered),
       details: {
         path: args.path,
         sandbox: backend.id,
