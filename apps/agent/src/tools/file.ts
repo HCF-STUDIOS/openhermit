@@ -94,6 +94,18 @@ type FileDeleteArgs = Static<typeof FileDeleteParams>;
 /** 5 MiB. Beyond this, results blow the model context budget. */
 const MAX_READ_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Skill files live under `<agentHome>/.openhermit/skills/` and are required
+ * reading for the agent to actually use a skill. Path-based file policies
+ * commonly forbid reads under `~/.openhermit/`, so without an exception the
+ * agent gets blocked and can't follow its own SKILL.md instructions.
+ *
+ * Treat any path containing the `/.openhermit/skills/` segment as a skill
+ * read: bypass the file-policy check and the size/result truncation caps.
+ */
+const isSkillPath = (path: string): boolean =>
+  path.includes('/.openhermit/skills/');
+
 const resolveBackend = (context: ToolContext, alias?: string): ExecBackend => {
   if (!context.execBackendManager) {
     throw new ValidationError('File tools are unavailable: no execution backend configured for this agent.');
@@ -148,9 +160,12 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    await checkFilePath(context, backend.id, 'read', args.path, args);
+    const skillRead = isSkillPath(args.path);
+    if (!skillRead) {
+      await checkFilePath(context, backend.id, 'read', args.path, args);
+    }
     const { data } = await backend.files.read(args.path);
-    if (data.byteLength > MAX_READ_BYTES && !args.offset && !args.limit) {
+    if (!skillRead && data.byteLength > MAX_READ_BYTES && !args.offset && !args.limit) {
       throw new ValidationError(
         `File is ${data.byteLength.toLocaleString()} bytes; exceeds the ${MAX_READ_BYTES.toLocaleString()} byte cap. Use offset/limit to read a range, or exec for very large files.`,
       );
@@ -160,7 +175,9 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
     if (encoding === 'base64') {
       const content = data.toString('base64');
       return {
-        content: asTextContent(content),
+        content: skillRead
+          ? [{ type: 'text' as const, text: content }]
+          : asTextContent(content),
         details: { path: args.path, sandbox: backend.id, size: data.byteLength, encoding },
       };
     }
@@ -180,7 +197,9 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
       .join('\n');
 
     return {
-      content: asTextContent(numbered),
+      content: skillRead
+        ? [{ type: 'text' as const, text: numbered }]
+        : asTextContent(numbered),
       details: {
         path: args.path,
         sandbox: backend.id,
