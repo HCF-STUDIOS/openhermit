@@ -129,6 +129,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     const onPopState = () => {
       skipPushRef.current = true;
       const route = parseRoute(window.location.pathname);
+      // Update the ref *before* dispatching selectSessionById so
+      // loadSession reads the new view (observe vs chat) in the same
+      // tick — otherwise back/forward into /observe/:id snaps back to
+      // /chat/:id because loadSession sees the stale viewRef.
+      viewRef.current = route.view;
       setView(route.view);
       if (route.view === 'manage') {
         setManageTab(route.tab);
@@ -774,7 +779,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             <button
               className="btn btn--primary"
               onClick={() => {
-                if (view === 'manage') setView('chat');
+                if (view === 'manage' || view === 'observe') setView('chat');
                 void createNewSession();
               }}
             >

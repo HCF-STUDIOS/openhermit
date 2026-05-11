@@ -60,7 +60,12 @@ export const listSessionsForCaller = async (
     });
     if (!callerUserId) return [];
     const all = await runtime.listSessions(baseQuery);
-    return all.filter((s) => !s.userIds?.includes(callerUserId));
+    // Require userIds to be populated — a missing/empty array would
+    // otherwise leak unbackfilled or system rows into the observed list
+    // since `!undefined.includes(...)` is trivially true.
+    return all.filter(
+      (s) => s.userIds && s.userIds.length > 0 && !s.userIds.includes(callerUserId),
+    );
   }
 
   if (auth.mode === 'admin') {
