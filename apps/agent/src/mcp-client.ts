@@ -2,9 +2,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { Type } from '@mariozechner/pi-ai';
-import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { McpServerRecord } from '@openhermit/store';
-import { asTextContent, type Toolset } from './tools/shared.js';
+import { asTextContent, type PolicyAwareTool, type Toolset } from './tools/shared.js';
 
 export type McpConnectionStatusValue = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -128,7 +127,7 @@ export class McpClientManager {
     for (const state of this.connections.values()) {
       if (state.status !== 'connected' || state.tools.length === 0) continue;
 
-      const tools: AgentTool<any>[] = state.tools.map((mcpTool) =>
+      const tools: PolicyAwareTool[] = state.tools.map((mcpTool) =>
         this.adaptTool(state, mcpTool),
       );
 
@@ -156,10 +155,13 @@ export class McpClientManager {
     return this.connections.has(serverId);
   }
 
-  private adaptTool(state: McpConnectionState, mcpTool: McpToolInfo): AgentTool<any> {
+  private adaptTool(state: McpConnectionState, mcpTool: McpToolInfo): PolicyAwareTool {
     const toolName = `mcp__${state.serverId}__${mcpTool.name}`;
 
     return {
+      // MCP tools default to owner-only. Owner must explicitly grant
+      // wider access via tool/mcp policy rows (per-tool or per-server).
+      policy: { defaultGrants: [{ type: 'role', value: 'owner' }] },
       name: toolName,
       label: `[${state.serverName}] ${mcpTool.name}`,
       description: mcpTool.description ?? `MCP tool from ${state.serverName}`,
