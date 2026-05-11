@@ -16,13 +16,14 @@ interface Props {
   currentSessionId: string | null;
   onSelect: (sessionId: string) => void;
   onDelete?: (sessionId: string) => void;
+  emptyMessage?: string;
 }
 
-export function SessionList({ sessions, currentSessionId, onSelect, onDelete }: Props) {
+export function SessionList({ sessions, currentSessionId, onSelect, onDelete, emptyMessage }: Props) {
   if (sessions.length === 0) {
     return (
       <div className="sidebar__list">
-        <div className="empty-state">No sessions yet. Start one to begin chatting.</div>
+        <div className="empty-state">{emptyMessage ?? 'No sessions yet. Start one to begin chatting.'}</div>
       </div>
     );
   }

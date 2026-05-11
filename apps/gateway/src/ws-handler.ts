@@ -221,6 +221,7 @@ const handleRequest = async (
         if (typeof p.limit === 'number') query.limit = p.limit;
         if (typeof p.channel === 'string') query.channel = p.channel;
         if (p.metadata && typeof p.metadata === 'object') query.metadata = p.metadata as Record<string, string>;
+        if (typeof p.observe === 'boolean') query.observe = p.observe;
         // Routes through the same helper as the HTTP endpoint so any
         // future change to the auth-mode → visibility rules takes
         // effect on both transports at once.

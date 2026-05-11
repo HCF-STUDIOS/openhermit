@@ -471,8 +471,11 @@ export class AgentWsClient {
     });
   }
 
-  async listSessions(limit = 50): Promise<SessionSummary[]> {
-    return this.send('session.list', { limit });
+  async listSessions(
+    options: { limit?: number; observe?: boolean } = {},
+  ): Promise<SessionSummary[]> {
+    const { limit = 50, observe } = options;
+    return this.send('session.list', { limit, ...(observe ? { observe: true } : {}) });
   }
 
   async openSession(sessionId: string): Promise<void> {

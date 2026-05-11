@@ -15,6 +15,10 @@ interface SessionListingRuntime {
     channel: string;
     channelUserId: string;
   }): Promise<string | undefined>;
+  resolveCallerRole?(caller: {
+    channel: string;
+    channelUserId: string;
+  }): Promise<'owner' | 'user' | 'guest' | undefined>;
 }
 
 /**
@@ -36,12 +40,35 @@ export const listSessionsForCaller = async (
   auth: AuthContext,
   query: SessionListQuery,
 ): Promise<SessionSummary[]> => {
+  // Observation mode: owner-only view of sessions the caller is NOT a
+  // participant of. Strip `observe` from the downstream query so the
+  // runtime doesn't see a flag it doesn't know about; enforce role here.
+  const { observe, ...rest } = query;
+  const baseQuery: SessionListQuery = rest;
+
+  if (observe) {
+    if (auth.mode !== 'user') return [];
+    if (!runtime.resolveCallerUserId || !runtime.resolveCallerRole) return [];
+    const role = await runtime.resolveCallerRole({
+      channel: auth.channel,
+      channelUserId: auth.channelUserId,
+    });
+    if (role !== 'owner') return [];
+    const callerUserId = await runtime.resolveCallerUserId({
+      channel: auth.channel,
+      channelUserId: auth.channelUserId,
+    });
+    if (!callerUserId) return [];
+    const all = await runtime.listSessions(baseQuery);
+    return all.filter((s) => !s.userIds?.includes(callerUserId));
+  }
+
   if (auth.mode === 'admin') {
-    return runtime.listSessions(query);
+    return runtime.listSessions(baseQuery);
   }
 
   if (auth.mode === 'channel') {
-    const effectiveQuery: SessionListQuery = { ...query };
+    const effectiveQuery: SessionListQuery = { ...baseQuery };
     if (auth.channelNamespace && !effectiveQuery.channel) {
       effectiveQuery.channel = auth.channelNamespace;
     }
@@ -55,5 +82,5 @@ export const listSessionsForCaller = async (
     channelUserId: auth.channelUserId,
   });
   if (!callerUserId) return [];
-  return runtime.listSessions(query, callerUserId);
+  return runtime.listSessions(baseQuery, callerUserId);
 };

@@ -93,6 +93,13 @@ export interface SessionSummary {
   lastMessagePreview?: string;
   status: SessionStatus;
   metadata?: Record<string, MetadataValue>;
+  /**
+   * Internal userIds that participate in this session. Populated by the
+   * gateway when the caller's auth mode warrants exposure (admin, owner
+   * observation mode) so the UI can identify "whose session is this"; left
+   * undefined for ordinary user-mode listings.
+   */
+  userIds?: string[];
 }
 
 export interface SessionListQuery {
@@ -106,6 +113,14 @@ export interface SessionListQuery {
   metadata?: Record<string, string>;
   /** Include inactive sessions (replaced by /new). Default false. */
   includeInactive?: boolean;
+  /**
+   * Owner observation mode: return sessions on this agent where the caller
+   * is NOT a participant. Requires the caller's role on the agent to be
+   * `owner`; ignored (returns []) for other roles. Used by the web UI's
+   * "Observation Mode" view to let owners peek into channel sessions they
+   * weren't part of.
+   */
+  observe?: boolean;
 }
 
 /**

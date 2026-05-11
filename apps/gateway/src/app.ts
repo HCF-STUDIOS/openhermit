@@ -143,6 +143,13 @@ const parseSessionListQuery = (request: Request): SessionListQuery => {
   }
   if (Object.keys(metadata).length > 0) query.metadata = metadata;
 
+  if (url.searchParams.has('observe')) {
+    const observe = parseBooleanQuery(
+      url.searchParams.get('observe') ?? undefined,
+    );
+    if (observe !== undefined) query.observe = observe;
+  }
+
   return query;
 };
 

@@ -55,6 +55,7 @@ export const buildSessionSummaries = (
         : {}),
       status: (session.status as SessionStatus) ?? 'idle',
       ...(session.metadata ? { metadata: session.metadata } : {}),
+      ...(session.userIds && session.userIds.length > 0 ? { userIds: session.userIds } : {}),
     }))
     .filter((summary) => matchesSessionListQuery(summary, query))
     .sort(sortSessionSummaries);

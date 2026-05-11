@@ -7,7 +7,7 @@ import { Composer } from './Composer';
 // hot chat path.
 const ManagePanel = lazy(() => import('./ManagePanel').then((m) => ({ default: m.ManagePanel })));
 
-type View = 'chat' | 'manage';
+type View = 'chat' | 'manage' | 'observe';
 type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'policies';
 
 const createSessionId = () =>
@@ -17,12 +17,21 @@ const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'skills', 'mcp
 
 type Route =
   | { view: 'chat'; sessionId: string | null }
-  | { view: 'manage'; tab: ManageTab };
+  | { view: 'manage'; tab: ManageTab }
+  | { view: 'observe'; sessionId: string | null };
 
 const parseRoute = (pathname: string): Route => {
   if (pathname.startsWith('/manage')) {
     const tab = pathname.split('/')[2] as ManageTab | undefined;
     return { view: 'manage', tab: MANAGE_TABS.includes(tab!) ? tab! : 'basic' };
+  }
+  if (pathname.startsWith('/observe')) {
+    // /observe          -> sessionId null
+    // /observe/<id>     -> sessionId
+    const rest = pathname.slice('/observe'.length);
+    if (rest === '' || rest === '/') return { view: 'observe', sessionId: null };
+    const sessionId = decodeURIComponent(rest.replace(/^\//, ''));
+    return { view: 'observe', sessionId: sessionId || null };
   }
   if (pathname.startsWith('/chat/')) {
     const sessionId = decodeURIComponent(pathname.slice(6));
@@ -33,6 +42,9 @@ const parseRoute = (pathname: string): Route => {
 
 const routeToPath = (route: Route): string => {
   if (route.view === 'manage') return `/manage/${route.tab}`;
+  if (route.view === 'observe') {
+    return route.sessionId ? `/observe/${encodeURIComponent(route.sessionId)}` : '/observe';
+  }
   if (route.sessionId) return `/chat/${encodeURIComponent(route.sessionId)}`;
   return '/';
 };
@@ -49,7 +61,14 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   const [manageTab, setManageTab] = useState<ManageTab>(initialRoute.view === 'manage' ? initialRoute.tab : 'basic');
   const isOwner = role === 'owner';
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const initialSessionId = initialRoute.view === 'chat' ? initialRoute.sessionId : null;
+  // Observed sessions = other users' sessions on this agent. Only fetched
+  // for owners and only when the observe view is active; kept separate
+  // from `sessions` so toggling the view doesn't blow away the owner's
+  // own session list.
+  const [observeSessions, setObserveSessions] = useState<SessionSummary[]>([]);
+  const initialSessionId = initialRoute.view === 'chat' || initialRoute.view === 'observe'
+    ? initialRoute.sessionId
+    : null;
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(initialSessionId);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [agentName, setAgentName] = useState<string | null>(null);
@@ -59,6 +78,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
 
   const wsRef = useRef<AgentWsClient | null>(null);
   const currentSessionRef = useRef<string | null>(null);
+  const viewRef = useRef<View>(initialRoute.view);
   const streamingTextRef = useRef('');
   const streamingThinkingRef = useRef('');
   const thinkingAsAssistantRef = useRef(false);
@@ -88,13 +108,16 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   }, [inboxSeenKey]);
 
   currentSessionRef.current = currentSessionId;
+  viewRef.current = view;
 
   // Sync URL when view/session/tab changes
   useEffect(() => {
     if (skipPushRef.current) { skipPushRef.current = false; return; }
     const route: Route = view === 'manage'
       ? { view: 'manage', tab: manageTab }
-      : { view: 'chat', sessionId: currentSessionId };
+      : view === 'observe'
+        ? { view: 'observe', sessionId: currentSessionId }
+        : { view: 'chat', sessionId: currentSessionId };
     const path = routeToPath(route);
     if (window.location.pathname !== path) {
       history.pushState(null, '', path);
@@ -111,6 +134,8 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         setManageTab(route.tab);
       } else if (route.sessionId && route.sessionId !== currentSessionRef.current) {
         void selectSessionById(route.sessionId);
+      } else if (!route.sessionId) {
+        setCurrentSessionId(null);
       }
     };
     window.addEventListener('popstate', onPopState);
@@ -119,7 +144,10 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
 
   const loadSession = useCallback(async (ws: AgentWsClient, sessionId: string) => {
     setCurrentSessionId(sessionId);
-    setView('chat');
+    // Preserve observe view so opening a session from the observation
+    // list stays under /observe/:id and keeps the sidebar pointed at the
+    // observed-sessions set rather than snapping back to the owner's own.
+    if (viewRef.current !== 'observe') setView('chat');
     setItems([]);
     setLoadingHistory(true);
     streamingTextRef.current = '';
@@ -235,7 +263,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     // chat view — the user may have been on /manage and clicking the
     // session in the sidebar should bring them back to that conversation.
     if (sessionId === currentSessionRef.current) {
-      setView('chat');
+      if (viewRef.current !== 'observe') setView('chat');
       return;
     }
     if (currentSessionRef.current) {
@@ -450,6 +478,9 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         setSending(false);
         setStatus('Connected');
         wsRef.current?.listSessions().then(setSessions).catch(() => {});
+        if (viewRef.current === 'observe') {
+          wsRef.current?.listSessions({ observe: true }).then(setObserveSessions).catch(() => {});
+        }
         break;
     }
   }, []);
@@ -459,6 +490,31 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     const list = await wsRef.current.listSessions();
     setSessions(list);
   }, []);
+
+  const refreshObserveSessions = useCallback(async () => {
+    if (!wsRef.current || !isOwner) return;
+    try {
+      const list = await wsRef.current.listSessions({ observe: true });
+      setObserveSessions(list);
+    } catch {
+      // Non-owners get [] from the gateway; ignore transient errors.
+    }
+  }, [isOwner]);
+
+  const enterObserveMode = useCallback(async () => {
+    if (!isOwner) return;
+    setView('observe');
+    setCurrentSessionId(null);
+    setItems([]);
+    await refreshObserveSessions();
+  }, [isOwner, refreshObserveSessions]);
+
+  // Keep observed list fresh while the view is open so newly arriving
+  // channel sessions show up without a manual refresh.
+  useEffect(() => {
+    if (view !== 'observe') return;
+    void refreshObserveSessions();
+  }, [view, refreshObserveSessions]);
 
   const selectSession = selectSessionById;
 
@@ -600,13 +656,27 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             // owner without inbox row, or transient — badge stays at 0.
           }
         }
+        // Observation mode: if the page loaded under /observe[/:id], prime
+        // the observed-sessions list now so the sidebar isn't empty and so
+        // the deep-link auto-load below can match against it.
+        let observedList: SessionSummary[] = [];
+        if (initialRoute.view === 'observe' && isOwner) {
+          try {
+            observedList = await client.listSessions({ observe: true });
+            setObserveSessions(observedList);
+          } catch {
+            // gateway returns [] for non-owners; transient failures fall
+            // through to an empty sidebar.
+          }
+        }
         // Only auto-load when the URL itself names a valid session.
         // Refreshing /  ̄or any non-/chat/:id path keeps the user on the
         // sessions list — don't jump them into a session they didn't pick.
         // Inbox is intentionally hidden from listSessions, so it never
         // satisfies the .some() check — load it directly when the URL
         // names it.
-        if (initialSessionId && (initialSessionId === 'inbox' || list.some((s: SessionSummary) => s.sessionId === initialSessionId))) {
+        const visibleList = initialRoute.view === 'observe' ? observedList : list;
+        if (initialSessionId && (initialSessionId === 'inbox' || visibleList.some((s: SessionSummary) => s.sessionId === initialSessionId))) {
           await loadSession(client, initialSessionId);
         }
       })
@@ -619,12 +689,21 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   }, [handleEvent, loadSession, isOwner, recomputeInboxBadge]);
 
   const isInbox = currentSessionId === 'inbox';
-  const currentSession = sessions.find(s => s.sessionId === currentSessionId);
+  const inObserveView = view === 'observe';
+  // In observe view, the visible session comes from observeSessions; in
+  // chat view from sessions. Look in both so a freshly-loaded observed
+  // session still resolves its title/source while observeSessions is
+  // being repopulated.
+  const currentSession =
+    sessions.find(s => s.sessionId === currentSessionId) ??
+    observeSessions.find(s => s.sessionId === currentSessionId);
   const sessionTitle = isInbox
     ? 'Inbox'
     : (currentSession?.description || currentSession?.lastMessagePreview || currentSessionId || 'No session');
   const isWebSession = !currentSession || currentSession.source?.kind === 'api' && currentSession.source?.platform === 'web';
-  const readOnly = isInbox || (currentSession != null && !isWebSession);
+  // Observation sessions are always read-only — owners are peeking at
+  // someone else's conversation, not participating.
+  const readOnly = isInbox || inObserveView || (currentSession != null && !isWebSession);
 
   // On mobile, only one of sidebar / detail shows at a time. "List" mode
   // is when the user is in chat view but hasn't selected a session yet;
@@ -714,11 +793,51 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             )}
           </div>
         </div>
+        {isOwner && (
+          <div className="sidebar__observe-row">
+            {inObserveView ? (
+              <button
+                type="button"
+                className="sidebar__observe-btn is-active"
+                onClick={() => {
+                  setView('chat');
+                  setCurrentSessionId(null);
+                  setItems([]);
+                }}
+                title="Back to my sessions"
+              >
+                <span className="sidebar__observe-icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 12H5" />
+                    <path d="m12 19-7-7 7-7" />
+                  </svg>
+                </span>
+                <span className="sidebar__observe-label">Back to my sessions</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="sidebar__observe-btn"
+                onClick={() => void enterObserveMode()}
+                title="View other users' sessions on this agent"
+              >
+                <span className="sidebar__observe-icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </span>
+                <span className="sidebar__observe-label">Observation Mode</span>
+              </button>
+            )}
+          </div>
+        )}
         <SessionList
-          sessions={sessions}
+          sessions={inObserveView ? observeSessions : sessions}
           currentSessionId={currentSessionId}
           onSelect={sessionId => void selectSession(sessionId)}
-          onDelete={sessionId => void deleteSession(sessionId)}
+          onDelete={inObserveView ? undefined : (sessionId => void deleteSession(sessionId))}
+          emptyMessage={inObserveView ? 'No other-user sessions on this agent yet.' : undefined}
         />
         <div className="sidebar__footer">
           <div>
