@@ -905,7 +905,9 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                 <span>
                   {isInbox
                     ? 'Read-only — inbox is the owner notification feed'
-                    : `Read-only — this session was created via ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`}
+                    : inObserveView
+                      ? `Read-only — observing a session from ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`
+                      : `Read-only — this session was created via ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`}
                 </span>
               </div>
             ) : (
