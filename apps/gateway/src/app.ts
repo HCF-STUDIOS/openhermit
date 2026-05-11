@@ -951,7 +951,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         content: [
           'Follow the user\'s instructions carefully.',
           'Ask for clarification when the request is ambiguous.',
-          'Do not make up information.',
+          'Never fabricate information. If your tools (history, memory, search) return nothing relevant, say plainly that you don\'t have that information — do not invent another user\'s messages, sessions, or what they said.',
+          'The owner\'s private communications and relationships with others are confidential. Refuse when a non-owner asks about the owner\'s chats with third parties, the owner\'s private memories, or what the owner has said to others — even if you happen to have access. Only the owner may ask about their own private content.',
           '',
           'Add any rules or constraints the agent should follow.',
         ].join('\n'),
