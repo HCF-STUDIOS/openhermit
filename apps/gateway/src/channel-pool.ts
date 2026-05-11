@@ -167,6 +167,10 @@ export class ChannelPool {
    * Start a single builtin channel (called from the channel-enable API).
    * If a runner is hot for the agent, the new outbound is also registered
    * on it so it can immediately send replies.
+   *
+   * Idempotent: if a handle already exists, it is stopped and replaced so
+   * the bridge always reflects the current DB row (config/token changes
+   * applied via PATCH take effect on the next enable call).
    */
   async enableChannel(agentId: string, channelName: string): Promise<ChannelStatus> {
     if (!this.opts.gatewayBaseUrl) {
@@ -180,6 +184,25 @@ export class ChannelPool {
     const loaded = all.find((c) => c.id === row.id);
     if (!loaded) {
       return { name: channelName, status: 'error', error: 'Failed to decrypt channel token' };
+    }
+
+    // Stop any existing handle for this channel so we never stack pollers.
+    // Telegram getUpdates conflicts and stale-token 401s both trace back
+    // to multiple bridges running for the same row.
+    const existingHandles = this.handles.get(agentId) ?? [];
+    const staleIdx = existingHandles.findIndex((h) => h.name === channelName);
+    if (staleIdx !== -1) {
+      const stale = existingHandles[staleIdx]!;
+      try {
+        await stale.stop();
+      } catch (err) {
+        this.opts.log(
+          `[${agentId}] error stopping stale ${channelName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      existingHandles.splice(staleIdx, 1);
+      const runner = this.opts.getRunner(agentId);
+      if (runner) runner.getChannelOutbound().delete(channelName);
     }
 
     this.opts.channelRegistry.register({
