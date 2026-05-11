@@ -282,7 +282,7 @@ export const createIdentityLinkConfirmTool = (
     'Redeem a token issued by identity_link_request on another channel. Links the current channel identity to the same user. Must be invoked from a different channel than the one that issued the token.',
   parameters: IdentityLinkConfirmParams,
   execute: async (_toolCallId, args: IdentityLinkConfirmArgs) => {
-    if (!context.userStore) {
+    if (!context.userStore || !context.storeScope) {
       throw new ValidationError('identity_link_confirm is unavailable: no user store is configured.');
     }
     if (!context.currentChannel || !context.currentChannelUserId) {
@@ -305,56 +305,79 @@ export const createIdentityLinkConfirmTool = (
       );
     }
 
-    // Verify requesting user still exists.
-    const targetUser = await context.userStore.get(link.userId);
-    if (!targetUser) {
+    const issuerUser = await context.userStore.get(link.userId);
+    if (!issuerUser) {
       throw new ValidationError(`Requesting user ${link.userId} no longer exists.`);
     }
 
-    // On public agents, resolveSessionUser auto-creates a guest for unknown
-    // channel identities.  So the confirming caller almost always arrives as
-    // a *different* user (the auto-created guest).  If the guest is ephemeral
-    // (single identity = this channel), we absorb it: re-link the identity
-    // and delete the empty shell.  If the caller already has multiple
-    // identities they're an established user — refuse and suggest user_merge.
-    let deletedGhostUserId: string | undefined;
-    if (context.currentUserId && context.currentUserId !== link.userId) {
-      const callerIdentities = await context.userStore.listIdentities(context.currentUserId);
-      const isEphemeral =
-        callerIdentities.length === 1 &&
-        callerIdentities[0]!.channel === context.currentChannel &&
-        callerIdentities[0]!.channelUserId === context.currentChannelUserId;
-
-      if (!isEphemeral) {
-        throw new ValidationError(
-          `This channel identity already belongs to user ${context.currentUserId}, which is different from the requesting user ${link.userId}. Ask the owner to merge the two users with user_merge if that is intentional.`,
-        );
-      }
-
-      deletedGhostUserId = context.currentUserId;
+    // Already the same user — nothing to do.
+    if (context.currentUserId === link.userId) {
+      return {
+        content: asTextContent(
+          `Channel ${context.currentChannel}:${context.currentChannelUserId} is already linked to user ${link.userId}.\n`,
+        ),
+        details: { userId: link.userId, alreadyLinked: true },
+      };
     }
 
-    await context.userStore.linkIdentity({
-      userId: link.userId,
-      channel: context.currentChannel,
-      channelUserId: context.currentChannelUserId,
-      createdAt: new Date().toISOString(),
-    });
-
-    if (deletedGhostUserId) {
-      await context.userStore.delete(deletedGhostUserId);
+    // No caller-side user yet — just attach the identity to the issuer.
+    if (!context.currentUserId) {
+      await context.userStore.linkIdentity({
+        userId: link.userId,
+        channel: context.currentChannel,
+        channelUserId: context.currentChannelUserId,
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        content: asTextContent(
+          `Linked ${context.currentChannel}:${context.currentChannelUserId} to user ${link.userId}.\n`,
+        ),
+        details: {
+          userId: link.userId,
+          linkedChannel: context.currentChannel,
+          linkedChannelUserId: context.currentChannelUserId,
+          sourceChannel: link.channel,
+        },
+      };
     }
+
+    // Both sides have a user. Direction is decided by role on this agent:
+    // the guest side is always absorbed into the non-guest side. If neither
+    // is a guest, refuse — merging two established users is user_merge's
+    // job, not a self-service link.
+    const scope = context.storeScope;
+    const [issuerRole, callerRole] = await Promise.all([
+      context.userStore.getAgentRole(scope, link.userId),
+      context.userStore.getAgentRole(scope, context.currentUserId),
+    ]);
+    const issuerIsGuest = (issuerRole ?? 'guest') === 'guest';
+    const callerIsGuest = (callerRole ?? 'guest') === 'guest';
+
+    if (!issuerIsGuest && !callerIsGuest) {
+      throw new ValidationError(
+        `Both ${link.userId} (${issuerRole}) and ${context.currentUserId} (${callerRole}) are established users on this agent. identity_link only auto-merges when one side is a guest. Ask the owner to run user_merge if a real merge is intended.`,
+      );
+    }
+
+    // Guest side becomes `from`, non-guest side becomes `into`.  When both
+    // are guests we keep the legacy direction (caller → issuer) so the
+    // user who initiated the link stays the surviving identity.
+    const absorbCaller = callerIsGuest;
+    const fromUserId = absorbCaller ? context.currentUserId : link.userId;
+    const intoUserId = absorbCaller ? link.userId : context.currentUserId;
+
+    await context.userStore.merge(fromUserId, intoUserId);
 
     return {
       content: asTextContent(
-        `Linked ${context.currentChannel}:${context.currentChannelUserId} to user ${link.userId}. You are now recognised as the same user across both channels.\n`,
+        `Linked ${context.currentChannel}:${context.currentChannelUserId} to user ${intoUserId}. Absorbed guest user ${fromUserId}.\n`,
       ),
       details: {
-        userId: link.userId,
+        userId: intoUserId,
         linkedChannel: context.currentChannel,
         linkedChannelUserId: context.currentChannelUserId,
         sourceChannel: link.channel,
-        ...(deletedGhostUserId ? { deletedGhostUserId } : {}),
+        mergedFromUserId: fromUserId,
       },
     };
   },
