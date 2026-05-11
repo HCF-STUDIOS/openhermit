@@ -151,7 +151,7 @@ The agent config's `exec.lifecycle` block controls when a backend is brought up 
     "lifecycle": {
       "start": "ondemand",
       "stop": "idle",
-      "idle_timeout_minutes": 30
+      "idle_timeout_minutes": 5
     }
   }
 }

@@ -329,7 +329,7 @@ export class AgentRunner implements SessionRuntime {
       return;
     }
 
-    const timeoutMs = (lifecycle?.idle_timeout_minutes ?? 30) * 60_000;
+    const timeoutMs = (lifecycle?.idle_timeout_minutes ?? 5) * 60_000;
 
     this.workspaceIdleTimer = setTimeout(() => {
       this.workspaceIdleTimer = undefined;

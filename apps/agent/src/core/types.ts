@@ -173,7 +173,7 @@ export const buildDefaultAgentConfig = (workspaceRoot: string): AgentRuntimeConf
     lifecycle: {
       start: 'ondemand',
       stop: 'idle',
-      idle_timeout_minutes: 30,
+      idle_timeout_minutes: 5,
     },
   },
   web: { provider: 'defuddle' },
