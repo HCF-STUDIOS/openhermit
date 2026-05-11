@@ -2368,10 +2368,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   });
 
   /**
-   * Delete a channel. External rows are soft-deleted (revoked); builtin
-   * rows are hard-deleted (a fresh row will be re-seeded on next agent
-   * create or via the backfill on next gateway boot if the channelType
-   * is in BUILTIN_CHANNELS).
+   * Delete a channel. External rows are soft-deleted (revoked). Builtin
+   * rows cannot be deleted — they must be disabled instead, since the
+   * row is part of the agent's fixed channel inventory.
    */
   app.delete('/api/agents/:agentId/channels/:channelId', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
@@ -2382,14 +2381,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!existing || existing.agentId !== agentId) {
       throw new NotFoundError(`Channel ${channelId} not found on agent ${agentId}.`);
     }
-    if (existing.kind === 'builtin' && existing.enabled) {
-      await instances.getChannelPool()?.disableChannel(agentId, existing.channelType);
-    }
     if (existing.kind === 'builtin') {
-      await store.delete(channelId);
-    } else {
-      await store.revoke(channelId);
+      throw new ValidationError(
+        `Built-in channel ${existing.channelType} cannot be deleted; disable it instead.`,
+      );
     }
+    await store.revoke(channelId);
     options.channelRegistry?.unregister(channelId);
     return c.json({ ok: true });
   });

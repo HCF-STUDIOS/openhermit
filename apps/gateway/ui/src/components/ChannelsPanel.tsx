@@ -86,9 +86,11 @@ export function ChannelsPanel() {
   };
 
   const handleDelete = async (ch: ChannelRecord) => {
-    const confirmMsg = ch.kind === 'builtin'
-      ? `Reset "${ch.channelType}" channel? It will be re-created disabled on next gateway boot.`
-      : `Revoke external channel "${ch.label ?? ch.namespace}"? Its token will stop working immediately.`;
+    if (ch.kind === 'builtin') {
+      alert(`Built-in channel "${ch.channelType}" cannot be deleted; disable it instead.`);
+      return;
+    }
+    const confirmMsg = `Revoke external channel "${ch.label ?? ch.namespace}"? Its token will stop working immediately.`;
     if (!confirm(confirmMsg)) return;
     try {
       await api(`/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(ch.id)}`, {
@@ -271,9 +273,11 @@ function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }
         <button className="btn btn--sm" onClick={onToggle}>
           {ch.enabled ? 'Disable' : 'Enable'}
         </button>
-        <button className="btn btn--sm btn--danger" onClick={onDelete}>
-          {ch.kind === 'external' ? 'Revoke' : 'Reset'}
-        </button>
+        {ch.kind === 'external' && (
+          <button className="btn btn--sm btn--danger" onClick={onDelete}>
+            Revoke
+          </button>
+        )}
       </div>
     </div>
   );
