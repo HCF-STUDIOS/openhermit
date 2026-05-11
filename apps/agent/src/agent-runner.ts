@@ -55,6 +55,7 @@ import {
   type LangfuseTurnContext,
   startTurnTrace,
 } from './langfuse.js';
+import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
 import { type Caller, type SessionDescriptor, SessionEventBroker, type SessionRuntime } from './runtime.js';
 export type { SessionEventEnvelope } from './runtime.js';
 import {
@@ -2007,7 +2008,7 @@ export class AgentRunner implements SessionRuntime {
       : baseSystemPrompt;
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
-      this.options.streamFn,
+      withOpenRouterAttribution(this.options.streamFn),
       input.langfuseTurnContext ?? { currentTrace: undefined },
     );
 
