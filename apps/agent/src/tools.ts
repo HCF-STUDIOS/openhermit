@@ -59,8 +59,6 @@ export const createBuiltInToolsets = (
   }
   if (context.userStore) {
     toolsets.push(createUserToolset(context));
-  }
-  if (context.userStore && context.currentUserId && context.currentChannel && context.currentChannelUserId) {
     toolsets.push(createIdentityToolset(context));
   }
   if (context.sessionStore) {
