@@ -147,13 +147,17 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     // Preserve observe view so opening a session from the observation
     // list stays under /observe/:id and keeps the sidebar pointed at the
     // observed-sessions set rather than snapping back to the owner's own.
-    if (viewRef.current !== 'observe') setView('chat');
+    const inObserve = viewRef.current === 'observe';
+    if (!inObserve) setView('chat');
     setItems([]);
     setLoadingHistory(true);
     streamingTextRef.current = '';
     streamingThinkingRef.current = '';
     thinkingAsAssistantRef.current = false;
-    await ws.openSession(sessionId);
+    // Observation mode is strictly read-only: skip session.open so we
+    // don't add the owner as a participant in someone else's session.
+    // History + subscribe alone are enough to render and stream.
+    if (!inObserve) await ws.openSession(sessionId);
     const history: HistoryMessage[] = await ws.getHistory(sessionId);
     const historyItems: ChatItem[] = [];
     let introspectionTools: Extract<ChatItem, { type: 'tool' }>[] | null = null;
@@ -250,7 +254,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     flushIntrospection();
     setItems(historyItems);
     setLoadingHistory(false);
-    const allSessions = await ws.listSessions();
+    const allSessions = await ws.listSessions(inObserve ? { observe: true } : undefined);
     const sess = allSessions.find(s => s.sessionId === sessionId);
     await ws.subscribe(sessionId, sess?.lastEventId ?? 0);
     if (sessionId === 'inbox') markInboxSeen();
