@@ -53,7 +53,12 @@ export class TelegramBot {
       await this.startWebhook();
     } else {
       // Fire-and-forget: polling loop runs in background so start() resolves immediately.
-      void this.startPolling();
+      // Catch any unexpected throw so it never bubbles up as an unhandled rejection
+      // (which would crash the whole gateway).
+      void this.startPolling().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(`polling task crashed: ${message}`);
+      });
     }
   }
 
@@ -76,8 +81,14 @@ export class TelegramBot {
   // --- Polling mode ---
 
   private async startPolling(): Promise<void> {
-    // Ensure no stale webhook.
-    await this.api.deleteWebhook();
+    // Best-effort: failure here (e.g. network timeout to api.telegram.org)
+    // must not crash the gateway. Polling can proceed without it.
+    try {
+      await this.api.deleteWebhook();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`deleteWebhook failed (continuing): ${message}`);
+    }
     this.log('polling mode started');
 
     this.pollAbort = new AbortController();
