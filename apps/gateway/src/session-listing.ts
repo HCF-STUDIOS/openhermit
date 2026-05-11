@@ -60,7 +60,12 @@ export const listSessionsForCaller = async (
     });
     if (!callerUserId) return [];
     const all = await runtime.listSessions(baseQuery);
-    return all.filter((s) => !s.userIds?.includes(callerUserId));
+    // Owners are auto-added as participants on every session, so
+    // "sessions I'm not in" is always empty. The useful read of
+    // observation mode is "sessions involving someone other than me":
+    // include any session whose userIds contains at least one
+    // non-caller participant.
+    return all.filter((s) => (s.userIds ?? []).some((id) => id !== callerUserId));
   }
 
   if (auth.mode === 'admin') {
