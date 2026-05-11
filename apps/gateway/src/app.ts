@@ -2861,11 +2861,27 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     await requireOwnerOrAdmin(c, agentId);
     const body = await c.req.json<{
       alias?: string;
+      preset?: string;
       type?: string;
       config?: Record<string, unknown>;
     }>();
     const alias = body.alias ?? 'default';
-    const type = body.type;
+    let type: string | undefined;
+    let config: Record<string, unknown> | undefined;
+    if (typeof body.preset === 'string') {
+      const presets = options.sandboxPresets ?? {};
+      const preset = presets[body.preset];
+      if (!preset) {
+        throw new ValidationError(
+          `Unknown sandbox preset "${body.preset}". Known: ${Object.keys(presets).join(', ') || '(none)'}`,
+        );
+      }
+      type = preset.type;
+      config = preset.config;
+    } else {
+      type = body.type;
+      config = body.config;
+    }
     if (type !== 'host' && type !== 'docker' && type !== 'e2b' && type !== 'daytona') {
       throw new ValidationError(`Invalid sandbox type: ${type}`);
     }
@@ -2884,7 +2900,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       agentId,
       alias,
       type,
-      ...(body.config ? { config: body.config } : {}),
+      ...(config ? { config } : {}),
     });
     return c.json(row, 201);
   });
