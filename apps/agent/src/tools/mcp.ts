@@ -15,7 +15,7 @@ const McpDisableParams = Type.Object({
 export const createMcpStatusTool = (
   mcpClientManager: McpClientManager,
 ): PolicyAwareTool<any> => ({
-  policy: { defaultGrants: [{ type: 'any' }] },
+  policy: { defaultGrants: [{ type: 'role', value: 'owner' }, { type: 'role', value: 'user' }] },
   name: 'mcp_status',
   label: 'MCP Status',
   description: 'View the connection status of all MCP servers, including available tools and errors.',
