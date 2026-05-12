@@ -1,3 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
+import { parseFrontmatter } from '@openhermit/agent/skills';
 import type { Command } from 'commander';
 
 import { createGateway, handleError, printTable } from './shared.js';
@@ -150,16 +154,41 @@ export const registerSkillsCommand = (program: Command): void => {
   skills
     .command('register <skillId>')
     .description('Register a skill in the global registry')
-    .requiredOption('--name <name>', 'Display name')
-    .requiredOption('--description <text>', 'Skill description')
     .requiredOption('--path <path>', 'Filesystem path to skill directory')
-    .action(async (skillId: string, opts: { name: string; description: string; path: string }) => {
+    .option('--name <name>', 'Display name (default: from SKILL.md frontmatter)')
+    .option('--description <text>', 'Skill description (default: from SKILL.md frontmatter)')
+    .action(async (skillId: string, opts: { name?: string; description?: string; path: string }) => {
       try {
+        let name = opts.name;
+        let description = opts.description;
+
+        if (!name || !description) {
+          const skillMdPath = path.join(opts.path, 'SKILL.md');
+          let fm: Record<string, string> = {};
+          try {
+            fm = parseFrontmatter(await readFile(skillMdPath, 'utf8'));
+          } catch {
+            console.error(
+              `Could not read ${skillMdPath}. Pass --name and --description explicitly, or ensure SKILL.md exists.`,
+            );
+            process.exit(1);
+          }
+          name ??= fm.name;
+          description ??= fm.description;
+        }
+
+        if (!name || !description) {
+          console.error(
+            'Missing name or description. Provide them via flags or SKILL.md frontmatter.',
+          );
+          process.exit(1);
+        }
+
         const gateway = createGateway();
         await gateway.registerSkill({
           id: skillId,
-          name: opts.name,
-          description: opts.description,
+          name,
+          description,
           path: opts.path,
         });
         console.log(`Registered skill ${skillId}.`);
