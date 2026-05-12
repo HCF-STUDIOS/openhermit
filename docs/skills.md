@@ -81,7 +81,8 @@ These routes require owner or admin auth.
 
 Current repository skills:
 
-- `openhermit-usage`
+- `openhermit-admin`
+- `openhermit-guide`
 - `skill-creator`
 
 See [../skills/](../skills/).

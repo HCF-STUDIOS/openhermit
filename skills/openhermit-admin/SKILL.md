@@ -1,6 +1,6 @@
 ---
-name: openhermit-usage
-description: Explain what OpenHermit is, how to set it up, use the CLI, configure agents, and interact via API or channels. Use when the user asks about OpenHermit itself.
+name: openhermit-admin
+description: Explain what OpenHermit is and how to deploy and administer it — setup, CLI, gateway, agent config, API. Use when the user asks about installing, operating, or administering an OpenHermit deployment. For how agents behave for their owners/users/guests, see openhermit-guide.
 ---
 
 # OpenHermit Usage Guide
