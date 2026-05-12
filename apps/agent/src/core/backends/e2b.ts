@@ -37,6 +37,12 @@ interface E2BBackendPersisted {
   template: string;
   cwd: string;
   updatedAt: string;
+  /** Last intent we recorded:
+   *  - 'active' after a successful connect/create
+   *  - 'paused' after our own shutdown()→pause()
+   * Informational; `connect()` itself transparently resumes paused
+   * sandboxes, so this is for observability rather than dispatch. */
+  state?: 'active' | 'paused';
 }
 
 interface E2BPendingSkillSync {
@@ -69,13 +75,63 @@ class E2BExecBackend implements ExecBackend {
     this.username = config.username ?? E2B_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? E2B_DEFAULT_AGENT_HOME;
     this.files = new E2BFileBackend();
+    this.files.getSandbox = () => this.sandbox;
     this.files.ensureSandbox = () => this.ensure();
+    this.files.invalidate = () => { this.sandbox = null; };
+
+    // Fire-and-forget: reconcile persisted state with the remote on
+    // startup. Catches the case where the previous process crashed
+    // before recording a deliberate pause (or the sandbox was paused
+    // out-of-band), so our DB stays in sync with e2b.
+    void this.reconcilePersistedState();
+  }
+
+  /**
+   * Best-effort check that runtime_state's `state` matches what e2b
+   * reports for the persisted sandboxId. Runs once at construction.
+   * Skips silently on any error — `ensure()` is the source of truth
+   * for liveness and will overwrite this on first use.
+   */
+  private async reconcilePersistedState(): Promise<void> {
+    try {
+      if (this.sandbox) return;
+      const persisted = await this.loadState();
+      if (!persisted?.sandboxId) return;
+      const apiKey = process.env['E2B_API_KEY'];
+      if (!apiKey) return;
+      const { Sandbox, SandboxNotFoundError } = await import('e2b');
+      let remoteState: 'active' | 'paused';
+      try {
+        const info = await Sandbox.getInfo(persisted.sandboxId, { apiKey });
+        remoteState = info.state === 'paused' ? 'paused' : 'active';
+      } catch (err) {
+        if (err instanceof SandboxNotFoundError) {
+          // Remote is gone entirely. Leave sandboxId in place — ensure()
+          // will hit the same 404 and fall through to create, which is
+          // the right behaviour. No state to record here.
+          return;
+        }
+        throw err;
+      }
+      // Re-check we haven't raced with ensure() taking ownership.
+      if (this.sandbox) return;
+      const fresh = await this.loadState();
+      if (!fresh || fresh.sandboxId !== persisted.sandboxId) return;
+      if (fresh.state === remoteState) return;
+      await this.saveState({
+        ...fresh,
+        state: remoteState,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Fire-and-forget: never let reconcile errors bubble up.
+    }
   }
 
   async ensure(): Promise<void> {
     if (this.sandbox) return;
 
-    const { Sandbox } = await import('e2b');
+    const { Sandbox, SandboxNotFoundError } = await import('e2b');
     const apiKey = process.env['E2B_API_KEY'];
     if (!apiKey) {
       throw new ValidationError(
@@ -86,19 +142,28 @@ class E2BExecBackend implements ExecBackend {
     const persisted = await this.loadState();
     if (persisted?.sandboxId) {
       try {
+        // `connect()` POSTs to /sandboxes/{id}/connect, which transparently
+        // resumes paused sandboxes. So `persisted.state === 'paused'` and
+        // `'active'` take the same code path — the state field is recorded
+        // for observability, not branching.
         this.sandbox = await Sandbox.connect(persisted.sandboxId, {
           apiKey,
           timeoutMs: this.sandboxTimeoutMs,
         });
-        this.files.sandbox = this.sandbox;
+        await this.saveState({
+          ...persisted,
+          updatedAt: new Date().toISOString(),
+          state: 'active',
+        });
         await this.context.markActive?.({
           externalId: this.sandbox.sandboxId,
           lastSeenAt: new Date().toISOString(),
         });
         await this.replayPendingSkillSync();
         return;
-      } catch {
-        // Sandbox gone — create a new one.
+      } catch (err) {
+        if (!(err instanceof SandboxNotFoundError)) throw err;
+        // 404 on connect = paused snapshot also expired. Fall through.
       }
     }
 
@@ -107,7 +172,6 @@ class E2BExecBackend implements ExecBackend {
       timeoutMs: this.sandboxTimeoutMs,
       metadata: { agentId: this.context.agentId },
     });
-    this.files.sandbox = this.sandbox;
 
     await this.sandbox.commands.run(`mkdir -p ${this.agentHome}`);
 
@@ -116,6 +180,7 @@ class E2BExecBackend implements ExecBackend {
       template: this.template,
       cwd: this.agentHome,
       updatedAt: new Date().toISOString(),
+      state: 'active',
     });
     await this.context.markActive?.({
       externalId: this.sandbox.sandboxId,
@@ -153,6 +218,13 @@ class E2BExecBackend implements ExecBackend {
           exitCode: e.exitCode,
           durationMs: Date.now() - startedAt,
         };
+      }
+      const { SandboxNotFoundError } = await import('e2b');
+      if (error instanceof SandboxNotFoundError) {
+        // Cached handle points at a dead/paused-and-evicted sandbox.
+        // Drop it so the next call re-enters ensure() → connect (auto-
+        // resume) or create. The current call still surfaces the error.
+        this.sandbox = null;
       }
       return {
         stdout: '',
@@ -217,13 +289,24 @@ class E2BExecBackend implements ExecBackend {
 
   async shutdown(): Promise<void> {
     if (!this.sandbox) return;
+    let paused = false;
     try {
       await this.sandbox.pause();
+      paused = true;
     } catch {
       // Already paused or gone.
     }
     this.sandbox = null;
-    this.files.sandbox = null;
+    if (paused) {
+      const persisted = await this.loadState();
+      if (persisted?.sandboxId) {
+        await this.saveState({
+          ...persisted,
+          updatedAt: new Date().toISOString(),
+          state: 'paused',
+        });
+      }
+    }
   }
 
   private async loadState(): Promise<E2BBackendPersisted | null> {

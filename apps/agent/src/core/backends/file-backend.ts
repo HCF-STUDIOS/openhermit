@@ -256,71 +256,99 @@ export class HostFileBackend implements FileBackend {
  * The sandbox handle is lazily provided after `ensure()`.
  */
 export class E2BFileBackend implements FileBackend {
-  sandbox: import('e2b').Sandbox | null = null;
+  /** Single source of truth for the live sandbox handle lives on the
+   * E2BExecBackend; we read it through this getter so invalidation in
+   * either place is visible to both without a sync step. */
+  getSandbox: (() => import('e2b').Sandbox | null) | null = null;
   ensureSandbox: (() => Promise<void>) | null = null;
+  /** Called when an operation surfaces a `SandboxNotFoundError`, so the
+   * exec backend can drop its cached handle and let the next call
+   * re-`ensure()` (which triggers connect → auto-resume, or create). */
+  invalidate: (() => void) | null = null;
 
   private get sb(): import('e2b').Sandbox {
-    if (!this.sandbox) throw new ValidationError('E2B sandbox is not connected. Call ensure() first.');
-    return this.sandbox;
+    const sb = this.getSandbox?.() ?? null;
+    if (!sb) throw new ValidationError('E2B sandbox is not connected. Call ensure() first.');
+    return sb;
   }
 
   private async ready(): Promise<void> {
-    if (!this.sandbox && this.ensureSandbox) await this.ensureSandbox();
+    if (!this.getSandbox?.() && this.ensureSandbox) await this.ensureSandbox();
+  }
+
+  private async withInvalidate<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      const { SandboxNotFoundError } = await import('e2b');
+      if (err instanceof SandboxNotFoundError) this.invalidate?.();
+      throw err;
+    }
   }
 
   async read(filePath: string): Promise<FileReadResult> {
     requireAbsolutePath(filePath);
     await this.ready();
-    const bytes = await this.sb.files.read(filePath, { format: 'bytes' });
-    return { data: Buffer.from(bytes) };
+    return this.withInvalidate(async () => {
+      const bytes = await this.sb.files.read(filePath, { format: 'bytes' });
+      return { data: Buffer.from(bytes) };
+    });
   }
 
   async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
     requireAbsolutePath(filePath);
     await this.ready();
-    if (mode === 'create') {
-      const exists = await this.sb.files.exists(filePath);
-      if (exists) throw new ValidationError(`File already exists (mode=create): ${filePath}`);
-    }
-    if (mode === 'append') {
-      let existing = Buffer.alloc(0);
-      try {
-        const bytes = await this.sb.files.read(filePath, { format: 'bytes' });
-        existing = Buffer.from(bytes);
-      } catch {
-        // File doesn't exist — append acts like create.
+    return this.withInvalidate(async () => {
+      if (mode === 'create') {
+        const exists = await this.sb.files.exists(filePath);
+        if (exists) throw new ValidationError(`File already exists (mode=create): ${filePath}`);
       }
-      const buf = Buffer.concat([existing, data]);
-      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-      await this.sb.files.write(filePath, ab);
-    } else {
-      const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-      await this.sb.files.write(filePath, ab);
-    }
+      if (mode === 'append') {
+        let existing = Buffer.alloc(0);
+        try {
+          const bytes = await this.sb.files.read(filePath, { format: 'bytes' });
+          existing = Buffer.from(bytes);
+        } catch {
+          // File doesn't exist — append acts like create.
+        }
+        const buf = Buffer.concat([existing, data]);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+        await this.sb.files.write(filePath, ab);
+      } else {
+        const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+        await this.sb.files.write(filePath, ab);
+      }
+    });
   }
 
   async list(dirPath: string): Promise<DirEntry[]> {
     requireAbsolutePath(dirPath);
     await this.ready();
-    const entries = await this.sb.files.list(dirPath);
-    return entries.map((e) => ({
-      name: e.name,
-      type: e.type === 'dir' ? 'directory' as const : e.type === 'file' ? 'file' as const : 'other' as const,
-      ...(e.type === 'file' ? { size: e.size } : {}),
-    }));
+    return this.withInvalidate(async () => {
+      const entries = await this.sb.files.list(dirPath);
+      return entries.map((e) => ({
+        name: e.name,
+        type: e.type === 'dir' ? 'directory' as const : e.type === 'file' ? 'file' as const : 'other' as const,
+        ...(e.type === 'file' ? { size: e.size } : {}),
+      }));
+    });
   }
 
   async stat(filePath: string): Promise<FileStat | null> {
     requireAbsolutePath(filePath);
     await this.ready();
     try {
-      const info = await this.sb.files.getInfo(filePath);
-      return {
-        type: info.type === 'dir' ? 'directory' : info.type === 'file' ? 'file' : 'other',
-        size: info.size,
-        mtime: info.modifiedTime ? info.modifiedTime.toISOString() : new Date().toISOString(),
-      };
-    } catch {
+      return await this.withInvalidate(async () => {
+        const info = await this.sb.files.getInfo(filePath);
+        return {
+          type: info.type === 'dir' ? 'directory' : info.type === 'file' ? 'file' : 'other',
+          size: info.size,
+          mtime: info.modifiedTime ? info.modifiedTime.toISOString() : new Date().toISOString(),
+        };
+      });
+    } catch (err) {
+      const { SandboxNotFoundError } = await import('e2b');
+      if (err instanceof SandboxNotFoundError) throw err;
       return null;
     }
   }
@@ -328,7 +356,9 @@ export class E2BFileBackend implements FileBackend {
   async delete(filePath: string): Promise<void> {
     requireAbsolutePath(filePath);
     await this.ready();
-    await this.sb.files.remove(filePath);
+    return this.withInvalidate(async () => {
+      await this.sb.files.remove(filePath);
+    });
   }
 }
 
