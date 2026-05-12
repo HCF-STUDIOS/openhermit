@@ -659,6 +659,29 @@ export class AgentRunner implements SessionRuntime {
     return limit !== undefined ? summaries.slice(0, limit) : summaries;
   }
 
+  /**
+   * Ensure the session is loaded in-memory. If the runner doesn't have it
+   * but the session row is persisted (e.g. after a gateway restart or LRU
+   * eviction), reopen it transparently using the persisted source so
+   * subsequent postMessage / appendMessage calls don't 404. Throws
+   * NotFoundError when no persisted row exists either.
+   */
+  async ensureSessionLoaded(sessionId: string, caller?: Caller): Promise<void> {
+    if (this.sessions.has(sessionId)) return;
+    const persisted = await this.store.sessions.get(this.scope, sessionId);
+    if (!persisted) {
+      throw new NotFoundError(`Session not found: ${sessionId}`);
+    }
+    await this.openSession(
+      {
+        sessionId,
+        source: persisted.source,
+        ...(persisted.metadata ? { metadata: persisted.metadata } : {}),
+      },
+      caller,
+    );
+  }
+
   /** Verify that callerUserId is a participant of the session (or an owner). Throws NotFoundError if not. */
   async verifySessionAccess(sessionId: string, callerUserId: string): Promise<void> {
     const role = await this.store.users.getAgentRole(this.scope, callerUserId);

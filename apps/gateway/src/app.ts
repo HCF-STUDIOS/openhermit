@@ -1141,6 +1141,14 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const url = new URL(c.req.url);
     const appendMode = url.searchParams.get('append') === 'true' || url.searchParams.get('inject') === 'true';
 
+    // Lazy-rehydrate after a gateway restart / eviction. The session may
+    // still exist in DB but not in the runner's in-memory map; the runner's
+    // post/append paths require an active session and would 404 otherwise.
+    const httpCaller = (auth.mode === 'user' || auth.mode === 'channel') && auth.channelUserId
+      ? { channel: auth.channel, channelUserId: auth.channelUserId }
+      : undefined;
+    await runtime.ensureSessionLoaded(sessionId, httpCaller);
+
     if (appendMode) {
       await runtime.appendMessage(sessionId, payload);
       return c.json({ sessionId, appended: true });

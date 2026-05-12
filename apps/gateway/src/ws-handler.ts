@@ -167,6 +167,12 @@ const handleRequest = async (
           sendError(ws, id, 'INVALID_PARAMS', 'Invalid message params.');
           return;
         }
+        // Lazy-rehydrate after a gateway restart / eviction so a client that
+        // skipped session.open (e.g. auto-reconnect after idle) doesn't 404.
+        const messageCaller = conn.auth.mode === 'user' && conn.auth.channelUserId
+          ? { channel: conn.auth.channel, channelUserId: conn.auth.channelUserId }
+          : undefined;
+        await runtime.ensureSessionLoaded(sessionId, messageCaller);
         const result = await runtime.postMessage(sessionId, message);
         sendResult(ws, id, result);
         return;
