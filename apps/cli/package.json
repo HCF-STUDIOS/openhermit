@@ -1,6 +1,6 @@
 {
   "name": "openhermit",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "OpenHermit — multi-agent platform CLI & server",
   "type": "module",
   "license": "MIT",
@@ -64,7 +64,7 @@
   "devDependencies": {
     "@openhermit/agent": "0.2.0",
     "@openhermit/gateway": "0.2.0",
-    "@openhermit/sdk": "0.3.7",
+    "@openhermit/sdk": "0.3.8",
     "@openhermit/shared": "0.2.0",
     "@openhermit/store": "0.2.0",
     "@openhermit/web": "0.2.0",
