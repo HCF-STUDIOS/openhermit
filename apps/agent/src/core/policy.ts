@@ -172,9 +172,10 @@ const parseFileScope = (row: PolicyRow): FileScope | undefined => {
 };
 
 /**
- * Resolve file path-level matches. Returns undefined if no file rows exist
- * (caller should fall back to tool-level policy). Returns PolicyMatch[] with
- * all matching rows for the path (across effects).
+ * Resolve file path-level matches. Returns `undefined` when no file row
+ * applies to this (sandbox, mode, path) — caller falls back to tool-level
+ * policy. An unrelated file rule (e.g. one targeting `/root/notes.md`)
+ * must not silently deny reads/writes on other paths.
  */
 export const resolveFilePathMatches = (
   fileRows: PolicyRow[],
@@ -200,7 +201,7 @@ export const resolveFilePathMatches = (
     }
   }
 
-  if (bestByEffect.size === 0) return [];
+  if (bestByEffect.size === 0) return undefined;
   return [...bestByEffect.values()].map(({ row }) => ({
     effect: (row.effect ?? 'allow') as PolicyEffect,
     grants: row.grants as Grant[],
@@ -242,9 +243,9 @@ const normalizeCommand = (cmd: string): string =>
   cmd.trim().replace(/\s+/g, ' ');
 
 /**
- * Resolve exec command-level matches. Returns undefined if no exec rows
- * exist (caller should fall back to tool-level policy). Returns PolicyMatch[]
- * with all matching rows for the command (across effects).
+ * Resolve exec command-level matches. Returns `undefined` when no exec row
+ * applies to this (sandbox, command, cwd) — caller falls back to tool-level
+ * policy. An unrelated command rule must not silently deny other commands.
  */
 export const resolveExecMatches = (
   execRows: PolicyRow[],
@@ -283,7 +284,7 @@ export const resolveExecMatches = (
     }
   }
 
-  if (bestByEffect.size === 0) return [];
+  if (bestByEffect.size === 0) return undefined;
   return [...bestByEffect.values()].map(({ row }) => ({
     effect: (row.effect ?? 'allow') as PolicyEffect,
     grants: row.grants as Grant[],

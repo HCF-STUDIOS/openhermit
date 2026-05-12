@@ -364,6 +364,17 @@ test('resolveFilePathMatches: deny effect on file path', () => {
   assert.equal(evaluateAccess({ agentId: 'a', role: 'owner' }, matches, 'deny'), 'allow');
 });
 
+test('resolveFilePathMatches: unrelated file rule falls through to tool-level', () => {
+  // A rule scoped to /root/notes.md must not block reads on /root or /etc.
+  const rows: PolicyRow[] = [{
+    agentId: 'a', resourceType: 'file', resourceKey: '*:*:/root/notes.md',
+    effect: 'require_approval', grants: [{ type: 'any' }],
+    scope: { sandbox: '*', mode: '*', path: '/root/notes.md' },
+  }];
+  assert.equal(resolveFilePathMatches(rows, 'primary', 'read', '/root'), undefined);
+  assert.equal(resolveFilePathMatches(rows, 'primary', 'read', '/etc/passwd'), undefined);
+});
+
 // ── resolveExecGrants ─────────────────────────────────────────────────
 
 test('resolveExecGrants: returns undefined when no exec rows', () => {
@@ -550,6 +561,17 @@ test('resolveExecMatches: deny effect on exec command', () => {
   const matches = resolveExecMatches(rows, 'primary', 'ls')!;
   assert.equal(evaluateAccess({ agentId: 'a', role: 'guest' }, matches, 'deny'), 'deny');
   assert.equal(evaluateAccess({ agentId: 'a', role: 'owner' }, matches, 'deny'), 'allow');
+});
+
+test('resolveExecMatches: unrelated exec rule falls through to tool-level', () => {
+  // A rule scoped to `rm -rf /` must not block `ls` or `git status`.
+  const rows: PolicyRow[] = [{
+    agentId: 'a', resourceType: 'exec', resourceKey: 'primary:rm -rf /',
+    effect: 'deny', grants: [{ type: 'any' }],
+    scope: { sandbox: 'primary', command: 'rm -rf /' },
+  }];
+  assert.equal(resolveExecMatches(rows, 'primary', 'ls'), undefined);
+  assert.equal(resolveExecMatches(rows, 'primary', 'git status'), undefined);
 });
 
 // ── parseMcpServerId ─────────────────────────────────────────────────
