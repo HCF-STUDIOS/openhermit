@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq, and, inArray, asc } from 'drizzle-orm';
+import { eq, inArray, asc } from 'drizzle-orm';
 import pg from 'pg';
 
 import type { SkillStore } from '../interfaces.js';
@@ -67,14 +67,23 @@ export class DbSkillStore implements SkillStore {
   }
 
   async disable(agentId: string, skillId: string): Promise<void> {
-    await this.db.update(agentSkills).set({ enabled: false })
-      .where(and(eq(agentSkills.agentId, agentId), eq(agentSkills.skillId, skillId)))
-      .catch(() => undefined);
+    const now = new Date().toISOString();
+    await this.db.insert(agentSkills)
+      .values({ agentId, skillId, enabled: false, createdAt: now })
+      .onConflictDoUpdate({
+        target: [agentSkills.agentId, agentSkills.skillId],
+        set: { enabled: false },
+      });
   }
 
   async listEnabled(agentId: string): Promise<SkillRecord[]> {
+    // Pull both the wildcard row and the per-agent row regardless of enabled
+    // state. A per-agent row always overrides the wildcard so that
+    // `disable --agent X` after `enable --all` actually opts X out.
     const rows = await this.db.select({
       skillId: agentSkills.skillId,
+      assignmentAgentId: agentSkills.agentId,
+      enabled: agentSkills.enabled,
       id: skills.id,
       name: skills.name,
       description: skills.description,
@@ -84,18 +93,19 @@ export class DbSkillStore implements SkillStore {
       updatedAt: skills.updatedAt,
     }).from(agentSkills)
       .innerJoin(skills, eq(agentSkills.skillId, skills.id))
-      .where(and(
-        inArray(agentSkills.agentId, [agentId, '*']),
-        eq(agentSkills.enabled, true),
-      ));
+      .where(inArray(agentSkills.agentId, [agentId, '*']));
 
-    const seen = new Set<string>();
-    const result: SkillRecord[] = [];
+    const effective = new Map<string, typeof rows[number]>();
     for (const row of rows) {
-      if (!seen.has(row.skillId)) {
-        seen.add(row.skillId);
-        result.push(this.rowToRecord(row));
+      const prior = effective.get(row.skillId);
+      if (!prior || (prior.assignmentAgentId === '*' && row.assignmentAgentId === agentId)) {
+        effective.set(row.skillId, row);
       }
+    }
+
+    const result: SkillRecord[] = [];
+    for (const row of effective.values()) {
+      if (row.enabled) result.push(this.rowToRecord(row));
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
   }
