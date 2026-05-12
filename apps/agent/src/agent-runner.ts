@@ -761,6 +761,26 @@ export class AgentRunner implements SessionRuntime {
     return session.approvalGate.respond(toolCallId, approved);
   }
 
+  /**
+   * Abort the in-flight turn for `sessionId`, if any.
+   *
+   * Delegates to pi-agent-core's `Agent.abort()`, which aborts the model
+   * stream and signals any tool whose `execute()` accepts an AbortSignal.
+   * The turn settles normally via the existing `agent_end` path (with
+   * `stopReason: 'aborted'`), so status/queue/tracing cleanup needs no
+   * separate plumbing.
+   *
+   * Returns `true` when an active turn was aborted, `false` when the
+   * session exists but was idle (nothing to interrupt).
+   */
+  interruptSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    if (!session.agent.signal || session.agent.signal.aborted) return false;
+    session.agent.abort();
+    return true;
+  }
+
   async checkpointSession(
     sessionId: string,
     reason: 'manual' | 'new_session' | 'turn_limit' | 'idle' = 'manual',

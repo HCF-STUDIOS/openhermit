@@ -199,6 +199,18 @@ const handleRequest = async (
         return;
       }
 
+      case 'session.interrupt': {
+        const sessionId = p.sessionId;
+        if (typeof sessionId !== 'string') {
+          sendError(ws, id, 'INVALID_PARAMS', 'Missing sessionId.');
+          return;
+        }
+        await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        const interrupted = runtime.interruptSession(sessionId);
+        sendResult(ws, id, { interrupted });
+        return;
+      }
+
       case 'session.checkpoint': {
         const sessionId = p.sessionId;
         if (typeof sessionId !== 'string') {

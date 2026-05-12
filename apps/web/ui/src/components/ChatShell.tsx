@@ -571,6 +571,17 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     }
   }, []);
 
+  const interruptTurn = useCallback(async () => {
+    const ws = wsRef.current;
+    const sessionId = currentSessionRef.current;
+    if (!ws || !sessionId) return;
+    try {
+      await ws.interrupt(sessionId);
+    } catch (error) {
+      setItems(prev => [...prev, { type: 'event', text: error instanceof Error ? error.message : String(error), isError: true }]);
+    }
+  }, []);
+
   const deleteSession = useCallback(async (sessionId: string) => {
     const ws = wsRef.current;
     if (!ws) return;
@@ -920,7 +931,12 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                 </span>
               </div>
             ) : (
-              <Composer onSend={sendMessage} disabled={sending || !currentSessionId} />
+              <Composer
+                onSend={sendMessage}
+                disabled={!currentSessionId}
+                running={sending}
+                onInterrupt={interruptTurn}
+              />
             )}
           </>
         )}

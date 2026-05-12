@@ -1346,6 +1346,19 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json({ resolved });
   });
 
+  // --- interrupt ---
+
+  app.post(gatewayRoutes.agentSessionInterruptPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const sessionId = c.req.param('sessionId') ?? '';
+    const intAuth = requireAuth(c, agentId);
+    enforceSessionNamespace(intAuth, sessionId);
+    const runtime = await resolveRunner(instances, agentId);
+    await requireSessionAccessHttp(intAuth, runtime, sessionId);
+    const interrupted = runtime.interruptSession(sessionId);
+    return c.json({ interrupted });
+  });
+
   // --- checkpoint ---
 
   app.post(gatewayRoutes.agentSessionCheckpointPattern, async (c) => {

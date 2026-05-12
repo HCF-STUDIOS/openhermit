@@ -1196,6 +1196,12 @@ export class AgentWsClient {
     return this.request('session.checkpoint', params) as Promise<{ checkpointed: boolean }>;
   }
 
+  async sessionInterrupt(params: {
+    sessionId: string;
+  }): Promise<{ interrupted: boolean }> {
+    return this.request('session.interrupt', params) as Promise<{ interrupted: boolean }>;
+  }
+
   async sessionList(params?: Record<string, unknown>): Promise<SessionSummary[]> {
     return this.request('session.list', params) as Promise<SessionSummary[]>;
   }

@@ -324,6 +324,10 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/checkpoint`,
   agentSessionCheckpointPattern:
     '/api/agents/:agentId/sessions/:sessionId/checkpoint',
+  agentSessionInterrupt: (agentId: string, sessionId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`,
+  agentSessionInterruptPattern:
+    '/api/agents/:agentId/sessions/:sessionId/interrupt',
   agentManage: (agentId: string, action: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/manage/${encodeURIComponent(action)}`,
   agentManagePattern: '/api/agents/:agentId/manage/:action',
@@ -525,6 +529,7 @@ export type WsMethod =
   | 'session.message'
   | 'session.approve'
   | 'session.checkpoint'
+  | 'session.interrupt'
   | 'session.delete'
   | 'session.list'
   | 'session.history'

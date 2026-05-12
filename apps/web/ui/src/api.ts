@@ -512,6 +512,10 @@ export class AgentWsClient {
     await this.send('session.checkpoint', { sessionId, reason });
   }
 
+  async interrupt(sessionId: string): Promise<{ interrupted: boolean }> {
+    return await this.send('session.interrupt', { sessionId }) as { interrupted: boolean };
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     await this.send('session.delete', { sessionId });
   }
