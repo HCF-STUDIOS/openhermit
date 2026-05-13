@@ -88,6 +88,9 @@ export const startChannels = async (
   if (channels.discord?.enabled) {
     tasks.push(tryStart('discord', () => startDiscord(channels.discord!, context)));
   }
+  if (channels.signal?.enabled) {
+    tasks.push(tryStart('signal', () => startSignal(channels.signal!, context)));
+  }
   await Promise.all(tasks);
 
   return { handles, statuses };
@@ -113,6 +116,7 @@ const starters: Record<string, (config: ChannelsConfig, context: ChannelContext)
   telegram: (cfg, ctx) => startTelegram(cfg.telegram!, ctx),
   slack: (cfg, ctx) => startSlack(cfg.slack!, ctx),
   discord: (cfg, ctx) => startDiscord(cfg.discord!, ctx),
+  signal: (cfg, ctx) => startSignal(cfg.signal!, ctx),
 };
 
 export const startSingleChannel = async (
@@ -262,6 +266,45 @@ async function startTelegram(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(`failed to start telegram channel: ${message}`);
+    return undefined;
+  }
+}
+
+async function startSignal(
+  config: NonNullable<ChannelsConfig['signal']>,
+  context: ChannelContext,
+): Promise<ChannelHandle | undefined> {
+  const log = (msg: string) => context.logger('signal', msg);
+
+  try {
+    const { SignalApi, SignalBridge, SignalBot } = await import(
+      '@openhermit/channel-signal'
+    );
+
+    const api = new SignalApi({ httpUrl: config.http_url, account: config.account });
+
+    const bridgeOptions: { allowedSenders?: string[]; allowedGroupIds?: string[] } = {};
+    if (config.allowed_senders) bridgeOptions.allowedSenders = config.allowed_senders;
+    if (config.allowed_group_ids) bridgeOptions.allowedGroupIds = config.allowed_group_ids;
+
+    const bridge = new SignalBridge(
+      api,
+      { baseUrl: context.agentBaseUrl, token: context.agentTokens['signal'] ?? '' },
+      bridgeOptions,
+      log,
+    );
+
+    const bot = new SignalBot({ signal: api, bridge, logger: log });
+    await bot.start();
+
+    return {
+      name: 'signal',
+      outbound: bridge,
+      stop: () => bot.stop(),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`failed to start signal channel: ${message}`);
     return undefined;
   }
 }
