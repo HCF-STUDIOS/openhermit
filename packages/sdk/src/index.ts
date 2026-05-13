@@ -94,7 +94,7 @@ export class AgentLocalClient {
   async appendMessage(
     sessionId: string,
     message: SessionMessage,
-  ): Promise<{ sessionId: string; appended: boolean }> {
+  ): Promise<{ sessionId: string; appended: boolean; deduped?: true }> {
     const path = `${agentLocalRoutes.sessionMessages(sessionId)}?append=true`;
     return this.postJson(path, message);
   }

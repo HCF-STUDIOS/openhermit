@@ -1061,3 +1061,119 @@ test('AgentRunner populates userIds on session open and reopen', async (t) => {
   assert.ok(session.userIds!.length > 0, 'userIds should have at least one entry');
   assert.ok(session.userIds!.includes('usr-owner'), 'userIds should include the owner');
 });
+
+test('AgentRunner.appendMessage with appendAs=assistant stores synthetic assistant entry without user_message', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([]),
+  });
+
+  const sessionId = 'cli:append-assistant';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  const result = await runner.appendMessage(sessionId, {
+    messageId: 'msg-assist-1',
+    text: 'owner-as-assistant reply',
+    appendAs: 'assistant',
+    sender: { channel: 'cli', channelUserId: 'owner' },
+  });
+  assert.deepEqual(result, { appended: true });
+  await runner.waitForSessionIdle(sessionId);
+
+  const entries = await readSessionLog(runner, sessionId);
+  const assistantEntry = entries.find(
+    (e) => e.role === 'assistant' && e.content === 'owner-as-assistant reply',
+  );
+  assert.ok(assistantEntry, 'assistant entry should be persisted');
+  const metadata = assistantEntry!.metadata as Record<string, unknown> | undefined;
+  assert.equal(metadata?.synthetic, true, 'metadata.synthetic should be true');
+  assert.ok(metadata?.appendedBy, 'metadata.appendedBy should be set');
+  assert.equal(assistantEntry!.provider, undefined, 'provider should be unset');
+  assert.equal(assistantEntry!.model, undefined, 'model should be unset');
+
+  const backlog = runner.events.getBacklog(sessionId);
+  assert.ok(
+    !backlog.some((entry) => entry.event.type === 'user_message'),
+    'no user_message event should be emitted for assistant-role append',
+  );
+});
+
+test('AgentRunner.appendMessage is idempotent by messageId', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([]),
+  });
+
+  const sessionId = 'cli:append-idempotent';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  const first = await runner.appendMessage(sessionId, {
+    messageId: 'msg-dup',
+    text: 'first',
+    appendAs: 'user',
+  });
+  assert.deepEqual(first, { appended: true });
+  await runner.waitForSessionIdle(sessionId);
+
+  const second = await runner.appendMessage(sessionId, {
+    messageId: 'msg-dup',
+    text: 'first',
+    appendAs: 'user',
+  });
+  assert.deepEqual(second, { appended: false, deduped: true });
+
+  const entries = await readSessionLog(runner, sessionId);
+  const matches = entries.filter((e) => e.messageId === 'msg-dup');
+  assert.equal(matches.length, 1, 'only one entry persisted for duplicate messageId');
+});
+
+test('AgentRunner.appendMessage honours occurredAt as the persisted ts', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([]),
+  });
+
+  const sessionId = 'cli:append-occurredat';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  const occurredAt = '2024-01-02T03:04:05.000Z';
+  await runner.appendMessage(sessionId, {
+    messageId: 'msg-ts',
+    text: 'backfilled',
+    appendAs: 'assistant',
+    occurredAt,
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  const entries = await readSessionLog(runner, sessionId);
+  const entry = entries.find((e) => e.messageId === 'msg-ts');
+  assert.ok(entry, 'entry persisted');
+  assert.equal(entry!.ts, occurredAt, 'persisted ts should match occurredAt');
+});

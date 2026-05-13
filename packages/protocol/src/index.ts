@@ -48,6 +48,28 @@ export interface SessionMessage {
   /** Whether the bot was explicitly mentioned. When false in a group session,
    *  the server may inject instead of prompting based on user role. */
   mentioned?: boolean;
+  /**
+   * Record this entry in session history under the given role instead of
+   * the default `'user'`. **Only honoured by `appendMessage`**; rejected
+   * on `postMessage` (which always represents a user-driven turn).
+   *
+   * Restricted to `'user' | 'assistant'`. Other history roles (`tool`,
+   * `error`, `introspection`) are server-internal and cannot be forged
+   * by clients.
+   *
+   * Primary use case: shared-account / autopilot flows where the owner
+   * sometimes acts as the assistant directly inside a third-party
+   * conversation, and the agent's history needs to record those turns
+   * as assistant so the persona stays consistent when autopilot resumes.
+   */
+  appendAs?: 'user' | 'assistant';
+  /**
+   * Wall-clock time the message actually occurred at. When set on
+   * `appendMessage`, used as the persisted entry's `ts`, so out-of-order
+   * backfill preserves chronological history order. ISO 8601. Default =
+   * server-now.
+   */
+  occurredAt?: string;
 }
 
 export type SessionHistoryRole = 'user' | 'assistant' | 'error' | 'tool' | 'introspection';
@@ -468,6 +490,16 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
     if (!isRecord(value.metadata) || Array.isArray(value.metadata)) {
       return false;
     }
+  }
+
+  if (value.appendAs !== undefined && value.appendAs !== 'user' && value.appendAs !== 'assistant') {
+    return false;
+  }
+
+  if (value.occurredAt !== undefined) {
+    if (typeof value.occurredAt !== 'string') return false;
+    const parsed = Date.parse(value.occurredAt);
+    if (Number.isNaN(parsed)) return false;
   }
 
   return true;

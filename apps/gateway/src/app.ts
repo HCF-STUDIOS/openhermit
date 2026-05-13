@@ -1150,8 +1150,18 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     await runtime.ensureSessionLoaded(sessionId, httpCaller);
 
     if (appendMode) {
-      await runtime.appendMessage(sessionId, payload);
-      return c.json({ sessionId, appended: true });
+      const result = await runtime.appendMessage(sessionId, payload);
+      return c.json({ sessionId, ...result });
+    }
+
+    // `appendAs` / `occurredAt` are only meaningful for appendMessage —
+    // postMessage represents a live user turn that drives a generation,
+    // never a backfilled or assistant-role entry. Reject loudly so the
+    // caller can pick the right method.
+    if (payload.appendAs !== undefined || payload.occurredAt !== undefined) {
+      throw new ValidationError(
+        '`appendAs` and `occurredAt` are only supported on appendMessage (POST ?append=true).',
+      );
     }
 
     const waitMode = url.searchParams.get('wait') === 'true';

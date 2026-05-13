@@ -123,6 +123,22 @@ export class DbMessageStore implements MessageStore {
     return row!.id;
   }
 
+  async findEntryIdByMessageId(
+    scope: StoreScope,
+    sessionId: string,
+    messageId: string,
+  ): Promise<number | null> {
+    const [row] = await this.db.select({ id: sessionEvents.id })
+      .from(sessionEvents)
+      .where(and(
+        eq(sessionEvents.agentId, scope.agentId),
+        eq(sessionEvents.sessionId, sessionId),
+        sql`${sessionEvents.payload}->>'messageId' = ${messageId}`,
+      ))
+      .limit(1);
+    return row?.id ?? null;
+  }
+
   async writeSessionStarted(scope: StoreScope, spec: SessionSpec, model: { provider: string; model: string }): Promise<void> {
     const entries = createSessionStartedEntries(spec, model);
     await this.appendLogEntry(scope, spec.sessionId, entries.session);

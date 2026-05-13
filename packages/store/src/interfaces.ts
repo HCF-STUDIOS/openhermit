@@ -47,6 +47,10 @@ export interface SessionStore {
 
 export interface MessageStore {
   appendLogEntry(scope: StoreScope, sessionId: string, entry: SessionLogEntry): Promise<number>;
+  /** Lookup an existing entry's id by the messageId stamped in its payload.
+   *  Used to make idempotent appends a no-op on retry. Returns null if no
+   *  entry with that messageId exists in this session. */
+  findEntryIdByMessageId(scope: StoreScope, sessionId: string, messageId: string): Promise<number | null>;
   writeSessionStarted(scope: StoreScope, spec: SessionSpec, model: { provider: string; model: string }): Promise<void>;
   listHistoryMessages(scope: StoreScope, sessionId: string): Promise<SessionHistoryMessage[]>;
   listMessagesSinceEvent(scope: StoreScope, sessionId: string, afterEventId: number): Promise<MessageRow[]>;
