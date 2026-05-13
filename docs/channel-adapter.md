@@ -9,6 +9,7 @@ OpenHermit includes built-in Telegram, Discord, and Slack adapters. At gateway b
 | Telegram | `@openhermit/channel-telegram` | polling or webhook |
 | Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
 | Slack | `@openhermit/channel-slack` | Slack Socket Mode |
+| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`) |
 
 ## Session Routing
 
@@ -19,6 +20,7 @@ Adapters keep a current session per external conversation and recover it by list
 | Telegram | `telegram:` | `telegram_chat_id` |
 | Discord | `discord:` | `discord_channel_id` |
 | Slack | `slack:` | `slack_channel_id`, optional `slack_thread_ts` |
+| Signal | `signal:` (DMs by uuid or E.164) / `signal:group:` | `signal_source`, optional `signal_group_id` |
 
 `/new` creates a new generated session ID after checkpointing the previous session with reason `new_session`.
 
@@ -121,3 +123,13 @@ Slack:
 - channel, DM, and thread metadata
 - deduplicates paired message/app-mention events
 - optional `allowed_channel_ids`
+
+Signal:
+
+- external `bbernhard/signal-cli-rest-api` daemon (`MODE=json-rpc` required)
+- persistent WebSocket to `/v1/receive/{account}` for inbound
+- REST `POST /v2/send` with `text_mode=styled` for outbound
+- group routing controlled via optional `allowed_group_ids`
+- DM allow-list controlled via optional `allowed_senders` (mix of `+E164` and `uuid:<id>`)
+- no native streaming edits — replies are sent in full chunks
+- self-loopback messages (linked secondary device) are dropped via `sourceUuid` match
