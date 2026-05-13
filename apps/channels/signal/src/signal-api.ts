@@ -138,9 +138,8 @@ export class SignalApi {
     ws.on('close', () => { closed = true; push(null); });
     ws.on('error', (err) => { openError = err as Error; closed = true; push(null); });
 
-    opts.signal?.addEventListener('abort', () => {
-      try { ws.close(); } catch { /* ignore */ }
-    });
+    const onAbort = (): void => { try { ws.close(); } catch { /* ignore */ } };
+    opts.signal?.addEventListener('abort', onAbort);
 
     try {
       while (true) {
@@ -160,6 +159,7 @@ export class SignalApi {
         yield next;
       }
     } finally {
+      opts.signal?.removeEventListener('abort', onAbort);
       try { ws.close(); } catch { /* ignore */ }
     }
   }

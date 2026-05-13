@@ -109,6 +109,19 @@ test('streamMessages marks isSelf=true when sourceUuid matches the bot account',
   );
 });
 
+test('streamMessages throws when the WebSocket fails to connect', async () => {
+  // Port 1 is reserved (TCP echo on Unix, never listening). Connection refused.
+  const api = new SignalApi({
+    httpUrl: 'http://127.0.0.1:1',
+    account: '+15551234567',
+  });
+  const iter = api.streamMessages({ signal: AbortSignal.timeout(2000) });
+  await assert.rejects(
+    async () => { await iter.next(); },
+    /ECONNREFUSED|connect/i,
+  );
+});
+
 test('streamMessages skips non-dataMessage envelopes (receipts, typing, sync)', async () => {
   await withMockWsServer(
     (ws) => {
