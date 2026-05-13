@@ -2212,6 +2212,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       ],
       defaultConfig: { bot_token: '${{SLACK_BOT_TOKEN}}', app_token: '${{SLACK_APP_TOKEN}}' },
     },
+    signal: {
+      label: 'Signal',
+      secretKeys: [
+        { key: 'SIGNAL_HTTP_URL', label: 'signal-cli-rest-api URL', placeholder: 'http://signal:8080' },
+        { key: 'SIGNAL_ACCOUNT', label: 'Bot phone number (E.164)', placeholder: '+15551234567' },
+      ],
+      defaultConfig: {
+        http_url: '${{SIGNAL_HTTP_URL}}',
+        account: '${{SIGNAL_ACCOUNT}}',
+      },
+    },
   };
 
   const requireAgentChannelStore = (): DbAgentChannelStore => {
