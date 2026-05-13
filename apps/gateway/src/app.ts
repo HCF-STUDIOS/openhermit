@@ -2968,7 +2968,18 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (error instanceof OpenHermitError) {
       return c.json(jsonError(error), error.statusCode);
     }
-    console.error('[openhermit-gateway] unhandled error', error);
+    // Drizzle/pg wrap the underlying driver error on `.cause`. Without
+    // dumping it the only thing we see is "Failed query: select ...",
+    // which makes runtime/pool issues (connection eviction, terminated
+    // backend, prepared-statement conflicts) effectively unfixable from
+    // production logs alone.
+    const cause = (error as { cause?: unknown }).cause;
+    const code = (error as { code?: unknown }).code
+      ?? (cause as { code?: unknown } | undefined)?.code;
+    console.error('[openhermit-gateway] unhandled error', error, {
+      ...(code !== undefined ? { code } : {}),
+      ...(cause !== undefined ? { cause } : {}),
+    });
     return c.json(jsonError(getErrorMessage(error), 'internal_error'), 500);
   });
 

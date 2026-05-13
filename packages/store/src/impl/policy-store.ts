@@ -13,6 +13,16 @@ import type { DrizzleDb } from './index.js';
 export class DbPolicyStore implements PolicyStore {
   private pool?: pg.Pool;
 
+  /**
+   * In-flight `list` promises keyed by `agentId|resourceType` (or
+   * `agentId|*` for "all types"). Concurrent callers within the same
+   * tick share a single SELECT — this is the hot path during
+   * `openSession`, where two parallel sessions on the same agent each
+   * load 'tool' and 'mcp' policies. Cleared as soon as the promise
+   * settles, so no staleness risk.
+   */
+  private readonly inFlightList = new Map<string, Promise<PolicyRecord[]>>();
+
   constructor(private readonly db: DrizzleDb) {}
 
   static async open(databaseUrl?: string): Promise<DbPolicyStore> {
@@ -31,12 +41,44 @@ export class DbPolicyStore implements PolicyStore {
   }
 
   async list(agentId: string, resourceType?: string): Promise<PolicyRecord[]> {
+    const key = `${agentId}|${resourceType ?? '*'}`;
+    const existing = this.inFlightList.get(key);
+    if (existing) return existing;
+
+    const promise = this.runList(agentId, resourceType);
+    this.inFlightList.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlightList.delete(key);
+    }
+  }
+
+  private async runList(agentId: string, resourceType?: string): Promise<PolicyRecord[]> {
     const conditions = resourceType
       ? and(eq(agentPolicies.agentId, agentId), eq(agentPolicies.resourceType, resourceType))
       : eq(agentPolicies.agentId, agentId);
 
-    const rows = await this.db.select().from(agentPolicies).where(conditions);
-    return rows.map(toRecord);
+    // One in-process retry: the SELECT itself is idempotent and the
+    // reported failure mode was transient ("DrizzleQueryError" with no
+    // schema mismatch). Cheaper than 500ing the caller.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const rows = await this.db.select().from(agentPolicies).where(conditions);
+        return rows.map(toRecord);
+      } catch (err) {
+        lastErr = err;
+        const cause = (err as { cause?: unknown }).cause;
+        const code = (err as { code?: unknown }).code
+          ?? (cause as { code?: unknown } | undefined)?.code;
+        console.warn(
+          `[policy-store] list(${agentId}, ${resourceType ?? '*'}) attempt ${attempt + 1} failed`,
+          { code, cause: cause ?? err },
+        );
+      }
+    }
+    throw lastErr;
   }
 
   async get(
