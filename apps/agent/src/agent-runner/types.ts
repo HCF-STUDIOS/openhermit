@@ -36,6 +36,11 @@ export interface RunnerSession extends SessionDescriptor {
   resolvedChannelUserId?: string;
   langfuseTurnContext?: LangfuseTurnContext;
   turnStartMs?: number;
+  /** Consecutive failed tool results in the current turn. Resets at turn
+   *  start and on any successful tool result. The agent aborts the turn
+   *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
+   *  model from looping forever against a broken tool. */
+  consecutiveToolFailures: number;
 }
 
 export interface AgentRunnerOptions {

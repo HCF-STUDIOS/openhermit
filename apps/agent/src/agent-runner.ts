@@ -1,7 +1,18 @@
 import { userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
-import { Agent, type AgentEvent, type AgentMessage } from '@mariozechner/pi-agent-core';
+import {
+  Agent,
+  type AfterToolCallContext,
+  type AfterToolCallResult,
+  type AgentEvent,
+  type AgentMessage,
+} from '@mariozechner/pi-agent-core';
+
+type AfterToolCallHook = (
+  ctx: AfterToolCallContext,
+  signal?: AbortSignal,
+) => Promise<AfterToolCallResult | undefined>;
 import type { MessageSender, SessionHistoryMessage, SessionListQuery, SessionMessage, SessionSpec, SessionSummary } from '@openhermit/protocol';
 import { NotFoundError, ValidationError, getErrorMessage } from '@openhermit/shared';
 import {
@@ -89,6 +100,10 @@ import {
   agentTurnDuration,
   agentTurnsTotal,
 } from './metrics.js';
+
+/** Abort the turn after this many consecutive tool failures. Bounds the
+ *  cost of a model that keeps re-calling a permanently broken tool. */
+const MAX_CONSECUTIVE_TOOL_FAILURES = 15;
 
 const addUserIdToList = (existing: string[], userId: string | undefined): string[] => {
   if (!userId) return existing;
@@ -570,6 +585,21 @@ export class AgentRunner implements SessionRuntime {
       resolvedUserName,
       resolvedChannel,
       resolvedChannelUserId,
+      async (ctx) => {
+        if (!session) return undefined;
+        if (ctx.isError) {
+          session.consecutiveToolFailures += 1;
+          if (session.consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+            this.logRuntime(
+              `session ${session.spec.sessionId}: aborting turn after ${session.consecutiveToolFailures} consecutive tool failures`,
+            );
+            session.agent.abort();
+          }
+        } else {
+          session.consecutiveToolFailures = 0;
+        }
+        return undefined;
+      },
     );
     session = {
       spec: effectiveSpec,
@@ -586,6 +616,7 @@ export class AgentRunner implements SessionRuntime {
       status: 'idle',
       messageCount: persisted?.messageCount ?? 0,
       completedTurnCount: persisted?.completedTurnCount ?? 0,
+      consecutiveToolFailures: 0,
       ...(persisted?.description ? { description: persisted.description } : {}),
       ...(persisted?.descriptionSource
         ? { descriptionSource: persisted.descriptionSource }
@@ -1070,6 +1101,7 @@ export class AgentRunner implements SessionRuntime {
       try {
         await this.refreshAgentConfiguration(session);
         session.latestAssistantText = undefined;
+        session.consecutiveToolFailures = 0;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
         } else {
@@ -1771,6 +1803,7 @@ export class AgentRunner implements SessionRuntime {
     userName?: string,
     channel?: string,
     channelUserId?: string,
+    afterToolCall?: AfterToolCallHook,
   ): Promise<Agent> {
     return this.createConfiguredAgent({
       config,
@@ -1788,6 +1821,7 @@ export class AgentRunner implements SessionRuntime {
       ...(spec.source.type ? { sessionType: spec.source.type } : {}),
       sourceKind: spec.source.kind,
       ...(spec.customInstruction ? { customInstruction: spec.customInstruction } : {}),
+      ...(afterToolCall ? { afterToolCall } : {}),
     });
   }
 
@@ -1809,6 +1843,7 @@ export class AgentRunner implements SessionRuntime {
     sessionType?: import('@openhermit/protocol').SessionType;
     sourceKind?: string;
     customInstruction?: string;
+    afterToolCall?: AfterToolCallHook;
   }): Promise<Agent> {
     const webProvider = this.resolveWebProvider(input.config);
 
@@ -2145,6 +2180,7 @@ export class AgentRunner implements SessionRuntime {
       transformContext: (messages, signal) =>
         this.transformContext(input.contextSessionId, messages, signal),
       transport: 'sse',
+      ...(input.afterToolCall ? { afterToolCall: input.afterToolCall } : {}),
     });
   }
 
