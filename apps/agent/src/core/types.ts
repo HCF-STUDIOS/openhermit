@@ -75,10 +75,23 @@ export interface DiscordChannelConfig {
   allowed_channel_ids?: string[];
 }
 
+export interface SignalChannelConfig {
+  enabled: boolean;
+  /** Base URL of the signal-cli-rest-api container (e.g. http://signal:8080). */
+  http_url: string;
+  /** E.164 phone number of the bot's Signal account. */
+  account: string;
+  /** Optional DM allow-list: each entry is either "+E164" or "uuid:<uuid>". */
+  allowed_senders?: string[];
+  /** Optional group allow-list: base64 group ids as reported by signal-cli. */
+  allowed_group_ids?: string[];
+}
+
 export interface ChannelsConfig {
   telegram?: TelegramChannelConfig;
   slack?: SlackChannelConfig;
   discord?: DiscordChannelConfig;
+  signal?: SignalChannelConfig;
 }
 
 /**
@@ -90,6 +103,7 @@ export const BUILTIN_CHANNELS: readonly BuiltinChannelDef[] = [
   { key: 'telegram', namespace: 'telegram' },
   { key: 'slack', namespace: 'slack' },
   { key: 'discord', namespace: 'discord' },
+  { key: 'signal', namespace: 'signal' },
 ] satisfies readonly { key: keyof ChannelsConfig; namespace: string }[];
 
 export interface BuiltinChannelDef {
