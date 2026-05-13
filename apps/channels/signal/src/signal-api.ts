@@ -1,8 +1,22 @@
+import { WebSocket } from 'ws';
+
 export interface SignalApiOptions {
   httpUrl: string;
   account: string;
+  /** UUID of the bot account itself; used to drop self-loopback messages. */
+  selfUuid?: string;
   /** Injectable for tests; defaults to global fetch. */
   fetch?: typeof fetch;
+}
+
+export interface SignalIncomingMessage {
+  sourceNumber?: string;
+  sourceUuid?: string;
+  sourceName?: string;
+  text: string;
+  groupId?: string;
+  timestamp: number;
+  isSelf: boolean;
 }
 
 export interface SendResult {
@@ -13,11 +27,13 @@ export class SignalApi {
   readonly httpUrl: string;
   readonly account: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly selfUuid: string | undefined;
 
   constructor(opts: SignalApiOptions) {
     this.httpUrl = opts.httpUrl.replace(/\/+$/, '');
     this.account = opts.account;
     this.fetchImpl = opts.fetch ?? fetch;
+    this.selfUuid = opts.selfUuid;
   }
 
   async sendDirectMessage(recipient: string, message: string): Promise<SendResult> {
@@ -86,5 +102,93 @@ export class SignalApi {
           `Set MODE=json-rpc in the container env and restart.`,
       );
     }
+  }
+
+  /**
+   * Open a persistent WebSocket to /v1/receive/{account} and yield
+   * normalized incoming messages. The iterator returns when the caller
+   * aborts via `opts.signal`. Reconnect is the caller's responsibility
+   * (see SignalBot) so the bridge can apply its own backoff policy.
+   */
+  async *streamMessages(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SignalIncomingMessage> {
+    const wsUrl = this.httpUrl.replace(/^http/, 'ws')
+      + `/v1/receive/${encodeURIComponent(this.account)}`;
+    const ws = new WebSocket(wsUrl);
+
+    const queue: SignalIncomingMessage[] = [];
+    const waiters: Array<(msg: SignalIncomingMessage | null) => void> = [];
+    let closed = false;
+    let openError: Error | undefined;
+
+    const push = (msg: SignalIncomingMessage | null): void => {
+      const w = waiters.shift();
+      if (w) w(msg);
+      else if (msg) queue.push(msg);
+    };
+
+    ws.on('message', (data) => {
+      try {
+        const raw = JSON.parse(data.toString());
+        const normalized = this.normalizeEnvelope(raw);
+        if (normalized) push(normalized);
+      } catch {
+        // skip malformed frames; the daemon occasionally emits non-JSON keepalives
+      }
+    });
+    ws.on('close', () => { closed = true; push(null); });
+    ws.on('error', (err) => { openError = err as Error; closed = true; push(null); });
+
+    opts.signal?.addEventListener('abort', () => {
+      try { ws.close(); } catch { /* ignore */ }
+    });
+
+    try {
+      while (true) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+          continue;
+        }
+        if (closed) {
+          if (openError) throw openError;
+          return;
+        }
+        const next = await new Promise<SignalIncomingMessage | null>((resolve) => waiters.push(resolve));
+        if (!next) {
+          if (openError) throw openError;
+          return;
+        }
+        yield next;
+      }
+    } finally {
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  }
+
+  private normalizeEnvelope(raw: unknown): SignalIncomingMessage | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const env = (raw as { envelope?: Record<string, unknown> }).envelope;
+    if (!env || typeof env !== 'object') return null;
+
+    const data = env.dataMessage as Record<string, unknown> | undefined;
+    if (!data) return null;
+    const text = typeof data.message === 'string' ? data.message : '';
+    if (!text) return null;
+
+    const sourceUuid = typeof env.sourceUuid === 'string' ? env.sourceUuid : undefined;
+    const sourceNumber = typeof env.sourceNumber === 'string' ? env.sourceNumber : undefined;
+    const sourceName = typeof env.sourceName === 'string' ? env.sourceName : undefined;
+    const timestamp = typeof env.timestamp === 'number' ? env.timestamp : Date.now();
+
+    const groupInfo = data.groupInfo as { groupId?: string } | undefined;
+    const groupId = typeof groupInfo?.groupId === 'string' ? groupInfo.groupId : undefined;
+
+    const isSelf = sourceUuid !== undefined && sourceUuid === this.selfUuid;
+
+    const out: SignalIncomingMessage = { text, timestamp, isSelf };
+    if (sourceUuid) out.sourceUuid = sourceUuid;
+    if (sourceNumber) out.sourceNumber = sourceNumber;
+    if (sourceName) out.sourceName = sourceName;
+    if (groupId) out.groupId = groupId;
+    return out;
   }
 }
