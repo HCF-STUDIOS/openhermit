@@ -73,6 +73,12 @@ test('SignalApi.sendTyping PUTs /v1/typing-indicator/{account}', async () => {
   assert.deepEqual(calls[0]!.body, { recipient: '+15559999999' });
 });
 
+test('SignalApi.sendTyping does not throw on non-ok status (failures are non-fatal)', async () => {
+  const { fetch: spy } = makeFetchSpy({ status: 500, body: { error: 'transient' } });
+  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
+  await api.sendTyping('+15559999999'); // must not throw
+});
+
 test('SignalApi.sendDirectMessage throws on non-2xx with the response body', async () => {
   const { fetch: spy } = makeFetchSpy({ status: 400, body: { error: 'invalid recipient' } });
   const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });

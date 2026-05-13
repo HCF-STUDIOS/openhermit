@@ -48,18 +48,23 @@ export class SignalApi {
   }
 
   async sendTyping(recipient: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.httpUrl}/v1/typing-indicator/${encodeURIComponent(this.account)}`,
-      {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ recipient }),
-      },
-    );
-    if (!res.ok && res.status !== 204) {
-      // typing failures are non-fatal; surface for logging but don't throw
-      const body = await res.text().catch(() => '');
-      throw new Error(`signal-cli-rest-api typing failed (${res.status}): ${body}`);
+    try {
+      const res = await this.fetchImpl(
+        `${this.httpUrl}/v1/typing-indicator/${encodeURIComponent(this.account)}`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ recipient }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        // Non-fatal: log only. Typing indicators are best-effort UX.
+        console.error(`[signal-api] typing-indicator failed (${res.status}): ${body}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[signal-api] typing-indicator error: ${msg}`);
     }
   }
 
