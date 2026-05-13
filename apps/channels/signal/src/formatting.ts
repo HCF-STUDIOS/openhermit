@@ -16,12 +16,12 @@ export function markdownToSignalStyled(md: string): string {
 }
 
 export function splitMessage(text: string): string[] {
-  if (text.length <= SIGNAL_MAX_LENGTH - 100) return [text];
+  if (text.length <= SIGNAL_MAX_LENGTH) return [text];
 
   const chunks: string[] = [];
   let remaining = text;
   while (remaining.length > 0) {
-    if (remaining.length <= SIGNAL_MAX_LENGTH - 100) {
+    if (remaining.length <= SIGNAL_MAX_LENGTH) {
       chunks.push(remaining);
       break;
     }

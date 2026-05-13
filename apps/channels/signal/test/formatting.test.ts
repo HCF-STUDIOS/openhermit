@@ -35,12 +35,14 @@ test('splitMessage returns the input unchanged when under cap', () => {
 });
 
 test('splitMessage splits on paragraph boundary when possible', () => {
-  const part = 'A'.repeat(SIGNAL_MAX_LENGTH - 100);
-  const text = `${part}\n\nsecond paragraph that pushes us over`;
+  const first = 'A'.repeat(SIGNAL_MAX_LENGTH - 100);
+  const second = 'B'.repeat(200);
+  const text = `${first}\n\n${second}`;
+  assert.ok(text.length > SIGNAL_MAX_LENGTH);
   const chunks = splitMessage(text);
   assert.equal(chunks.length, 2);
-  assert.ok(chunks[0]!.endsWith('A'));
-  assert.ok(chunks[1]!.startsWith('second paragraph'));
+  assert.equal(chunks[0], first);
+  assert.equal(chunks[1], second);
 });
 
 test('splitMessage falls back to newline boundary when no paragraph break', () => {
