@@ -142,7 +142,7 @@ export class SignalBridge implements ChannelOutbound {
     const result = await this.waitForAgentResponse(sessionId);
     if (result.error && !result.text) {
       await this.send({ sessionId, to: key, text: `Error: ${result.error}` });
-    } else if (result.text && result.text.trim() !== NO_REPLY_TAG) {
+    } else if (result.text) {
       await this.send({ sessionId, to: key, text: result.text });
     }
   }
@@ -156,6 +156,7 @@ export class SignalBridge implements ChannelOutbound {
 
     try {
       const metadata: Record<string, string> = {};
+      // Group sessions key by group only; individual senders within the group share one session.
       if (msg.groupId) metadata.signal_group_id = msg.groupId;
       else if (msg.sourceUuid) metadata.signal_source = `uuid:${msg.sourceUuid}`;
       else if (msg.sourceNumber) metadata.signal_source = msg.sourceNumber;
@@ -184,6 +185,7 @@ export class SignalBridge implements ChannelOutbound {
     msg: SignalIncomingMessage,
   ): Promise<void> {
     const metadata: Record<string, string> = {};
+    // Group sessions store both group_id and the most-recent sender's signal_source for audit.
     if (msg.groupId) metadata.signal_group_id = msg.groupId;
     if (msg.sourceUuid) metadata.signal_source = `uuid:${msg.sourceUuid}`;
     else if (msg.sourceNumber) metadata.signal_source = msg.sourceNumber;
@@ -278,6 +280,9 @@ export class SignalBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
     const responseText = finalText ?? (accumulatedText.trim() || undefined);
+    if (responseText?.trim() === NO_REPLY_TAG) {
+      return { text: undefined, error };
+    }
     return { text: responseText, error };
   }
 }
