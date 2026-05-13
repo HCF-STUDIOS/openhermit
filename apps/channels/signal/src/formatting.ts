@@ -1,11 +1,6 @@
 export const SIGNAL_MAX_LENGTH = 2000;
 
-/**
- * Convert Markdown to Signal's styled-text dialect.
- * Signal natively renders **bold**, _italic_, ~strikethrough~, `code`,
- * ```preformatted```, and ||spoiler||. Headings have no native form so we
- * flatten them to bold; list bullets become • glyphs.
- */
+// Signal styled text has no native headings or list bullets; flatten to bold + •.
 export function markdownToSignalStyled(md: string): string {
   return md
     .replace(/~~(.*?)~~/g, '~$1~')

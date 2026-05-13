@@ -46,7 +46,7 @@ export class SignalBot {
         this.log('connecting to receive WS...');
         const stream = this.signal.streamMessages({ signal: this.abortController.signal });
         for await (const msg of stream) {
-          backoffMs = 1000; // reset on any successful message
+          backoffMs = 1000;
           try {
             await this.bridge.handleIncoming(msg);
           } catch (err) {

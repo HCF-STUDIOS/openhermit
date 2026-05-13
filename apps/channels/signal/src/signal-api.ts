@@ -3,9 +3,7 @@ import { WebSocket } from 'ws';
 export interface SignalApiOptions {
   httpUrl: string;
   account: string;
-  /** UUID of the bot account itself; used to drop self-loopback messages. */
   selfUuid?: string;
-  /** Injectable for tests; defaults to global fetch. */
   fetch?: typeof fetch;
 }
 
@@ -75,7 +73,6 @@ export class SignalApi {
       );
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        // Non-fatal: log only. Typing indicators are best-effort UX.
         console.error(`[signal-api] typing-indicator failed (${res.status}): ${body}`);
       }
     } catch (err) {
@@ -84,12 +81,8 @@ export class SignalApi {
     }
   }
 
-  /**
-   * Verify the daemon was started with MODE=json-rpc. The /v1/receive
-   * WebSocket only upgrades successfully when the daemon is in that mode,
-   * but the failure mode is a silent connect-then-disconnect — much better
-   * to catch this at startup with a clear message.
-   */
+  // /v1/receive only upgrades cleanly in MODE=json-rpc; other modes silently
+  // connect-then-disconnect, which is brutal to diagnose. Probe at boot.
   async probeReceiveMode(): Promise<void> {
     const res = await this.fetchImpl(`${this.httpUrl}/v1/about`);
     if (!res.ok) {
@@ -104,12 +97,7 @@ export class SignalApi {
     }
   }
 
-  /**
-   * Open a persistent WebSocket to /v1/receive/{account} and yield
-   * normalized incoming messages. The iterator returns when the caller
-   * aborts via `opts.signal`. Reconnect is the caller's responsibility
-   * (see SignalBot) so the bridge can apply its own backoff policy.
-   */
+  // Reconnect is owned by SignalBot so the bridge can apply its own backoff.
   async *streamMessages(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SignalIncomingMessage> {
     const wsUrl = this.httpUrl.replace(/^http/, 'ws')
       + `/v1/receive/${encodeURIComponent(this.account)}`;

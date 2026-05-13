@@ -7,9 +7,9 @@ import type { SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
 
 export interface ConversationKeyInput {
-  sourceUuid?: string | undefined;
-  sourceNumber?: string | undefined;
-  groupId?: string | undefined;
+  sourceUuid?: string;
+  sourceNumber?: string;
+  groupId?: string;
 }
 
 export function conversationKey(input: ConversationKeyInput): string {
@@ -74,10 +74,6 @@ export class SignalBridge implements ChannelOutbound {
     this.allowedGroupIds = options.allowedGroupIds;
   }
 
-  /**
-   * ChannelOutbound entry-point — `to` is a conversationKey
-   * (signal:uuid:..., signal:+E.164, or signal:group:...).
-   */
   async send(params: { sessionId: string; to: string; text: string }): Promise<ChannelOutboundResult> {
     try {
       const chunks = formatAgentResponse(params.text);
@@ -109,17 +105,12 @@ export class SignalBridge implements ChannelOutbound {
     return this.signal.sendDirectMessage(target, text);
   }
 
-  /**
-   * Inbound entry-point — called by SignalBot for each accepted envelope.
-   * Resolves or creates the session, posts the user message, then waits
-   * for the agent's final reply over SSE.
-   */
   async handleIncoming(msg: SignalIncomingMessage): Promise<void> {
     if (!shouldAcceptSender(msg, this.allowedSenders, this.allowedGroupIds)) {
       this.log(`dropped message from disallowed sender (${msg.sourceUuid ?? msg.sourceNumber})`);
       return;
     }
-    if (msg.isSelf) return; // loopback guard
+    if (msg.isSelf) return;
 
     const key = conversationKey(msg);
     const sessionId = await this.getSessionId(key, msg);
@@ -127,9 +118,10 @@ export class SignalBridge implements ChannelOutbound {
 
     const senderChannelUserId = msg.sourceUuid ?? msg.sourceNumber ?? 'unknown';
     const senderName = msg.sourceName;
+    // Signal has no first-class mentions; group filtering is handled by allowedGroupIds.
     const postResult = await this.client.postMessage(sessionId, {
       text: msg.text,
-      mentioned: true, // every DM is "mentioned"; group routing is enforced upstream by allowedGroupIds
+      mentioned: true,
       sender: {
         channel: 'signal',
         channelUserId: senderChannelUserId,
@@ -156,7 +148,6 @@ export class SignalBridge implements ChannelOutbound {
 
     try {
       const metadata: Record<string, string> = {};
-      // Group sessions key by group only; individual senders within the group share one session.
       if (msg.groupId) metadata.signal_group_id = msg.groupId;
       else if (msg.sourceUuid) metadata.signal_source = `uuid:${msg.sourceUuid}`;
       else if (msg.sourceNumber) metadata.signal_source = msg.sourceNumber;
@@ -172,7 +163,7 @@ export class SignalBridge implements ChannelOutbound {
         return sessionId;
       }
     } catch {
-      // fall through
+      /* ignore */
     }
 
     const id = generateSessionId();
@@ -185,7 +176,6 @@ export class SignalBridge implements ChannelOutbound {
     msg: SignalIncomingMessage,
   ): Promise<void> {
     const metadata: Record<string, string> = {};
-    // Group sessions store both group_id and the most-recent sender's signal_source for audit.
     if (msg.groupId) metadata.signal_group_id = msg.groupId;
     if (msg.sourceUuid) metadata.signal_source = `uuid:${msg.sourceUuid}`;
     else if (msg.sourceNumber) metadata.signal_source = msg.sourceNumber;

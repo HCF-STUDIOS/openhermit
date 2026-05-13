@@ -1,5 +1,3 @@
-// All env mutation in this file MUST go through withEnv() so tests stay
-// isolated when node:test runs multiple test files in the same worker.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 

@@ -77,13 +77,9 @@ export interface DiscordChannelConfig {
 
 export interface SignalChannelConfig {
   enabled: boolean;
-  /** Base URL of the signal-cli-rest-api container (e.g. http://signal:8080). */
   http_url: string;
-  /** E.164 phone number of the bot's Signal account. */
   account: string;
-  /** Optional DM allow-list: each entry is either "+E164" or "uuid:<uuid>". */
   allowed_senders?: string[];
-  /** Optional group allow-list: base64 group ids as reported by signal-cli. */
   allowed_group_ids?: string[];
 }
 

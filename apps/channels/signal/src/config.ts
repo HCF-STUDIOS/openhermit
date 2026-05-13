@@ -1,15 +1,9 @@
 export interface SignalAdapterConfig {
-  /** Base URL of the signal-cli-rest-api container, e.g. http://signal:8080. */
   httpUrl: string;
-  /** E.164 phone number of the bot's Signal account, e.g. +15551234567. */
   account: string;
-  /** Per-agent base URL provided by the gateway (OPENHERMIT_AGENT_URL). */
   agentBaseUrl: string;
-  /** Per-agent bearer token provided by the gateway (OPENHERMIT_AGENT_TOKEN). */
   agentToken: string;
-  /** Optional list of allowed sender identifiers (E.164 or uuid:<id>) for DMs. */
   allowedSenders?: string[];
-  /** Optional list of allowed group ids. */
   allowedGroupIds?: string[];
 }
 
