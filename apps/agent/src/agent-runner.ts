@@ -1105,39 +1105,41 @@ export class AgentRunner implements SessionRuntime {
     message: SessionMessage,
   ): Promise<{ appended: boolean; deduped?: true }> {
     const session = this.getRequiredSession(sessionId);
-    session.updatedAt = new Date().toISOString();
-
-    // Idempotency: if a prior append already recorded this messageId in
-    // this session, return early. Lets host apps retry on flaky networks
-    // without doubling history entries.
-    if (message.messageId) {
-      const existing = await this.store.messages.findEntryIdByMessageId(
-        this.scope, session.spec.sessionId, message.messageId,
-      );
-      if (existing !== null) {
-        return { appended: false, deduped: true };
-      }
-    }
-
     const role: 'user' | 'assistant' = message.appendAs === 'assistant' ? 'assistant' : 'user';
     const ts = message.occurredAt ?? new Date().toISOString();
     const displayName = message.sender?.displayName;
 
-    if (role === 'user') {
-      // User-role backfill: resolve the sender as an authoring user the
-      // same way postMessage does, so userId/userName get stamped on the
-      // entry and `users` table is kept in sync.
-      let messageUserId = session.resolvedUserId;
-      if (message.sender) {
-        const now = new Date().toISOString();
-        const resolved = await this.resolveMessageSender(message.sender, now);
-        if (resolved.userId) {
-          messageUserId = resolved.userId;
-          session.userIds = addUserIdToList(session.userIds, resolved.userId);
+    // For user-role backfill we resolve the sender outside the side-effect
+    // queue (it can touch the users table). userIds mutation is reflected
+    // in the persisted index after the write below.
+    let messageUserId = session.resolvedUserId;
+    if (role === 'user' && message.sender) {
+      const now = new Date().toISOString();
+      const resolved = await this.resolveMessageSender(message.sender, now);
+      if (resolved.userId) {
+        messageUserId = resolved.userId;
+        session.userIds = addUserIdToList(session.userIds, resolved.userId);
+      }
+    }
+
+    // Run idempotency check + log write inside the per-session side-effect
+    // queue so concurrent appends with the same messageId from this process
+    // serialize and the second one observes the first's row before writing.
+    // (Cross-process dedup still relies on caller retry semantics; the index
+    //  in 0023_session_events_message_id_idx keeps the lookup cheap.)
+    let deduped = false;
+    await this.queueSideEffect(session, async () => {
+      if (message.messageId) {
+        const existing = await this.store.messages.findEntryIdByMessageId(
+          this.scope, session.spec.sessionId, message.messageId,
+        );
+        if (existing !== null) {
+          deduped = true;
+          return;
         }
       }
 
-      await this.queueSideEffect(session, async () => {
+      if (role === 'user') {
         await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
           ts,
           role: 'user',
@@ -1148,32 +1150,19 @@ export class AgentRunner implements SessionRuntime {
           ...(displayName ? { userName: displayName } : {}),
           ...(message.metadata ? { metadata: message.metadata } : {}),
         });
-      });
-
-      void this.events.publish({
-        type: 'user_message',
-        sessionId,
-        text: message.text,
-        ...(displayName ? { name: displayName } : {}),
-      });
-    } else {
-      // Assistant-role backfill: the agent did not generate this turn —
-      // someone (typically the owner of a shared-account session) acted
-      // as the assistant out-of-band. We persist it as `assistant` so
-      // model history stays consistent, but:
-      //   - leave `provider`/`model` unset so it's visibly distinct from
-      //     model-generated turns;
-      //   - stamp `metadata.synthetic = true` (and the originating
-      //     sender, if any) for downstream attribution;
-      //   - do NOT emit `user_message` — there is no user turn here.
-      // No `text_final`/`text_delta` are emitted either; those are
-      // reserved for live model output.
-      const metadata: Record<string, unknown> = {
-        ...(message.metadata ?? {}),
-        synthetic: true,
-        ...(message.sender ? { appendedBy: message.sender } : {}),
-      };
-      await this.queueSideEffect(session, async () => {
+      } else {
+        // Assistant-role backfill: the agent did not generate this turn —
+        // someone (typically the owner of a shared-account session) acted
+        // as the assistant out-of-band. Leave provider/model unset so it's
+        // visibly distinct from model-generated turns; stamp
+        // metadata.synthetic = true (and the originating sender) for
+        // downstream attribution. No user_message / text_final / text_delta
+        // events are emitted; those are reserved for live turns.
+        const metadata: Record<string, unknown> = {
+          ...(message.metadata ?? {}),
+          synthetic: true,
+          ...(message.sender ? { appendedBy: message.sender } : {}),
+        };
         await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
           ts,
           role: 'assistant',
@@ -1182,6 +1171,22 @@ export class AgentRunner implements SessionRuntime {
           ...(message.attachments ? { attachments: message.attachments } : {}),
           metadata,
         });
+      }
+    });
+
+    if (deduped) {
+      return { appended: false, deduped: true };
+    }
+
+    session.updatedAt = new Date().toISOString();
+    await this.persistSessionIndex(session);
+
+    if (role === 'user') {
+      void this.events.publish({
+        type: 'user_message',
+        sessionId,
+        text: message.text,
+        ...(displayName ? { name: displayName } : {}),
       });
     }
 

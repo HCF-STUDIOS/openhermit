@@ -498,8 +498,10 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
 
   if (value.occurredAt !== undefined) {
     if (typeof value.occurredAt !== 'string') return false;
-    const parsed = Date.parse(value.occurredAt);
-    if (Number.isNaN(parsed)) return false;
+    // Strict ISO 8601 with timezone (Z or ±HH:MM). Date.parse is too lenient.
+    const iso8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+    if (!iso8601.test(value.occurredAt)) return false;
+    if (Number.isNaN(Date.parse(value.occurredAt))) return false;
   }
 
   return true;
