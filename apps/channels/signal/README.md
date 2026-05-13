@@ -91,6 +91,8 @@ SIGNAL_ALLOWED_SENDERS="+15551111111,uuid:abc-def-...,+15552222222"
 SIGNAL_ALLOWED_GROUP_IDS="base64GroupId1==,base64GroupId2=="
 ```
 
+> Heads up: because Signal has no first-class @mentions, the bot replies to **every** message in an allow-listed group, not only ones that address it. Use group allow-listing sparingly — it's a coarser filter than `@bot` in Slack/Discord.
+
 Without these the bot accepts all incoming traffic — fine for personal-use
 deployments, not fine for public bot numbers.
 
