@@ -1,3 +1,5 @@
+// All env mutation in this file MUST go through withEnv() so tests stay
+// isolated when node:test runs multiple test files in the same worker.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -80,6 +82,20 @@ test('loadConfig throws when agent URL/token are missing', async () => {
   );
 });
 
+test('loadConfig throws when only OPENHERMIT_AGENT_TOKEN is missing', async () => {
+  await withEnv(
+    {
+      SIGNAL_HTTP_URL: 'http://signal:8080',
+      SIGNAL_ACCOUNT: '+15551234567',
+      OPENHERMIT_AGENT_URL: 'http://gateway/api/agents/main',
+      OPENHERMIT_AGENT_TOKEN: undefined,
+    },
+    async () => {
+      await assert.rejects(() => loadConfig(), /OPENHERMIT_AGENT_TOKEN/);
+    },
+  );
+});
+
 test('loadConfig strips a trailing slash from httpUrl for predictable URL joins', async () => {
   await withEnv(
     {
@@ -91,6 +107,42 @@ test('loadConfig strips a trailing slash from httpUrl for predictable URL joins'
     async () => {
       const cfg = await loadConfig();
       assert.equal(cfg.httpUrl, 'http://signal:8080');
+    },
+  );
+});
+
+test('loadConfig parses SIGNAL_ALLOWED_SENDERS and SIGNAL_ALLOWED_GROUP_IDS as trimmed comma-lists', async () => {
+  await withEnv(
+    {
+      SIGNAL_HTTP_URL: 'http://signal:8080',
+      SIGNAL_ACCOUNT: '+15551234567',
+      OPENHERMIT_AGENT_URL: 'http://gateway/api/agents/main',
+      OPENHERMIT_AGENT_TOKEN: 'tok',
+      SIGNAL_ALLOWED_SENDERS: 'uuid:abc, +15551111111 ,',
+      SIGNAL_ALLOWED_GROUP_IDS: 'gid1==,gid2==',
+    },
+    async () => {
+      const cfg = await loadConfig();
+      assert.deepEqual(cfg.allowedSenders, ['uuid:abc', '+15551111111']);
+      assert.deepEqual(cfg.allowedGroupIds, ['gid1==', 'gid2==']);
+    },
+  );
+});
+
+test('loadConfig omits allow-list fields when env vars are unset', async () => {
+  await withEnv(
+    {
+      SIGNAL_HTTP_URL: 'http://signal:8080',
+      SIGNAL_ACCOUNT: '+15551234567',
+      OPENHERMIT_AGENT_URL: 'http://gateway/api/agents/main',
+      OPENHERMIT_AGENT_TOKEN: 'tok',
+      SIGNAL_ALLOWED_SENDERS: undefined,
+      SIGNAL_ALLOWED_GROUP_IDS: undefined,
+    },
+    async () => {
+      const cfg = await loadConfig();
+      assert.equal(cfg.allowedSenders, undefined);
+      assert.equal(cfg.allowedGroupIds, undefined);
     },
   );
 });

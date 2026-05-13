@@ -26,11 +26,14 @@ export const loadConfig = async (): Promise<SignalAdapterConfig> => {
 
   const httpUrl = rawHttpUrl.replace(/\/+$/, '');
 
-  const agentBaseUrl = process.env.OPENHERMIT_AGENT_URL ?? '';
-  const agentToken = process.env.OPENHERMIT_AGENT_TOKEN ?? '';
+  const agentBaseUrl = process.env.OPENHERMIT_AGENT_URL;
+  const agentToken = process.env.OPENHERMIT_AGENT_TOKEN;
 
-  if (!agentBaseUrl || !agentToken) {
-    throw new Error('Agent connection required. Set OPENHERMIT_AGENT_URL + OPENHERMIT_AGENT_TOKEN.');
+  if (!agentBaseUrl) {
+    throw new Error('OPENHERMIT_AGENT_URL environment variable is required.');
+  }
+  if (!agentToken) {
+    throw new Error('OPENHERMIT_AGENT_TOKEN environment variable is required.');
   }
 
   const cfg: SignalAdapterConfig = { httpUrl, account, agentBaseUrl, agentToken };
