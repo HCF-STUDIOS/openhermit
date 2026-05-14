@@ -27,11 +27,22 @@ hermit chat "one-shot question"     # send once, print reply, exit
 
 ```bash
 hermit agents list
-hermit agents get <id>
-hermit agents create --name <name> --model <model-id>
-hermit agents update <id> --model <model-id>
-hermit agents update <id> --access-level public|protected|private
-hermit agents delete <id>
+hermit agents create <id>                          # interactive create
+hermit agents enable  <id>
+hermit agents disable <id>
+hermit agents restart <id>
+hermit agents delete  <id>
+
+# Configuration is its own command tree (no `hermit agents update`):
+hermit config --agent <id> show
+hermit config --agent <id> get <key>
+hermit config --agent <id> set <key> <value>
+
+# Common keys:
+#   model.provider           anthropic | openai | openrouter | …
+#   model.model              <provider-specific model id>
+#   model.max_tokens         <int>
+hermit config --agent <id> security set access public|protected|private
 ```
 
 ---

@@ -24,18 +24,24 @@ Everything else (memory, instructions, skills, MCPs, workspace) is independent o
 
 ---
 
-## 16.2 The `hermit agents` Command
+## 16.2 The `hermit config` Commands
+
+Model selection lives under the agent's config tree, not as a flag on `hermit agents`. Two keys matter:
+
+- `model.provider` — which provider the gateway routes to (`anthropic`, `openai`, `openrouter`, …).
+- `model.model` — the model identifier the provider expects.
 
 ```bash
-hermit agents list                                # see current model per agent
-hermit agents update <id> --model <model-id>      # switch
+hermit config --agent main show                     # see all current config, including model.*
+hermit config --agent main get model.model          # one key
+hermit config --agent main set model.provider anthropic
+hermit config --agent main set model.model claude-opus-4-7
 
-# Examples.
-hermit agents update main --model claude-opus-4-7
-hermit agents update main --model claude-sonnet-4-6
+# Other useful model knobs:
+hermit config --agent main set model.max_tokens 16384
 ```
 
-The model identifier is whatever string the provider expects. The gateway translates it.
+The model identifier is whatever string the provider expects. The gateway hands it through.
 
 ---
 
@@ -78,7 +84,8 @@ Be aware of context-window mismatches: switching from a 200K-window model to a 3
 ### 16.7.1 Try a stronger model for a hard task
 
 ```bash
-hermit agents update main --model claude-opus-4-7
+hermit config --agent main set model.provider anthropic
+hermit config --agent main set model.model claude-opus-4-7
 ```
 
 Ask the question. If the answer is good and the latency tolerable, leave it. If you only needed the strength for one task, switch back when done.
@@ -90,7 +97,7 @@ Ask the question. If the answer is good and the latency tolerable, leave it. If 
 Pick a faster, smaller model for everyday chat:
 
 ```bash
-hermit agents update main --model claude-haiku-4-5
+hermit config --agent main set model.model claude-haiku-4-5
 ```
 
 Watch tool-use reliability for the first few turns; smaller models occasionally pick the wrong tool. If you see drift, fall back to a mid-tier model.
@@ -99,7 +106,7 @@ Watch tool-use reliability for the first few turns; smaller models occasionally 
 
 ### 16.7.3 Use a self-hosted or alternate endpoint
 
-If your gateway is configured with a custom provider (e.g., a local llama.cpp instance, an Azure OpenAI deployment), the model IDs your operator exposes show up in `hermit agents list --models`. Pick one and set it.
+If your gateway is configured with a custom provider (e.g., a local llama.cpp instance, an Azure OpenAI deployment), set `model.provider` to that provider's name and `model.model` to one of the IDs it accepts. If the provider needs a custom endpoint, the operator wires that on the gateway side.
 
 ---
 
@@ -111,7 +118,7 @@ If your gateway is configured with a custom provider (e.g., a local llama.cpp in
 
 **Can different sessions use different models within one agent?** No — model is an agent-level setting. To get session-level routing, run multiple agents.
 
-**What about temperature, top-p, max-tokens?** Gateway-level defaults usually apply. Some builds expose them per agent; check `hermit agents update --help`.
+**What about temperature, top-p, max-tokens?** `model.max_tokens` is settable per agent. Temperature and top-p use gateway-level defaults unless your build exposes them as additional `model.*` keys — check `hermit config --agent <id> show`.
 
 ---
 

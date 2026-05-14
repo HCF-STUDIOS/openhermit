@@ -42,9 +42,9 @@ Default for a freshly created agent is private. Loosening is a deliberate act.
 ## 13.3 Setting the Level
 
 ```bash
-hermit agents update <agent-id> --access-level public
-hermit agents update <agent-id> --access-level protected
-hermit agents update <agent-id> --access-level private
+hermit config --agent <agent-id> security set access public
+hermit config --agent <agent-id> security set access protected
+hermit config --agent <agent-id> security set access private
 ```
 
 Web UI: *Manage → Basic* has the access level selector.
@@ -75,7 +75,7 @@ For channels with their own gating (e.g., a private Slack workspace), that gatin
 ### 13.6.1 Lock down a previously public agent
 
 ```bash
-hermit agents update main --access-level private
+hermit config --agent main security set access private
 ```
 
 Existing guest identities are not auto-removed; they just cannot create new sessions. To clean them out:
