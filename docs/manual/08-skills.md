@@ -45,9 +45,19 @@ When you enable a skill for an agent, the agent gets the `SKILL.md` content as a
 
 **Built-in skills.** Ship with OpenHermit and are discoverable as soon as the gateway is running. They cover common patterns: research, summarisation, GitHub helpers, and similar.
 
-**Workspace / custom skills.** Skills you write yourself, or pull from a third-party repo, and **register** with OpenHermit. Once registered, they behave the same as built-in skills.
+**User skills.** Skills you write yourself, or pull from a third-party repo. Drop the skill folder under `~/.openhermit/skills/user/` and the gateway picks it up on the next scan. Once registered, user skills behave the same as built-in skills.
 
-Either way, the workflow is identical: list, enable, disable.
+```
+~/.openhermit/skills/user/
+├── weekly-retro/
+│   └── SKILL.md
+├── standup-digest/
+│   ├── SKILL.md
+│   └── helper.sh
+└── …
+```
+
+Either source — built-in or user — the workflow is identical: list, enable, disable.
 
 ---
 
@@ -96,7 +106,7 @@ The agent decides on its own when a skill applies. You usually do not need to in
 
 ## 8.5 Web Admin UI
 
-The *Manage → Skills* tab shows the registry, the assignments, and toggles to enable or disable per agent. Registering new skills typically still happens through the CLI or by dropping a skill folder into the gateway's skills directory and running `hermit skills scan`.
+The *Manage → Skills* tab shows the registry, the assignments, and toggles to enable or disable per agent. Registering new skills typically still happens through the filesystem — drop the folder under `~/.openhermit/skills/user/` and run `hermit skills scan` (or restart the gateway).
 
 ---
 
@@ -133,13 +143,13 @@ hermit skills enable web-research --agent main
 
 **Steps**
 
-1. Create the folder:
+1. Create the folder under the user skills directory:
 
    ```bash
-   mkdir -p ./skills/weekly-retro
+   mkdir -p ~/.openhermit/skills/user/weekly-retro
    ```
 
-2. Write `SKILL.md`:
+2. Write `SKILL.md` inside it:
 
    ```markdown
    ---
@@ -152,10 +162,10 @@ hermit skills enable web-research --agent main
    When asked for a weekly retro, …
    ```
 
-3. Register and enable:
+3. Scan and enable:
 
    ```bash
-   hermit skills register weekly-retro --path ./skills/weekly-retro
+   hermit skills scan
    hermit skills enable weekly-retro --agent main
    ```
 
