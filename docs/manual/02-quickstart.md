@@ -95,7 +95,7 @@ You will see a prompt. Type a message and press Enter. The agent streams its rep
 hermit web start
 ```
 
-It tells you a URL (default `http://localhost:5173`). Open it in a browser, pick your agent, and chat.
+It tells you a URL (default `http://localhost:4310`). Open it in a browser, pick your agent, and chat. The gateway itself listens on `http://localhost:4000`.
 
 Either way, the conversation is stored as a **session** and persists across restarts.
 

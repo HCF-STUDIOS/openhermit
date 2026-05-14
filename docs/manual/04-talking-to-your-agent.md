@@ -57,7 +57,7 @@ While inside `chat`, press **Ctrl-C** once to interrupt the current reply (the a
 hermit web start
 ```
 
-Open the URL it prints (usually `http://localhost:5173`). Pick an agent in the sidebar, pick or create a session, type your message.
+Open the URL it prints (default `http://localhost:4310`; the gateway it talks to listens on `http://localhost:4000`). Pick an agent in the sidebar, pick or create a session, type your message.
 
 The web channel has a few things the CLI does not:
 
