@@ -54,7 +54,19 @@ The fix is identity linking. The recipes in 5.5 cover it.
 
 ---
 
-## 5.4 Capability Matrix
+## 5.4 Two Ways to Link an Identity
+
+There are two paths, and which one fits depends on who is making the claim.
+
+**Owner-initiated.** The owner says, from any channel where they are already recognised as owner, "the Telegram user named *William* is also me" — or picks the identity in the admin UI. The agent links it on the spot, no confirmation. This is the path for *your own* identities and for cases where you already know who someone is.
+
+**Request and confirm.** A non-owner identity asks to be linked. From Telegram (still seen as a guest), the person says "I'm William, please link this Telegram account to my web user." The agent does not link unilaterally — it sends a confirmation prompt to the owner (and to the target user, if different). The owner approves or rejects; only then is the link made.
+
+The distinction matters because identity linking is privilege-granting: if Bob's guest identity gets linked to Alice's owner user, Bob effectively becomes Alice on that agent. Owner-initiated is fast because the owner is already trusted. Request-and-confirm is the safe default whenever the request originates from a less-privileged identity.
+
+---
+
+## 5.5 Capability Matrix
 
 This is the source of truth that later chapters refer back to. Each ✓ means "yes, by default"; gaps mean "blocked by role". Custom policy can tighten things further; see [Chapter 15 · Policy and Approval](15-policy-and-approval.md).
 
@@ -78,9 +90,9 @@ This is the source of truth that later chapters refer back to. Each ✓ means "y
 
 ---
 
-## 5.5 How-to Recipes
+## 5.6 How-to Recipes
 
-### 5.5.1 Make Telegram see you as yourself, not as a guest
+### 5.6.1 Make Telegram see you as yourself, not as a guest
 
 **Scenario** — you created your agent from the web (so the web identity is the owner), then you opened a Telegram chat with the bot. Telegram sees a new identity and either drops your message (on `protected` or `private` access) or creates a guest user.
 
@@ -107,11 +119,31 @@ curl -X POST "$GATEWAY/api/agents/<agent-id>/members" \
 
 **Verify** — send a message from Telegram. Ask the agent "who am I?" — it should answer with your owner display name, not "guest".
 
-**Common issues** — if the agent already auto-created a separate guest user from your Telegram identity before you linked, you have to merge the duplicate into yourself; see 5.5.3.
+**Common issues** — if the agent already auto-created a separate guest user from your Telegram identity before you linked, you have to merge the duplicate into yourself; see 5.6.4.
 
 ---
 
-### 5.5.2 Make a browser session see you as owner
+### 5.6.2 Request a link from the less-privileged side
+
+**Scenario** — you do not have an owner channel handy right now. You are messaging the agent from Telegram, where it currently sees you as a guest, and you want to be recognised as your real user account.
+
+**Prerequisites** — the user you want to be linked to exists on the agent. There is an owner reachable to confirm.
+
+**Ways to do it**
+
+*Ask the agent from the less-privileged channel.* For example, from Telegram:
+
+> I'm William. Please link this Telegram account to my web user.
+
+The agent does **not** link unilaterally. Instead it forwards a confirmation request to the owner (and, when relevant, to the target user). The request shows up in the *Observe* tab as a pending action, and also as a notification on any channel the owner has linked. The owner approves or rejects; on approve, the link is made and your next message from Telegram is recognised as your real user.
+
+**Verify** — after the owner approves, ask the agent on Telegram "who am I?" — it should name your real user.
+
+**Common issues** — if no owner is online, the request sits pending until it times out (default a few minutes). Just ask again, or have the owner do the owner-initiated flow (5.6.1) when they are back.
+
+---
+
+### 5.6.3 Make a browser session see you as owner
 
 **Scenario** — you ran `hermit setup` on the CLI, that made you owner. Now you open the web UI in a browser; the web identity is a different `(web, <fingerprint>)` tuple and you appear as guest or unauthenticated.
 
@@ -128,7 +160,7 @@ hermit web start
 
 If you opened the URL manually instead, copy the token printed by `hermit web start` into the browser's "sign in with token" field.
 
-*Link the web identity manually.* Same shape as 5.5.1 with `channel = web` and the device fingerprint shown in the Admin UI.
+*Link the web identity manually.* Same shape as 5.6.1 with `channel = web` and the device fingerprint shown in the Admin UI.
 
 **Verify** — the Admin UI shows the full management surface (Manage tab is visible and editable), not just a chat view.
 
@@ -136,7 +168,7 @@ If you opened the URL manually instead, copy the token printed by `hermit web st
 
 ---
 
-### 5.5.3 Merge two identities that ended up as two users
+### 5.6.4 Merge two identities that ended up as two users
 
 **Scenario** — you have two entries in the Members list that are obviously the same person (you, with two channel identities, accidentally created as two users because you did not link in time).
 
@@ -156,7 +188,7 @@ The agent calls `user_merge`. After it returns, every old identity attached to `
 
 ---
 
-### 5.5.4 Promote a user to owner
+### 5.6.5 Promote a user to owner
 
 **Scenario** — you want to give someone full administrative access to an agent.
 
@@ -174,9 +206,9 @@ The agent calls `user_role_set`. The promoted user keeps their existing identiti
 
 ---
 
-## 5.6 FAQ
+## 5.7 FAQ
 
-**The agent calls me "guest" even though I created it. Why?** You probably created it from one channel (say, CLI) and you are messaging from another (say, Telegram). Each channel is a separate identity until you link them. See 5.5.1.
+**The agent calls me "guest" even though I created it. Why?** You probably created it from one channel (say, CLI) and you are messaging from another (say, Telegram). Each channel is a separate identity until you link them. See 5.6.1.
 
 **Can a guest become a user without the owner doing anything?** No. Role changes are owner-only.
 
@@ -188,7 +220,7 @@ The agent calls `user_role_set`. The promoted user keeps their existing identiti
 
 ---
 
-## 5.7 Pointers
+## 5.8 Pointers
 
 - Want to give someone access for the first time → [Chapter 12 · Inviting People](12-inviting-people.md).
 - Want to restrict what a particular role or user can call → [Chapter 15 · Policy and Approval](15-policy-and-approval.md).
