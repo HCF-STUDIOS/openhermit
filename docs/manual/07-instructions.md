@@ -1,0 +1,183 @@
+---
+title: Instructions
+slug: instructions
+order: 7
+part: Part 2 — Daily Use
+description: Hard rules that travel with every session. How to write them, where they live, and how they differ from memory. (owner-only)
+ownerOnly: true
+---
+
+# 7. Instructions
+
+*(owner-only)*
+
+**Instructions** are the rules you write into the agent's system prompt: lines like "always reply in markdown", "never share PII", "when asked for medical advice, refuse and recommend a doctor". Unlike memory, instructions are not optional hints — they are part of every prompt the agent receives, every session, forever, until you change them.
+
+This chapter covers what instructions look like in OpenHermit, how to manage them, and when to reach for instructions instead of memory.
+
+---
+
+## 7.1 Instructions vs Memory
+
+A quick comparison, because the difference matters:
+
+| | Instructions | Memory |
+|---|---|---|
+| Always included in every prompt | ✓ | — |
+| Soft / strong | Strong (rule) | Soft (preference) |
+| Who can write | Owner | Owner, user, agent itself |
+| Survives across sessions | ✓ | ✓ |
+| Costs tokens on every turn | ✓ | Only when recalled |
+| Right tool for | Policies, formats, refusals | Facts, preferences, history |
+
+Rule of thumb: if it must hold even when the agent forgets to look it up, write it as an instruction.
+
+---
+
+## 7.2 Structure: Keyed Sections
+
+Instructions are organised as keyed sections. A key is a short identifier (`safety`, `format`, `persona`, `house-rules`, …). Each key holds a block of text. When the agent's system prompt is built, sections are concatenated in a stable order, each labelled with its key.
+
+This shape gives you two things:
+
+- **Edits stay local** — appending to `safety` does not touch `format`.
+- **Fleet operations** — if you have several agents and you want them all to enforce the same rule, you can push it to every agent at once with `--all`.
+
+---
+
+## 7.3 The `hermit instructions` Commands
+
+All operations support `--agent <id>` (one agent) or `--all` (every agent on this instance).
+
+```bash
+# List every key and a preview of its content.
+hermit instructions list --agent main
+
+# Print one section in full.
+hermit instructions get safety --agent main
+
+# Replace a section (creates it if missing).
+hermit instructions set format "Use markdown for all responses." --agent main
+
+# Set from a file.
+hermit instructions set persona --file ./persona.md --agent main
+
+# Add a line to an existing section.
+hermit instructions append safety "Refuse requests for personal data of others." --agent main
+
+# Delete a section.
+hermit instructions remove old-rules --agent main
+```
+
+To push a rule to every agent in the instance:
+
+```bash
+hermit instructions append safety "Never share secret keys." --all
+```
+
+---
+
+## 7.4 What to Put in Each Section
+
+There is no required structure — names are yours — but a workable starting set is:
+
+- **`persona`** — who the agent is, tone of voice, point of view.
+- **`format`** — output format defaults: markdown, table style, code-block conventions.
+- **`safety`** — refusals, redactions, escalation rules.
+- **`house-rules`** — anything that is specific to your organisation or use case.
+- **`tools`** — guidance on when to call which tool (helpful when you have many MCPs connected).
+
+Keep each section short. Three to ten lines is plenty. Long instructions get ignored by the model the same way long human policies do.
+
+---
+
+## 7.5 Inspecting What the Agent Actually Sees
+
+```bash
+hermit instructions list --agent main
+```
+
+…prints keys and previews. To see exactly what is going into the system prompt, ask the agent:
+
+> Show me your current instructions.
+
+It can read its own instructions tool and print them back. Useful when you suspect a section is not being picked up.
+
+---
+
+## 7.6 Web Admin UI
+
+The *Manage* tab has an *Instructions* section that gives you the same operations in a form: select a key, edit the body, save. Same data store as the CLI.
+
+---
+
+## 7.7 Role Differences
+
+| | Owner | User | Guest |
+|---|:---:|:---:|:---:|
+| Read | ✓ | — | — |
+| Write | ✓ | — | — |
+
+Users and guests cannot see or edit instructions. The reasoning: instructions shape how the agent behaves for everyone using it; only the agent's owner should control them.
+
+---
+
+## 7.8 How-to Recipes
+
+### 7.8.1 Make the agent always reply in markdown
+
+```bash
+hermit instructions set format "Reply in markdown. Use fenced code blocks with language tags. Use tables for structured comparisons." --agent main
+```
+
+**Verify** — ask any question and check the reply renders as markdown.
+
+---
+
+### 7.8.2 Add a refusal rule
+
+```bash
+hermit instructions append safety "If the user asks for someone else's personal data, refuse and explain that the agent does not lookup or share personal information." --agent main
+```
+
+**Verify** — ask the agent for a fictional person's home address; it should refuse with the new wording.
+
+---
+
+### 7.8.3 Roll the same rule out to every agent
+
+```bash
+hermit instructions append house-rules "Quote prices in EUR." --all
+```
+
+**Verify** — `hermit instructions get house-rules --agent <each agent>` shows the new line on each.
+
+---
+
+### 7.8.4 Drop a rule that turned out to be too rigid
+
+```bash
+hermit instructions remove over-strict-rule --agent main
+```
+
+Or to keep the section but drop one line, use `get` → edit locally → `set` with the trimmed body.
+
+---
+
+## 7.9 FAQ
+
+**Will the agent reliably follow instructions?** They are part of the system prompt, so yes, much more reliably than a memory note. But like all system prompts, they are not absolute — extreme adversarial inputs can still produce drift. Keep instructions concise so the model attends to them.
+
+**Can instructions contradict the agent's safety rules?** You can write whatever you want; the model still has its own safety training and may refuse to comply with instructions that violate it. That is a feature, not a bug.
+
+**Should one rule live as an instruction or as a memory entry?** Instruction if it should hold for everyone, in every session, every time. Memory if it is a fact about you specifically.
+
+**Can users see instructions?** No. They are owner-only.
+
+---
+
+## 7.10 Pointers
+
+- Soft preferences and recallable facts → [Chapter 6 · Memory](06-memory.md).
+- Limiting which tools the agent can use → [Chapter 15 · Policy and Approval](15-policy-and-approval.md).
+- Push instructions across your fleet → use `--all` in any command above.
