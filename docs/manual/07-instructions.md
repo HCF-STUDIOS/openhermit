@@ -95,17 +95,25 @@ hermit instructions append safety "Never share secret keys." --all
 
 ---
 
-## 7.5 What to Put in Each Section
+## 7.5 The Default Sections
 
-There is no required structure — names are yours — but a workable starting set is:
+Every new agent is seeded with three sections. You do not have to use these names — they are just the keys OpenHermit ships, and the agent is already configured to read them on every turn. Editing them in place is the path of least resistance.
 
-- **`persona`** — who the agent is, tone of voice, point of view.
+- **`identity`** — who the agent is. Its name, its purpose, the role it plays for you. The seed reads "You are `<agent-name>`, an AI assistant." plus a placeholder line; replace that with a sentence or two that actually describes the agent.
+- **`soul`** — personality, tone, voice. How the agent should *sound*. The seed reads "You are helpful, thoughtful, and concise. You think step by step when solving complex problems." Make it yours: cautious or playful, terse or chatty, first-person or third.
+- **`rules`** — hard constraints. Things the agent must or must not do, regardless of who is asking. The seed already includes two rules worth keeping: never fabricate information when tools come back empty, and refuse non-owner requests for the owner's private communications. Add your own on top.
+
+Mental model: **`identity`** is *what* the agent is, **`soul`** is *how* it speaks, **`rules`** is *what it will and will not do*. When you find yourself writing something, ask which of those three it answers, and put it there.
+
+### Adding your own sections
+
+Beyond the defaults, you can create any keyed section you want. Common additions:
+
 - **`format`** — output format defaults: markdown, table style, code-block conventions.
-- **`safety`** — refusals, redactions, escalation rules.
-- **`house-rules`** — anything that is specific to your organisation or use case.
+- **`house-rules`** — anything specific to your organisation or use case.
 - **`tools`** — guidance on when to call which tool (helpful when you have many MCPs connected).
 
-Keep each section short. Three to ten lines is plenty. Long instructions get ignored by the model the same way long human policies do.
+Keep each section short. Three to ten lines is plenty. Long instructions get skimmed past by the model the same way long human policies do.
 
 ---
 
