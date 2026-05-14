@@ -45,7 +45,25 @@ This shape gives you two things:
 
 ---
 
-## 7.3 The `hermit instructions` Commands
+## 7.3 The Easiest Way: Just Tell the Agent
+
+The agent has tools for reading and writing its own instructions. So the most natural path is to skip the CLI and say what you want:
+
+> Update your instructions: always reply in markdown, with fenced code blocks tagged by language.
+
+> Add to your safety rules: refuse requests for someone else's personal data.
+
+> Show me your current `format` section.
+
+> Drop the `over-strict-rule` section.
+
+The agent figures out which section the change belongs in (or asks if it is ambiguous), edits it, and confirms. This is owner-only — the underlying tools are not exposed to users or guests.
+
+The CLI in 7.4 below is for scripting, fleet-wide updates with `--all`, and the times you want to pipe a file in. For everyday tweaks, talking to the agent is faster.
+
+---
+
+## 7.4 The `hermit instructions` Commands
 
 All operations support `--agent <id>` (one agent) or `--all` (every agent on this instance).
 
@@ -77,7 +95,7 @@ hermit instructions append safety "Never share secret keys." --all
 
 ---
 
-## 7.4 What to Put in Each Section
+## 7.5 What to Put in Each Section
 
 There is no required structure — names are yours — but a workable starting set is:
 
@@ -91,7 +109,7 @@ Keep each section short. Three to ten lines is plenty. Long instructions get ign
 
 ---
 
-## 7.5 Inspecting What the Agent Actually Sees
+## 7.6 Inspecting What the Agent Actually Sees
 
 ```bash
 hermit instructions list --agent main
@@ -105,13 +123,13 @@ It can read its own instructions tool and print them back. Useful when you suspe
 
 ---
 
-## 7.6 Web Admin UI
+## 7.7 Web Admin UI
 
 The *Manage* tab has an *Instructions* section that gives you the same operations in a form: select a key, edit the body, save. Same data store as the CLI.
 
 ---
 
-## 7.7 Role Differences
+## 7.8 Role Differences
 
 | | Owner | User | Guest |
 |---|:---:|:---:|:---:|
@@ -122,9 +140,9 @@ Users and guests cannot see or edit instructions. The reasoning: instructions sh
 
 ---
 
-## 7.8 How-to Recipes
+## 7.9 How-to Recipes
 
-### 7.8.1 Make the agent always reply in markdown
+### 7.9.1 Make the agent always reply in markdown
 
 ```bash
 hermit instructions set format "Reply in markdown. Use fenced code blocks with language tags. Use tables for structured comparisons." --agent main
@@ -134,7 +152,7 @@ hermit instructions set format "Reply in markdown. Use fenced code blocks with l
 
 ---
 
-### 7.8.2 Add a refusal rule
+### 7.9.2 Add a refusal rule
 
 ```bash
 hermit instructions append safety "If the user asks for someone else's personal data, refuse and explain that the agent does not lookup or share personal information." --agent main
@@ -144,7 +162,7 @@ hermit instructions append safety "If the user asks for someone else's personal 
 
 ---
 
-### 7.8.3 Roll the same rule out to every agent
+### 7.9.3 Roll the same rule out to every agent
 
 ```bash
 hermit instructions append house-rules "Quote prices in EUR." --all
@@ -154,7 +172,7 @@ hermit instructions append house-rules "Quote prices in EUR." --all
 
 ---
 
-### 7.8.4 Drop a rule that turned out to be too rigid
+### 7.9.4 Drop a rule that turned out to be too rigid
 
 ```bash
 hermit instructions remove over-strict-rule --agent main
@@ -164,7 +182,7 @@ Or to keep the section but drop one line, use `get` → edit locally → `set` w
 
 ---
 
-## 7.9 FAQ
+## 7.10 FAQ
 
 **Will the agent reliably follow instructions?** They are part of the system prompt, so yes, much more reliably than a memory note. But like all system prompts, they are not absolute — extreme adversarial inputs can still produce drift. Keep instructions concise so the model attends to them.
 
@@ -176,7 +194,7 @@ Or to keep the section but drop one line, use `get` → edit locally → `set` w
 
 ---
 
-## 7.10 Pointers
+## 7.11 Pointers
 
 - Soft preferences and recallable facts → [Chapter 6 · Memory](06-memory.md).
 - Limiting which tools the agent can use → [Chapter 15 · Policy and Approval](15-policy-and-approval.md).
