@@ -56,13 +56,18 @@ The fix is identity linking. The recipes in 5.5 cover it.
 
 ## 5.4 Two Ways to Link an Identity
 
-There are two paths, and which one fits depends on who is making the claim.
+There are two paths, and which one fits depends on who is doing the linking.
 
-**Owner-initiated.** The owner says, from any channel where they are already recognised as owner, "the Telegram user named *William* is also me" — or picks the identity in the admin UI. The agent links it on the spot, no confirmation. This is the path for *your own* identities and for cases where you already know who someone is.
+**Owner-initiated.** The owner picks the identity in the admin UI or, from a channel where they are already recognised as owner, tells the agent "the Telegram user named *William* is also me". The agent links it on the spot. This is the path for an owner cleaning up the members list — including their own duplicate identities — and it requires owner role.
 
-**Request and confirm.** A non-owner identity asks to be linked. From Telegram (still seen as a guest), the person says "I'm William, please link this Telegram account to my web user." The agent does not link unilaterally — it sends a confirmation prompt to the owner (and to the target user, if different). The owner approves or rejects; only then is the link made.
+**Token-based, cross-channel proof.** Any user (including a guest) can link their own identities across channels by proving they control both sides. The flow:
 
-The distinction matters because identity linking is privilege-granting: if Bob's guest identity gets linked to Alice's owner user, Bob effectively becomes Alice on that agent. Owner-initiated is fast because the owner is already trusted. Request-and-confirm is the safe default whenever the request originates from a less-privileged identity.
+1. On channel A, ask the agent to **issue a link token**. It calls `identity_link_request` and prints a short token, valid for about 10 minutes.
+2. You carry that token to channel B yourself — copy it, type it into the other client.
+3. On channel B, give the token to the agent and ask it to **confirm the link**. The agent calls `identity_link_confirm` with the token. The tool verifies that the redeeming side is a *different* channel from the one that issued the token; that mutual possession is the proof.
+4. The two identities are now attached to the same user. If one side was a guest and the other a real user, the guest is absorbed into the real user. If both sides were already non-guest users with distinct roles, the tool refuses and asks an owner to do a manual merge — this prevents a guest's identity from accidentally claiming someone else's user.
+
+No owner approval is needed in the token flow; the security comes from the requirement to actually hold the token on both channels. The owner-initiated path is for cases where you have admin authority and want to skip the token dance.
 
 ---
 
@@ -123,23 +128,33 @@ curl -X POST "$GATEWAY/api/agents/<agent-id>/members" \
 
 ---
 
-### 5.6.2 Request a link from the less-privileged side
+### 5.6.2 Link two of your own channels using a token
 
-**Scenario** — you do not have an owner channel handy right now. You are messaging the agent from Telegram, where it currently sees you as a guest, and you want to be recognised as your real user account.
+**Scenario** — you are the same person on web (recognised as your real user) and on Telegram (currently a guest). No owner is helping you; you are doing it yourself.
 
-**Prerequisites** — the user you want to be linked to exists on the agent. There is an owner reachable to confirm.
+**Prerequisites** — you have already messaged the agent from both channels at least once, so each identity exists on the agent.
 
 **Ways to do it**
 
-*Ask the agent from the less-privileged channel.* For example, from Telegram:
+1. From the channel where you are already recognised as yourself (say, web), tell the agent:
 
-> I'm William. Please link this Telegram account to my web user.
+   > Generate a link token so I can attach another channel to this account.
 
-The agent does **not** link unilaterally. Instead it forwards a confirmation request to the owner (and, when relevant, to the target user). The request shows up in the *Observe* tab as a pending action, and also as a notification on any channel the owner has linked. The owner approves or rejects; on approve, the link is made and your next message from Telegram is recognised as your real user.
+   The agent calls `identity_link_request` and replies with a short token, e.g. `Xq4Aw8Zk`, valid for about 10 minutes.
 
-**Verify** — after the owner approves, ask the agent on Telegram "who am I?" — it should name your real user.
+2. Switch to the other channel (Telegram). Send the agent a message containing that token:
 
-**Common issues** — if no owner is online, the request sits pending until it times out (default a few minutes). Just ask again, or have the owner do the owner-initiated flow (5.6.1) when they are back.
+   > Link this Telegram account using token `Xq4Aw8Zk`.
+
+   The agent calls `identity_link_confirm`. Because the redeeming channel (Telegram) differs from the issuing channel (web), the proof check passes; the Telegram identity is attached to your existing user, and the guest record is absorbed.
+
+**Verify** — ask the agent from Telegram "who am I?" — it should name your real user, not "guest".
+
+**Common issues**
+
+- *"Token expired."* It is only valid for ~10 minutes. Issue a new one.
+- *"Same channel."* Tokens must be redeemed on a different channel from the one that issued them.
+- *"Already linked to a different user."* If both sides are already established non-guest users, the token flow refuses on purpose — ask an owner to run a merge ([5.6.4](#564-merge-two-identities-that-ended-up-as-two-users)).
 
 ---
 
