@@ -84,15 +84,15 @@ This is the source of truth that later chapters refer back to. Each ✓ means "y
 
 **Scenario** — you created your agent from the web (so the web identity is the owner), then you opened a Telegram chat with the bot. Telegram sees a new identity and either drops your message (on `protected` or `private` access) or creates a guest user.
 
-**Prerequisites** — the agent has Telegram connected ([Chapter 17 · Channels](17-channels.md)). You know your Telegram user ID (ask `@userinfobot` on Telegram, or check the Members panel — guests show up with their channel ID).
+**Prerequisites** — the agent has Telegram connected ([Chapter 17 · Channels](17-channels.md)). You have already sent at least one message to the bot from Telegram, so the agent has seen that identity.
 
 **Ways to do it**
 
-*Let the agent do it.* From the web (where you are owner), say:
+*Let the agent do it.* From the web (where you are owner), just describe the other identity in plain words:
 
-> Link Telegram user `656756615` to my account.
+> The user chatting with you on Telegram, named "William", is also my account.
 
-The agent calls its identity-linking tool and confirms.
+The agent looks up the matching Telegram identity, links it to your user record, and confirms. You do not need to dig up the numeric Telegram user ID — naming the display name is enough as long as it is unambiguous.
 
 *Web admin UI.* Open the agent's *Manage* page, go to the section listing members (typically reached via the `/api/agents/<id>/members` flow surfaced in the UI; if your admin UI does not expose this directly, use the API path below). Find your own entry, add an identity, choose `channel = telegram`, paste the ID.
 
