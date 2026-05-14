@@ -170,16 +170,16 @@ curl -X POST "$GATEWAY/api/agents/<agent-id>/members" \
 
 ```bash
 hermit web start
-# Browser opens with a token already attached, recognising you as owner.
+# Open the printed local web URL, then sign in with the same gateway credentials.
 ```
 
-If you opened the URL manually instead, copy the token printed by `hermit web start` into the browser's "sign in with token" field.
+The web server command starts the UI and prints the listening URL; it does not itself create a browser identity link. If the browser still appears as a separate guest after sign-in, use the identity-link flow from 5.6.2.
 
 *Link the web identity manually.* Same shape as 5.6.1 with `channel = web` and the device fingerprint shown in the Admin UI.
 
 **Verify** — the Admin UI shows the full management surface (Manage tab is visible and editable), not just a chat view.
 
-**Common issues** — using a different browser, or an incognito window, gives you a new fingerprint. You have to re-link or use a fresh token each time, unless you sign in through the same browser profile.
+**Common issues** — using a different browser, or an incognito window, gives you a new web identity. Link that identity again if you want it to resolve to the same user.
 
 ---
 

@@ -18,7 +18,7 @@ A flat reference, grouped by job. Run `hermit <command> --help` for full options
 hermit setup                        # first-time wizard
 hermit chat                         # interactive REPL with the default agent
 hermit chat --agent <id>            # specific agent
-hermit chat "one-shot question"     # send once, print reply, exit
+hermit chat --agent <id> --resume   # resume the latest CLI session
 ```
 
 ---
@@ -27,7 +27,7 @@ hermit chat "one-shot question"     # send once, print reply, exit
 
 ```bash
 hermit agents list
-hermit agents create <id>                          # interactive create
+hermit agents create <id> --name "<name>" --workspace-dir <path>
 hermit agents enable  <id>
 hermit agents disable <id>
 hermit agents restart <id>
@@ -49,14 +49,7 @@ hermit config --agent <id> security set access public|protected|private
 
 ## 19.3 Users (Members)
 
-```bash
-hermit users list   --agent <id> [--role guest|user]
-hermit users get    <user-id> --agent <id>
-hermit users update <user-id> --role guest|user --agent <id>
-hermit users link   <user-id> --channel <ch> --channel-user-id <cuid> --agent <id>
-hermit users unlink <user-id> --channel <ch> --agent <id>
-hermit users delete <user-id> --agent <id>
-```
+There is no `hermit users` command in the current CLI. Manage members through the web admin Users panel, the `/api/agents/<id>/members` API, or the owner-only agent tools (`user_list`, `user_role_set`, `user_identity_link`, `user_identity_unlink`, `user_merge`).
 
 ---
 
@@ -100,15 +93,7 @@ hermit mcp disable <name> [--agent <id>|--all]
 
 ## 19.7 Channels
 
-```bash
-hermit channels list    --agent <id>
-hermit channels add     <adapter> --agent <id> [adapter-specific opts]
-hermit channels enable  <adapter> --agent <id>
-hermit channels disable <adapter> --agent <id>
-hermit channels remove  <adapter> --agent <id>
-```
-
-Adapters: `telegram`, `discord`, `slack`, plus any others your gateway has.
+There is no `hermit channels` command in the current CLI. Configure channels in *Manage → Channels* or through the `/api/agents/<id>/channels` API.
 
 ---
 
@@ -118,7 +103,10 @@ Adapters: `telegram`, `discord`, `slack`, plus any others your gateway has.
 hermit schedules create --type cron --cron "<expr>" --prompt "<text>" --agent <id>
 hermit schedules create --type once --run-at "<iso>" --prompt "<text>" --agent <id>
 hermit schedules list   --agent <id>
+hermit schedules pause  <id> --agent <id>
+hermit schedules resume <id> --agent <id>
 hermit schedules delete <id> --agent <id>
+hermit schedules runs   <id> --agent <id>
 ```
 
 ---
@@ -126,9 +114,9 @@ hermit schedules delete <id> --agent <id>
 ## 19.9 Secrets
 
 ```bash
-hermit config secrets list   --agent <id>
-hermit config secrets set    <KEY> <value> --agent <id> [--pass-through|--no-pass-through]
-hermit config secrets delete <KEY>         --agent <id>
+hermit config --agent <id> secrets list
+hermit config --agent <id> secrets set    <KEY> <value> [--pass-through|--no-pass-through]
+hermit config --agent <id> secrets remove <KEY>
 ```
 
 ---
@@ -136,9 +124,11 @@ hermit config secrets delete <KEY>         --agent <id>
 ## 19.10 Policy
 
 ```bash
-hermit policy list   --agent <id>
-hermit policy add    --agent <id> --match "<expr>" --effect allow|deny|require_approval
-hermit policy remove <rule-id>  --agent <id>
+hermit config --agent <id> policy list
+hermit config --agent <id> policy set <resource-key> '<grants-json>' --effect allow|deny|require_approval
+hermit config --agent <id> policy delete <resource-key> [--effect allow|deny|require_approval]
+hermit config --agent <id> approvals list [--status pending|approved|rejected|expired]
+hermit config --agent <id> approvals review <request-id> approved|rejected
 ```
 
 ---
@@ -149,7 +139,7 @@ hermit policy remove <rule-id>  --agent <id>
 hermit --help
 hermit <command> --help
 hermit doctor                     # connection + auth sanity check
-hermit version
+hermit --version
 ```
 
 ---

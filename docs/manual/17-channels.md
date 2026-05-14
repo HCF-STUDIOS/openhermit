@@ -26,24 +26,11 @@ Newer adapters may exist (e.g., Signal); the *Manage → Channels* tab is the so
 
 ---
 
-## 17.2 The `hermit channels` Commands
+## 17.2 Managing Channels
 
-```bash
-# List configured channels for an agent.
-hermit channels list --agent main
+The current CLI does not include a `hermit channels` command. Configure channels in *Manage → Channels* or through the `/api/agents/<agent-id>/channels` API.
 
-# Add (configure) a channel — example for Telegram.
-hermit channels add telegram --agent main --token-secret TELEGRAM_BOT_TOKEN
-
-# Enable / disable an existing channel without removing config.
-hermit channels enable telegram  --agent main
-hermit channels disable telegram --agent main
-
-# Remove configuration entirely.
-hermit channels remove telegram --agent main
-```
-
-The exact options vary per adapter; `hermit channels add <adapter> --help` lists them.
+The API lists configured channels, creates owner-issued external channels, patches existing channel config (`enabled`, secrets, and adapter options), and deletes channels. Built-in channels such as Telegram, Discord, and Slack are seeded as channel rows and are enabled by patching their config.
 
 ---
 
@@ -94,22 +81,19 @@ When someone messages the agent via Telegram for the first time, the gateway rec
 **Prerequisites**
 
 1. Create a bot with BotFather; copy the bot token.
-2. Save the token as a gateway secret:
+2. Save the token as an agent secret:
 
    ```bash
-   hermit config secrets set TELEGRAM_BOT_TOKEN <token> --agent main
+   hermit config --agent main secrets set TELEGRAM_BOT_TOKEN <token> --pass-through
    ```
 
 **Steps**
 
-```bash
-hermit channels add telegram --agent main --token-secret TELEGRAM_BOT_TOKEN
-hermit channels enable telegram --agent main
-```
+Open *Manage → Channels*, choose the Telegram channel, enter the required bot token secret/config fields, and enable it. The same operation is available through `PATCH /api/agents/main/channels/<telegram-channel-id>`.
 
 **Verify** — DM your bot; it replies.
 
-**Common issues** — if it does not reply, check `hermit channels list --agent main` for an error column and the gateway logs.
+**Common issues** — if it does not reply, check *Manage → Channels* for missing secrets or disabled status, then check the gateway logs.
 
 ---
 

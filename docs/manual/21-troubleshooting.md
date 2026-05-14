@@ -19,7 +19,7 @@ A symptom-first reference. For each issue: what you see, what is most likely wro
 **Check**
 
 1. `hermit doctor` — basic connectivity to the gateway.
-2. `hermit channels list --agent <id>` — is the channel enabled and free of error?
+2. *Manage → Channels* — is the channel enabled and free of missing-secret warnings?
 3. Try the web UI: if web works but Telegram does not, the channel is the issue, not the agent.
 4. *Observe* tab — is the session showing a model error?
 
@@ -70,8 +70,8 @@ The agent runner aborts the turn after 15 consecutive tool failures to prevent l
 
 **Check**
 
-1. `hermit users get <id> --agent <id>` — their role.
-2. `hermit policy list --agent <id>` — does the relevant deny rule exist for their role?
+1. Gateway admin UI *Users* tab, or `user_list` as owner — confirm their role.
+2. `hermit config --agent <id> policy list` — does the relevant deny rule exist for their role?
 3. Test by impersonation: sign in as them on web (or use a test guest identity) and reproduce.
 
 ---

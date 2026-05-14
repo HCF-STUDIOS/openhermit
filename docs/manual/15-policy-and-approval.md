@@ -28,7 +28,7 @@ When multiple rules match, the most restrictive wins.
 
 A rule can match on:
 
-- **Tool name** — `file_write`, `exec`, `mcp_github.create_pr`, etc.
+- **Tool name / resource** — `file_write`, `exec`, or an MCP server id such as `github`.
 - **Tool argument patterns** — e.g., `exec` where the command begins with `rm`.
 - **Principal role** — guest / user / owner.
 - **Resource path** — for file tools, the path the tool would touch.
@@ -38,29 +38,23 @@ Rules compose. You usually start with a couple of broad defaults and add specifi
 
 ---
 
-## 15.3 The `hermit policy` Commands
+## 15.3 The `hermit config policy` Commands
 
 ```bash
 # List rules on an agent.
-hermit policy list --agent main
+hermit config --agent main policy list
 
-# Add a rule.
-hermit policy add \
-  --agent main \
-  --match "tool=exec,role=guest" \
-  --effect deny
+# Deny guests access to exec.
+hermit config --agent main policy set exec '[{"type":"role","value":"guest"}]' --effect deny
 
-# Add an approval rule for write-y GitHub calls.
-hermit policy add \
-  --agent main \
-  --match "tool=mcp_github.create_pr,role=user" \
-  --effect require_approval
+# Require approval for users on a GitHub MCP server.
+hermit config --agent main policy set github '[{"type":"role","value":"user"}]' --resource-type mcp --effect require_approval
 
 # Remove a rule.
-hermit policy remove <rule-id> --agent main
+hermit config --agent main policy delete exec --effect deny
 ```
 
-The exact match syntax depends on your version; `hermit policy --help` and `hermit policy list` are the source of truth for what your gateway accepts.
+`<resource-key>` is usually a tool name such as `exec`, an MCP server id such as `github`, or `*`. Grants are a JSON array such as `[{"type":"role","value":"guest"}]`, `[{"type":"role","value":"user"}]`, or `[{"type":"any"}]`.
 
 ---
 
@@ -85,14 +79,14 @@ A starter policy that covers most shared agents:
 
 ```bash
 # Guests cannot exec.
-hermit policy add --agent main --match "tool=exec,role=guest" --effect deny
+hermit config --agent main policy set exec '[{"type":"role","value":"guest"}]' --effect deny
 
-# Guests cannot write files.
-hermit policy add --agent main --match "tool=file_write,role=guest" --effect deny
+# Guests cannot use write-style shell/file tools.
+hermit config --agent main policy set file_write '[{"type":"role","value":"guest"}]' --effect deny
 
-# Any tool that mutates external systems requires approval for users.
-hermit policy add --agent main --match "tool=mcp_github.create_pr,role=user" --effect require_approval
-hermit policy add --agent main --match "tool=mcp_slack.send_message,role=user" --effect require_approval
+# External systems require approval for users.
+hermit config --agent main policy set github '[{"type":"role","value":"user"}]' --resource-type mcp --effect require_approval
+hermit config --agent main policy set slack  '[{"type":"role","value":"user"}]' --resource-type mcp --effect require_approval
 ```
 
 Owners are exempt unless you write rules that target them. (You can — sometimes a "make me confirm destructive ops" rule for yourself is wise.)
@@ -119,16 +113,13 @@ The *Observe* tab shows pending approvals at the top.
 
 ## 15.8 How-to Recipes
 
-### 15.8.1 Block file writes outside a sandbox path
+### 15.8.1 Block guests from writing files
 
 ```bash
-hermit policy add \
-  --agent main \
-  --match "tool=file_write,path!=sandbox/**" \
-  --effect deny
+hermit config --agent main policy set file_write '[{"type":"role","value":"guest"}]' --effect deny
 ```
 
-(`path!=` syntax illustrative — check your version's `--help`.)
+For path-specific rules, use `--resource-type file` plus a JSON `scope` with `sandbox`, `mode`, and `path`.
 
 **Verify** — ask the agent to write to `/etc/hosts`; it should be denied and recover.
 
@@ -137,10 +128,7 @@ hermit policy add \
 ### 15.8.2 Require approval for any destructive shell command
 
 ```bash
-hermit policy add \
-  --agent main \
-  --match "tool=exec,arg:command~=^(rm|mv|kill|drop)" \
-  --effect require_approval
+hermit config --agent main policy set exec '[{"type":"role","value":"user"}]' --effect require_approval
 ```
 
 **Verify** — ask the agent to "delete the temp folder"; you should see an approval prompt.

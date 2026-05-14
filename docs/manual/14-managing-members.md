@@ -12,31 +12,13 @@ Once people start showing up — through a channel invite or a public URL — yo
 
 ---
 
-## 14.1 The `hermit users` Commands
+## 14.1 Current Management Surfaces
 
-```bash
-# List users on an agent.
-hermit users list --agent main
+The current CLI does not include a `hermit users` command. Use one of these supported paths:
 
-# Filter by role.
-hermit users list --agent main --role guest
-
-# Show one user with their linked identities.
-hermit users get <user-id> --agent main
-
-# Promote / demote.
-hermit users update <user-id> --role user  --agent main
-hermit users update <user-id> --role guest --agent main
-
-# Link a channel identity to an existing user record.
-hermit users link <user-id> --channel telegram --channel-user-id 12345 --agent main
-
-# Remove a channel identity from a user.
-hermit users unlink <user-id> --channel telegram --agent main
-
-# Delete a user entirely (channel re-engagement creates a fresh guest).
-hermit users delete <user-id> --agent main
-```
+- **Web admin UI:** the gateway admin UI has a *Users* tab for viewing members and their linked identities.
+- **HTTP API:** `GET /api/agents/<agent-id>/members`, `POST /api/agents/<agent-id>/members`, and `DELETE /api/agents/<agent-id>/members/<user-id>`.
+- **Agent tools:** owners can ask the agent to list users, promote or demote a member, link or unlink an identity, or merge duplicates. The underlying tools are `user_list`, `user_role_set`, `user_identity_link`, `user_identity_unlink`, and `user_merge`.
 
 Promotion and demotion take effect on the next message.
 
@@ -55,7 +37,7 @@ Two columns to skim first:
 
 ## 14.3 Web Admin UI
 
-There is currently no dedicated *Manage → Members* tab in the web UI. Membership operations live in the CLI. The roadmap includes a UI for this.
+The gateway admin UI has a *Users* tab for member inspection. The per-agent web chat management view does not currently expose a dedicated members tab.
 
 ---
 
@@ -80,34 +62,19 @@ Only owners manage membership.
 
 **Steps**
 
-1. List and identify both user records:
-
-   ```bash
-   hermit users list --agent main
-   ```
+1. List and identify both user records in the gateway admin UI's *Users* tab, or ask the agent as owner: "list users and their linked identities".
 
 2. Pick the one you want to keep (call it `<keep-id>`) and note the channel identity on the other (`<drop-id>`). Suppose the keeper has the web identity and the other has Telegram.
-3. Link the Telegram identity to the keeper:
+3. Ask the agent as owner to link the Telegram identity to the keeper, or use the member API to add that identity.
+4. If two established users need to be collapsed, ask the agent as owner to merge `<drop-id>` into `<keep-id>`; it calls `user_merge`.
 
-   ```bash
-   hermit users link <keep-id> --channel telegram --channel-user-id <telegram-user-id> --agent main
-   ```
-
-4. Delete the now-empty other record:
-
-   ```bash
-   hermit users delete <drop-id> --agent main
-   ```
-
-**Verify** — `hermit users get <keep-id>` shows both linked identities. Send a message from each channel; both should attribute to the same user.
+**Verify** — the Users tab or `user_list` shows both linked identities under the keeper. Send a message from each channel; both should attribute to the same user.
 
 ---
 
 ### 14.5.2 Promote a guest to user after vetting
 
-```bash
-hermit users update <user-id> --role user --agent main
-```
+Ask the agent as owner: "promote `<user-id>` to user on `main`." It calls `user_role_set`.
 
 **Verify** — have them ask the agent to write a file; it succeeds.
 
@@ -115,13 +82,7 @@ hermit users update <user-id> --role user --agent main
 
 ### 14.5.3 Bulk-clean stale guests
 
-```bash
-# List guests older than 90 days (use --since/--until if your build supports it,
-# otherwise eyeball the last-seen column).
-hermit users list --agent main --role guest
-# Then delete the ones you no longer want:
-hermit users delete <id> --agent main
-```
+Use the gateway admin UI's *Users* tab or `user_list` to find stale guests, then remove the memberships through the member API.
 
 There is no built-in "delete-all-stale-guests" command; do this when the list gets noisy.
 

@@ -25,26 +25,26 @@ The pattern is: never paste a credential into the agent's instructions or messag
 
 ---
 
-## 18.2 The `hermit config secrets` Commands
+## 18.2 The `hermit config --agent ... secrets` Commands
 
 ```bash
 # List secret names (values are not shown).
-hermit config secrets list --agent main
+hermit config --agent main secrets list
 
 # Set a secret.
-hermit config secrets set GITHUB_TOKEN <value> --agent main
+hermit config --agent main secrets set GITHUB_TOKEN <value>
 
-# Set a secret that should be passed through to MCP / channel adapter env (default).
-hermit config secrets set GITHUB_TOKEN <value> --agent main --pass-through
+# Set a secret that should be passed through to MCP / channel adapter env.
+hermit config --agent main secrets set GITHUB_TOKEN <value> --pass-through
 
 # Set a secret you do NOT want exposed to subprocess env.
-hermit config secrets set INTERNAL_KEY <value> --agent main --no-pass-through
+hermit config --agent main secrets set INTERNAL_KEY <value> --no-pass-through
 
 # Delete.
-hermit config secrets delete GITHUB_TOKEN --agent main
+hermit config --agent main secrets remove GITHUB_TOKEN
 ```
 
-Gateway-level secrets (shared across all agents) typically live in environment variables on the gateway host, not in `hermit config secrets`. Your operator controls those.
+Gateway-level secrets (shared across all agents) typically live in environment variables on the gateway host, not in `hermit config --agent ... secrets`. Your operator controls those.
 
 ---
 
@@ -92,7 +92,7 @@ Even owners do not see secret values in the UI after setting them — set-only. 
 ### 18.7.1 Rotate a GitHub token
 
 ```bash
-hermit config secrets set GITHUB_TOKEN <new-token> --agent main
+hermit config --agent main secrets set GITHUB_TOKEN <new-token>
 hermit mcp disable mcp_github --agent main
 hermit mcp enable  mcp_github --agent main
 ```
@@ -108,7 +108,7 @@ The disable/enable cycle restarts the MCP server so it picks up the new value. S
 You discover an old `instructions` section contains an API key in plain text. Fix:
 
 ```bash
-hermit config secrets set MY_API_KEY <value> --agent main
+hermit config --agent main secrets set MY_API_KEY <value>
 hermit instructions get tools --agent main         # copy the body
 # Edit locally — replace the raw key with ${{MY_API_KEY}}
 hermit instructions set tools --file ./tools.md --agent main
@@ -121,7 +121,7 @@ hermit instructions set tools --file ./tools.md --agent main
 ### 18.7.3 Audit which secrets an agent has
 
 ```bash
-hermit config secrets list --agent main
+hermit config --agent main secrets list
 ```
 
 If you see names that no longer correspond to an enabled MCP or channel, delete them.

@@ -46,7 +46,7 @@ Yes. The exact repo and licence are operator-known.
 Set access level to public or protected, share the URL or channel handle. → [Chapter 12](12-inviting-people.md), [Chapter 13](13-access-levels.md).
 
 **How do I make a guest into a user?**
-`hermit users update <id> --role user --agent <id>`. → [Chapter 14](14-managing-members.md).
+Use the gateway admin UI's *Users* tab, or ask the agent as owner to promote the user. → [Chapter 14](14-managing-members.md).
 
 **Does the agent remember everything I say forever?**
 Long-term memory entries persist until you delete them. Session scrollback is per session. → [Chapter 6](06-memory.md).

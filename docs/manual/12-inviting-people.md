@@ -40,9 +40,9 @@ You can promote a guest to user later, so when in doubt, start as guest.
 1. The other person finds the bot (you give them the handle).
 2. They send a message — say, `/start` for Telegram.
 3. The gateway creates a guest user pinned to that channel handle.
-4. You (the owner) decide: leave them as guest, link them to an existing user record (if they are someone you already know), or promote them to user with `hermit users update <id> --role user`.
+4. You (the owner) decide: leave them as guest, link them to an existing user record (if they are someone you already know), or promote them to user from the gateway admin UI or by asking the agent to call `user_role_set`.
 
-The exact CLI commands are in [Chapter 14 · Managing Members](14-managing-members.md).
+The supported management surfaces are in [Chapter 14 · Managing Members](14-managing-members.md).
 
 ### Web
 
@@ -85,17 +85,8 @@ Only owners invite and revoke. Users and guests can talk to the agent but cannot
 1. Make sure the Telegram channel is configured on the agent (see [Chapter 17](17-channels.md)).
 2. Share the bot handle (e.g., `@my_agent_bot`).
 3. Wait for them to send their first message — a guest identity is created.
-4. List recent identities and find theirs:
-
-   ```bash
-   hermit users list --agent main
-   ```
-
-5. Promote them:
-
-   ```bash
-   hermit users update <user-id> --role user --agent main
-   ```
+4. List recent identities in the gateway admin UI's *Users* tab, or ask the agent as owner to list users.
+5. Promote them from the admin UI, or ask the agent as owner: "promote `<user-id>` to user on `main`."
 
 **Verify** — they ask the agent to write a file; the file gets written (guests cannot, users can).
 
@@ -117,11 +108,7 @@ Only owners invite and revoke. Users and guests can talk to the agent but cannot
 
 ### 12.6.3 Revoke someone's access
 
-```bash
-hermit users update <user-id> --role guest --agent main   # demote
-# or, to drop them entirely:
-hermit users delete <user-id> --agent main
-```
+Demote them from the gateway admin UI, or ask the agent as owner to demote the user. To drop their membership entirely, use the member API: `DELETE /api/agents/<agent-id>/members/<user-id>`.
 
 If they re-engage the agent, they will create a fresh guest identity (unless the channel itself is access-controlled at the operator level).
 

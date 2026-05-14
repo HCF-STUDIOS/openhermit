@@ -80,10 +80,7 @@ hermit config --agent main security set access private
 
 Existing guest identities are not auto-removed; they just cannot create new sessions. To clean them out:
 
-```bash
-hermit users list --agent main --role guest
-hermit users delete <id> --agent main   # repeat as needed
-```
+Use the gateway admin UI's *Users* tab to find guest members, then remove memberships through the UI or `DELETE /api/agents/main/members/<user-id>`.
 
 ---
 

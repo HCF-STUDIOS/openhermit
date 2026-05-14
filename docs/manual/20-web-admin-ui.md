@@ -51,7 +51,7 @@ Configuration. Sub-tabs (the exact set depends on your gateway version):
 - **Schedules** — list and create form.
 - **Policies** — rule list and add form.
 
-The data behind every tab is the same store as the CLI; do not worry about choosing one or the other.
+The data behind every tab is the same gateway store used by the CLI and API; some surfaces, such as Channels, are currently UI/API-only.
 
 ---
 
@@ -101,5 +101,5 @@ If you need to find a session by tool call (e.g., "the session where the agent r
 
 ## 20.7 Pointers
 
-- Equivalent CLI for every Manage operation → [Chapter 19 · CLI Cheatsheet](19-cli-cheatsheet.md).
+- CLI and API equivalents for management operations → [Chapter 19 · CLI Cheatsheet](19-cli-cheatsheet.md).
 - What each Manage sub-tab maps to in this manual → the chapter of the same name.

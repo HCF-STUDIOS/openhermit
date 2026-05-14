@@ -66,12 +66,12 @@ Most useful MCP servers need credentials (a GitHub token, a Slack bot token, an 
 1. Store the credential as a **secret** (see [Chapter 18 · Secrets](18-secrets.md)):
 
    ```bash
-   hermit config secrets set GITHUB_TOKEN ghp_xxx --agent main
+   hermit config --agent main secrets set GITHUB_TOKEN ghp_xxx --pass-through
    ```
 
 2. The MCP server's configuration references the secret as `${{GITHUB_TOKEN}}`. The gateway substitutes the value when the server starts.
 
-You manage the credential rotation through `hermit config secrets`, not through the MCP server's config.
+You manage the credential rotation through `hermit config --agent ... secrets`, not through the MCP server's config.
 
 ---
 
@@ -105,7 +105,7 @@ The agent's role-filtered toolset includes MCP tools by default for users; depen
 
 ```bash
 # 1. Store your GitHub token as a secret.
-hermit config secrets set GITHUB_TOKEN <ghp_...> --agent main
+hermit config --agent main secrets set GITHUB_TOKEN <ghp_...> --pass-through
 
 # 2. Enable the MCP server.
 hermit mcp enable mcp_github --agent main
