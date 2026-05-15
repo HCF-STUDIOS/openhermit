@@ -400,8 +400,22 @@ export class ChannelManifestRegistry {
     this.byKey.set(manifest.key, manifest);
   }
 
-  /** Replace an existing manifest by key. No-op if not registered. */
+  /**
+   * Register or override a manifest by key. Inserts when absent, overwrites
+   * when present. Validates `key` and `manifestVersion` with the same rules
+   * as `register()`; only the duplicate-key check is relaxed.
+   */
   replace(manifest: ChannelManifest): void {
+    if (!manifest.key) {
+      throw new Error('ChannelManifestRegistry.replace: manifest.key is required');
+    }
+    if (manifest.manifestVersion !== CHANNEL_MANIFEST_VERSION) {
+      throw new Error(
+        `ChannelManifestRegistry.replace: unsupported manifestVersion ${String(
+          manifest.manifestVersion,
+        )} for channel "${manifest.key}" (this build supports ${CHANNEL_MANIFEST_VERSION})`,
+      );
+    }
     this.byKey.set(manifest.key, manifest);
   }
 

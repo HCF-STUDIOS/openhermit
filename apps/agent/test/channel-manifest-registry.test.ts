@@ -102,6 +102,20 @@ test('ChannelManifestRegistry: replace() adds when absent', () => {
   assert.equal(reg.has('signal'), true);
 });
 
+test('ChannelManifestRegistry: replace() enforces same validation as register()', () => {
+  const reg = new ChannelManifestRegistry();
+  assert.throws(() => reg.replace(manifest('')), /manifest\.key is required/);
+
+  const futureManifest = {
+    ...manifest('future'),
+    manifestVersion: 999,
+  } as unknown as ChannelManifest;
+  assert.throws(
+    () => reg.replace(futureManifest),
+    /unsupported manifestVersion 999/,
+  );
+});
+
 test('ChannelManifest.start: contract returns a usable handle', async () => {
   const reg = new ChannelManifestRegistry();
   let started = false;

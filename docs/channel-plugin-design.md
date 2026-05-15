@@ -1,6 +1,6 @@
 # Channel Plugin Architecture (Design Draft)
 
-> Status: draft — not implemented. Supersedes the "External Channel Adapter API" open question in `pending-decisions.md`.
+> Status: draft — partially implemented. The manifest contract and `ChannelManifestRegistry` have landed in `@openhermit/protocol`; nothing consumes the registry yet (see migration plan below). Supersedes the "External Channel Adapter API" open question in `pending-decisions.md`.
 
 ## Why
 
@@ -23,7 +23,7 @@ Goal: make channels first-class npm-installable plugins. The CLI still bundles a
 
 ## Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ gateway process                                                     │
 │                                                                     │
@@ -147,7 +147,7 @@ Sequenced so each step is independently shippable:
 3. **Add `channel_packages` config.** Gateway reads the list, dynamic-imports each, registers. Empty list = no-op, fully backwards compatible.
 4. **Delete `BUILTIN_CHANNELS` constant.** All consumers (`channels.ts` `starters` map, admin UI registry, backfill) now read from the runtime registry. Backfill becomes: "for each manifest registered at boot, ensure an `agent_channels` row exists per active agent."
 5. **Ship Signal as the first external-default channel.** PR #81 rebased: drop from `BUILTIN_CHANNELS`, drop from `tsup` `noExternal`, add `export default manifest`. Operators add `@openhermit/channel-signal` to `channel_packages` to enable.
-6. **Admin UI registry.** `/api/channels/available` returns the runtime registry instead of a hardcoded list. Form rendering uses each manifest's `configSchema`.
+6. **Admin UI registry.** `/api/channels/available` returns the runtime registry instead of a hardcoded list. Form rendering uses each manifest's `parseConfig` (or a richer descriptor we add later — `parseConfig` is opaque by design, so the UI may eventually want an explicit JSON-Schema or Zod field for form generation).
 
 Steps 1–4 are pure infrastructure with no user-visible change. Step 5 is the first user-visible delivery; step 6 polishes the admin UX.
 
