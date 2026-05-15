@@ -14,11 +14,17 @@ A **channel** is a transport for messages: the CLI, the web UI, a Telegram bot, 
 
 ## 17.1 The Channels You Get
 
+**Bundled with the CLI** (always available once `openhermit` is installed):
+
 - **CLI** — `hermit chat`. Always available if you have the CLI installed.
 - **Web** — `https://<your-gateway>/chat/<agent>`. Always available once the gateway is reachable.
 - **Telegram** — bot you create via BotFather, registered with the agent.
 - **Discord** — bot application registered with the agent.
 - **Slack** — Slack app installed into your workspace, registered with the agent.
+
+**Installable as npm packages** (add via `hermit channel install`):
+
+- **WeChat (personal)** — `@openhermit/channel-wechat`. Pair an existing personal WeChat account with the agent using a QR-scan wizard. Text-only v0.
 
 Each non-CLI channel needs a credential (a bot token or app secret). Credentials are stored as secrets — see [Chapter 18](18-secrets.md).
 
@@ -60,6 +66,13 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 - Slack apps are workspace-scoped. Install per workspace, register per agent.
 - Threading: the adapter creates a thread for each session by default. Quote-reply to continue an existing one.
 - File attachments supported.
+
+### WeChat (external plugin)
+
+- Install with `hermit channel install @openhermit/channel-wechat`, then restart the gateway.
+- Pair the bot through *Manage → Channels → Add channel → WeChat*: the UI renders a QR code that you scan with the WeChat mobile app and confirm. The setup wizard exchanges the scan + confirmation for a long-lived `bot_token` and IDC-pinned `base_url`, which the gateway stores on the channel row.
+- Restarts preserve the login: the gateway reloads `bot_token` from the channel row and resumes the iLink long-poll without re-scanning. You only need to re-pair if you unlink the bot from inside the WeChat client.
+- Text-only in v0 — no attachments, no group filtering.
 
 ### Web / CLI
 
@@ -114,6 +127,24 @@ Channels are interchangeable surfaces over the same agent. Disable Telegram, ena
 ### 17.6.3 Run one bot for two agents
 
 Not supported on the same channel handle. Use two distinct bot tokens / apps, one per agent.
+
+---
+
+### 17.6.4 Install a plugin channel (WeChat)
+
+```bash
+hermit channel install @openhermit/channel-wechat
+hermit gateway stop && hermit gateway start
+```
+
+Then open *Manage → Channels → Add channel → WeChat*, scan the QR with your phone, confirm the login, and save the channel. To remove it later:
+
+```bash
+hermit channel uninstall @openhermit/channel-wechat
+hermit gateway stop && hermit gateway start
+```
+
+`hermit channel list` shows what's currently registered.
 
 ---
 

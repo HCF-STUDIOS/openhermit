@@ -1,14 +1,28 @@
 # Channel Adapters
 
-OpenHermit includes built-in Telegram, Discord, and Slack adapters. At gateway boot the `ChannelPool` (`apps/gateway/src/channel-pool.ts`) starts every enabled adapter for every agent with `agents.status='active'` and registers scoped channel tokens so adapters can call back into `/api/agents/{agentId}/...`. Bridges are owned by the gateway, not by the per-agent runner — they stay alive across runner eviction and only tear down on gateway shutdown, agent disable, or explicit `disableChannel`. When an inbound message arrives, the gateway hydrates the runner on demand before dispatching.
+A **channel** is an npm package that default-exports a `ChannelManifest` (`packages/protocol/src/index.ts`) describing how to talk to an external messaging platform. At gateway boot, the `ChannelManifestRegistry` (`apps/gateway/src/channel-manifests.ts`) registers every manifest — bundled defaults plus any package named in `gateway.config.channelPackages` — and the `ChannelPool` (`apps/gateway/src/channel-pool.ts`) starts every enabled adapter for every agent with `agents.status='active'`, registering scoped channel tokens so adapters can call back into `/api/agents/{agentId}/...`. Bridges are owned by the gateway, not by the per-agent runner — they stay alive across runner eviction and only tear down on gateway shutdown, agent disable, or explicit `disableChannel`. When an inbound message arrives, the gateway hydrates the runner on demand before dispatching.
 
-## Implemented Adapters
+For the design rationale behind manifests, see [`channel-plugin-design.md`](channel-plugin-design.md).
+
+## Bundled Adapters
+
+These ship inside the CLI binary and are registered automatically:
 
 | Platform | Package | Connection |
 |----------|---------|------------|
 | Telegram | `@openhermit/channel-telegram` | polling or webhook |
 | Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
 | Slack | `@openhermit/channel-slack` | Slack Socket Mode |
+
+## External Plugin Adapters
+
+These are not bundled. Operators install them with `hermit channel install <pkg>` (or `npm install -g <pkg>` followed by adding to `channelPackages`); the gateway dynamic-imports each package at boot:
+
+| Platform | Package | Connection |
+|----------|---------|------------|
+| WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text-only v0 |
+
+External plugins follow the same manifest contract as bundled ones — there is no special-case loading path. Adding a new external plugin requires no gateway code change, only a config edit and a restart.
 
 ## Session Routing
 
@@ -48,7 +62,20 @@ Adapters register `ChannelOutbound` implementations. The `session_send` tool can
 
 ## Configuration
 
-Channels are stored in the `agent_channels` table (config + encrypted token columns) and managed through the admin UI, CLI (`hermit channels ...`), or the REST routes below. Tokens never live in `config.json`; they are encrypted at rest and decrypted only when an adapter starts.
+Channels are stored in the `agent_channels` table and managed through the admin UI (*Manage → Channels*) or the REST routes below. The row has two distinct credential slots:
+
+- **`config` (jsonb, plaintext)** — adapter-specific credentials the channel uses to reach the *upstream* platform (Telegram bot token, Slack bot/app tokens, WeChat `bot_token` + `base_url` from iLink, etc.). These are stored as plaintext jsonb today; treat the database itself as the security boundary.
+- **`token_ciphertext` (text, AES-256-GCM)** — the bearer token OpenHermit *issues* to that channel, used by webhook ingress (`POST /api/agents/.../channels/.../webhook`) and by adapters calling back into the gateway API. Encrypted at rest with `OPENHERMIT_SECRETS_KEY` and decrypted only when an adapter starts.
+
+To install or remove gateway-wide channel plugins (npm packages contributing new channel types), use:
+
+```bash
+hermit channel install   <pkg>    # npm install -g <pkg> + append to channelPackages
+hermit channel uninstall <pkg>    # remove from channelPackages + npm uninstall -g <pkg>
+hermit channel list
+```
+
+A gateway restart is required for plugin changes to take effect. The `channelPackages` array is also editable via `hermit gateway config set channelPackages '[...]'` or directly in *Admin → Gateway Config*.
 
 ## Runtime Management API
 
@@ -62,7 +89,27 @@ Channels are stored in the `agent_channels` table (config + encrypted token colu
 
 These routes require owner or admin auth.
 
-## Webhook Ingress
+## Interactive Setup (QR Scan, OAuth Device Flow)
+
+Token-paste channels (Telegram, Discord, Slack) start with a known `config` — the operator pastes a bot token and saves the row. Channels whose credentials are only obtainable after an external action — WeChat QR scan, Signal device-link, OAuth device flow — implement the optional `ChannelManifest.setup` state machine. The contract lives in `packages/protocol/src/index.ts` (`ChannelSetup`, `ChannelSetupState`) and is wrapped by four gateway routes:
+
+```
+POST   /api/agents/:id/channels/:type/setup/begin              -> { sessionId, state }
+GET    /api/agents/:id/channels/:type/setup/:sessionId         -> { sessionId, state }   (poll)
+POST   /api/agents/:id/channels/:type/setup/:sessionId         -> { sessionId, state }   (submit)
+DELETE /api/agents/:id/channels/:type/setup/:sessionId         -> { ok: true }            (cancel)
+```
+
+The UI switch-renders on `state.kind`:
+
+- `awaiting_user_input` — form (e.g. phone number for Signal)
+- `awaiting_external` — render `qrText` as a QR code, or surface `redirectUrl` as a button; poll every `pollIntervalMs`
+- `done` — the UI takes `state.config` and POSTs / PATCHes it onto the channel row via the existing CRUD API (the setup contract itself does **not** write to the DB)
+- `error` — display `message` verbatim
+
+Session state lives in-process inside the plugin (`Map<sessionId, ...>`); the gateway is stateless. Sessions are bounded by a plugin-chosen TTL (WeChat: 5 min; Signal: 10 min). On gateway restart, in-flight setup sessions are lost — the UI restarts the wizard. **Completed setups survive restart** because the durable credentials live on the channel row, not in the setup session: WeChat's `bot_token` (and any equivalent long-lived credential a setup flow produces) is reloaded from `agent_channels.config` and used to re-establish the upstream connection without re-scanning.
+
+
 
 For platforms that push updates over HTTPS (e.g. Telegram in webhook
 mode, Slack Events API, Discord Interactions), the gateway exposes a
@@ -121,3 +168,10 @@ Slack:
 - channel, DM, and thread metadata
 - deduplicates paired message/app-mention events
 - optional `allowed_channel_ids`
+
+WeChat (external plugin):
+
+- iLink long-poll loop on `bot_token` — no per-message webhook
+- QR-link setup wizard exchanges scan+confirmation for `bot_token` + IDC-pinned `base_url`; both persist on the channel row
+- text-only v0 (no media, no group filtering)
+- `errcode === -14` from `getUpdates` is treated as long-poll cursor reset, **not** auth failure
