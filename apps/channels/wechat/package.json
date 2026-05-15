@@ -1,17 +1,53 @@
 {
   "name": "@openhermit/channel-wechat",
-  "private": true,
   "version": "0.1.0",
+  "description": "OpenHermit channel plugin for personal WeChat (Weixin) via Tencent iLink. Text-only v0.",
+  "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HCF-STUDIOS/openhermit.git",
+    "directory": "apps/channels/wechat"
+  },
+  "homepage": "https://github.com/HCF-STUDIOS/openhermit/tree/main/apps/channels/wechat",
+  "bugs": "https://github.com/HCF-STUDIOS/openhermit/issues",
+  "keywords": [
+    "openhermit",
+    "channel",
+    "wechat",
+    "weixin",
+    "ilink",
+    "chatbot"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "ilink_appid": "",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.typecheck.json --pretty false",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build",
+    "prepack": "node scripts/strip-dev-condition.mjs",
+    "postpack": "node scripts/restore-package-json.mjs"
   },
   "dependencies": {
-    "@openhermit/sdk": "0.3.7",
-    "@openhermit/shared": "0.2.0"
+    "@openhermit/sdk": "^0.3.9"
   }
 }
