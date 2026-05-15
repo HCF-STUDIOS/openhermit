@@ -167,10 +167,12 @@ export function ChannelsPanel() {
   const renderCard = (ch: ChannelRecord, group: GroupKey) => {
     const manifest = manifestByKey.get(ch.channelType);
     const canSetup = group === 'package' && manifest?.supportsSetup === true;
+    const displayName = ch.label ?? manifest?.displayName ?? ch.channelType;
     return (
       <ChannelCard
         key={ch.id}
         ch={ch}
+        displayName={displayName}
         statusClass={statusClass(ch)}
         statusText={statusText(ch)}
         canSetup={canSetup}
@@ -313,8 +315,9 @@ export function ChannelsPanel() {
   );
 }
 
-function ChannelCard({ ch, statusClass, statusText, canSetup, onSetup, onEdit, onToggle, onDelete }: {
+function ChannelCard({ ch, displayName, statusClass, statusText, canSetup, onSetup, onEdit, onToggle, onDelete }: {
   ch: ChannelRecord;
+  displayName: string;
   statusClass: string;
   statusText: string;
   canSetup: boolean;
@@ -328,7 +331,7 @@ function ChannelCard({ ch, statusClass, statusText, canSetup, onSetup, onEdit, o
       <div className="schedule-card__info">
         <div>
           <span className="skill-card__name">
-            {ch.label ?? ch.channelType}
+            {displayName}
             {ch.kind === 'external' && (
               <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>· {ch.namespace}</span>
             )}

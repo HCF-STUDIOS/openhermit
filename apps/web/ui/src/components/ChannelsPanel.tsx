@@ -253,10 +253,12 @@ export function ChannelsPanel() {
   const renderCard = (ch: ChannelInfo, group: GroupKey) => {
     const manifest = manifestByKey.get(ch.channelType);
     const canSetup = group === 'package' && manifest?.supportsSetup === true;
+    const displayName = ch.label ?? manifest?.displayName ?? ch.channelType;
     return (
       <ChannelCard
         key={ch.id}
         ch={ch}
+        displayName={displayName}
         canSetup={canSetup}
         onSetup={() => setSetupFor(ch)}
         onToggle={() => void handleToggle(ch)}
@@ -375,7 +377,7 @@ export function ChannelsPanel() {
         {editingChannel && (
           <>
             <div className="manage__dialog-header">
-              <h3>Edit {editingChannel.label ?? editingChannel.channelType}</h3>
+              <h3>Edit {editingChannel.label ?? manifestByKey.get(editingChannel.channelType)?.displayName ?? editingChannel.channelType}</h3>
               <button className="btn btn--sm btn--ghost" onClick={() => setEditing(null)}>Cancel</button>
             </div>
             <div className="manage__dialog-body">
@@ -513,8 +515,9 @@ function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras 
   );
 }
 
-function ChannelCard({ ch, canSetup, onSetup, onToggle, onEdit, onRemove }: {
+function ChannelCard({ ch, displayName, canSetup, onSetup, onToggle, onEdit, onRemove }: {
   ch: ChannelInfo;
+  displayName: string;
   canSetup: boolean;
   onSetup: () => void;
   onToggle: () => void;
@@ -534,7 +537,7 @@ function ChannelCard({ ch, canSetup, onSetup, onToggle, onEdit, onRemove }: {
       <div className="manage__card-info">
         <div className="manage__card-header">
           <span className="manage__card-name">
-            {ch.label ?? ch.channelType}
+            {displayName}
             {ch.kind === 'external' && (
               <span className="manage__card-meta"> · {ch.namespace}</span>
             )}
