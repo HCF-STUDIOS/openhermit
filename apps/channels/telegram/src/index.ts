@@ -51,6 +51,9 @@ export { TelegramBot } from './bot.js';
 export type { TelegramAdapterConfig } from './config.js';
 export type { ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
 
+// Default export: ChannelManifest consumed by the gateway plugin registry.
+export { default } from './manifest.js';
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));

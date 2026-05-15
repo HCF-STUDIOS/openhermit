@@ -40,6 +40,7 @@ import { ChannelPool } from './channel-pool.js';
 import { CentralScheduler } from './central-scheduler.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
 import { createGatewayApp } from './app.js';
+import { buildChannelManifestRegistry } from './channel-manifests.js';
 import { loadGatewayConfig } from './config.js';
 import { attachGatewayWs } from './ws-handler.js';
 import {
@@ -160,6 +161,14 @@ export const main = async (): Promise<void> => {
   );
   logStartup(`config loaded (source: ${configSource})`);
 
+  // Build the channel manifest registry: dynamic-import built-in channel
+  // packages first, then any external packages from config.channelPackages.
+  // External packages may override a built-in by matching its key.
+  const manifestRegistry = await buildChannelManifestRegistry(
+    config.channelPackages,
+    logStartup,
+  );
+
   // Auth configuration (secrets stay in env). ChannelRegistry is seeded
   // by ChannelPool.start() at gateway boot — every channel row (builtin
   // or external) lives in the same agent_channels table and takes the
@@ -167,30 +176,30 @@ export const main = async (): Promise<void> => {
   const channels = new ChannelRegistry();
   if (agentChannelStore) {
     // One-shot backfill: for every existing agent, make sure each
-    // BUILTIN_CHANNELS kind has a row. If the agent's old
+    // registered builtin channel kind has a row. If the agent's old
     // config_json.channels.X document has values, copy them into the
     // new row's config field on first create. Idempotent — runs every
     // boot but only inserts the missing rows.
     if (agentStore && configStore) {
       try {
-        const { BUILTIN_CHANNELS } = await import('@openhermit/agent/core');
+        const builtinKeys = manifestRegistry.keys();
         for (const agent of await agentStore.list()) {
           const legacyConfig = await configStore.getConfig(agent.agentId);
           const legacyChannels = (legacyConfig?.channels ?? {}) as Record<string, Record<string, unknown> | undefined>;
-          for (const def of BUILTIN_CHANNELS) {
-            const existing = await agentChannelStore.findBuiltin(agent.agentId, def.key);
+          for (const key of builtinKeys) {
+            const existing = await agentChannelStore.findBuiltin(agent.agentId, key);
             if (existing) continue;
-            const legacy = legacyChannels[def.key];
+            const legacy = legacyChannels[key];
             const enabled = !!legacy?.enabled;
             const cfg = legacy ? { ...legacy } : {};
             delete (cfg as { enabled?: unknown }).enabled;
             await agentChannelStore.createBuiltin({
               agentId: agent.agentId,
-              channelType: def.key,
+              channelType: key,
               config: cfg,
               enabled,
             });
-            logStartup(`backfilled builtin channel row: ${agent.agentId}/${def.key} (enabled=${enabled})`);
+            logStartup(`backfilled builtin channel row: ${agent.agentId}/${key} (enabled=${enabled})`);
           }
         }
       } catch (err) {
@@ -340,6 +349,7 @@ export const main = async (): Promise<void> => {
     sandboxPresets: config.sandboxPresets,
     autoProvisionSandbox: config.autoProvisionSandbox,
     channelRegistry: channels,
+    manifestRegistry,
     auth,
     adminToken,
     logger: logStartup,
@@ -413,6 +423,7 @@ export const main = async (): Promise<void> => {
         configStore,
         secretStore,
         channelRegistry: channels,
+        manifestRegistry,
         // Channel adapters connect back from inside the host. Use
         // 127.0.0.1 even when the public listener is 0.0.0.0.
         gatewayBaseUrl: `http://127.0.0.1:${info.port}`,

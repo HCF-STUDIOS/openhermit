@@ -81,24 +81,6 @@ export interface ChannelsConfig {
   discord?: DiscordChannelConfig;
 }
 
-/**
- * Built-in channel definitions. Each entry maps a ChannelsConfig key to the
- * identity namespace the channel bridge uses in `sender.channel`.
- * When adding a new built-in channel, add an entry here.
- */
-export const BUILTIN_CHANNELS: readonly BuiltinChannelDef[] = [
-  { key: 'telegram', namespace: 'telegram' },
-  { key: 'slack', namespace: 'slack' },
-  { key: 'discord', namespace: 'discord' },
-] satisfies readonly { key: keyof ChannelsConfig; namespace: string }[];
-
-export interface BuiltinChannelDef {
-  /** Key in ChannelsConfig. */
-  key: keyof ChannelsConfig;
-  /** Identity namespace used by the bridge in sender.channel. */
-  namespace: string;
-}
-
 export type WorkspaceContainerStartPolicy = 'session' | 'ondemand';
 export type WorkspaceContainerStopPolicy = 'session' | 'idle';
 

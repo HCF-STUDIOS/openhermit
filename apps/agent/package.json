@@ -57,8 +57,5 @@
     "langfuse": "^3.38.6",
     "prom-client": "^15.1.3",
     "zod": "^4.3.6"
-  },
-  "optionalDependencies": {
-    "@openhermit/channel-telegram": "0.2.0"
   }
 }

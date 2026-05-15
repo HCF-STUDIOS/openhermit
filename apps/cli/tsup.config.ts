@@ -10,6 +10,8 @@ const internalPackages = [
   '@openhermit/agent/*',
   '@openhermit/web',
   '@openhermit/channel-telegram',
+  '@openhermit/channel-slack',
+  '@openhermit/channel-discord',
   '@openhermit/gateway',
 ];
 

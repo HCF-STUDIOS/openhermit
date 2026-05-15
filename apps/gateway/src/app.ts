@@ -13,6 +13,7 @@ import {
   isSessionMessage,
   isToolApprovalRequest,
   isSessionCheckpointRequest,
+  type ChannelManifestRegistry,
   type CreateAgentRequest,
   type SessionListQuery,
   type SyncResponse,
@@ -48,7 +49,7 @@ import {
 
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 import { metricsRegistry, startDefaultMetrics } from '@openhermit/agent/metrics';
-import { BUILTIN_CHANNELS, buildDefaultAgentConfig, listAllOpenHermitContainers } from '@openhermit/agent/core';
+import { buildDefaultAgentConfig, listAllOpenHermitContainers } from '@openhermit/agent/core';
 import { listProviderCatalog } from '@openhermit/agent/model-catalog';
 
 import type { AgentInstanceManager } from './agent-instance.js';
@@ -229,6 +230,8 @@ export interface GatewayAppOptions {
   autoProvisionSandbox?: string | null | undefined;
   /** Live ChannelRegistry — handlers mutate this when channels are created/revoked. */
   channelRegistry?: ChannelRegistry | undefined;
+  /** Channel manifest registry — drives builtin channel iteration in agent create. */
+  manifestRegistry: ChannelManifestRegistry;
   auth?: AuthResolverOptions | undefined;
   adminToken?: string | undefined;
   logger?: ((message: string) => void) | undefined;
@@ -917,10 +920,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // can flip them on later from the admin / web UI without having to
     // create rows from scratch.
     if (options.agentChannelStore) {
-      for (const def of BUILTIN_CHANNELS) {
+      for (const key of options.manifestRegistry.keys()) {
         await options.agentChannelStore.createBuiltin({
           agentId: record.agentId,
-          channelType: def.key,
+          channelType: key,
           enabled: false,
         });
       }

@@ -18,6 +18,12 @@ export interface GatewayConfig {
    * explicit `sandbox` field. `null` (or missing) disables auto-provisioning.
    */
   autoProvisionSandbox: string | null;
+  /**
+   * Additional channel packages to dynamic-import at gateway boot. Each
+   * package must default-export a `ChannelManifest`. External packages
+   * may override a built-in channel by matching its key.
+   */
+  channelPackages: string[];
 }
 
 export const META_KEY = 'gateway.config';
@@ -34,6 +40,7 @@ const DEFAULT_CONFIG: GatewayConfig = {
   cors: { origin: '*' },
   sandboxPresets: DEFAULT_PRESETS,
   autoProvisionSandbox: 'docker-ubuntu',
+  channelPackages: [],
 };
 
 export const defaultGatewayConfig = (): GatewayConfig =>
@@ -67,6 +74,19 @@ const parsePresets = (raw: unknown): Record<string, SandboxPreset> | undefined =
     out[name] = { type: type as SandboxPreset['type'], config };
   }
   return out;
+};
+
+const parseChannelPackages = (raw: unknown): string[] => {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error('channelPackages must be an array of package name strings');
+  }
+  return raw.map((v, i) => {
+    if (typeof v !== 'string' || v.trim() === '') {
+      throw new Error(`channelPackages[${i}] must be a non-empty string`);
+    }
+    return v;
+  });
 };
 
 const parseAutoProvision = (
@@ -107,6 +127,7 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
     },
     sandboxPresets: presets,
     autoProvisionSandbox: autoProvision,
+    channelPackages: parseChannelPackages(raw['channelPackages']),
   };
 };
 

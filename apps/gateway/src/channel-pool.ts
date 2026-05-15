@@ -14,7 +14,7 @@
  */
 import type { AgentRunner } from '@openhermit/agent/agent-runner';
 import {
-  startSingleChannel as startOneChannel,
+  startSingleChannel,
   stopChannels as stopChannelHandles,
   type ChannelHandle,
   type ChannelStatus,
@@ -22,6 +22,7 @@ import {
   type WebhookResponse,
 } from '@openhermit/agent/channels';
 import { AgentSecurity, AgentWorkspace } from '@openhermit/agent/core';
+import type { ChannelManifestRegistry } from '@openhermit/protocol';
 import type {
   AgentConfigStore,
   AgentStore,
@@ -37,6 +38,7 @@ export interface ChannelPoolOptions {
   configStore: AgentConfigStore;
   secretStore: SecretStore;
   channelRegistry: ChannelRegistry;
+  manifestRegistry: ChannelManifestRegistry;
   gatewayBaseUrl: string;
   /** Live-runner lookup so enable/disable can update the hot runner's outbounds. */
   getRunner: (agentId: string) => AgentRunner | undefined;
@@ -117,11 +119,22 @@ export class ChannelPool {
     const startedStatuses: ChannelStatus[] = [];
 
     for (const row of rows) {
+      const manifest = this.opts.manifestRegistry.get(row.channelType);
+      if (!manifest) {
+        this.opts.log(
+          `[${agentId}] [${row.channelType}] no manifest registered — skipping`,
+        );
+        startedStatuses.push({
+          name: row.channelType,
+          status: 'error',
+          error: `no manifest registered for channel "${row.channelType}"`,
+        });
+        continue;
+      }
       const resolved = await security.expandSecrets({ ...row.config, enabled: true });
-      const channelsConfig: Record<string, unknown> = { [row.channelType]: resolved };
-      const { handle, status } = await startOneChannel(row.channelType, channelsConfig as never, {
+      const { handle, status } = await startSingleChannel(manifest, resolved, {
         agentBaseUrl,
-        agentTokens: { [row.channelType]: row.token },
+        agentTokens: { [manifest.key]: row.token },
         logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
       });
       if (handle) startedHandles.push(handle);
@@ -212,14 +225,22 @@ export class ChannelPool {
       agentId,
     });
 
+    const manifest = this.opts.manifestRegistry.get(channelName);
+    if (!manifest) {
+      return {
+        name: channelName,
+        status: 'error',
+        error: `no manifest registered for channel "${channelName}"`,
+      };
+    }
+
     const security = await this.loadSecurity(agentId);
     const resolved = await security.expandSecrets({ ...row.config, enabled: true });
-    const channelsConfig: Record<string, unknown> = { [channelName]: resolved };
     const agentBaseUrl = `${this.opts.gatewayBaseUrl}/api/agents/${encodeURIComponent(agentId)}`;
 
-    const { handle, status } = await startOneChannel(channelName, channelsConfig as never, {
+    const { handle, status } = await startSingleChannel(manifest, resolved, {
       agentBaseUrl,
-      agentTokens: { [channelName]: loaded.token },
+      agentTokens: { [manifest.key]: loaded.token },
       logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
     });
 
