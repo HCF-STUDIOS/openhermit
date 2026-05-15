@@ -10,6 +10,14 @@ OpenHermit includes built-in Telegram, Discord, and Slack adapters. At gateway b
 | Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
 | Slack | `@openhermit/channel-slack` | Slack Socket Mode |
 
+## External Plugin Adapters
+
+Not bundled in the CLI. Operators install them explicitly and list the package name under `channelPackages` in gateway config. No row is auto-seeded on agent create — owners add them via the admin UI's "Add channel" picker.
+
+| Platform | Package | Connection |
+|----------|---------|------------|
+| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard |
+
 ## Session Routing
 
 Adapters keep a current session per external conversation and recover it by listing sessions with channel metadata.
@@ -19,6 +27,7 @@ Adapters keep a current session per external conversation and recover it by list
 | Telegram | `telegram:` | `telegram_chat_id` |
 | Discord | `discord:` | `discord_channel_id` |
 | Slack | `slack:` | `slack_channel_id`, optional `slack_thread_ts` |
+| Signal | `signal:` (DMs by uuid or E.164) / `signal:group:` | `signal_source`, optional `signal_group_id` |
 
 `/new` creates a new generated session ID after checkpointing the previous session with reason `new_session`.
 
