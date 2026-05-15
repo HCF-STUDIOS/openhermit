@@ -227,11 +227,17 @@ export class ChannelPool {
 
     const manifest = this.opts.manifestRegistry.get(channelName);
     if (!manifest) {
-      return {
+      const errorStatus: ChannelStatus = {
         name: channelName,
         status: 'error',
         error: `no manifest registered for channel "${channelName}"`,
       };
+      const statuses = this.statuses.get(agentId) ?? [];
+      const existingIdx = statuses.findIndex((s) => s.name === channelName);
+      if (existingIdx !== -1) statuses[existingIdx] = errorStatus;
+      else statuses.push(errorStatus);
+      this.statuses.set(agentId, statuses);
+      return errorStatus;
     }
 
     const security = await this.loadSecurity(agentId);

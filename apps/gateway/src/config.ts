@@ -85,7 +85,7 @@ const parseChannelPackages = (raw: unknown): string[] => {
     if (typeof v !== 'string' || v.trim() === '') {
       throw new Error(`channelPackages[${i}] must be a non-empty string`);
     }
-    return v;
+    return v.trim();
   });
 };
 

@@ -13,7 +13,6 @@ interface TelegramRuntimeConfig {
   bot_token: string;
   mode?: 'polling' | 'webhook';
   webhook_url?: string;
-  webhook_port?: number;
 }
 
 const manifest: ChannelManifest = {
