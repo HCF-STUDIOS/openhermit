@@ -531,15 +531,23 @@ export interface ChannelSetup {
  * userland code; the registry is constructed before any request
  * handling begins).
  */
+export type ChannelManifestOrigin = 'built-in' | 'external';
+
 export class ChannelManifestRegistry {
   private readonly byKey = new Map<string, ChannelManifest>();
+  private readonly originByKey = new Map<string, ChannelManifestOrigin>();
 
   /**
    * Register a manifest. Throws on duplicate `key` — the caller (the
    * plugin loader) decides whether to swallow the error to allow an
    * external manifest to override a bundled default.
+   *
+   * `origin` tags the manifest as bundled-default (`built-in`) or
+   * plugin-loaded (`external`). The gateway uses it to decide whether to
+   * pre-seed an `agent_channels` row when an agent is created — only
+   * built-ins are auto-seeded; externals are added on demand via the UI.
    */
-  register(manifest: ChannelManifest): void {
+  register(manifest: ChannelManifest, origin: ChannelManifestOrigin = 'external'): void {
     if (!manifest.key) {
       throw new Error('ChannelManifestRegistry.register: manifest.key is required');
     }
@@ -554,6 +562,7 @@ export class ChannelManifestRegistry {
       throw new Error(`ChannelManifestRegistry.register: duplicate channel key "${manifest.key}"`);
     }
     this.byKey.set(manifest.key, manifest);
+    this.originByKey.set(manifest.key, origin);
   }
 
   /**
@@ -561,7 +570,7 @@ export class ChannelManifestRegistry {
    * when present. Validates `key` and `manifestVersion` with the same rules
    * as `register()`; only the duplicate-key check is relaxed.
    */
-  replace(manifest: ChannelManifest): void {
+  replace(manifest: ChannelManifest, origin: ChannelManifestOrigin = 'external'): void {
     if (!manifest.key) {
       throw new Error('ChannelManifestRegistry.replace: manifest.key is required');
     }
@@ -573,6 +582,7 @@ export class ChannelManifestRegistry {
       );
     }
     this.byKey.set(manifest.key, manifest);
+    this.originByKey.set(manifest.key, origin);
   }
 
   get(key: string): ChannelManifest | undefined {
@@ -589,6 +599,18 @@ export class ChannelManifestRegistry {
 
   keys(): string[] {
     return Array.from(this.byKey.keys());
+  }
+
+  originOf(key: string): ChannelManifestOrigin | undefined {
+    return this.originByKey.get(key);
+  }
+
+  keysByOrigin(origin: ChannelManifestOrigin): string[] {
+    const out: string[] = [];
+    for (const [key, o] of this.originByKey) {
+      if (o === origin) out.push(key);
+    }
+    return out;
   }
 }
 

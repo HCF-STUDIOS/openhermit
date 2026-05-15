@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { ChannelSetupWizard } from './ChannelSetupWizard';
 
 interface AgentInfo {
   agentId: string;
@@ -7,6 +8,16 @@ interface AgentInfo {
 }
 
 interface ChannelSecretKey { key: string; label: string; placeholder: string }
+
+interface ChannelManifestSummary {
+  key: string;
+  namespace: string;
+  displayName: string;
+  origin: 'built-in' | 'external';
+  supportsSetup: boolean;
+  secretKeys?: ChannelSecretKey[];
+  defaultConfig?: Record<string, unknown>;
+}
 
 interface ChannelRecord {
   id: string;
@@ -127,7 +138,7 @@ export function ChannelsPanel() {
           onClick={() => setCreating(true)}
           disabled={!agentId}
         >
-          New external token
+          Add channel
         </button>
       </div>
 
@@ -225,9 +236,10 @@ export function ChannelsPanel() {
       {creating && agentId && (
         <CreateChannelDialog
           agentId={agentId}
+          existingTypes={new Set(builtin.map((c) => c.channelType))}
           onClose={() => setCreating(false)}
           onCreated={(created) => {
-            setCreatedToken(created);
+            if (created) setCreatedToken(created);
             setCreating(false);
             void loadChannels();
           }}
@@ -352,19 +364,70 @@ function EditChannelDialog({ agentId, channel, onClose, onSaved }: {
   );
 }
 
-function CreateChannelDialog({ agentId, onClose, onCreated }: {
+function CreateChannelDialog({ agentId, existingTypes, onClose, onCreated }: {
   agentId: string;
+  existingTypes: Set<string>;
   onClose: () => void;
-  onCreated: (created: CreatedChannelResponse) => void;
+  onCreated: (created: CreatedChannelResponse | null) => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
+  const [step, setStep] = useState<'pick' | 'wizard' | 'external'>('pick');
+  const [picked, setPicked] = useState<ChannelManifestSummary | null>(null);
   const [namespace, setNamespace] = useState('');
   const [label, setLabel] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => { dialogRef.current?.showModal(); }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        setManifests(await api<ChannelManifestSummary[]>('/api/channel-manifests'));
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handlePick = (m: ChannelManifestSummary): void => {
+    setPicked(m);
+    if (m.supportsSetup) {
+      setStep('wizard');
+      return;
+    }
+    // Manifest with no interactive setup: create a builtin row immediately
+    // with the default config skeleton. Operator fills in secrets via the
+    // row's Edit dialog afterwards.
+    void (async () => {
+      try {
+        await api(`/api/agents/${encodeURIComponent(agentId)}/channels`, {
+          method: 'POST',
+          body: {
+            channelType: m.key,
+            ...(m.defaultConfig ? { config: m.defaultConfig } : {}),
+          },
+        });
+        onCreated(null);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
+  };
+
+  const handleWizardDone = async (config: Record<string, unknown>): Promise<void> => {
+    if (!picked) return;
+    try {
+      await api(`/api/agents/${encodeURIComponent(agentId)}/channels`, {
+        method: 'POST',
+        body: { channelType: picked.key, config, enabled: true },
+      });
+      onCreated(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleSubmitExternal = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     const ns = namespace.trim();
     if (!ns) { setError('Namespace is required.'); return; }
@@ -381,36 +444,99 @@ function CreateChannelDialog({ agentId, onClose, onCreated }: {
 
   return (
     <dialog ref={dialogRef} className="dialog" onClose={onClose}>
-      <form className="dialog__form" onSubmit={handleSubmit}>
-        <h3>New external channel token</h3>
+      <div className="dialog__form">
+        <h3>
+          {step === 'wizard' && picked
+            ? `Link ${picked.displayName}`
+            : step === 'external'
+              ? 'New external channel token'
+              : 'Add channel'}
+        </h3>
         {error && <p className="config-error">{error}</p>}
-        <label className="field">
-          <span className="field__label">Namespace</span>
-          <input
-            className="field__input"
-            required
-            placeholder="e.g. telegram-bot, custom-slack"
-            value={namespace}
-            onChange={(e) => setNamespace(e.target.value)}
+        {step === 'pick' && (
+          <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <p style={{ color: 'var(--muted)' }}>
+              Pick a channel package, or issue a raw external token for a custom adapter.
+            </p>
+            {manifests.length === 0 && (
+              <p style={{ color: 'var(--muted)' }}>No channel packages registered.</p>
+            )}
+            {manifests.map((m) => {
+              const taken = existingTypes.has(m.key);
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  className="btn"
+                  disabled={taken}
+                  onClick={() => handlePick(m)}
+                  style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                >
+                  <span style={{ fontWeight: 600 }}>{m.displayName}</span>
+                  <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
+                    {m.origin === 'built-in' ? 'built-in' : 'plugin'}
+                    {m.supportsSetup ? ' · interactive setup' : ''}
+                    {taken ? ' · already added' : ''}
+                  </span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => setStep('external')}
+              style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+            >
+              <span style={{ fontWeight: 600 }}>Custom external token</span>
+              <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
+                for an adapter running outside the gateway
+              </span>
+            </button>
+            <div className="dialog__actions">
+              <button className="btn btn--ghost" type="button" onClick={onClose}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {step === 'wizard' && picked && (
+          <ChannelSetupWizard
+            agentId={agentId}
+            channelType={picked.key}
+            displayName={picked.displayName}
+            onDone={handleWizardDone}
+            onCancel={onClose}
           />
-          <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-            The adapter will only be able to act in this namespace. The token has no admin privileges.
-          </span>
-        </label>
-        <label className="field">
-          <span className="field__label">Label (optional)</span>
-          <input
-            className="field__input"
-            placeholder="Human-readable name"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-          />
-        </label>
-        <div className="dialog__actions">
-          <button className="btn btn--ghost" type="button" onClick={onClose}>Cancel</button>
-          <button className="btn btn--primary" type="submit">Issue token</button>
-        </div>
-      </form>
+        )}
+        {step === 'external' && (
+          <form onSubmit={handleSubmitExternal}>
+            <label className="field">
+              <span className="field__label">Namespace</span>
+              <input
+                className="field__input"
+                required
+                placeholder="e.g. telegram-bot, custom-slack"
+                value={namespace}
+                onChange={(e) => setNamespace(e.target.value)}
+              />
+              <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                The adapter will only be able to act in this namespace. The token has no admin privileges.
+              </span>
+            </label>
+            <label className="field">
+              <span className="field__label">Label (optional)</span>
+              <input
+                className="field__input"
+                placeholder="Human-readable name"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+              />
+            </label>
+            <div className="dialog__actions">
+              <button className="btn btn--ghost" type="button" onClick={() => setStep('pick')}>← Back</button>
+              <button className="btn btn--primary" type="submit">Issue token</button>
+            </div>
+          </form>
+        )}
+      </div>
     </dialog>
   );
 }

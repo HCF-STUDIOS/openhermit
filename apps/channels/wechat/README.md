@@ -23,14 +23,19 @@ the gateway config:
 ```
 
 On gateway boot the plugin loader picks it up via dynamic import and
-registers the `wechat` channel manifest with the runtime registry.
+registers the `wechat` channel manifest with the runtime registry as
+an `external` origin — so unlike `telegram` / `slack` / `discord`, no
+row is auto-seeded into `agent_channels` on agent create. Owners add
+WeChat on demand from the UI's "Add channel" picker.
 
 ## Linking a bot
 
-1. From the admin UI, pick **WeChat** in the channel-setup wizard.
+1. In `/manage/channels` (web) or `/admin/channels` (gateway admin),
+   click **Add channel** → pick **WeChat**.
 2. The wizard renders a QR code (`qrText` carries the URL).
-3. Open WeChat on your phone, scan the QR. On confirmation the gateway
-   persists the `agent_channels` row and the channel comes online.
+3. Open WeChat on your phone, scan the QR, confirm on phone. On
+   confirmation the gateway persists the `agent_channels` row and the
+   channel comes online.
 
 ## Stored config
 

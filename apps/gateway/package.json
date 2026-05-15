@@ -20,11 +20,13 @@
     "croner": "^10.0.1",
     "hono": "^4.7.2",
     "jose": "^6.2.2",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@types/ws": "^8.18.1",

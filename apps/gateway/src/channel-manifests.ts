@@ -65,13 +65,13 @@ const loadOne = async (
   try {
     if (registry.has(candidate.key)) {
       if (origin === 'external') {
-        registry.replace(candidate);
+        registry.replace(candidate, origin);
         log(`channel "${candidate.key}" overridden by external package "${pkg}"`);
       } else {
         log(`channel package "${pkg}" (built-in) duplicates key "${candidate.key}" — skipping`);
       }
     } else {
-      registry.register(candidate);
+      registry.register(candidate, origin);
       log(`registered ${origin} channel "${candidate.key}" from ${pkg}`);
     }
   } catch (err) {

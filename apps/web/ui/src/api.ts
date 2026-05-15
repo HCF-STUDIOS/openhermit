@@ -650,6 +650,71 @@ export const removeChannel = (id: string) =>
   apiFetch<{ ok: boolean }>(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const createExternalChannel = (input: { namespace: string; label?: string; config?: Record<string, unknown>; enabled?: boolean }) =>
   apiFetch<CreatedChannel>('/channels', { method: 'POST', body: input });
+export const createBuiltinChannel = (input: { channelType: string; label?: string; config?: Record<string, unknown>; enabled?: boolean }) =>
+  apiFetch<ChannelInfo>('/channels', { method: 'POST', body: input });
+
+// Channel manifest catalog — drives the "Add channel" picker.
+export interface ChannelManifestSummary {
+  key: string;
+  namespace: string;
+  displayName: string;
+  origin: 'built-in' | 'external';
+  supportsSetup: boolean;
+  secretKeys?: ChannelSecretKey[];
+  defaultConfig?: Record<string, unknown>;
+}
+export const fetchChannelManifests = () =>
+  apiFetchGlobal<ChannelManifestSummary[]>('/api/channel-manifests');
+
+// Channel setup (interactive auth) — shuttles bytes between the UI and the
+// plugin's `ChannelSetup.{begin,poll,submit,cancel}` handlers.
+export interface ChannelSetupStateAwaitingInput {
+  kind: 'awaiting_user_input';
+  instructions?: string;
+  fields: Array<{ name: string; label: string; type?: 'text' | 'password'; placeholder?: string }>;
+}
+export interface ChannelSetupStateAwaitingExternal {
+  kind: 'awaiting_external';
+  instructions?: string;
+  qrText?: string;
+  redirectUrl?: string;
+  pollIntervalMs?: number;
+}
+export interface ChannelSetupStateDone {
+  kind: 'done';
+  config: Record<string, unknown>;
+}
+export interface ChannelSetupStateError {
+  kind: 'error';
+  message: string;
+}
+export type ChannelSetupState =
+  | ChannelSetupStateAwaitingInput
+  | ChannelSetupStateAwaitingExternal
+  | ChannelSetupStateDone
+  | ChannelSetupStateError;
+
+export interface ChannelSetupResponse { sessionId: string; state: ChannelSetupState }
+
+export const beginChannelSetup = (channelType: string, body: Record<string, unknown> = {}) =>
+  apiFetch<ChannelSetupResponse>(
+    `/channels/${encodeURIComponent(channelType)}/setup/begin`,
+    { method: 'POST', body },
+  );
+export const pollChannelSetup = (channelType: string, sessionId: string) =>
+  apiFetch<ChannelSetupResponse>(
+    `/channels/${encodeURIComponent(channelType)}/setup/${encodeURIComponent(sessionId)}`,
+  );
+export const submitChannelSetup = (channelType: string, sessionId: string, body: Record<string, unknown>) =>
+  apiFetch<ChannelSetupResponse>(
+    `/channels/${encodeURIComponent(channelType)}/setup/${encodeURIComponent(sessionId)}`,
+    { method: 'POST', body },
+  );
+export const cancelChannelSetup = (channelType: string, sessionId: string) =>
+  apiFetch<{ ok: boolean }>(
+    `/channels/${encodeURIComponent(channelType)}/setup/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' },
+  );
 
 // Agent config (basic settings)
 export interface AgentConfig {

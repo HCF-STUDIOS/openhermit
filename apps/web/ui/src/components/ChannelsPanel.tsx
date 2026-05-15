@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchChannels,
+  fetchChannelManifests,
   patchChannel,
   removeChannel,
   createExternalChannel,
+  createBuiltinChannel,
   setAgentSecret,
   type ChannelInfo,
+  type ChannelManifestSummary,
   type CreatedChannel,
 } from '../api';
+import { ChannelSetupWizard } from './ChannelSetupWizard';
 
 /**
  * Fixed config skeletons for built-in channels. Token fields are kept as
@@ -58,8 +62,14 @@ export function ChannelsPanel() {
   const [editExtras, setEditExtras] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
 
-  // Create-external flow
+  // Create-channel flow (unified picker + wizard branch).
   const [creating, setCreating] = useState(false);
+  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
+  // Manifest picker step: 'pick' selects manifest, 'wizard' runs setup,
+  // 'external' issues a raw external token (no manifest).
+  const [createStep, setCreateStep] = useState<'pick' | 'wizard' | 'external'>('pick');
+  /** Selected manifest key when in wizard or pre-fill mode. Empty = external. */
+  const [pickedManifest, setPickedManifest] = useState<ChannelManifestSummary | null>(null);
   const [newNamespace, setNewNamespace] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [createdToken, setCreatedToken] = useState<CreatedChannel | null>(null);
@@ -76,6 +86,79 @@ export function ChannelsPanel() {
     if (creating) createDialogRef.current?.showModal();
     else createDialogRef.current?.close();
   }, [creating]);
+
+  // Pre-fetch the manifest catalog once the dialog opens so the picker
+  // populates without an extra spinner. Refresh every time the dialog
+  // reopens — operators may install a new channel package between visits.
+  useEffect(() => {
+    if (!creating) return;
+    void (async () => {
+      try {
+        setManifests(await fetchChannelManifests());
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
+  }, [creating]);
+
+  const openCreate = (): void => {
+    setCreating(true);
+    setCreateStep('pick');
+    setPickedManifest(null);
+    setNewNamespace('');
+    setNewLabel('');
+    setError('');
+  };
+
+  const closeCreate = (): void => {
+    setCreating(false);
+    setCreateStep('pick');
+    setPickedManifest(null);
+  };
+
+  /** Apply the manifest's default config skeleton (resolves at adapter start). */
+  const applyDefaultConfig = (m: ChannelManifestSummary): Record<string, unknown> | undefined => {
+    return m.defaultConfig ? { ...m.defaultConfig } : undefined;
+  };
+
+  const handlePickManifest = (m: ChannelManifestSummary): void => {
+    setPickedManifest(m);
+    if (m.supportsSetup) {
+      setCreateStep('wizard');
+      return;
+    }
+    // No interactive setup → seed a builtin row immediately with the
+    // manifest's default config (if any). Token fields will be filled
+    // in via the row's Edit dialog (which gathers secrets).
+    void (async () => {
+      try {
+        const cfg = applyDefaultConfig(m);
+        await createBuiltinChannel({
+          channelType: m.key,
+          ...(cfg ? { config: cfg } : {}),
+        });
+        closeCreate();
+        await load();
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
+  };
+
+  const handleWizardDone = async (config: Record<string, unknown>): Promise<void> => {
+    if (!pickedManifest) return;
+    try {
+      await createBuiltinChannel({
+        channelType: pickedManifest.key,
+        config,
+        enabled: true,
+      });
+      closeCreate();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -195,9 +278,7 @@ export function ChannelsPanel() {
         ...(newLabel.trim() ? { label: newLabel.trim() } : {}),
       });
       setCreatedToken(created);
-      setNewNamespace('');
-      setNewLabel('');
-      setCreating(false);
+      closeCreate();
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -269,44 +350,73 @@ export function ChannelsPanel() {
       ))}
 
       <div className="manage__add-list">
-        <button className="btn btn--sm btn--outline" onClick={() => setCreating(true)}>
-          + Issue external channel token
+        <button className="btn btn--sm btn--outline" onClick={openCreate}>
+          + Add channel
         </button>
       </div>
 
-      <dialog ref={createDialogRef} className="manage__dialog" onClose={() => setCreating(false)}>
+      <dialog ref={createDialogRef} className="manage__dialog" onClose={closeCreate}>
         <div className="manage__dialog-header">
-          <h3>New external channel</h3>
-          <button className="btn btn--sm btn--ghost" onClick={() => setCreating(false)}>Cancel</button>
+          <h3>
+            {createStep === 'wizard' && pickedManifest
+              ? `Link ${pickedManifest.displayName}`
+              : createStep === 'external'
+                ? 'New external channel token'
+                : 'Add channel'}
+          </h3>
+          <button className="btn btn--sm btn--ghost" onClick={closeCreate}>Cancel</button>
         </div>
         <div className="manage__dialog-body">
-          <div className="manage__field">
-            <label className="manage__field-label">Namespace</label>
-            <input
-              className="manage__field-input"
-              placeholder="e.g. telegram-bot, custom-slack"
-              value={newNamespace}
-              onChange={(e) => setNewNamespace(e.target.value)}
+          {createStep === 'pick' && (
+            <ManifestPicker
+              manifests={manifests}
+              existingTypes={new Set(channels.filter((c) => !c.kind || c.kind === 'builtin').map((c) => c.channelType))}
+              onPick={handlePickManifest}
+              onPickExternal={() => setCreateStep('external')}
             />
-            <span className="manage__field-hint">
-              The adapter will only be able to act in this namespace (sender.channel must match).
-            </span>
-          </div>
-          <div className="manage__field">
-            <label className="manage__field-label">Label (optional)</label>
-            <input
-              className="manage__field-input"
-              placeholder="Human-readable name"
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
+          )}
+          {createStep === 'wizard' && pickedManifest && (
+            <ChannelSetupWizard
+              channelType={pickedManifest.key}
+              displayName={pickedManifest.displayName}
+              onDone={handleWizardDone}
+              onCancel={closeCreate}
             />
+          )}
+          {createStep === 'external' && (
+            <>
+              <div className="manage__field">
+                <label className="manage__field-label">Namespace</label>
+                <input
+                  className="manage__field-input"
+                  placeholder="e.g. telegram-bot, custom-slack"
+                  value={newNamespace}
+                  onChange={(e) => setNewNamespace(e.target.value)}
+                />
+                <span className="manage__field-hint">
+                  The adapter will only be able to act in this namespace (sender.channel must match).
+                </span>
+              </div>
+              <div className="manage__field">
+                <label className="manage__field-label">Label (optional)</label>
+                <input
+                  className="manage__field-input"
+                  placeholder="Human-readable name"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+        {createStep === 'external' && (
+          <div className="manage__dialog-footer">
+            <button className="btn btn--ghost" onClick={() => setCreateStep('pick')}>← Back</button>
+            <button className="btn btn--primary" onClick={() => void handleCreateExternal()} disabled={saving}>
+              {saving ? 'Creating...' : 'Issue token'}
+            </button>
           </div>
-        </div>
-        <div className="manage__dialog-footer">
-          <button className="btn btn--primary" onClick={() => void handleCreateExternal()} disabled={saving}>
-            {saving ? 'Creating...' : 'Issue token'}
-          </button>
-        </div>
+        )}
       </dialog>
 
       <dialog ref={editDialogRef} className="manage__dialog" onClose={() => setEditing(null)}>
@@ -448,6 +558,53 @@ function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras 
         </div>
       )}
     </>
+  );
+}
+
+function ManifestPicker({ manifests, existingTypes, onPick, onPickExternal }: {
+  manifests: ChannelManifestSummary[];
+  existingTypes: Set<string>;
+  onPick: (m: ChannelManifestSummary) => void;
+  onPickExternal: () => void;
+}): JSX.Element {
+  return (
+    <div className="manage__field" style={{ gap: 8 }}>
+      <p className="manage__hint">
+        Pick a channel package, or issue a raw external token for a custom adapter.
+      </p>
+      {manifests.length === 0 && (
+        <p className="manage__empty">No channel packages registered.</p>
+      )}
+      {manifests.map((m) => {
+        const taken = existingTypes.has(m.key);
+        return (
+          <button
+            key={m.key}
+            className="btn btn--outline"
+            disabled={taken}
+            onClick={() => onPick(m)}
+            style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+          >
+            <span style={{ fontWeight: 600 }}>{m.displayName}</span>
+            <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
+              {m.origin === 'built-in' ? 'built-in' : 'plugin'}
+              {m.supportsSetup ? ' · interactive setup' : ''}
+              {taken ? ' · already added' : ''}
+            </span>
+          </button>
+        );
+      })}
+      <button
+        className="btn btn--ghost"
+        onClick={onPickExternal}
+        style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+      >
+        <span style={{ fontWeight: 600 }}>Custom external token</span>
+        <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
+          for an adapter running outside the gateway
+        </span>
+      </button>
+    </div>
   );
 }
 
