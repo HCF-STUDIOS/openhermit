@@ -121,7 +121,7 @@ export interface ChannelSetup {
 
 export type ChannelSetupState =
   | { kind: 'awaiting_user_input'; instructions?: string; fields: ChannelSetupFieldSpec[] }
-  | { kind: 'awaiting_external'; instructions: string; qrPngBase64?: string; redirectUrl?: string; pollIntervalMs: number }
+  | { kind: 'awaiting_external'; instructions: string; qrText?: string; redirectUrl?: string; pollIntervalMs: number }
   | { kind: 'done'; config: Record<string, unknown> }
   | { kind: 'error'; message: string };
 ```
@@ -147,14 +147,15 @@ UI                           gateway                     manifest.setup
  │                              │                              │ signal-cli-rest-api:
  │                              │                              │   POST /v1/qrcodelink/+1...
  │                              │                              │   ◄── PNG bytes
+ │                              │                              │ decode PNG → sgnl:// URI
  │                              │                              │
  │ { sessionId, state:          │                              │
  │   awaiting_external,         │                              │
- │   qrPngBase64: '...',        │  ◄── { sessionId, state }    │
+ │   qrText: 'sgnl://...',      │  ◄── { sessionId, state }    │
  │   pollIntervalMs: 1000 }     │                              │
  │ ◄──────────────────────────  │                              │
  │                              │                              │
- │ <img src=data:...> renders   │                              │
+ │ <QRCode value={qrText}/>     │                              │
  │ user scans QR in Signal app  │                              │
  │                              │                              │
  │ GET .../setup/:sessionId     │                              │
@@ -178,8 +179,8 @@ Key design choices:
 
 - **Plugin owns session state.** The gateway is stateless; sessions live in the plugin's own `Map<sessionId, State>` for the gateway lifetime. This matches how `start()` plugins already own their in-process state (sockets, pollers). Plugins are responsible for their own timeouts/GC.
 - **Setup does not write the DB.** `done.config` is returned to the UI, which then calls the existing `POST /api/agents/:id/channels` (or PATCH) to persist the row. This keeps the setup contract focused on producing config and leaves the persistence/enable path unchanged.
-- **The UI wizard is generic.** The admin UI switch-renders on `state.kind` — input form, `awaiting_external` (renders QR and/or "open link" button from `qrPngBase64` / `redirectUrl`, polls every `pollIntervalMs`), done, error. No channel-specific UI code. Channels with truly bespoke needs can ship their own admin-UI panel later (out of scope for this contract).
-- **`awaiting_external` covers QR scans, OAuth device flow, and any "open this URL in your browser, finish, we'll poll for you" pattern.** Plugins set `qrPngBase64`, `redirectUrl`, or both. What is explicitly out of scope for v1 is the classic OAuth redirect flow where the provider posts a `code` back to a callback URL the gateway hosts — that needs per-plugin callback routing and is deferred. Channels that support device-flow OAuth (Google, GitHub, Slack via device code) work today; channels that *only* support the redirect flavor cannot use the setup contract yet and must fall back to the existing token-paste path.
+- **The UI wizard is generic.** The admin UI switch-renders on `state.kind` — input form, `awaiting_external` (renders QR and/or "open link" button from `qrText` / `redirectUrl`, polls every `pollIntervalMs`), done, error. No channel-specific UI code. Channels with truly bespoke needs can ship their own admin-UI panel later (out of scope for this contract).
+- **`awaiting_external` covers QR scans, OAuth device flow, and any "open this URL in your browser, finish, we'll poll for you" pattern.** Plugins set `qrText`, `redirectUrl`, or both. What is explicitly out of scope for v1 is the classic OAuth redirect flow where the provider posts a `code` back to a callback URL the gateway hosts — that needs per-plugin callback routing and is deferred. Channels that support device-flow OAuth (Google, GitHub, Slack via device code) work today; channels that *only* support the redirect flavor cannot use the setup contract yet and must fall back to the existing token-paste path.
 - **All fields except `begin` and `poll` are optional.** Plugins with a single-step external flow (just a QR) don't implement `submit`. Plugins with no external resources (sockets, sub-processes) to clean up don't implement `cancel`.
 
 `setup` is itself optional on `ChannelManifest`. Token-only channels (telegram/slack/discord) leave it unset and continue to use the existing "fill the form, save the row, enable" path.

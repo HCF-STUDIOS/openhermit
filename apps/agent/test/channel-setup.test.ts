@@ -36,7 +36,7 @@ class StubSignalSetup implements ChannelSetup {
       state: {
         kind: 'awaiting_external',
         instructions: 'Scan this QR in Signal',
-        qrPngBase64: 'iVBORw0KGgo=', // 1-byte stub PNG
+        qrText: 'sgnl://linkdevice?uuid=stub&pub_key=stub',
         pollIntervalMs: 1000,
       },
     };
@@ -88,7 +88,7 @@ test('ChannelSetup: begin -> poll -> done happy path', async () => {
   const { sessionId, state: first } = await setup.begin({ phone_number: '+1' }, ctx);
   assert.equal(first.kind, 'awaiting_external');
   if (first.kind === 'awaiting_external') {
-    assert.ok(first.qrPngBase64);
+    assert.ok(first.qrText);
     assert.ok(first.pollIntervalMs > 0);
   }
 
