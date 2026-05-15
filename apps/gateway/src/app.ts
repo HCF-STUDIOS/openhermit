@@ -2470,6 +2470,30 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     logger: (msg) => log(`[${agentId}] [${channelType}/setup] ${msg}`),
   });
 
+  /**
+   * Catalog of channels the gateway knows about. The UI's "Add channel"
+   * picker queries this to render manifest-backed options. `origin` is
+   * inferred from a small built-in allow-list since the registry doesn't
+   * track it (planned for a future iteration).
+   */
+  const BUILTIN_KEYS = new Set(['telegram', 'slack', 'discord']);
+  app.get('/api/channel-manifests', async (c) => {
+    requireAuth(c);
+    const out = options.manifestRegistry.all().map((m) => {
+      const origin: 'built-in' | 'external' = BUILTIN_KEYS.has(m.key) ? 'built-in' : 'external';
+      const def = BUILTIN_CHANNEL_DEFS[m.key];
+      return {
+        key: m.key,
+        namespace: m.namespace,
+        displayName: m.displayName,
+        origin,
+        supportsSetup: !!m.setup,
+        ...(def ? { secretKeys: def.secretKeys, defaultConfig: def.defaultConfig } : {}),
+      };
+    });
+    return c.json(out);
+  });
+
   app.post('/api/agents/:agentId/channels/:channelType/setup/begin', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
     const channelType = c.req.param('channelType') ?? '';
