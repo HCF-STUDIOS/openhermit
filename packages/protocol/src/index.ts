@@ -340,7 +340,8 @@ export interface ChannelManifest {
    * pin a compatible plugin version.
    *
    * Bump policy: add optional fields without bumping; bump on any required
-   * field addition, semantic change, or signature change to `start`.
+   * field addition, semantic change, or signature change to `start` or
+   * `setup`.
    */
   manifestVersion: 1;
   /** Stable key. Matches the DB `channel_type` column and the key under `ChannelsConfig`. */
@@ -363,6 +364,144 @@ export interface ChannelManifest {
    * should not treat as fatal.
    */
   start: (config: unknown, context: ChannelContext) => Promise<ChannelHandle | undefined>;
+  /**
+   * Optional interactive setup machine. Channels that need a multi-step
+   * auth flow (Signal QR-link, WhatsApp pairing, OAuth, etc.) implement
+   * this; the gateway exposes REST routes that drive it and the admin
+   * UI renders a generic wizard from the returned `ChannelSetupState`.
+   *
+   * Token-only channels (telegram/slack/discord) leave this unset — the
+   * existing "fill the secrets form, save the row" path keeps working.
+   */
+  setup?: ChannelSetup;
+}
+
+// ─── Channel setup contract ──────────────────────────────────────────────
+//
+// The setup machine runs *before* a channel row's persistent config is
+// written. The plugin owns its own session state (keyed by an opaque
+// `sessionId` it generates in `begin`); the gateway only routes HTTP
+// calls into it and shuttles `ChannelSetupState` back to the UI.
+//
+// Lifecycle (driven by the UI):
+//   1. UI POSTs initial input  -> manifest.setup.begin()  -> { sessionId, state }
+//   2. UI renders `state` and either:
+//        - polls (state.kind === 'awaiting_external')      -> manifest.setup.poll()
+//        - collects more input (state.kind === 'awaiting_user_input') -> manifest.setup.submit()
+//   3. On `state.kind === 'done'`, the UI takes `state.config` and POSTs
+//      it to the existing `POST /api/agents/:id/channels` (or PATCH) to
+//      persist the channel row. The setup session is then dropped.
+//   4. UI may DELETE the session at any time -> manifest.setup.cancel().
+//
+// Session lifetime is the plugin's responsibility; the gateway should
+// surface a sensible default (e.g. 10 min) but does not enforce it.
+
+/** Context passed to every setup method. */
+export interface ChannelSetupContext {
+  /** Agent the setup is running for. */
+  agentId: string;
+  /** Per-session logger (prefixed with channel key + agent id by caller). */
+  logger: (message: string) => void;
+}
+
+/**
+ * A single form field the UI should render during an `awaiting_user_input`
+ * step. The shape is intentionally narrow — channels with truly bespoke
+ * UI needs are expected to ship their own admin-UI plugin in a future
+ * iteration of the spec.
+ */
+export interface ChannelSetupFieldSpec {
+  /** Field name; becomes a key in the input object passed to `submit()`. */
+  key: string;
+  /** Human-readable label rendered next to the input. */
+  label: string;
+  /** Input semantics. `password` masks the value. */
+  type: 'text' | 'phone' | 'password' | 'number';
+  required?: boolean;
+  placeholder?: string;
+  /** Optional help text rendered below the field. */
+  help?: string;
+}
+
+/**
+ * What the UI should show / do next. Returned by every setup method.
+ * Discriminated by `kind` so the UI can switch-render.
+ */
+export type ChannelSetupState =
+  | {
+      kind: 'awaiting_user_input';
+      /** Human-readable prompt rendered above the form. */
+      instructions?: string;
+      fields: ChannelSetupFieldSpec[];
+    }
+  | {
+      kind: 'awaiting_external';
+      /** Human-readable prompt (e.g. "Scan this QR code in Signal"). */
+      instructions: string;
+      /**
+       * Base64-encoded PNG of a QR code. Rendered as
+       * `<img src="data:image/png;base64,${qrPngBase64}">`.
+       */
+      qrPngBase64?: string;
+      /** Hint to the UI about how often to poll, in ms. */
+      pollIntervalMs: number;
+    }
+  | {
+      kind: 'done';
+      /**
+       * The final channel config to persist. The UI takes this and
+       * POSTs it to `/api/agents/:id/channels` (or PATCHes an existing
+       * row) — the setup contract itself does not write to the DB.
+       */
+      config: Record<string, unknown>;
+    }
+  | {
+      kind: 'error';
+      /** Operator-facing message; UI renders verbatim. */
+      message: string;
+    };
+
+/**
+ * Interactive setup machine for a channel. All methods are optional except
+ * `begin` and `poll`; `submit` is only needed when the flow has more than
+ * one user-input step, and `cancel` only when the plugin holds external
+ * resources (sockets, daemon processes) it needs to clean up.
+ */
+export interface ChannelSetup {
+  /**
+   * Open a new setup session. Returns the plugin-chosen `sessionId`
+   * (used by all subsequent calls) and the first `ChannelSetupState`
+   * to show. Most flows start with `awaiting_user_input` to collect
+   * a phone number / account name.
+   */
+  begin: (
+    input: Record<string, unknown>,
+    ctx: ChannelSetupContext,
+  ) => Promise<{ sessionId: string; state: ChannelSetupState }>;
+  /**
+   * Re-check the session's state. Called by the UI on a timer while
+   * `awaiting_external` (e.g. polling for QR scan completion). Plugins
+   * with no async progress can return the same state until something
+   * changes.
+   */
+  poll: (
+    sessionId: string,
+    ctx: ChannelSetupContext,
+  ) => Promise<ChannelSetupState>;
+  /**
+   * Advance the session with new user input. Called when the UI
+   * submits the form fields from an `awaiting_user_input` step.
+   */
+  submit?: (
+    sessionId: string,
+    input: Record<string, unknown>,
+    ctx: ChannelSetupContext,
+  ) => Promise<ChannelSetupState>;
+  /**
+   * Drop in-progress session state. Called on explicit UI cancel; the
+   * gateway also calls this on session timeout. Should be idempotent.
+   */
+  cancel?: (sessionId: string, ctx: ChannelSetupContext) => Promise<void>;
 }
 
 /**

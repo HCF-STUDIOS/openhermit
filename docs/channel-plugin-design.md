@@ -100,6 +100,89 @@ Webhook ingress (Telegram secret_token, Slack HMAC, Discord ed25519) lives on th
 
 Existing built-in channels (`telegram`, `slack`, `discord`) are refactored to expose the same default-exported manifest. The `start*` functions and config types already exist; only the export shape changes.
 
+## Interactive Setup
+
+Token-only channels (telegram, slack, discord) start with a known config: the operator pastes a bot token into the admin UI, the row is saved, the channel is enabled. Some channels — Signal (QR-link via [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)), WhatsApp-Web, anything OAuth — have a multi-step interactive flow that produces the persistent config only *after* the user completes an external action (scanning a QR, granting consent in a browser).
+
+The `setup` field on `ChannelManifest` describes a state machine for this flow:
+
+```ts
+export interface ChannelManifest {
+  // ...existing fields
+  setup?: ChannelSetup;
+}
+
+export interface ChannelSetup {
+  begin: (input, ctx) => Promise<{ sessionId: string; state: ChannelSetupState }>;
+  poll: (sessionId, ctx) => Promise<ChannelSetupState>;
+  submit?: (sessionId, input, ctx) => Promise<ChannelSetupState>;
+  cancel?: (sessionId, ctx) => Promise<void>;
+}
+
+export type ChannelSetupState =
+  | { kind: 'awaiting_user_input'; instructions?: string; fields: ChannelSetupFieldSpec[] }
+  | { kind: 'awaiting_external'; instructions: string; qrPngBase64?: string; pollIntervalMs: number }
+  | { kind: 'done'; config: Record<string, unknown> }
+  | { kind: 'error'; message: string };
+```
+
+The plugin owns its session state, keyed by an opaque `sessionId` it generates in `begin`. The gateway exposes four REST routes that wrap the four methods:
+
+```
+POST   /api/agents/:id/channels/:type/setup/begin              -> { sessionId, state }
+GET    /api/agents/:id/channels/:type/setup/:sessionId         -> { sessionId, state }   (= poll)
+POST   /api/agents/:id/channels/:type/setup/:sessionId         -> { sessionId, state }   (= submit)
+DELETE /api/agents/:id/channels/:type/setup/:sessionId         -> { ok: true }            (= cancel)
+```
+
+A Signal flow looks like:
+
+```text
+UI                           gateway                     manifest.setup
+ │                              │                              │
+ │ POST .../setup/begin         │                              │
+ │ { phone_number: '+1...' }    │                              │
+ │ ──────────────────────────►  │ begin(input, ctx)            │
+ │                              │ ──────────────────────────►  │
+ │                              │                              │ signal-cli-rest-api:
+ │                              │                              │   POST /v1/qrcodelink/+1...
+ │                              │                              │   ◄── PNG bytes
+ │                              │                              │
+ │ { sessionId, state:          │                              │
+ │   awaiting_external,         │                              │
+ │   qrPngBase64: '...',        │  ◄── { sessionId, state }    │
+ │   pollIntervalMs: 1000 }     │                              │
+ │ ◄──────────────────────────  │                              │
+ │                              │                              │
+ │ <img src=data:...> renders   │                              │
+ │ user scans QR in Signal app  │                              │
+ │                              │                              │
+ │ GET .../setup/:sessionId     │                              │
+ │ (every 1s)                   │ poll(sessionId, ctx)         │
+ │ ──────────────────────────►  │ ──────────────────────────►  │
+ │                              │                              │ check linked-device status
+ │ { state: done,               │                              │
+ │   config: {...} }            │  ◄── { kind: 'done', ... }   │
+ │ ◄──────────────────────────  │                              │
+ │                              │                              │
+ │ POST /api/agents/:id/channels                               │
+ │ { namespace: 'signal',       │                              │
+ │   config: <state.config>,    │                              │
+ │   enabled: true }            │                              │
+ │ ──────────────────────────►  │ (existing channel CRUD;      │
+ │                              │  setup contract does NOT     │
+ │                              │  write to the DB itself)     │
+```
+
+Key design choices:
+
+- **Plugin owns session state.** The gateway is stateless; sessions live in the plugin's own `Map<sessionId, State>` for the gateway lifetime. This matches how `start()` plugins already own their in-process state (sockets, pollers). Plugins are responsible for their own timeouts/GC.
+- **Setup does not write the DB.** `done.config` is returned to the UI, which then calls the existing `POST /api/agents/:id/channels` (or PATCH) to persist the row. This keeps the setup contract focused on producing config and leaves the persistence/enable path unchanged.
+- **The UI wizard is generic.** The admin UI switch-renders on `state.kind` — input form, QR + polling, done, error. No channel-specific UI code. Channels with truly bespoke needs can ship their own admin-UI panel later (out of scope for this contract).
+- **All fields except `begin` and `poll` are optional.** Plugins with a single-step external flow (just a QR) don't implement `submit`. Plugins with no external resources (sockets, sub-processes) to clean up don't implement `cancel`.
+
+`setup` is itself optional on `ChannelManifest`. Token-only channels (telegram/slack/discord) leave it unset and continue to use the existing "fill the form, save the row, enable" path.
+
 ## Discovery and Loading
 
 Plugins are loaded from two sources, in order:
