@@ -439,16 +439,20 @@ export type ChannelSetupState =
       /** Human-readable prompt (e.g. "Scan this QR code in Signal"). */
       instructions: string;
       /**
-       * Base64-encoded PNG of a QR code. Rendered as
-       * `<img src="data:image/png;base64,${qrPngBase64}">`. Used for
-       * scan-from-phone flows (Signal, WeChat web login).
+       * Underlying string (URI, token, anything) for the UI to encode as
+       * a QR code with its own renderer. Used for scan-from-another-device
+       * flows — Signal's `sgnl://linkdevice?...`, WeChat web login, etc.
+       *
+       * Plugins whose upstream only returns a pre-rendered PNG (e.g.
+       * signal-cli-rest-api) decode it once with a QR-decode library and
+       * return the embedded text here.
        */
-      qrPngBase64?: string;
+      qrText?: string;
       /**
-       * URL the user should open in a browser to complete authentication
-       * (OAuth device flow, hosted login pages). Rendered as a button or
-       * link. May be combined with `qrPngBase64` so the same target can
-       * be opened on this device *or* scanned from another.
+       * URL the user should open in *this* browser to complete
+       * authentication (OAuth device flow, hosted login pages). Rendered
+       * as a button or link. May be combined with `qrText` when the same
+       * target can be opened on this device or scanned from another.
        *
        * Note: the gateway does not host a callback endpoint for this URL.
        * Plugins detect completion by polling their own backend; classic
