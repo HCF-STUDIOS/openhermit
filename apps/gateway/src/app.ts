@@ -13,7 +13,10 @@ import {
   isSessionMessage,
   isToolApprovalRequest,
   isSessionCheckpointRequest,
+  type ChannelManifest,
   type ChannelManifestRegistry,
+  type ChannelSetup,
+  type ChannelSetupContext,
   type CreateAgentRequest,
   type SessionListQuery,
   type SyncResponse,
@@ -2430,6 +2433,88 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
     await store.revoke(channelId);
     options.channelRegistry?.unregister(channelId);
+    return c.json({ ok: true });
+  });
+
+  // ─── Channel setup (interactive auth) ──────────────────────────────────
+  //
+  // Drives `ChannelManifest.setup` over HTTP for channels with a
+  // multi-step auth flow (Signal QR-link, OAuth, etc.). The plugin owns
+  // session state keyed by an opaque `sessionId`; these routes just
+  // shuttle bytes between the UI and `manifest.setup.{begin,poll,submit,cancel}`.
+  //
+  // On `state.kind === 'done'`, the UI takes `state.config` and POSTs
+  // it to `/api/agents/:id/channels` (or PATCHes an existing row) — the
+  // setup contract itself does not persist to the DB.
+
+  const lookupChannelSetup = (
+    channelType: string,
+  ): { manifest: ChannelManifest; setup: ChannelSetup } => {
+    const manifest = options.manifestRegistry.get(channelType);
+    if (!manifest) {
+      throw new NotFoundError(`Channel "${channelType}" is not registered.`);
+    }
+    if (!manifest.setup) {
+      throw new ValidationError(
+        `Channel "${channelType}" does not support interactive setup.`,
+      );
+    }
+    return { manifest, setup: manifest.setup };
+  };
+
+  const setupContext = (
+    agentId: string,
+    channelType: string,
+  ): ChannelSetupContext => ({
+    agentId,
+    logger: (msg) => log(`[${agentId}] [${channelType}/setup] ${msg}`),
+  });
+
+  app.post('/api/agents/:agentId/channels/:channelType/setup/begin', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const channelType = c.req.param('channelType') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const { setup } = lookupChannelSetup(channelType);
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const result = await setup.begin(body, setupContext(agentId, channelType));
+    return c.json(result);
+  });
+
+  app.get('/api/agents/:agentId/channels/:channelType/setup/:sessionId', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const channelType = c.req.param('channelType') ?? '';
+    const sessionId = c.req.param('sessionId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const { setup } = lookupChannelSetup(channelType);
+    const state = await setup.poll(sessionId, setupContext(agentId, channelType));
+    return c.json({ sessionId, state });
+  });
+
+  app.post('/api/agents/:agentId/channels/:channelType/setup/:sessionId', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const channelType = c.req.param('channelType') ?? '';
+    const sessionId = c.req.param('sessionId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const { setup } = lookupChannelSetup(channelType);
+    if (!setup.submit) {
+      throw new ValidationError(
+        `Channel "${channelType}" setup does not accept additional input; poll instead.`,
+      );
+    }
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const state = await setup.submit(sessionId, body, setupContext(agentId, channelType));
+    return c.json({ sessionId, state });
+  });
+
+  app.delete('/api/agents/:agentId/channels/:channelType/setup/:sessionId', async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const channelType = c.req.param('channelType') ?? '';
+    const sessionId = c.req.param('sessionId') ?? '';
+    await requireOwnerOrAdmin(c, agentId);
+    const { setup } = lookupChannelSetup(channelType);
+    if (setup.cancel) {
+      await setup.cancel(sessionId, setupContext(agentId, channelType));
+    }
     return c.json({ ok: true });
   });
 
