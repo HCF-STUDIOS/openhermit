@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 
 import { loadEnv } from '@openhermit/shared';
 
+import manifest from './manifest.js';
 import { SignalApi } from './signal-api.js';
 import { SignalBridge } from './bridge.js';
 import { SignalBot } from './bot.js';
@@ -11,6 +12,12 @@ const log = (message: string): void => {
   console.log(`[openhermit-channel-signal] ${message}`);
 };
 
+/**
+ * Standalone runner — used when the operator runs the adapter as its own
+ * process (e.g. `npm run dev -w @openhermit/channel-signal`) rather than
+ * having the gateway load the manifest plugin. Unchanged from before the
+ * plugin refactor.
+ */
 export const main = async (): Promise<void> => {
   await loadEnv();
   const config = await loadConfig();
@@ -45,6 +52,8 @@ export const main = async (): Promise<void> => {
   await bot.start();
 };
 
+export default manifest;
+export { manifest };
 export { SignalApi } from './signal-api.js';
 export { SignalBridge } from './bridge.js';
 export { SignalBot } from './bot.js';
