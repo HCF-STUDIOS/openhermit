@@ -3,41 +3,29 @@
  * Uses dynamic imports so the agent doesn't hard-depend on specific channel packages.
  */
 
-import type { ChannelOutbound } from '@openhermit/protocol';
+import type {
+  ChannelContext,
+  ChannelHandle,
+  ChannelOutbound,
+  WebhookHandler,
+  WebhookRequest,
+  WebhookResponse,
+} from '@openhermit/protocol';
 
 import type { ChannelsConfig } from './core/types.js';
 
-export interface ChannelContext {
-  agentBaseUrl: string;
-  agentTokens: Record<string, string>;
-  logger: (channel: string, message: string) => void;
-}
-
-export interface WebhookRequest {
-  headers: Record<string, string>;
-  rawBody: string;
-}
-
-export interface WebhookResponse {
-  status: number;
-  body?: string;
-  headers?: Record<string, string>;
-}
-
-export type WebhookHandler = (req: WebhookRequest) => Promise<WebhookResponse>;
-
-export interface ChannelHandle {
-  name: string;
-  outbound?: ChannelOutbound;
-  stop: () => Promise<void>;
-  /**
-   * Optional webhook handler. When present, the gateway forwards POSTs
-   * received at /api/agents/:agentId/channels/:namespace/webhook here.
-   * The adapter is responsible for verifying authenticity (e.g.
-   * Telegram secret_token, Slack HMAC, Discord ed25519).
-   */
-  handleWebhook?: WebhookHandler;
-}
+// Re-export the channel runtime types that used to live here. Consumers
+// like `@openhermit/gateway` import them via `@openhermit/agent/channels`;
+// the canonical definitions are now in `@openhermit/protocol` so that
+// third-party channel plugins can depend on a stable contract.
+export type {
+  ChannelContext,
+  ChannelHandle,
+  ChannelOutbound,
+  WebhookHandler,
+  WebhookRequest,
+  WebhookResponse,
+};
 
 export interface ChannelStatus {
   name: string;

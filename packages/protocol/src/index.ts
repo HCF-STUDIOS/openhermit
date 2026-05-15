@@ -257,6 +257,151 @@ export interface ChannelOutbound {
   }): Promise<ChannelOutboundResult>;
 }
 
+// ── Channel Plugin Contract ───────────────────────────────────────────
+//
+// The types below define the stable contract a channel plugin package
+// implements. Third-party channel packages (e.g. `@vendor/channel-foo`)
+// should depend only on `@openhermit/protocol` for these types so they
+// stay decoupled from the agent/gateway runtime internals.
+//
+// See `docs/channel-plugin-design.md` for the architecture and
+// migration plan.
+
+/**
+ * Per-agent boot context passed to a manifest's `start()`. The adapter
+ * uses `agentBaseUrl` + `agentTokens[<key>]` to authenticate callbacks
+ * into the agent HTTP API.
+ */
+export interface ChannelContext {
+  agentBaseUrl: string;
+  agentTokens: Record<string, string>;
+  logger: (channel: string, message: string) => void;
+}
+
+/**
+ * HTTP request handed to a channel's webhook handler. The gateway
+ * forwards `POST /api/agents/:agentId/channels/:namespace/webhook` to
+ * this handler when present.
+ */
+export interface WebhookRequest {
+  headers: Record<string, string>;
+  rawBody: string;
+}
+
+export interface WebhookResponse {
+  status: number;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+export type WebhookHandler = (req: WebhookRequest) => Promise<WebhookResponse>;
+
+/**
+ * Live channel instance returned from `start()`. The gateway's
+ * ChannelPool owns the handle and calls `stop()` on shutdown / disable.
+ */
+export interface ChannelHandle {
+  name: string;
+  outbound?: ChannelOutbound;
+  stop: () => Promise<void>;
+  /**
+   * Optional webhook handler. When present, the gateway forwards
+   * `POST /api/agents/:agentId/channels/:namespace/webhook` here. The
+   * adapter is responsible for verifying authenticity (Telegram
+   * `secret_token`, Slack HMAC, Discord ed25519, …).
+   */
+  handleWebhook?: WebhookHandler;
+}
+
+/**
+ * A channel plugin's default export. Describes the channel to the
+ * runtime registry, the admin UI, and the boot sequence.
+ *
+ * Plugin authors export this as the package default:
+ *
+ * ```ts
+ * const manifest: ChannelManifest = {
+ *   key: 'signal',
+ *   namespace: 'signal',
+ *   displayName: 'Signal',
+ *   start: startSignal,
+ * };
+ * export default manifest;
+ * ```
+ */
+export interface ChannelManifest {
+  /** Stable key. Matches the DB `channel_type` column and the key under `ChannelsConfig`. */
+  key: string;
+  /** Identity namespace used in `sender.channel`. Usually equal to `key`. */
+  namespace: string;
+  /** Human-readable label for the admin UI. */
+  displayName: string;
+  /**
+   * Optional config parser. When set, the registry calls this before
+   * `start()` to validate the persisted config. The shape is left
+   * opaque so plugin authors can use Zod (`schema.parse`), a manual
+   * function, or skip validation entirely. Returning a value replaces
+   * the raw config passed to `start()`; throwing aborts the start.
+   */
+  parseConfig?: (input: unknown) => unknown;
+  /**
+   * Boot the channel for one agent. Returns the live handle, or
+   * `undefined` if startup failed in a way the caller logged but
+   * should not treat as fatal.
+   */
+  start: (config: unknown, context: ChannelContext) => Promise<ChannelHandle | undefined>;
+}
+
+/**
+ * In-memory registry of channel manifests. Populated once at gateway
+ * boot from (a) bundled-default channels and (b) packages listed in
+ * the `channel_packages` config, then consulted by the channel
+ * launcher and the admin UI's "available channels" endpoint.
+ *
+ * Single-process, non-thread-safe (Node is single-threaded for
+ * userland code; the registry is constructed before any request
+ * handling begins).
+ */
+export class ChannelManifestRegistry {
+  private readonly byKey = new Map<string, ChannelManifest>();
+
+  /**
+   * Register a manifest. Throws on duplicate `key` — the caller (the
+   * plugin loader) decides whether to swallow the error to allow an
+   * external manifest to override a bundled default.
+   */
+  register(manifest: ChannelManifest): void {
+    if (!manifest.key) {
+      throw new Error('ChannelManifestRegistry.register: manifest.key is required');
+    }
+    if (this.byKey.has(manifest.key)) {
+      throw new Error(`ChannelManifestRegistry.register: duplicate channel key "${manifest.key}"`);
+    }
+    this.byKey.set(manifest.key, manifest);
+  }
+
+  /** Replace an existing manifest by key. No-op if not registered. */
+  replace(manifest: ChannelManifest): void {
+    this.byKey.set(manifest.key, manifest);
+  }
+
+  get(key: string): ChannelManifest | undefined {
+    return this.byKey.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.byKey.has(key);
+  }
+
+  all(): ChannelManifest[] {
+    return Array.from(this.byKey.values());
+  }
+
+  keys(): string[] {
+    return Array.from(this.byKey.keys());
+  }
+}
+
 export interface ToolApprovalRequest {
   toolCallId: string;
   approved: boolean;
