@@ -41,21 +41,25 @@ interface CreatedChannelResponse extends ChannelRecord {
   token: string;
 }
 
+type GroupKey = 'builtin' | 'package' | 'token';
+
 /**
- * Per-agent channel management: select an agent, see all its channel rows
- * (built-in adapters + owner-issued external tokens), enable/disable,
- * edit config + label, revoke / reset, issue new external tokens.
- *
- * Mirrors the SchedulesPanel UX: agent picker on top, list of cards below.
+ * Per-agent channel management with three groups:
+ *   1. Built-in (telegram/slack/discord, ship with the gateway).
+ *   2. Package-installed (loaded via `channelPackages` config, e.g. WeChat) —
+ *      with a "Set up" wizard for the manifest's interactive auth flow.
+ *   3. Owner-issued external tokens for adapters outside the gateway.
  */
 export function ChannelsPanel() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState('');
   const [channels, setChannels] = useState<ChannelRecord[]>([]);
+  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<ChannelRecord | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [setupFor, setSetupFor] = useState<ChannelRecord | null>(null);
+  const [issuing, setIssuing] = useState(false);
   const [createdToken, setCreatedToken] = useState<CreatedChannelResponse | null>(null);
 
   const loadAgents = useCallback(async () => {
@@ -81,8 +85,24 @@ export function ChannelsPanel() {
     }
   }, [agentId]);
 
+  const loadManifests = useCallback(async () => {
+    try {
+      setManifests(await api<ChannelManifestSummary[]>('/api/channel-manifests'));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
   useEffect(() => { void loadAgents(); }, [loadAgents]);
   useEffect(() => { void loadChannels(); }, [loadChannels]);
+  useEffect(() => { void loadManifests(); }, [loadManifests]);
+
+  const manifestByKey = new Map(manifests.map((m) => [m.key, m]));
+
+  const groupOf = (ch: ChannelRecord): GroupKey => {
+    if (ch.kind === 'external') return 'token';
+    return manifestByKey.get(ch.channelType)?.origin === 'external' ? 'package' : 'builtin';
+  };
 
   const handleToggle = async (ch: ChannelRecord) => {
     try {
@@ -113,6 +133,20 @@ export function ChannelsPanel() {
     await loadChannels();
   };
 
+  const handleSetupDone = async (config: Record<string, unknown>): Promise<void> => {
+    if (!setupFor) return;
+    try {
+      await api(`/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(setupFor.id)}`, {
+        method: 'PATCH',
+        body: { config, enabled: true },
+      });
+      setSetupFor(null);
+      await loadChannels();
+    } catch (err) {
+      alert(`Set-up failed: ${(err as Error).message}`);
+    }
+  };
+
   const statusClass = (ch: ChannelRecord) => {
     if (ch.runtimeStatus === 'error') return 'badge--failed';
     if (ch.runtimeStatus === 'connected') return 'badge--active';
@@ -126,20 +160,32 @@ export function ChannelsPanel() {
     return ch.enabled ? 'enabled' : 'disabled';
   };
 
-  const builtin = channels.filter((c) => c.kind === 'builtin');
-  const external = channels.filter((c) => c.kind === 'external');
+  const builtin = channels.filter((c) => groupOf(c) === 'builtin');
+  const pkg = channels.filter((c) => groupOf(c) === 'package');
+  const token = channels.filter((c) => groupOf(c) === 'token');
+
+  const renderCard = (ch: ChannelRecord, group: GroupKey) => {
+    const manifest = manifestByKey.get(ch.channelType);
+    const canSetup = group === 'package' && manifest?.supportsSetup === true;
+    return (
+      <ChannelCard
+        key={ch.id}
+        ch={ch}
+        statusClass={statusClass(ch)}
+        statusText={statusText(ch)}
+        canSetup={canSetup}
+        onSetup={() => setSetupFor(ch)}
+        onEdit={() => setEditing(ch)}
+        onToggle={() => void handleToggle(ch)}
+        onDelete={() => void handleDelete(ch)}
+      />
+    );
+  };
 
   return (
     <div className="panel">
       <div className="panel__header">
         <h2>Channels</h2>
-        <button
-          className="btn btn--primary btn--sm"
-          onClick={() => setCreating(true)}
-          disabled={!agentId}
-        >
-          Add channel
-        </button>
       </div>
 
       <label className="field schedule-agent-select">
@@ -184,45 +230,55 @@ export function ChannelsPanel() {
         </div>
       )}
 
-      <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: '0.9rem', color: 'var(--muted)' }}>Built-in</h3>
+      <h3 style={{ marginTop: 16, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>Built-in</h3>
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        Ship with the gateway. Add secrets, then enable.
+      </p>
       {loading && channels.length === 0 && agentId && (
         <p className="agent-list__empty">Loading channels…</p>
       )}
       {!loading && builtin.length === 0 && agentId && (
-        <p className="agent-list__empty">No built-in channels yet for this agent.</p>
+        <p className="agent-list__empty">No built-in channels for this agent.</p>
       )}
       <div className="schedule-list">
-        {builtin.map((ch) => (
-          <ChannelCard
-            key={ch.id}
-            ch={ch}
-            statusClass={statusClass(ch)}
-            statusText={statusText(ch)}
-            onEdit={() => setEditing(ch)}
-            onToggle={() => void handleToggle(ch)}
-            onDelete={() => void handleDelete(ch)}
-          />
-        ))}
+        {builtin.map((ch) => renderCard(ch, 'builtin'))}
       </div>
 
-      <h3 style={{ marginTop: 24, marginBottom: 8, fontSize: '0.9rem', color: 'var(--muted)' }}>
+      <h3 style={{ marginTop: 24, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>
+        Package-installed
+      </h3>
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        Loaded via the gateway's <code>channelPackages</code> config. Click <strong>Set up</strong> to link.
+      </p>
+      {!loading && pkg.length === 0 && agentId && (
+        <p className="agent-list__empty">
+          No channel packages installed. Run <code>hermit gateway config set channelPackages '["@scope/pkg"]'</code> and restart the gateway.
+        </p>
+      )}
+      <div className="schedule-list">
+        {pkg.map((ch) => renderCard(ch, 'package'))}
+      </div>
+
+      <h3 style={{ marginTop: 24, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>
         External tokens
       </h3>
-      {!loading && external.length === 0 && agentId && (
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        For adapters running outside the gateway. Each token is namespace-scoped.
+      </p>
+      {!loading && token.length === 0 && agentId && (
         <p className="agent-list__empty">No external tokens issued.</p>
       )}
       <div className="schedule-list">
-        {external.map((ch) => (
-          <ChannelCard
-            key={ch.id}
-            ch={ch}
-            statusClass={statusClass(ch)}
-            statusText={statusText(ch)}
-            onEdit={() => setEditing(ch)}
-            onToggle={() => void handleToggle(ch)}
-            onDelete={() => void handleDelete(ch)}
-          />
-        ))}
+        {token.map((ch) => renderCard(ch, 'token'))}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <button
+          className="btn btn--sm"
+          onClick={() => setIssuing(true)}
+          disabled={!agentId}
+        >
+          + Issue new token
+        </button>
       </div>
 
       {editing && (
@@ -233,14 +289,22 @@ export function ChannelsPanel() {
           onSaved={() => { setEditing(null); void loadChannels(); }}
         />
       )}
-      {creating && agentId && (
-        <CreateChannelDialog
+      {setupFor && (
+        <SetupChannelDialog
           agentId={agentId}
-          existingTypes={new Set(builtin.map((c) => c.channelType))}
-          onClose={() => setCreating(false)}
+          channel={setupFor}
+          displayName={manifestByKey.get(setupFor.channelType)?.displayName ?? setupFor.channelType}
+          onClose={() => setSetupFor(null)}
+          onDone={handleSetupDone}
+        />
+      )}
+      {issuing && agentId && (
+        <IssueTokenDialog
+          agentId={agentId}
+          onClose={() => setIssuing(false)}
           onCreated={(created) => {
-            if (created) setCreatedToken(created);
-            setCreating(false);
+            setCreatedToken(created);
+            setIssuing(false);
             void loadChannels();
           }}
         />
@@ -249,10 +313,12 @@ export function ChannelsPanel() {
   );
 }
 
-function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }: {
+function ChannelCard({ ch, statusClass, statusText, canSetup, onSetup, onEdit, onToggle, onDelete }: {
   ch: ChannelRecord;
   statusClass: string;
   statusText: string;
+  canSetup: boolean;
+  onSetup: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
@@ -281,6 +347,9 @@ function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }
         </div>
       </div>
       <div className="schedule-card__actions">
+        {canSetup && (
+          <button className="btn btn--sm btn--primary" onClick={onSetup}>Set up</button>
+        )}
         <button className="btn btn--sm" onClick={onEdit}>Edit</button>
         <button className="btn btn--sm" onClick={onToggle}>
           {ch.enabled ? 'Disable' : 'Enable'}
@@ -364,70 +433,44 @@ function EditChannelDialog({ agentId, channel, onClose, onSaved }: {
   );
 }
 
-function CreateChannelDialog({ agentId, existingTypes, onClose, onCreated }: {
+function SetupChannelDialog({ agentId, channel, displayName, onClose, onDone }: {
   agentId: string;
-  existingTypes: Set<string>;
+  channel: ChannelRecord;
+  displayName: string;
   onClose: () => void;
-  onCreated: (created: CreatedChannelResponse | null) => void;
+  onDone: (config: Record<string, unknown>) => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
-  const [step, setStep] = useState<'pick' | 'wizard' | 'external'>('pick');
-  const [picked, setPicked] = useState<ChannelManifestSummary | null>(null);
+  useEffect(() => { dialogRef.current?.showModal(); }, []);
+  return (
+    <dialog ref={dialogRef} className="dialog" onClose={onClose}>
+      <div className="dialog__form">
+        <h3>Link {displayName}</h3>
+        <ChannelSetupWizard
+          agentId={agentId}
+          channelType={channel.channelType}
+          displayName={displayName}
+          onDone={onDone}
+          onCancel={onClose}
+        />
+      </div>
+    </dialog>
+  );
+}
+
+function IssueTokenDialog({ agentId, onClose, onCreated }: {
+  agentId: string;
+  onClose: () => void;
+  onCreated: (created: CreatedChannelResponse) => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [namespace, setNamespace] = useState('');
   const [label, setLabel] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => { dialogRef.current?.showModal(); }, []);
-  useEffect(() => {
-    void (async () => {
-      try {
-        setManifests(await api<ChannelManifestSummary[]>('/api/channel-manifests'));
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    })();
-  }, []);
 
-  const handlePick = (m: ChannelManifestSummary): void => {
-    setPicked(m);
-    if (m.supportsSetup) {
-      setStep('wizard');
-      return;
-    }
-    // Manifest with no interactive setup: create a builtin row immediately
-    // with the default config skeleton. Operator fills in secrets via the
-    // row's Edit dialog afterwards.
-    void (async () => {
-      try {
-        await api(`/api/agents/${encodeURIComponent(agentId)}/channels`, {
-          method: 'POST',
-          body: {
-            channelType: m.key,
-            ...(m.defaultConfig ? { config: m.defaultConfig } : {}),
-          },
-        });
-        onCreated(null);
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    })();
-  };
-
-  const handleWizardDone = async (config: Record<string, unknown>): Promise<void> => {
-    if (!picked) return;
-    try {
-      await api(`/api/agents/${encodeURIComponent(agentId)}/channels`, {
-        method: 'POST',
-        body: { channelType: picked.key, config, enabled: true },
-      });
-      onCreated(null);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const handleSubmitExternal = async (e: React.FormEvent): Promise<void> => {
+  const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     const ns = namespace.trim();
     if (!ns) { setError('Namespace is required.'); return; }
@@ -444,99 +487,36 @@ function CreateChannelDialog({ agentId, existingTypes, onClose, onCreated }: {
 
   return (
     <dialog ref={dialogRef} className="dialog" onClose={onClose}>
-      <div className="dialog__form">
-        <h3>
-          {step === 'wizard' && picked
-            ? `Link ${picked.displayName}`
-            : step === 'external'
-              ? 'New external channel token'
-              : 'Add channel'}
-        </h3>
+      <form className="dialog__form" onSubmit={handleSubmit}>
+        <h3>New external channel token</h3>
         {error && <p className="config-error">{error}</p>}
-        {step === 'pick' && (
-          <div className="field" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <p style={{ color: 'var(--muted)' }}>
-              Pick a channel package, or issue a raw external token for a custom adapter.
-            </p>
-            {manifests.length === 0 && (
-              <p style={{ color: 'var(--muted)' }}>No channel packages registered.</p>
-            )}
-            {manifests.map((m) => {
-              const taken = existingTypes.has(m.key);
-              return (
-                <button
-                  key={m.key}
-                  type="button"
-                  className="btn"
-                  disabled={taken}
-                  onClick={() => handlePick(m)}
-                  style={{ justifyContent: 'flex-start', textAlign: 'left' }}
-                >
-                  <span style={{ fontWeight: 600 }}>{m.displayName}</span>
-                  <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
-                    {m.origin === 'built-in' ? 'built-in' : 'plugin'}
-                    {m.supportsSetup ? ' · interactive setup' : ''}
-                    {taken ? ' · already added' : ''}
-                  </span>
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => setStep('external')}
-              style={{ justifyContent: 'flex-start', textAlign: 'left' }}
-            >
-              <span style={{ fontWeight: 600 }}>Custom external token</span>
-              <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 12 }}>
-                for an adapter running outside the gateway
-              </span>
-            </button>
-            <div className="dialog__actions">
-              <button className="btn btn--ghost" type="button" onClick={onClose}>Cancel</button>
-            </div>
-          </div>
-        )}
-        {step === 'wizard' && picked && (
-          <ChannelSetupWizard
-            agentId={agentId}
-            channelType={picked.key}
-            displayName={picked.displayName}
-            onDone={handleWizardDone}
-            onCancel={onClose}
+        <label className="field">
+          <span className="field__label">Namespace</span>
+          <input
+            className="field__input"
+            required
+            placeholder="e.g. telegram-bot, custom-slack"
+            value={namespace}
+            onChange={(e) => setNamespace(e.target.value)}
           />
-        )}
-        {step === 'external' && (
-          <form onSubmit={handleSubmitExternal}>
-            <label className="field">
-              <span className="field__label">Namespace</span>
-              <input
-                className="field__input"
-                required
-                placeholder="e.g. telegram-bot, custom-slack"
-                value={namespace}
-                onChange={(e) => setNamespace(e.target.value)}
-              />
-              <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-                The adapter will only be able to act in this namespace. The token has no admin privileges.
-              </span>
-            </label>
-            <label className="field">
-              <span className="field__label">Label (optional)</span>
-              <input
-                className="field__input"
-                placeholder="Human-readable name"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-              />
-            </label>
-            <div className="dialog__actions">
-              <button className="btn btn--ghost" type="button" onClick={() => setStep('pick')}>← Back</button>
-              <button className="btn btn--primary" type="submit">Issue token</button>
-            </div>
-          </form>
-        )}
-      </div>
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+            The adapter will only be able to act in this namespace. The token has no admin privileges.
+          </span>
+        </label>
+        <label className="field">
+          <span className="field__label">Label (optional)</span>
+          <input
+            className="field__input"
+            placeholder="Human-readable name"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </label>
+        <div className="dialog__actions">
+          <button className="btn btn--ghost" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn btn--primary" type="submit">Issue token</button>
+        </div>
+      </form>
     </dialog>
   );
 }

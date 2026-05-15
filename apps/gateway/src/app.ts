@@ -919,13 +919,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Pre-seed one row per built-in channel only (all disabled). Owner
-    // can flip them on later from the admin / web UI. Plugin-loaded
-    // (external) channels are not seeded — they are added on demand
-    // via the "Add channel" UI, which routes through `createBuiltin`
-    // once the user picks a manifest.
+    // Pre-seed one row per registered manifest (both built-in and
+    // plugin-loaded). Rows are created disabled — the owner enables
+    // them from the UI (running through the setup wizard for plugins
+    // that ship a `ChannelSetup`, or via direct config-edit for the
+    // built-in token-based ones).
     if (options.agentChannelStore) {
-      for (const key of options.manifestRegistry.keysByOrigin('built-in')) {
+      for (const key of options.manifestRegistry.keys()) {
         await options.agentChannelStore.createBuiltin({
           agentId: record.agentId,
           channelType: key,
