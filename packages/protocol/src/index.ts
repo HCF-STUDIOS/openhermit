@@ -440,9 +440,22 @@ export type ChannelSetupState =
       instructions: string;
       /**
        * Base64-encoded PNG of a QR code. Rendered as
-       * `<img src="data:image/png;base64,${qrPngBase64}">`.
+       * `<img src="data:image/png;base64,${qrPngBase64}">`. Used for
+       * scan-from-phone flows (Signal, WeChat web login).
        */
       qrPngBase64?: string;
+      /**
+       * URL the user should open in a browser to complete authentication
+       * (OAuth device flow, hosted login pages). Rendered as a button or
+       * link. May be combined with `qrPngBase64` so the same target can
+       * be opened on this device *or* scanned from another.
+       *
+       * Note: the gateway does not host a callback endpoint for this URL.
+       * Plugins detect completion by polling their own backend; classic
+       * OAuth redirect flows that require an inbound callback are out of
+       * scope for v1.
+       */
+      redirectUrl?: string;
       /** Hint to the UI about how often to poll, in ms. */
       pollIntervalMs: number;
     }
