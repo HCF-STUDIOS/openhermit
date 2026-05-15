@@ -62,6 +62,7 @@ const SignalConfig = z.object({
 });
 
 const manifest: ChannelManifest = {
+  manifestVersion: 1,
   key: 'signal',                              // ChannelsConfig key + DB channel_type
   namespace: 'signal',                        // sender.channel namespace
   displayName: 'Signal',                      // admin UI label
@@ -75,7 +76,10 @@ export default manifest;
 The shape lives in `packages/protocol/src/index.ts`:
 
 ```ts
+export const CHANNEL_MANIFEST_VERSION = 1 as const;
+
 export interface ChannelManifest {
+  manifestVersion: 1;       // pinned literal; bumped on breaking changes
   key: string;
   namespace: string;
   displayName: string;
@@ -84,6 +88,11 @@ export interface ChannelManifest {
   start: (config: unknown, context: ChannelContext) => Promise<ChannelHandle | undefined>;
 }
 ```
+
+The `manifestVersion: 1` literal is required from day one. The registry refuses to register a manifest whose `manifestVersion` doesn't match `CHANNEL_MANIFEST_VERSION`, throwing a clear error. Plugins survive a protocol bump by either continuing to declare `1` (if the loader still accepts it) or shipping a new release pinned to the new version. Bump policy:
+
+- **No bump** for adding *optional* fields to the manifest, the handle, or the context.
+- **Bump required** for adding required fields, changing the `start()` signature, or any semantic change a v1 plugin couldn't have anticipated.
 
 `parseConfig` is intentionally opaque — plugin authors can use Zod (`schema.parse`), a hand-rolled validator, or skip validation entirely. The contract is "throws if invalid; returns the value passed to `start()`."
 
@@ -112,7 +121,7 @@ If the same `key` is registered twice (e.g. a vendor publishes their own `@vendo
 
 When the CLI is installed via `npm install -g @openhermit/cli`, both the CLI and any `npm install -g @vendor/channel-foo` package land as siblings in the same global tree (`/usr/local/lib/node_modules/` on most systems, `~/.npm-global/lib/node_modules/` if the user prefixed npm). Node's normal upward resolution from the CLI's runtime location finds external channel packages without any custom `NODE_PATH` manipulation.
 
-For pnpm and bun globals, the path layout differs and may need a fallback (testing required before declaring support). For development inside the monorepo, channel packages are workspace deps and resolution is trivial.
+v1 supports npm-installed CLI only — pnpm, bun, homebrew, and standalone-binary distributions are out of scope (see "Scope Decisions" below). For development inside the monorepo, channel packages are workspace deps and resolution is trivial.
 
 ## CLI Bundling Policy
 
@@ -142,10 +151,27 @@ Sequenced so each step is independently shippable:
 
 Steps 1–4 are pure infrastructure with no user-visible change. Step 5 is the first user-visible delivery; step 6 polishes the admin UX.
 
+## Scope Decisions
+
+### v1 supports npm only
+
+- **No pnpm or bun global resolution.** Their global layouts use symlink trees that Node's default upward resolution from the CLI's location does not traverse. Supporting them is feasible (custom `createRequire` paths, `PNPM_HOME`-aware loader) but each adds a code path that must be maintained. Operators wanting pnpm/bun can install the CLI and channel packages into a project-local `node_modules` and point the gateway at it via env var — but this is unsupported in v1.
+- **No homebrew / `curl | sh` / standalone-binary distributions.** Those install the CLI outside any `node_modules` tree, so a sibling-resolution model doesn't apply. v1 is `npm install -g @openhermit/cli` only. Other distribution channels are a future-work item.
+
+These constraints are documented in the operator-facing channel install docs (added in PR2 alongside the `hermit channel install` command) so users picking pnpm/bun/brew aren't surprised.
+
+### `hermit channel install` ships in PR2
+
+A thin wrapper around `npm install -g <pkg>` that also appends the package to `channel_packages` in the gateway config. Without it, operators have to run npm directly and edit the config file by hand — workable but not first-class. PR2 includes it as part of the user-visible delivery.
+
+### Supply-chain trust is the operator's responsibility
+
+The gateway loads arbitrary npm packages whose `start()` runs with full gateway permissions. v1 takes no position on signing, sandboxing, or capability restriction; the operator-facing docs say plainly:
+
+> Installing a channel plugin grants the plugin's code the same authority as the gateway process. Only install plugins from sources you trust — pin versions, audit changes, and treat `npm install -g @vendor/channel-foo` with the same caution as `sudo`.
+
+Signing / capability-scoped sandboxing is a future-work item. Out of scope for v1.
+
 ## Open Questions
 
-- **pnpm/bun global resolution.** Needs hands-on testing before we claim support.
-- **Standalone binary distributions (homebrew, curl|sh).** If the CLI ships outside npm's global tree, where does `@heyamiko/channel-signal` go? A fallback `~/.openhermit/channels/node_modules/` plus `createRequire` is the obvious answer but it's another moving part — defer until the binary distribution exists.
-- **Versioning and ABI.** Manifest contract changes break installed plugins. Adopt a `manifestVersion: 1` field from day one so the loader can refuse mismatched plugins with a clear error.
-- **Signed plugins.** Loading arbitrary npm packages into the gateway process is a supply-chain risk. Out of scope for this RFC but worth flagging — at minimum, document that operators are responsible for trusting the source.
-- **`hermit channel install` command.** Convenience wrapper around `npm install -g`. Nice-to-have, not required for the architecture to work.
+None at this revision. Future revisions land here as the design hits real-world friction.

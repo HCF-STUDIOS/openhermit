@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  CHANNEL_MANIFEST_VERSION,
   ChannelManifestRegistry,
   type ChannelContext,
   type ChannelHandle,
@@ -20,6 +21,7 @@ const dummyHandle: ChannelHandle = {
 };
 
 const manifest = (key: string, overrides: Partial<ChannelManifest> = {}): ChannelManifest => ({
+  manifestVersion: 1,
   key,
   namespace: key,
   displayName: key,
@@ -60,6 +62,27 @@ test('ChannelManifestRegistry: register() throws on duplicate key', () => {
 test('ChannelManifestRegistry: register() rejects empty key', () => {
   const reg = new ChannelManifestRegistry();
   assert.throws(() => reg.register(manifest('')), /manifest\.key is required/);
+});
+
+test('ChannelManifestRegistry: register() rejects unsupported manifestVersion', () => {
+  const reg = new ChannelManifestRegistry();
+  // Plugin built against a hypothetical future contract revision. The
+  // runtime cast mirrors what happens at `await import(pkg)` boundaries
+  // where the dynamic-import result is `any`.
+  const futureManifest = {
+    ...manifest('future'),
+    manifestVersion: 999,
+  } as unknown as ChannelManifest;
+  assert.throws(
+    () => reg.register(futureManifest),
+    /unsupported manifestVersion 999/,
+  );
+});
+
+test('CHANNEL_MANIFEST_VERSION matches manifest contract', () => {
+  // Pin the constant so a bump can't accidentally land without
+  // updating consumers (registry, loader, plugin authors).
+  assert.equal(CHANNEL_MANIFEST_VERSION, 1);
 });
 
 test('ChannelManifestRegistry: replace() overrides existing manifest', () => {

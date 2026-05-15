@@ -329,7 +329,20 @@ export interface ChannelHandle {
  * export default manifest;
  * ```
  */
+/** Highest manifest version supported by this build of the protocol. */
+export const CHANNEL_MANIFEST_VERSION = 1 as const;
+
 export interface ChannelManifest {
+  /**
+   * Manifest contract version. Always `1` in this revision. Plugins built
+   * against a future, incompatible revision will set a higher number; the
+   * loader rejects unknown versions with a clear error so an operator can
+   * pin a compatible plugin version.
+   *
+   * Bump policy: add optional fields without bumping; bump on any required
+   * field addition, semantic change, or signature change to `start`.
+   */
+  manifestVersion: 1;
   /** Stable key. Matches the DB `channel_type` column and the key under `ChannelsConfig`. */
   key: string;
   /** Identity namespace used in `sender.channel`. Usually equal to `key`. */
@@ -337,7 +350,7 @@ export interface ChannelManifest {
   /** Human-readable label for the admin UI. */
   displayName: string;
   /**
-   * Optional config parser. When set, the registry calls this before
+   * Optional config parser. When set, the loader calls this before
    * `start()` to validate the persisted config. The shape is left
    * opaque so plugin authors can use Zod (`schema.parse`), a manual
    * function, or skip validation entirely. Returning a value replaces
@@ -373,6 +386,13 @@ export class ChannelManifestRegistry {
   register(manifest: ChannelManifest): void {
     if (!manifest.key) {
       throw new Error('ChannelManifestRegistry.register: manifest.key is required');
+    }
+    if (manifest.manifestVersion !== CHANNEL_MANIFEST_VERSION) {
+      throw new Error(
+        `ChannelManifestRegistry.register: unsupported manifestVersion ${String(
+          manifest.manifestVersion,
+        )} for channel "${manifest.key}" (this build supports ${CHANNEL_MANIFEST_VERSION})`,
+      );
     }
     if (this.byKey.has(manifest.key)) {
       throw new Error(`ChannelManifestRegistry.register: duplicate channel key "${manifest.key}"`);
