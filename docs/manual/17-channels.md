@@ -28,9 +28,17 @@ Newer adapters may exist (e.g., Signal); the *Manage → Channels* tab is the so
 
 ## 17.2 Managing Channels
 
-The current CLI does not include a `hermit channels` command. Configure channels in *Manage → Channels* or through the `/api/agents/<agent-id>/channels` API.
+Per-agent channel configuration (enabling Telegram, setting Discord bot tokens, issuing webhook tokens, etc.) lives in *Manage → Channels* or under the `/api/agents/<agent-id>/channels` API. The API lists configured channels, creates owner-issued external channels, patches existing channel config (`enabled`, secrets, and adapter options), and deletes channels. Built-in channels such as Telegram, Discord, and Slack are seeded as channel rows and are enabled by patching their config.
 
-The API lists configured channels, creates owner-issued external channels, patches existing channel config (`enabled`, secrets, and adapter options), and deletes channels. Built-in channels such as Telegram, Discord, and Slack are seeded as channel rows and are enabled by patching their config.
+To install or remove **gateway-wide channel plugins** (npm packages that contribute new channel types), use the `hermit channel` command:
+
+```bash
+hermit channel install <pkg>      # npm install -g <pkg> + append to channelPackages
+hermit channel uninstall <pkg>    # remove from channelPackages + npm uninstall -g <pkg>
+hermit channel list               # show registered channel packages
+```
+
+A gateway restart (`hermit gateway stop && hermit gateway start`) is required for plugin changes to take effect.
 
 ---
 
