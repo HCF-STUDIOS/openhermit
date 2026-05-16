@@ -132,12 +132,12 @@ export const formatSkillsPromptSection = (skills: SkillIndexEntry[]): string | u
   if (skills.length === 0) return undefined;
 
   const lines = skills.map(
-    (s) => `- **${s.name}**: ${s.description} — \`cat ${s.path}/SKILL.md\``,
+    (s) => `- **${s.name}**: ${s.description} — \`file_read ${s.path}/SKILL.md\``,
   );
 
   return `## Skills
 
-The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, read its SKILL.md for detailed instructions.
+The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, read its SKILL.md in full with \`file_read\` (do not use \`exec cat\`; \`file_read\` returns skill files verbatim and uncapped).
 
 ${lines.join('\n')}`;
 };

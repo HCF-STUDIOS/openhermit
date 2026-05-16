@@ -2781,7 +2781,14 @@ export class AgentRunner implements SessionRuntime {
         // For large tool results, build an inline head+tail preview so we
         // don't bloat events or context.  The full output is persisted to
         // workspace/.openhermit/tool_results/<id>.json in the side-effect.
-        const truncation = resultText
+        // Skill-file reads opt out: SKILL.md is required reading and the
+        // head+tail preview would corrupt resumed sessions (DB-restored
+        // history would only ever see the truncated middle marker).
+        const isSkillRead =
+          typeof resultDetails === 'object'
+          && resultDetails !== null
+          && (resultDetails as { skillRead?: unknown }).skillRead === true;
+        const truncation = resultText && !isSkillRead
           ? buildToolResultPreview(event.toolCallId, resultText)
           : null;
         const publishText = truncation ? truncation.preview : resultText;

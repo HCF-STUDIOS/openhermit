@@ -187,7 +187,13 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
         content: skillRead
           ? [{ type: 'text' as const, text: content }]
           : asTextContent(content),
-        details: { path: args.path, sandbox: backend.id, size: data.byteLength, encoding },
+        details: {
+          path: args.path,
+          sandbox: backend.id,
+          size: data.byteLength,
+          encoding,
+          ...(skillRead ? { skillRead: true } : {}),
+        },
       };
     }
 
@@ -217,6 +223,7 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
         startLine: startIdx + 1,
         endLine: endIdx,
         encoding,
+        ...(skillRead ? { skillRead: true } : {}),
       },
     };
   },

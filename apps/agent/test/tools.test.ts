@@ -9,8 +9,11 @@ import { ValidationError } from '@openhermit/shared';
 
 import { DbInternalStateStore, standaloneScope } from '@openhermit/store';
 import { createBuiltInTools, withApproval } from '../src/tools.js';
+import { createFileReadTool } from '../src/tools/file.js';
 import { createSessionListTool, createSessionReadTool, createSessionSummaryTool } from '../src/tools/session.js';
 import { DefuddleWebProvider } from '../src/web/index.js';
+import { ExecBackendManager } from '../src/core/index.js';
+import type { ExecBackend } from '../src/core/index.js';
 import { createSecurityFixture, createTempDir } from './helpers.js';
 
 const defaultWebProvider = new DefuddleWebProvider();
@@ -640,4 +643,92 @@ test('session_summary denies access when user is not a participant', async (t) =
     (err: any) => err.message.includes('Access denied'),
     'should reject access for non-participant',
   );
+});
+
+// ── file_read: skill-path bypass ─────────────────────────────────────────
+
+const makeReadOnlyBackend = (agentHome: string, files: Map<string, Buffer>): ExecBackend => ({
+  id: 'host',
+  type: 'host',
+  label: 'host',
+  username: 'tester',
+  agentHome,
+  ensure: async () => {},
+  exec: async () => ({ stdout: '', stderr: '', exitCode: 0, durationMs: 0 }),
+  syncSkills: async () => {},
+  shutdown: async () => {},
+  files: {
+    read: async (filePath: string) => {
+      const data = files.get(filePath);
+      if (!data) throw new Error(`fake backend: file not found: ${filePath}`);
+      return { data };
+    },
+    write: async () => { throw new Error('not used'); },
+    list: async () => [],
+    stat: async () => null,
+    delete: async () => { throw new Error('not used'); },
+  },
+});
+
+test('file_read flags skill-path reads and returns content verbatim (no line numbers)', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+
+  const agentHome = '/home/user';
+  const skillPath = `${agentHome}/.openhermit/skills/system/demo/SKILL.md`;
+  const skillBody = '---\nname: demo\ndescription: x\n---\n\nline one\nline two\nline three\n';
+  const backend = makeReadOnlyBackend(agentHome, new Map([[skillPath, Buffer.from(skillBody, 'utf8')]]));
+  const execBackendManager = new ExecBackendManager([backend]);
+
+  const tool = createFileReadTool({ security, execBackendManager });
+  const result = await tool.execute('call-skill', { path: skillPath });
+
+  const text = (result.content[0] as { type: string; text: string }).text;
+  assert.equal(text, skillBody, 'skill files are returned without line-number prefixes');
+
+  const details = result.details as { skillRead?: boolean; path: string };
+  assert.equal(details.skillRead, true, 'details.skillRead is set so agent-runner can skip the head+tail preview');
+  assert.equal(details.path, skillPath);
+});
+
+test('file_read on a non-skill path numbers lines and does not set skillRead', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+
+  const agentHome = '/home/user';
+  const filePath = `${agentHome}/notes.txt`;
+  const body = 'alpha\nbeta\n';
+  const backend = makeReadOnlyBackend(agentHome, new Map([[filePath, Buffer.from(body, 'utf8')]]));
+  const execBackendManager = new ExecBackendManager([backend]);
+
+  const tool = createFileReadTool({ security, execBackendManager });
+  const result = await tool.execute('call-plain', { path: filePath });
+
+  const text = (result.content[0] as { type: string; text: string }).text;
+  assert.ok(text.startsWith('1\talpha'), 'non-skill paths still get line-number prefixes');
+
+  const details = result.details as { skillRead?: boolean };
+  assert.equal(details.skillRead, undefined, 'skillRead flag is omitted for non-skill paths');
+});
+
+test('file_read does not bypass policy/numbering for paths only superficially matching skills root', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+
+  const agentHome = '/home/user';
+  // Path contains "/.openhermit/skills/" but resolves outside agentHome via "..".
+  // isSkillPath should reject — the bypass must not apply.
+  const escapingPath = `${agentHome}/.openhermit/skills/../../etc/passwd`;
+  const body = 'root:x:0:0\n';
+  const backend = makeReadOnlyBackend(
+    agentHome,
+    new Map([[escapingPath, Buffer.from(body, 'utf8')]]),
+  );
+  const execBackendManager = new ExecBackendManager([backend]);
+
+  const tool = createFileReadTool({ security, execBackendManager });
+  const result = await tool.execute('call-escape', { path: escapingPath });
+
+  const details = result.details as { skillRead?: boolean };
+  assert.equal(details.skillRead, undefined, 'paths with .. segments are not treated as skill paths');
 });

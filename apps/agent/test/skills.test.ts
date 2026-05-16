@@ -158,5 +158,9 @@ test('formatSkillsPromptSection formats skills as markdown', () => {
   const section = formatSkillsPromptSection(skills)!;
   assert.ok(section.includes('## Skills'));
   assert.ok(section.includes('**Test**'));
-  assert.ok(section.includes('cat /skills/test/SKILL.md'));
+  // Steers the agent toward file_read (skill-aware: no truncation, no line
+  // numbers) instead of `exec cat`, which gets head+tail-previewed by
+  // agent-runner and is then unrecoverable across session resumes.
+  assert.ok(section.includes('file_read /skills/test/SKILL.md'));
+  assert.ok(!section.includes('cat /skills/test/SKILL.md'));
 });
