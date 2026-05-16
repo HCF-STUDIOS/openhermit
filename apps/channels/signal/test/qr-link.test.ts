@@ -37,7 +37,7 @@ test('begin() requests QR PNG and exposes it as a base64 data URL', async () => 
     account: '+15551234567',
     fetch: spy,
   });
-  assert.equal(calls[0]!.url, 'http://signal:8080/v1/qrcodelink/%2B15551234567');
+  assert.equal(calls[0]!.url, 'http://signal:8080/v1/qrcodelink?device_name=openhermit');
   assert.equal(calls[0]!.method, 'GET');
   assert.match(session.qrPngDataUrl, /^data:image\/png;base64,iVBORw/);
   assert.equal(session.account, '+15551234567');

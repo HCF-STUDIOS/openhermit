@@ -24,7 +24,10 @@ export class QrLinkSession {
   static async begin(opts: QrLinkOptions): Promise<QrLinkSession> {
     const fetchImpl = opts.fetch ?? fetch;
     const httpUrl = opts.httpUrl.replace(/\/+$/, '');
-    const url = `${httpUrl}/v1/qrcodelink/${encodeURIComponent(opts.account)}`;
+    // signal-cli-rest-api's link endpoint takes device_name as a query
+    // param and does NOT take the phone number — the number is chosen at
+    // scan time on the user's phone, not pre-bound to the QR.
+    const url = `${httpUrl}/v1/qrcodelink?device_name=openhermit`;
     const res = await fetchImpl(url, { method: 'GET' });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
