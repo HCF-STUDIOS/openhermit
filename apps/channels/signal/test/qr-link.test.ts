@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { toBuffer as qrToBuffer } from 'qrcode';
+
 import { QrLinkSession } from '../src/qr-link.js';
 
 interface RecordedCall { url: string; method: string; }
@@ -29,9 +31,16 @@ function makeFetchSpy(responses: Array<{ status?: number; body?: unknown; bytes?
   return { fetch: spy, calls };
 }
 
-test('begin() requests QR PNG and exposes it as a base64 data URL', async () => {
-  const fakePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03]);
-  const { fetch: spy, calls } = makeFetchSpy([{ bytes: fakePng }]);
+async function makeSignalQrPng(uri: string): Promise<Uint8Array> {
+  // Margin + larger scale make the synthetic QR robust enough for jsqr.
+  const buf = await qrToBuffer(uri, { type: 'png', margin: 2, scale: 4 });
+  return new Uint8Array(buf);
+}
+
+test('begin() decodes the daemon-rendered PNG and exposes the sgnl:// URI', async () => {
+  const uri = 'sgnl://linkdevice?uuid=abc&pub_key=def';
+  const png = await makeSignalQrPng(uri);
+  const { fetch: spy, calls } = makeFetchSpy([{ bytes: png }]);
   const session = await QrLinkSession.begin({
     httpUrl: 'http://signal:8080',
     account: '+15551234567',
@@ -39,15 +48,17 @@ test('begin() requests QR PNG and exposes it as a base64 data URL', async () => 
   });
   assert.equal(calls[0]!.url, 'http://signal:8080/v1/qrcodelink?device_name=openhermit');
   assert.equal(calls[0]!.method, 'GET');
+  assert.equal(session.qrUri, uri);
+  // Back-compat: data URL still exposed for legacy consumers.
   assert.match(session.qrPngDataUrl, /^data:image\/png;base64,iVBORw/);
   assert.equal(session.account, '+15551234567');
   assert.equal(session.httpUrl, 'http://signal:8080');
 });
 
 test('poll() returns awaiting until /v1/accounts contains the bot number', async () => {
-  const fakePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const png = await makeSignalQrPng('sgnl://linkdevice?uuid=x&pub_key=y');
   const { fetch: spy } = makeFetchSpy([
-    { bytes: fakePng },
+    { bytes: png },
     { body: [] },                     // first poll: empty
     { body: ['+15559999999'] },       // second poll: other account, still no
     { body: ['+15551234567'] },       // third poll: linked
@@ -71,5 +82,18 @@ test('begin() throws when daemon returns non-2xx for the QR request', async () =
       fetch: spy,
     }),
     /500/,
+  );
+});
+
+test('begin() throws when the returned bytes are not a parseable PNG', async () => {
+  const garbage = new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]);
+  const { fetch: spy } = makeFetchSpy([{ bytes: garbage }]);
+  await assert.rejects(
+    () => QrLinkSession.begin({
+      httpUrl: 'http://signal:8080',
+      account: '+15551234567',
+      fetch: spy,
+    }),
+    /could not parse|could not decode/i,
   );
 });

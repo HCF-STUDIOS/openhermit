@@ -109,7 +109,7 @@ export const createSignalSetup = (
           kind: 'awaiting_external',
           instructions:
             'Scan this QR in Signal → Settings → Linked Devices → Link New Device.',
-          qrText: qr.qrPngDataUrl,
+          qrText: qr.qrUri,
           pollIntervalMs: 1500,
         };
       } catch (err) {
@@ -133,7 +133,7 @@ export const createSignalSetup = (
           return {
             kind: 'awaiting_external',
             instructions: 'Waiting for the device to link…',
-            qrText: session.qr.qrPngDataUrl,
+            qrText: session.qr.qrUri,
             pollIntervalMs: 1500,
           };
         }

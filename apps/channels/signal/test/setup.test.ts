@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChannelSetupContext } from '@openhermit/protocol';
+import { toBuffer as qrToBuffer } from 'qrcode';
 
 import { createSignalSetup } from '../src/setup.js';
 
 const ctx: ChannelSetupContext = { agentId: 'agent-1', logger: () => {} };
+
+async function makeSignalQrPng(uri: string): Promise<Uint8Array> {
+  const buf = await qrToBuffer(uri, { type: 'png', margin: 2, scale: 4 });
+  return new Uint8Array(buf);
+}
 
 test('begin() returns awaiting_user_input asking for http_url and phone_number', async () => {
   const setup = createSignalSetup();
@@ -27,12 +33,13 @@ test('submit() with invalid phone number returns error state', async () => {
   assert.equal(state.kind, 'error');
 });
 
-test('submit() with valid input transitions to awaiting_external with a QR data URL', async () => {
-  const fakePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+test('submit() with valid input transitions to awaiting_external with the decoded sgnl:// URI', async () => {
+  const uri = 'sgnl://linkdevice?uuid=abc&pub_key=def';
+  const png = await makeSignalQrPng(uri);
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.includes('/v1/qrcodelink')) {
-      return new Response(fakePng, { status: 200, headers: { 'content-type': 'image/png' } });
+      return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
     }
     return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -45,17 +52,18 @@ test('submit() with valid input transitions to awaiting_external with a QR data 
   );
   assert.equal(state.kind, 'awaiting_external');
   if (state.kind !== 'awaiting_external') return;
-  assert.match(state.qrText ?? '', /^data:image\/png;base64,/);
+  assert.equal(state.qrText, uri);
+  assert.ok(state.qrText?.startsWith('sgnl://'));
   assert.equal(state.pollIntervalMs, 1500);
 });
 
 test('poll() returns done when /v1/accounts contains the linked number', async () => {
-  const fakePng = new Uint8Array([0x89]);
+  const png = await makeSignalQrPng('sgnl://linkdevice?uuid=x&pub_key=y');
   let pollHits = 0;
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.includes('/v1/qrcodelink')) {
-      return new Response(fakePng, { status: 200 });
+      return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } });
     }
     pollHits += 1;
     const body = pollHits >= 2 ? ['+15551234567'] : [];
