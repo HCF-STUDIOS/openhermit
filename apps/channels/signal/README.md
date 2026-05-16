@@ -54,12 +54,32 @@ default). After the device is linked, restart the daemon with
 `MODE=json-rpc` so the receive WebSocket comes online — that's what
 the bridge uses for inbound messages.
 
-## Daemon docker-compose snippet
+## Daemon docker-compose snippets
+
+The daemon's `MODE` env var must change between linking and steady-state
+operation. Restart (or redeploy) the container after switching.
+
+### 1. Linking mode (first-time QR link)
 
 ```yaml
 signal:
   image: bbernhard/signal-cli-rest-api:latest
   environment:
+    # MODE=normal exposes the QR-link endpoint used by the wizard.
+    MODE: normal
+  volumes:
+    - signal-data:/home/.local/share/signal-cli
+  ports:
+    - "8080:8080"
+```
+
+### 2. Runtime mode (after linking)
+
+```yaml
+signal:
+  image: bbernhard/signal-cli-rest-api:latest
+  environment:
+    # MODE=json-rpc enables the receive WebSocket the bridge consumes.
     MODE: json-rpc
   volumes:
     - signal-data:/home/.local/share/signal-cli

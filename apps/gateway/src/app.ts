@@ -2323,7 +2323,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
    * with the rest of the channels API surface.
    */
   app.get('/api/channel-manifests', async (c) => {
-    requireAuth(c);
+    // In JWT-auth deployments the middleware attaches an AuthContext,
+    // so requireAuth() works. In admin-token-only deployments there is
+    // no middleware, so requireAuth() would 401 every caller; fall back
+    // to the admin-token check that the rest of the admin surface uses.
+    if (options.auth) {
+      requireAuth(c);
+    } else {
+      requireAdmin(c.req.header('authorization'));
+    }
     const out = options.manifestRegistry.all().map((m) => {
       const origin = options.manifestRegistry.originOf(m.key) ?? 'external';
       const def = BUILTIN_CHANNEL_DEFS[m.key];
@@ -2536,30 +2544,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   ): ChannelSetupContext => ({
     agentId,
     logger: (msg) => log(`[${agentId}] [${channelType}/setup] ${msg}`),
-  });
-
-  /**
-   * Catalog of channels the gateway knows about. The UI's "Add channel"
-   * picker queries this to render manifest-backed options. `origin` is
-   * inferred from a small built-in allow-list since the registry doesn't
-   * track it (planned for a future iteration).
-   */
-  const BUILTIN_KEYS = new Set(['telegram', 'slack', 'discord']);
-  app.get('/api/channel-manifests', async (c) => {
-    requireAuth(c);
-    const out = options.manifestRegistry.all().map((m) => {
-      const origin: 'built-in' | 'external' = BUILTIN_KEYS.has(m.key) ? 'built-in' : 'external';
-      const def = BUILTIN_CHANNEL_DEFS[m.key];
-      return {
-        key: m.key,
-        namespace: m.namespace,
-        displayName: m.displayName,
-        origin,
-        supportsSetup: !!m.setup,
-        ...(def ? { secretKeys: def.secretKeys, defaultConfig: def.defaultConfig } : {}),
-      };
-    });
-    return c.json(out);
   });
 
   app.post('/api/agents/:agentId/channels/:channelType/setup/begin', async (c) => {

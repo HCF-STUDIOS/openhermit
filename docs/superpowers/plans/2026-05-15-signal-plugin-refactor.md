@@ -931,7 +931,7 @@ npm run dev:gateway
 ```
 
 Look for a log line like:
-```
+```text
 [gateway] registered external channel "signal" from @openhermit/channel-signal
 ```
 
@@ -2529,7 +2529,7 @@ npm run dev:gateway
 ```
 
 Verify in the boot logs:
-```
+```text
 registered external channel "signal" from @openhermit/channel-signal
 ```
 
