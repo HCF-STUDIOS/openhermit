@@ -4,6 +4,21 @@ import { api } from '../api';
 import { SecretsDialog } from './SecretsDialog';
 import { SecurityDialog } from './SecurityDialog';
 import { ConfigDialog } from './ConfigDialog';
+import { UsageDialog } from './UsageDialog';
+
+export interface UsageWindow {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+}
+
+export interface FleetUsage {
+  window24h: UsageWindow;
+  window7d: UsageWindow;
+  allTime: UsageWindow;
+}
 
 interface FleetAgent {
   agentId: string;
@@ -15,6 +30,7 @@ interface FleetAgent {
   channels: string[];
   skillsCount: number;
   mcpCount: number;
+  usage: FleetUsage;
 }
 
 interface SkillInfo {
@@ -50,6 +66,20 @@ const formatRelative = (iso?: string): string => {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 };
 
+export const formatTokens = (n: number): string => {
+  if (n < 1_000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
+};
+
+export const formatUsd = (n: number): string => {
+  if (!Number.isFinite(n) || n === 0) return '$0';
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  if (n < 1) return `$${n.toFixed(3)}`;
+  if (n < 100) return `$${n.toFixed(2)}`;
+  return `$${Math.round(n).toLocaleString()}`;
+};
+
 export function FleetPanel() {
   const [fleet, setFleet] = useState<FleetAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +93,7 @@ export function FleetPanel() {
   const [securityAgent, setSecurityAgent] = useState<string | null>(null);
   const [skillsAgent, setSkillsAgent] = useState<string | null>(null);
   const [mcpAgent, setMcpAgent] = useState<string | null>(null);
+  const [usageAgent, setUsageAgent] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
@@ -204,6 +235,8 @@ export function FleetPanel() {
               <th>Last activity</th>
               <th className="fleet-table__num">Sessions 24h</th>
               <th className="fleet-table__num">Errors 24h</th>
+              <th className="fleet-table__num">Tokens 24h</th>
+              <th className="fleet-table__num">USD 24h</th>
               <th className="fleet-table__actions"></th>
             </tr>
           </thead>
@@ -232,6 +265,10 @@ export function FleetPanel() {
                 <td className={`fleet-table__num${a.errors24h > 0 ? ' fleet-cell-error' : ''}`}>
                   {a.errors24h}
                 </td>
+                <td className="fleet-table__num">
+                  {formatTokens(a.usage.window24h.inputTokens + a.usage.window24h.outputTokens)}
+                </td>
+                <td className="fleet-table__num">{formatUsd(a.usage.window24h.costUsd)}</td>
                 <td className="fleet-table__actions">
                   <div className="fleet-actions">
                     <button
@@ -314,6 +351,14 @@ export function FleetPanel() {
                   <dt>Errors 24h</dt>
                   <dd className={a.errors24h > 0 ? 'fleet-cell-error' : ''}>{a.errors24h}</dd>
                 </div>
+                <div>
+                  <dt>Tokens 24h</dt>
+                  <dd>{formatTokens(a.usage.window24h.inputTokens + a.usage.window24h.outputTokens)}</dd>
+                </div>
+                <div>
+                  <dt>USD 24h</dt>
+                  <dd>{formatUsd(a.usage.window24h.costUsd)}</dd>
+                </div>
               </dl>
             </div>
           ))}
@@ -344,6 +389,7 @@ export function FleetPanel() {
           onMcp={(id) => { setOpenMenu(null); setMcpAgent(id); }}
           onSecrets={(id) => { setOpenMenu(null); setSecretsAgent(id); }}
           onSecurity={(id) => { setOpenMenu(null); setSecurityAgent(id); }}
+          onUsage={(id) => { setOpenMenu(null); setUsageAgent(id); }}
         />,
         document.body,
       )}
@@ -354,6 +400,7 @@ export function FleetPanel() {
       {configAgent && <ConfigDialog agentId={configAgent} onClose={() => setConfigAgent(null)} />}
       {skillsAgent && <AgentSkillsDialog agentId={skillsAgent} onClose={() => setSkillsAgent(null)} />}
       {mcpAgent && <AgentMcpDialog agentId={mcpAgent} onClose={() => setMcpAgent(null)} />}
+      {usageAgent && <UsageDialog agentId={usageAgent} onClose={() => setUsageAgent(null)} />}
     </div>
   );
 }
@@ -368,6 +415,7 @@ function FleetActionsMenu({
   onMcp,
   onSecrets,
   onSecurity,
+  onUsage,
 }: {
   agent: FleetAgent | undefined;
   top: number;
@@ -378,6 +426,7 @@ function FleetActionsMenu({
   onMcp: (agentId: string) => void;
   onSecrets: (agentId: string) => void;
   onSecurity: (agentId: string) => void;
+  onUsage: (agentId: string) => void;
 }) {
   if (!agent) return null;
   return (
@@ -401,6 +450,7 @@ function FleetActionsMenu({
       <button role="menuitem" onClick={() => onMcp(agent.agentId)}>MCP</button>
       <button role="menuitem" onClick={() => onSecrets(agent.agentId)}>Secrets</button>
       <button role="menuitem" onClick={() => onSecurity(agent.agentId)}>Security</button>
+      <button role="menuitem" onClick={() => onUsage(agent.agentId)}>Usage…</button>
       {agent.status === 'disabled' && (
         <>
           <div className="fleet-actions__divider" />

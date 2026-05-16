@@ -1467,12 +1467,22 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const records = await agentStore.list();
     const agentIds = records.map((r) => r.agentId);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const stats = await agentStore.fleetStats(agentIds, since);
+    const [stats, usage] = await Promise.all([
+      agentStore.fleetStats(agentIds, since),
+      agentStore.fleetUsage(agentIds),
+    ]);
+
+    const emptyUsage = {
+      window24h: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      window7d:  { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      allTime:   { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+    };
 
     const fleet = await Promise.all(records.map(async (record) => {
       const stat = stats.get(record.agentId) ?? {
         sessions24h: 0, errors24h: 0, skillsCount: 0, mcpCount: 0,
       };
+      const u = usage.get(record.agentId) ?? emptyUsage;
       const channelStatuses = instances.getChannelPool()?.getStatuses(record.agentId) ?? [];
       const channelsEnabled = channelStatuses
         .filter((s) => s.status === 'connected')
@@ -1487,9 +1497,19 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         channels: channelsEnabled,
         skillsCount: stat.skillsCount,
         mcpCount: stat.mcpCount,
+        usage: u,
       };
     }));
     return c.json(fleet);
+  });
+
+  app.get('/api/admin/agents/:agentId/usage', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    if (!agentStore) {
+      return c.json({ error: { code: 'not_configured', message: 'Agent store not configured.' } }, 500);
+    }
+    const detail = await agentStore.agentUsageDetail(c.req.param('agentId'));
+    return c.json(detail);
   });
 
   app.get('/api/admin/sandboxes', async (c) => {
@@ -1584,7 +1604,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   app.get('/api/admin/stats', async (c) => {
     requireAdmin(c.req.header('authorization'));
     const memoryUsage = process.memoryUsage();
-    const counts = agentStore ? await agentStore.counts() : { users: 0, sessions: 0, sessionEvents: 0 };
+    const [counts, usage] = agentStore
+      ? await Promise.all([agentStore.counts(), agentStore.usageTotals()])
+      : [
+          { users: 0, sessions: 0, sessionEvents: 0 },
+          {
+            window24h: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+            allTime:   { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+          },
+        ];
     return c.json({
       uptime: process.uptime(),
       memory: {
@@ -1596,6 +1624,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         running: instances.listRunnerIds().length,
       },
       counts,
+      usage,
     });
   });
 

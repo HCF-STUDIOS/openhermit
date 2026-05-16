@@ -4,6 +4,33 @@ import pg from 'pg';
 
 import type { AgentStore } from '../interfaces.js';
 import type { AgentRecord, AgentStatus } from '../types.js';
+
+export interface UsageWindow {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+}
+
+export interface FleetUsageEntry {
+  window24h: UsageWindow;
+  window7d: UsageWindow;
+  allTime: UsageWindow;
+}
+
+export interface AgentUsageDetail {
+  totals: FleetUsageEntry;
+  byModel: Array<{
+    model: string;
+    provider?: string;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }>;
+  daily: Array<{ day: string; inputTokens: number; outputTokens: number; costUsd: number }>;
+}
 import * as schema from '../schema.js';
 import {
   agents,
@@ -255,6 +282,223 @@ export class DbAgentStore implements AgentStore {
       this.db.select({ count: sql<number>`count(*)::int` }).from(sessionEvents),
     ]);
     return { users: u!.count, sessions: s!.count, sessionEvents: e!.count };
+  }
+
+  /**
+   * Per-agent token + cost aggregates across three windows: 24h, 7d, all-time.
+   * Sums the `usage` block stored on every `assistant` event payload
+   * (input / output / cacheRead / cacheWrite tokens + pre-computed
+   * `cost.total` USD). Returns a Map keyed by agentId; agents absent from
+   * the result had no billable activity in any window.
+   */
+  async fleetUsage(agentIds: string[]): Promise<Map<string, FleetUsageEntry>> {
+    const result = new Map<string, FleetUsageEntry>();
+    if (agentIds.length === 0) return result;
+
+    const now = new Date();
+    const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const rows = await this.db.execute<{
+      agent_id: string;
+      window: string;
+      input_tokens: string | null;
+      output_tokens: string | null;
+      cache_read_tokens: string | null;
+      cache_write_tokens: string | null;
+      usd_total: number | null;
+    }>(sql`
+      WITH usage AS (
+        SELECT agent_id, ts, payload
+        FROM ${sessionEvents}
+        WHERE event_type = 'assistant'
+          AND payload ? 'usage'
+          AND agent_id = ANY(${agentIds}::text[])
+      ),
+      buckets AS (
+        SELECT agent_id, 'window24h' AS window, payload FROM usage WHERE ts > ${since24h}
+        UNION ALL
+        SELECT agent_id, 'window7d'  AS window, payload FROM usage WHERE ts > ${since7d}
+        UNION ALL
+        SELECT agent_id, 'allTime'   AS window, payload FROM usage
+      )
+      SELECT
+        agent_id,
+        window,
+        SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text       AS input_tokens,
+        SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
+        SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
+        SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
+        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+      FROM buckets
+      GROUP BY agent_id, window
+    `);
+
+    const empty = (): UsageWindow => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0,
+    });
+    const ensure = (id: string): FleetUsageEntry => {
+      let entry = result.get(id);
+      if (!entry) {
+        entry = { window24h: empty(), window7d: empty(), allTime: empty() };
+        result.set(id, entry);
+      }
+      return entry;
+    };
+    for (const row of rows.rows) {
+      const entry = ensure(row.agent_id);
+      const bucket: UsageWindow = {
+        inputTokens: Number(row.input_tokens ?? 0),
+        outputTokens: Number(row.output_tokens ?? 0),
+        cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+        cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+        costUsd: Number(row.usd_total ?? 0),
+      };
+      if (row.window === 'window24h') entry.window24h = bucket;
+      else if (row.window === 'window7d') entry.window7d = bucket;
+      else entry.allTime = bucket;
+    }
+    return result;
+  }
+
+  /**
+   * Gateway-wide token + cost totals for the system stats panel.
+   * Two windows: last 24h and all-time.
+   */
+  async usageTotals(): Promise<{ window24h: UsageWindow; allTime: UsageWindow }> {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const rows = await this.db.execute<{
+      window: string;
+      input_tokens: string | null;
+      output_tokens: string | null;
+      cache_read_tokens: string | null;
+      cache_write_tokens: string | null;
+      usd_total: number | null;
+    }>(sql`
+      WITH buckets AS (
+        SELECT 'window24h' AS window, payload
+          FROM ${sessionEvents}
+          WHERE event_type = 'assistant' AND payload ? 'usage' AND ts > ${since24h}
+        UNION ALL
+        SELECT 'allTime' AS window, payload
+          FROM ${sessionEvents}
+          WHERE event_type = 'assistant' AND payload ? 'usage'
+      )
+      SELECT
+        window,
+        SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text       AS input_tokens,
+        SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
+        SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
+        SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
+        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+      FROM buckets
+      GROUP BY window
+    `);
+
+    const empty: UsageWindow = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0,
+    };
+    const out = { window24h: { ...empty }, allTime: { ...empty } };
+    for (const row of rows.rows) {
+      const bucket: UsageWindow = {
+        inputTokens: Number(row.input_tokens ?? 0),
+        outputTokens: Number(row.output_tokens ?? 0),
+        cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+        cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+        costUsd: Number(row.usd_total ?? 0),
+      };
+      if (row.window === 'window24h') out.window24h = bucket;
+      else out.allTime = bucket;
+    }
+    return out;
+  }
+
+  /**
+   * Per-agent drilldown: token + cost totals plus a per-model breakdown
+   * and a daily series for the last 30 days. Drives the "Usage" drawer in
+   * the admin Fleet UI.
+   */
+  async agentUsageDetail(agentId: string): Promise<AgentUsageDetail> {
+    const now = new Date();
+    const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const since30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [totals] = await Promise.all([this.fleetUsage([agentId])]);
+    const totalsEntry = totals.get(agentId) ?? {
+      window24h: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      window7d:  { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      allTime:   { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+    };
+
+    const modelRows = await this.db.execute<{
+      model: string | null;
+      provider: string | null;
+      calls: string | null;
+      input_tokens: string | null;
+      output_tokens: string | null;
+      usd_total: number | null;
+    }>(sql`
+      SELECT
+        payload->>'model'    AS model,
+        payload->>'provider' AS provider,
+        COUNT(*)::text       AS calls,
+        SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text  AS input_tokens,
+        SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text AS output_tokens,
+        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+      FROM ${sessionEvents}
+      WHERE event_type = 'assistant'
+        AND payload ? 'usage'
+        AND agent_id = ${agentId}
+      GROUP BY model, provider
+      ORDER BY usd_total DESC NULLS LAST
+    `);
+
+    const dailyRows = await this.db.execute<{
+      day: string;
+      input_tokens: string | null;
+      output_tokens: string | null;
+      usd_total: number | null;
+    }>(sql`
+      SELECT
+        to_char(date_trunc('day', ts::timestamptz), 'YYYY-MM-DD') AS day,
+        SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text  AS input_tokens,
+        SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text AS output_tokens,
+        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+      FROM ${sessionEvents}
+      WHERE event_type = 'assistant'
+        AND payload ? 'usage'
+        AND agent_id = ${agentId}
+        AND ts > ${since30d}
+      GROUP BY day
+      ORDER BY day ASC
+    `);
+
+    return {
+      totals: totalsEntry,
+      byModel: modelRows.rows.map((r) => ({
+        model: r.model ?? '(unknown)',
+        ...(r.provider ? { provider: r.provider } : {}),
+        calls: Number(r.calls ?? 0),
+        inputTokens: Number(r.input_tokens ?? 0),
+        outputTokens: Number(r.output_tokens ?? 0),
+        costUsd: Number(r.usd_total ?? 0),
+      })),
+      daily: dailyRows.rows.map((r) => ({
+        day: r.day,
+        inputTokens: Number(r.input_tokens ?? 0),
+        outputTokens: Number(r.output_tokens ?? 0),
+        costUsd: Number(r.usd_total ?? 0),
+      })),
+    };
   }
 
   /**

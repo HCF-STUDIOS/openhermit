@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { formatTokens, formatUsd, type UsageWindow } from './FleetPanel';
 
 interface Stats {
   uptime: number;
   memory: { rss: number; heapUsed: number; heapTotal: number };
   agents: { running: number };
   counts?: { users?: number; sessions?: number; sessionEvents?: number };
+  usage?: { window24h: UsageWindow; allTime: UsageWindow };
 }
 
 function formatBytes(bytes: number): string {
@@ -74,6 +76,23 @@ export function StatsPanel() {
             <StatCard label="Session Events" value={c.sessionEvents ?? 0} />
           </div>
         </div>
+        {stats.usage && (
+          <div className="stats-section">
+            <h3 className="stats-section__title">Token Usage</h3>
+            <div className="stats-row">
+              <StatCard
+                label="Tokens 24h"
+                value={formatTokens(stats.usage.window24h.inputTokens + stats.usage.window24h.outputTokens)}
+              />
+              <StatCard label="Cost 24h" value={formatUsd(stats.usage.window24h.costUsd)} />
+              <StatCard
+                label="Tokens all-time"
+                value={formatTokens(stats.usage.allTime.inputTokens + stats.usage.allTime.outputTokens)}
+              />
+              <StatCard label="Cost all-time" value={formatUsd(stats.usage.allTime.costUsd)} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
