@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import { Type, type Static } from '@mariozechner/pi-ai';
 import { ValidationError } from '@openhermit/shared';
 
@@ -19,6 +17,7 @@ import {
   evaluateAccess,
   resolveFilePathMatches,
 } from '../core/policy.js';
+import { isSkillPath } from '../skills.js';
 
 const SANDBOX_ARG = Type.Optional(
   Type.String({ description: 'Sandbox alias. Omit to use the default sandbox.' }),
@@ -96,25 +95,6 @@ type FileDeleteArgs = Static<typeof FileDeleteParams>;
 /** 5 MiB. Beyond this, results blow the model context budget. */
 const MAX_READ_BYTES = 5 * 1024 * 1024;
 
-/**
- * Skill files live under `<agentHome>/.openhermit/skills/` and are required
- * reading for the agent to actually use a skill. Path-based file policies
- * commonly forbid reads under `~/.openhermit/`, so without an exception the
- * agent gets blocked and can't follow its own SKILL.md instructions.
- *
- * Anchor the check to the backend's agentHome rather than matching the
- * substring anywhere in the path — that way an unrelated path that happens
- * to contain `.openhermit/skills/` (e.g. a user-supplied workspace tree)
- * doesn't silently inherit the bypass.
- */
-const isSkillPath = (backend: ExecBackend, rawPath: string): boolean => {
-  if (!path.posix.isAbsolute(rawPath)) return false;
-  const normalized = path.posix.normalize(rawPath);
-  if (normalized.split('/').includes('..')) return false;
-  const skillsRoot = `${backend.agentHome.replace(/\/$/, '')}/.openhermit/skills/`;
-  return normalized.startsWith(skillsRoot);
-};
-
 const resolveBackend = (context: ToolContext, alias?: string): ExecBackend => {
   if (!context.execBackendManager) {
     throw new ValidationError('File tools are unavailable: no execution backend configured for this agent.');
@@ -169,7 +149,12 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
   parameters: FileReadParams,
   execute: async (_id, args: FileReadArgs) => {
     const backend = resolveBackend(context, args.sandbox);
-    const skillRead = isSkillPath(backend, args.path);
+    // Skill-file reads bypass file-policy checks and content-shaping
+    // (line numbering, byte cap) because SKILL.md is required reading
+    // for the agent. The same classification is re-applied by
+    // agent-runner to skip the head+tail truncation preview — that
+    // decision lives in the runner, not in this tool's return shape.
+    const skillRead = isSkillPath(args.path, backend.agentHome);
     if (!skillRead) {
       await checkFilePath(context, backend.id, 'read', args.path, args);
     }
@@ -192,7 +177,6 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
           sandbox: backend.id,
           size: data.byteLength,
           encoding,
-          ...(skillRead ? { skillRead: true } : {}),
         },
       };
     }
@@ -223,7 +207,6 @@ export const createFileReadTool = (context: ToolContext): PolicyAwareTool<typeof
         startLine: startIdx + 1,
         endLine: endIdx,
         encoding,
-        ...(skillRead ? { skillRead: true } : {}),
       },
     };
   },

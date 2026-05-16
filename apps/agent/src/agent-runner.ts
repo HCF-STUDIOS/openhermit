@@ -88,7 +88,7 @@ import {
 import { buildToolResultPreview, persistToolResult } from './agent-runner/tool-result-persistence.js';
 import { createWebProvider, type WebProvider } from './web/index.js';
 import { runIntrospection } from './introspection/index.js';
-import { loadSkillIndex } from './skills.js';
+import { isSkillReadResult, loadSkillIndex } from './skills.js';
 import type { ScheduleRecord } from '@openhermit/store';
 import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
@@ -2783,16 +2783,17 @@ export class AgentRunner implements SessionRuntime {
         // workspace/.openhermit/tool_results/<id>.json in the side-effect.
         // Skill-file reads opt out: SKILL.md is required reading and the
         // head+tail preview would corrupt resumed sessions (DB-restored
-        // history would only ever see the truncated middle marker). The
-        // bypass is gated on the originating tool being `file_read` so
-        // any other tool that happens to set `skillRead` in its details
-        // (intentionally or by collision) cannot smuggle large output
-        // past truncation.
-        const isSkillRead =
-          event.toolName === 'file_read'
-          && typeof resultDetails === 'object'
-          && resultDetails !== null
-          && (resultDetails as { skillRead?: unknown }).skillRead === true;
+        // history would only ever see the truncated middle marker).
+        //
+        // The classification is owned by the runner: only `file_read`
+        // returning a path under `<agentHome>/.openhermit/skills/`
+        // qualifies, and the determination is made here rather than
+        // trusting a flag from the tool's return value.
+        const isSkillRead = isSkillReadResult(
+          event.toolName,
+          resultDetails,
+          this.execBackendManager?.getDefault().agentHome,
+        );
         const truncation = resultText && !isSkillRead
           ? buildToolResultPreview(event.toolCallId, resultText)
           : null;

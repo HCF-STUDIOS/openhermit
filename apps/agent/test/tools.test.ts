@@ -670,7 +670,7 @@ const makeReadOnlyBackend = (agentHome: string, files: Map<string, Buffer>): Exe
   },
 });
 
-test('file_read flags skill-path reads and returns content verbatim (no line numbers)', async (t) => {
+test('file_read returns skill-path content verbatim (no line numbers)', async (t) => {
   const { security } = await createSecurityFixture(t);
   await security.load();
 
@@ -683,15 +683,18 @@ test('file_read flags skill-path reads and returns content verbatim (no line num
   const tool = createFileReadTool({ security, execBackendManager });
   const result = await tool.execute('call-skill', { path: skillPath });
 
+  // Content shape is the observable signal that the tool classified this
+  // as a skill read internally (skipped line numbering + byte cap). The
+  // truncation-bypass decision is owned by agent-runner; covered by
+  // `isSkillReadResult` tests in skills.test.ts.
   const text = (result.content[0] as { type: string; text: string }).text;
   assert.equal(text, skillBody, 'skill files are returned without line-number prefixes');
 
-  const details = result.details as { skillRead?: boolean; path: string };
-  assert.equal(details.skillRead, true, 'details.skillRead is set so agent-runner can skip the head+tail preview');
+  const details = result.details as { path: string };
   assert.equal(details.path, skillPath);
 });
 
-test('file_read on a non-skill path numbers lines and does not set skillRead', async (t) => {
+test('file_read on a non-skill path numbers lines', async (t) => {
   const { security } = await createSecurityFixture(t);
   await security.load();
 
@@ -706,12 +709,9 @@ test('file_read on a non-skill path numbers lines and does not set skillRead', a
 
   const text = (result.content[0] as { type: string; text: string }).text;
   assert.ok(text.startsWith('1\talpha'), 'non-skill paths still get line-number prefixes');
-
-  const details = result.details as { skillRead?: boolean };
-  assert.equal(details.skillRead, undefined, 'skillRead flag is omitted for non-skill paths');
 });
 
-test('file_read does not bypass policy/numbering for paths only superficially matching skills root', async (t) => {
+test('file_read does not bypass numbering for paths only superficially matching skills root', async (t) => {
   const { security } = await createSecurityFixture(t);
   await security.load();
 
@@ -729,6 +729,6 @@ test('file_read does not bypass policy/numbering for paths only superficially ma
   const tool = createFileReadTool({ security, execBackendManager });
   const result = await tool.execute('call-escape', { path: escapingPath });
 
-  const details = result.details as { skillRead?: boolean };
-  assert.equal(details.skillRead, undefined, 'paths with .. segments are not treated as skill paths');
+  const text = (result.content[0] as { type: string; text: string }).text;
+  assert.ok(text.startsWith('1\troot:x:0:0'), 'paths with .. segments are treated as non-skill — line numbers applied');
 });

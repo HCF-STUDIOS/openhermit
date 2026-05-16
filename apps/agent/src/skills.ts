@@ -16,6 +16,51 @@ export interface SkillIndexEntry {
   source: 'system' | 'workspace';
 }
 
+/**
+ * Classify an absolute path as living under the agent's skills directory.
+ *
+ * Skill files live at `<agentHome>/.openhermit/skills/`. Two downstream
+ * policies key off this: `file_read` returns skill content verbatim
+ * (no line numbers, no internal byte cap), and agent-runner skips the
+ * head+tail preview that would otherwise corrupt skill content across
+ * session resumes.
+ *
+ * Anchored to `agentHome` rather than substring-matched, so unrelated
+ * trees that happen to contain `.openhermit/skills/` don't silently
+ * inherit the bypass. `..` segments are rejected — paths flow through
+ * here without further sanitization, so traversal must be neutralized.
+ */
+export const isSkillPath = (filePath: string, agentHome: string): boolean => {
+  if (!path.posix.isAbsolute(filePath)) return false;
+  const normalized = path.posix.normalize(filePath);
+  if (normalized.split('/').includes('..')) return false;
+  const skillsRoot = `${agentHome.replace(/\/$/, '')}/.openhermit/skills/`;
+  return normalized.startsWith(skillsRoot);
+};
+
+/**
+ * Decide — from a tool-execution-end event — whether a result represents
+ * a skill-file read that should bypass agent-runner's head+tail preview.
+ *
+ * Owned entirely by the runner side: classifies by the dispatched tool
+ * name (which the runner controls) plus the path the tool reports it
+ * read, re-checked against the agent's skills root. The tool's return
+ * value does not get to declare itself a skill read — only `file_read`
+ * is authorized, and only for paths that pass `isSkillPath`.
+ */
+export const isSkillReadResult = (
+  toolName: string,
+  details: unknown,
+  agentHome: string | undefined,
+): boolean => {
+  if (toolName !== 'file_read') return false;
+  if (!agentHome) return false;
+  if (typeof details !== 'object' || details === null) return false;
+  const filePath = (details as { path?: unknown }).path;
+  if (typeof filePath !== 'string') return false;
+  return isSkillPath(filePath, agentHome);
+};
+
 /** Parse YAML frontmatter from a SKILL.md file. */
 export const parseFrontmatter = (content: string): Record<string, string> => {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);

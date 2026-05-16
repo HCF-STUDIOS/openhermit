@@ -3,7 +3,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { parseFrontmatter, scanSkillDirectory, loadSkillIndex, formatSkillsPromptSection } from '../src/skills.js';
+import {
+  parseFrontmatter,
+  scanSkillDirectory,
+  loadSkillIndex,
+  formatSkillsPromptSection,
+  isSkillPath,
+  isSkillReadResult,
+} from '../src/skills.js';
 import type { SkillIndexEntry } from '../src/skills.js';
 import { createTempDir } from './helpers.js';
 
@@ -163,4 +170,80 @@ test('formatSkillsPromptSection formats skills as markdown', () => {
   // agent-runner and is then unrecoverable across session resumes.
   assert.ok(section.includes('file_read /skills/test/SKILL.md'));
   assert.ok(!section.includes('cat /skills/test/SKILL.md'));
+});
+
+// ── isSkillPath ──────────────────────────────────────────────────────────
+
+test('isSkillPath matches paths anchored under <agentHome>/.openhermit/skills/', () => {
+  assert.equal(isSkillPath('/home/user/.openhermit/skills/system/demo/SKILL.md', '/home/user'), true);
+  assert.equal(isSkillPath('/home/user/.openhermit/skills/wechat/SKILL.md', '/home/user'), true);
+});
+
+test('isSkillPath tolerates a trailing slash on agentHome', () => {
+  assert.equal(isSkillPath('/home/user/.openhermit/skills/x/SKILL.md', '/home/user/'), true);
+});
+
+test('isSkillPath rejects paths outside the skills root', () => {
+  assert.equal(isSkillPath('/home/user/notes.txt', '/home/user'), false);
+  assert.equal(isSkillPath('/etc/passwd', '/home/user'), false);
+});
+
+test('isSkillPath rejects paths with .. segments (no traversal bypass)', () => {
+  assert.equal(
+    isSkillPath('/home/user/.openhermit/skills/../../etc/passwd', '/home/user'),
+    false,
+  );
+});
+
+test('isSkillPath rejects relative paths', () => {
+  assert.equal(isSkillPath('.openhermit/skills/demo/SKILL.md', '/home/user'), false);
+});
+
+test('isSkillPath rejects paths that only superficially contain the skills prefix', () => {
+  // /home/userX/.openhermit/skills/... must NOT match agentHome=/home/user.
+  assert.equal(
+    isSkillPath('/home/userX/.openhermit/skills/demo/SKILL.md', '/home/user'),
+    false,
+  );
+});
+
+// ── isSkillReadResult ────────────────────────────────────────────────────
+
+test('isSkillReadResult: only file_read on a skill path qualifies', () => {
+  const skillPath = '/home/user/.openhermit/skills/system/demo/SKILL.md';
+  assert.equal(
+    isSkillReadResult('file_read', { path: skillPath }, '/home/user'),
+    true,
+  );
+});
+
+test('isSkillReadResult rejects non-file_read tools even with a skill path in details', () => {
+  // A different tool (or a future one) cannot smuggle a result past the
+  // head+tail preview by claiming to have read a skill file.
+  const skillPath = '/home/user/.openhermit/skills/system/demo/SKILL.md';
+  assert.equal(
+    isSkillReadResult('exec', { path: skillPath }, '/home/user'),
+    false,
+  );
+});
+
+test('isSkillReadResult rejects file_read on a non-skill path', () => {
+  assert.equal(
+    isSkillReadResult('file_read', { path: '/home/user/notes.txt' }, '/home/user'),
+    false,
+  );
+});
+
+test('isSkillReadResult rejects when agentHome is undefined', () => {
+  // Before any backend is initialized the runner can't classify — fail
+  // safe to the truncating path rather than silently bypassing.
+  const skillPath = '/home/user/.openhermit/skills/system/demo/SKILL.md';
+  assert.equal(isSkillReadResult('file_read', { path: skillPath }, undefined), false);
+});
+
+test('isSkillReadResult rejects malformed details', () => {
+  assert.equal(isSkillReadResult('file_read', null, '/home/user'), false);
+  assert.equal(isSkillReadResult('file_read', 'string-details', '/home/user'), false);
+  assert.equal(isSkillReadResult('file_read', { path: 42 }, '/home/user'), false);
+  assert.equal(isSkillReadResult('file_read', {}, '/home/user'), false);
 });
