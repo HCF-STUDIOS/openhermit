@@ -31,7 +31,7 @@ test('submit() with valid input transitions to awaiting_external with a QR data 
   const fakePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
-    if (url.includes('/v1/qrcodelink/')) {
+    if (url.includes('/v1/qrcodelink')) {
       return new Response(fakePng, { status: 200, headers: { 'content-type': 'image/png' } });
     }
     return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
@@ -54,7 +54,7 @@ test('poll() returns done when /v1/accounts contains the linked number', async (
   let pollHits = 0;
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
-    if (url.includes('/v1/qrcodelink/')) {
+    if (url.includes('/v1/qrcodelink')) {
       return new Response(fakePng, { status: 200 });
     }
     pollHits += 1;
