@@ -26,7 +26,7 @@ PostgreSQL stores (Drizzle)
 | `apps/agent` | Agent loop, prompt assembly, tools, sessions, events, introspection, compaction, MCP client manager |
 | `apps/cli` | Setup, gateway lifecycle, agent management, chat TUI, config/secrets, schedules, logs/status |
 | `apps/web` | Standalone end-user chat web app |
-| `apps/channels/*` | Telegram, Discord, and Slack bridges |
+| `apps/channels/*` | Bundled bridges (Telegram, Discord, Slack) plus external plugins (e.g. `@openhermit/channel-wechat`) — all loaded uniformly through the `ChannelManifestRegistry` |
 | `packages/protocol` | Shared contracts and route builders |
 | `packages/sdk` | HTTP/SSE/WebSocket clients used by CLI/channels |
 | `packages/store` | Drizzle schema and PostgreSQL store implementations |
@@ -87,7 +87,7 @@ On startup, the gateway:
 3. opens PostgreSQL stores if `DATABASE_URL` is available
 4. scans and registers built-in skills from `skills/`
 5. starts the Hono server and WebSocket handler
-6. boots the channel pool — bridges (Telegram/Slack/Discord) attach to gateway HTTP routes; runners hydrate lazily on first inbound traffic
+6. loads the `ChannelManifestRegistry` — bundled defaults (Telegram/Slack/Discord) plus any plugin packages named in `gateway.config.channelPackages` (e.g. `@openhermit/channel-wechat`) — and boots the channel pool, attaching each adapter's webhook handler to gateway HTTP routes; runners hydrate lazily on first inbound traffic
 
 Agents hydrate on demand: the first request that targets an agent constructs its `AgentRunner`, syncs enabled skills into the sandbox via `runner.syncSkills`, attaches existing channel outbounds from the pool, and connects enabled MCP servers lazily through the runner. Schedules fire from a single gateway-level `CentralScheduler` that hydrates the target runner on demand at fire time. Idle runners are evicted by an LRU after `OPENHERMIT_EVICTION_TTL_MINUTES`; channel bridges in the pool stay alive across eviction.
 
@@ -143,7 +143,7 @@ Agent access can be `public`, `protected`, or `private`. `protected` requires th
 
 - **Tools:** built-in toolsets plus dynamically connected MCP tools
 - **Skills:** prompt instructions and supporting files, registered in DB and synced into each backend's sandbox via `runner.syncSkills`
-- **Channels:** Telegram, Discord, Slack built-ins plus channel-token support for external adapters
+- **Channels:** Telegram, Discord, Slack as bundled built-ins; additional adapters loaded as npm plugins via `channelPackages` (e.g. `@openhermit/channel-wechat`). All registered through the `ChannelManifestRegistry`. See [`channel-adapter.md`](channel-adapter.md) and [`channel-plugin-design.md`](channel-plugin-design.md).
 - **Schedules:** cron/once jobs that post prompts into dedicated or configured sessions
 - **Web providers:** Defuddle, Exa, Tavily
 

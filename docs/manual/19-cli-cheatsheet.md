@@ -93,7 +93,13 @@ hermit mcp disable <name> [--agent <id>|--all]
 
 ## 19.7 Channels
 
-There is no `hermit channels` command in the current CLI. Configure channels in *Manage → Channels* or through the `/api/agents/<id>/channels` API.
+```bash
+hermit channel install   <pkg>    # npm install -g <pkg> + add to channelPackages
+hermit channel uninstall <pkg>    # remove from channelPackages + npm uninstall -g <pkg>
+hermit channel list
+```
+
+Restart the gateway after install/uninstall. Per-agent channel config (enabling Telegram, issuing webhook tokens, etc.) lives in *Manage → Channels* or under `/api/agents/<id>/channels`.
 
 ---
 

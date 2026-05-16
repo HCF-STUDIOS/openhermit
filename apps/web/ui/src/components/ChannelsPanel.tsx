@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchChannels,
+  fetchChannelManifests,
   patchChannel,
   removeChannel,
   createExternalChannel,
   setAgentSecret,
   type ChannelInfo,
+  type ChannelManifestSummary,
   type CreatedChannel,
 } from '../api';
+import { ChannelSetupWizard } from './ChannelSetupWizard';
 
 /**
  * Fixed config skeletons for built-in channels. Token fields are kept as
@@ -37,20 +40,25 @@ const BUILTIN_CONFIG_TEMPLATES: Record<string, (extras: Record<string, unknown>)
   }),
 };
 
+type GroupKey = 'builtin' | 'package' | 'token';
+
 /**
- * Unified channel management — covers both built-in adapters
- * (telegram/discord/slack, in-process bridges) and owner-issued external
- * tokens (third-party adapters connecting from outside the gateway).
+ * Unified channel management — three groups:
+ *   1. Built-in (telegram/slack/discord, ship with the gateway).
+ *   2. Package-installed (loaded via `channelPackages` config, e.g. WeChat).
+ *      Typically require an interactive Set-up wizard to provision config.
+ *   3. Owner-issued external tokens for adapters running outside the gateway.
  *
- * Both kinds live in the agent_channels table; the server returns them
- * in one list. Built-in rows are auto-seeded on agent creation and only
- * support enable/disable/config-edit. External rows are created here
- * (with a token issued by the server) and can be revoked.
+ * Built-in and package rows are auto-seeded on agent create (one row per
+ * registered manifest, disabled). Token rows are created on demand here.
  */
 export function ChannelsPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
+  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+
+  // Edit-row state.
   const [editing, setEditing] = useState<string | null>(null);
   const [editConfig, setEditConfig] = useState('');
   const [editLabel, setEditLabel] = useState('');
@@ -58,28 +66,38 @@ export function ChannelsPanel() {
   const [editExtras, setEditExtras] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
 
-  // Create-external flow
-  const [creating, setCreating] = useState(false);
+  // Set-up wizard (re-uses the manifest's ChannelSetup state machine to
+  // populate an already-seeded row's config). `setupFor` carries the row.
+  const [setupFor, setSetupFor] = useState<ChannelInfo | null>(null);
+
+  // Issue-token flow.
+  const [issuing, setIssuing] = useState(false);
   const [newNamespace, setNewNamespace] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [createdToken, setCreatedToken] = useState<CreatedChannel | null>(null);
 
   const editDialogRef = useRef<HTMLDialogElement>(null);
-  const createDialogRef = useRef<HTMLDialogElement>(null);
+  const setupDialogRef = useRef<HTMLDialogElement>(null);
+  const issueDialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     if (editing) editDialogRef.current?.showModal();
     else editDialogRef.current?.close();
   }, [editing]);
-
   useEffect(() => {
-    if (creating) createDialogRef.current?.showModal();
-    else createDialogRef.current?.close();
-  }, [creating]);
+    if (setupFor) setupDialogRef.current?.showModal();
+    else setupDialogRef.current?.close();
+  }, [setupFor]);
+  useEffect(() => {
+    if (issuing) issueDialogRef.current?.showModal();
+    else issueDialogRef.current?.close();
+  }, [issuing]);
 
   const load = useCallback(async () => {
     try {
-      setChannels(await fetchChannels());
+      const [chs, mans] = await Promise.all([fetchChannels(), fetchChannelManifests()]);
+      setChannels(chs);
+      setManifests(mans);
       setError('');
     } catch (err) {
       setError((err as Error).message);
@@ -89,6 +107,13 @@ export function ChannelsPanel() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const manifestByKey = new Map(manifests.map((m) => [m.key, m]));
+
+  const groupOf = (ch: ChannelInfo): GroupKey => {
+    if (ch.kind === 'external') return 'token';
+    return manifestByKey.get(ch.channelType)?.origin === 'external' ? 'package' : 'builtin';
+  };
 
   const handleToggle = async (ch: ChannelInfo) => {
     try {
@@ -119,9 +144,7 @@ export function ChannelsPanel() {
     setEditLabel(ch.label ?? '');
     setEditSecrets({});
     setError('');
-    if (ch.kind === 'builtin') {
-      // Pre-fill structured extras from existing config (token fields stay
-      // as placeholders; secrets are entered fresh).
+    if (ch.kind === 'builtin' && BUILTIN_CONFIG_TEMPLATES[ch.channelType]) {
       const cfg = ch.config ?? {};
       const extras: Record<string, unknown> = {};
       if (ch.channelType === 'telegram') {
@@ -146,16 +169,14 @@ export function ChannelsPanel() {
     setSaving(true);
     try {
       let nextConfig: Record<string, unknown>;
-      if (ch.kind === 'builtin') {
-        // 1. Persist any newly-entered secrets first.
+      const tmpl = ch.kind === 'builtin' ? BUILTIN_CONFIG_TEMPLATES[ch.channelType] : undefined;
+      if (tmpl) {
         for (const [key, value] of Object.entries(editSecrets)) {
           if (value.trim()) {
             await setAgentSecret(key, value.trim());
           }
         }
-        // 2. Build a fixed config skeleton from the channel-type template.
-        const tmpl = BUILTIN_CONFIG_TEMPLATES[ch.channelType];
-        nextConfig = tmpl ? tmpl(editExtras) : (ch.config ?? {});
+        nextConfig = tmpl(editExtras);
       } else {
         try {
           nextConfig = JSON.parse(editConfig || '{}') as Record<string, unknown>;
@@ -182,7 +203,25 @@ export function ChannelsPanel() {
     }
   };
 
-  const handleCreateExternal = async () => {
+  const handleSetupDone = async (config: Record<string, unknown>): Promise<void> => {
+    if (!setupFor) return;
+    try {
+      await patchChannel(setupFor.id, { config, enabled: true });
+      setSetupFor(null);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const openIssue = () => {
+    setIssuing(true);
+    setNewNamespace('');
+    setNewLabel('');
+    setError('');
+  };
+
+  const handleIssueToken = async () => {
     const ns = newNamespace.trim();
     if (!ns) {
       setError('Namespace is required.');
@@ -195,9 +234,7 @@ export function ChannelsPanel() {
         ...(newLabel.trim() ? { label: newLabel.trim() } : {}),
       });
       setCreatedToken(created);
-      setNewNamespace('');
-      setNewLabel('');
-      setCreating(false);
+      setIssuing(false);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -208,9 +245,28 @@ export function ChannelsPanel() {
 
   if (loading) return <p className="manage__empty">Loading...</p>;
 
-  const builtin = channels.filter((c) => c.kind === 'builtin');
-  const external = channels.filter((c) => c.kind === 'external');
+  const builtin = channels.filter((c) => groupOf(c) === 'builtin');
+  const pkg = channels.filter((c) => groupOf(c) === 'package');
+  const token = channels.filter((c) => groupOf(c) === 'token');
   const editingChannel = channels.find((c) => c.id === editing);
+
+  const renderCard = (ch: ChannelInfo, group: GroupKey) => {
+    const manifest = manifestByKey.get(ch.channelType);
+    const canSetup = group === 'package' && manifest?.supportsSetup === true;
+    const displayName = ch.label ?? manifest?.displayName ?? ch.channelType;
+    return (
+      <ChannelCard
+        key={ch.id}
+        ch={ch}
+        displayName={displayName}
+        canSetup={canSetup}
+        onSetup={() => setSetupFor(ch)}
+        onToggle={() => void handleToggle(ch)}
+        onEdit={() => startEdit(ch)}
+        onRemove={() => void handleRemove(ch)}
+      />
+    );
+  };
 
   return (
     <div className="manage__list">
@@ -234,50 +290,58 @@ export function ChannelsPanel() {
       )}
 
       <h3 className="manage__section-title">Built-in channels</h3>
+      <p className="manage__hint">Ship with the gateway. Add secrets, then enable.</p>
       {builtin.length === 0 && (
-        <p className="manage__empty">No built-in channels yet (will be seeded on next agent restart).</p>
+        <p className="manage__empty">No built-in channels yet (seeded on next agent restart).</p>
       )}
-      {builtin.map((ch) => (
-        <ChannelCard
-          key={ch.id}
-          ch={ch}
-          onToggle={() => void handleToggle(ch)}
-          onEdit={() => startEdit(ch)}
-          onRemove={() => void handleRemove(ch)}
-        />
-      ))}
+      {builtin.map((ch) => renderCard(ch, 'builtin'))}
 
-      <h3 className="manage__section-title" style={{ marginTop: 24 }}>
-        External channel tokens
-      </h3>
+      <h3 className="manage__section-title" style={{ marginTop: 24 }}>Package-installed channels</h3>
       <p className="manage__hint">
-        For channel adapters running outside the gateway (a Telegram bot deployed
-        elsewhere, a custom bridge). Each token is namespace-scoped and has no
-        admin privileges.
+        Loaded via the gateway's <code>channelPackages</code> config. Use <strong>Set up</strong> to link an account interactively.
       </p>
-      {external.length === 0 && (
+      {pkg.length === 0 && (
+        <p className="manage__empty">No channel packages installed. Add one via <code>hermit gateway config set channelPackages '["@scope/pkg"]'</code> and restart the gateway.</p>
+      )}
+      {pkg.map((ch) => renderCard(ch, 'package'))}
+
+      <h3 className="manage__section-title" style={{ marginTop: 24 }}>External channel tokens</h3>
+      <p className="manage__hint">
+        For channel adapters running outside the gateway. Each token is namespace-scoped.
+      </p>
+      {token.length === 0 && (
         <p className="manage__empty">No external tokens issued.</p>
       )}
-      {external.map((ch) => (
-        <ChannelCard
-          key={ch.id}
-          ch={ch}
-          onToggle={() => void handleToggle(ch)}
-          onEdit={() => startEdit(ch)}
-          onRemove={() => void handleRemove(ch)}
-        />
-      ))}
-
+      {token.map((ch) => renderCard(ch, 'token'))}
       <div className="manage__add-list">
-        <button className="btn btn--sm btn--outline" onClick={() => setCreating(true)}>
-          + Issue external channel token
+        <button className="btn btn--sm btn--outline" onClick={openIssue}>
+          + Issue new token
         </button>
       </div>
 
-      <dialog ref={createDialogRef} className="manage__dialog" onClose={() => setCreating(false)}>
+      <dialog ref={setupDialogRef} className="manage__dialog" onClose={() => setSetupFor(null)}>
+        {setupFor && (
+          <>
+            <div className="manage__dialog-header">
+              <h3>Link {manifestByKey.get(setupFor.channelType)?.displayName ?? setupFor.channelType}</h3>
+              <button className="btn btn--sm btn--ghost" onClick={() => setSetupFor(null)}>Cancel</button>
+            </div>
+            <div className="manage__dialog-body">
+              <ChannelSetupWizard
+                channelType={setupFor.channelType}
+                displayName={manifestByKey.get(setupFor.channelType)?.displayName ?? setupFor.channelType}
+                onDone={handleSetupDone}
+                onCancel={() => setSetupFor(null)}
+              />
+            </div>
+          </>
+        )}
+      </dialog>
+
+      <dialog ref={issueDialogRef} className="manage__dialog" onClose={() => setIssuing(false)}>
         <div className="manage__dialog-header">
-          <h3>New external channel</h3>
-          <button className="btn btn--sm btn--ghost" onClick={() => setCreating(false)}>Cancel</button>
+          <h3>New external channel token</h3>
+          <button className="btn btn--sm btn--ghost" onClick={() => setIssuing(false)}>Cancel</button>
         </div>
         <div className="manage__dialog-body">
           <div className="manage__field">
@@ -303,7 +367,7 @@ export function ChannelsPanel() {
           </div>
         </div>
         <div className="manage__dialog-footer">
-          <button className="btn btn--primary" onClick={() => void handleCreateExternal()} disabled={saving}>
+          <button className="btn btn--primary" onClick={() => void handleIssueToken()} disabled={saving}>
             {saving ? 'Creating...' : 'Issue token'}
           </button>
         </div>
@@ -313,7 +377,7 @@ export function ChannelsPanel() {
         {editingChannel && (
           <>
             <div className="manage__dialog-header">
-              <h3>Edit {editingChannel.label ?? editingChannel.channelType}</h3>
+              <h3>Edit {editingChannel.label ?? manifestByKey.get(editingChannel.channelType)?.displayName ?? editingChannel.channelType}</h3>
               <button className="btn btn--sm btn--ghost" onClick={() => setEditing(null)}>Cancel</button>
             </div>
             <div className="manage__dialog-body">
@@ -325,7 +389,7 @@ export function ChannelsPanel() {
                   onChange={(e) => setEditLabel(e.target.value)}
                 />
               </div>
-              {editingChannel.kind === 'builtin' ? (
+              {editingChannel.kind === 'builtin' && BUILTIN_CONFIG_TEMPLATES[editingChannel.channelType] ? (
                 <BuiltinChannelFields
                   channel={editingChannel}
                   secrets={editSecrets}
@@ -451,8 +515,11 @@ function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras 
   );
 }
 
-function ChannelCard({ ch, onToggle, onEdit, onRemove }: {
+function ChannelCard({ ch, displayName, canSetup, onSetup, onToggle, onEdit, onRemove }: {
   ch: ChannelInfo;
+  displayName: string;
+  canSetup: boolean;
+  onSetup: () => void;
   onToggle: () => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -470,7 +537,7 @@ function ChannelCard({ ch, onToggle, onEdit, onRemove }: {
       <div className="manage__card-info">
         <div className="manage__card-header">
           <span className="manage__card-name">
-            {ch.label ?? ch.channelType}
+            {displayName}
             {ch.kind === 'external' && (
               <span className="manage__card-meta"> · {ch.namespace}</span>
             )}
@@ -486,6 +553,9 @@ function ChannelCard({ ch, onToggle, onEdit, onRemove }: {
         {ch.error && <div className="manage__card-error">{ch.error}</div>}
       </div>
       <div className="manage__card-actions">
+        {canSetup && (
+          <button className="btn btn--sm btn--primary" onClick={onSetup}>Set up</button>
+        )}
         <button className="btn btn--sm btn--ghost" onClick={onEdit}>Edit</button>
         <button
           className={`btn btn--sm ${ch.enabled ? 'btn--ghost' : 'btn--primary'}`}

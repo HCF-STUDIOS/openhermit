@@ -919,9 +919,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Pre-seed one row per supported builtin channel (all disabled). Owner
-    // can flip them on later from the admin / web UI without having to
-    // create rows from scratch.
+    // Pre-seed one row per registered manifest (both built-in and
+    // plugin-loaded). Rows are created disabled — the owner enables
+    // them from the UI (running through the setup wizard for plugins
+    // that ship a `ChannelSetup`, or via direct config-edit for the
+    // built-in token-based ones).
     if (options.agentChannelStore) {
       for (const key of options.manifestRegistry.keys()) {
         await options.agentChannelStore.createBuiltin({
@@ -2307,21 +2309,92 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   });
 
   /**
-   * Create a new external channel. Builtin slots are auto-seeded on
-   * agent create — owner doesn't POST those, only PATCHes them.
+   * Catalog of channels the gateway knows about. The UI's "Add channel"
+   * picker queries this to render a dropdown of manifest-backed options
+   * (telegram/slack/discord/wechat/...) plus the "Custom external" fallback.
+   *
+   * - `origin: 'built-in'` rows come from the gateway's bundled defaults.
+   * - `origin: 'external'` rows come from `channelPackages` plugins.
+   * - `supportsSetup: true` means the manifest exposes `ChannelSetup` and
+   *   the UI should route the user through the interactive wizard.
+   *
+   * Returned to any authenticated owner/admin scope — manifest metadata
+   * isn't agent-specific, but we gate behind owner-or-admin to keep parity
+   * with the rest of the channels API surface.
+   */
+  app.get('/api/channel-manifests', async (c) => {
+    requireAuth(c);
+    const out = options.manifestRegistry.all().map((m) => {
+      const origin = options.manifestRegistry.originOf(m.key) ?? 'external';
+      const def = BUILTIN_CHANNEL_DEFS[m.key];
+      return {
+        key: m.key,
+        namespace: m.namespace,
+        displayName: m.displayName,
+        origin,
+        supportsSetup: !!m.setup,
+        ...(def ? { secretKeys: def.secretKeys, defaultConfig: def.defaultConfig } : {}),
+      };
+    });
+    return c.json(out);
+  });
+
+  /**
+   * Create a new channel. Two modes:
+   *
+   * 1. `channelType` set → manifest-backed builtin row. Used by the
+   *    "Add channel" picker when the user selects e.g. WeChat. The
+   *    channel must be a registered manifest. Caller may pass a `config`
+   *    if the manifest doesn't need an interactive setup flow.
+   * 2. `namespace` only → raw external row (current behavior). The
+   *    response carries the plaintext token the caller must store.
+   *
+   * Builtin slots for the three bundled channels (telegram/slack/discord)
+   * are still auto-seeded on agent create, so the UI shouldn't POST
+   * those — but if it does, we reject as a duplicate.
    */
   app.post('/api/agents/:agentId/channels', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
     const auth = await requireOwnerOrAdmin(c, agentId);
     const store = requireAgentChannelStore();
     const body = await c.req.json().catch(() => ({})) as {
+      channelType?: string;
       namespace?: string;
       label?: string;
       config?: Record<string, unknown>;
       enabled?: boolean;
     };
+
+    let createdBy: string | undefined;
+    if (auth.mode === 'user' && options.userStore) {
+      const userId = await options.userStore.resolve(auth.channel, auth.channelUserId);
+      if (userId) createdBy = userId;
+    }
+
+    if (body.channelType && typeof body.channelType === 'string') {
+      const channelType = body.channelType.trim();
+      const manifest = options.manifestRegistry.get(channelType);
+      if (!manifest) {
+        throw new ValidationError(`Channel "${channelType}" is not a registered manifest.`);
+      }
+      const existing = await store.listForAgent(agentId);
+      if (existing.some((ch) => ch.channelType === channelType && !ch.revokedAt)) {
+        throw new ValidationError(
+          `A channel of type "${channelType}" already exists on this agent.`,
+        );
+      }
+      const created = await store.createBuiltin({
+        agentId,
+        channelType,
+        ...(body.label ? { label: body.label } : {}),
+        ...(body.config ? { config: body.config } : {}),
+        ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+      });
+      return c.json(created, 201);
+    }
+
     if (!body.namespace || typeof body.namespace !== 'string') {
-      throw new ValidationError('namespace is required.');
+      throw new ValidationError('channelType or namespace is required.');
     }
     const namespace = body.namespace.trim();
     if (!namespace) {
@@ -2332,11 +2405,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       throw new ValidationError(
         `A channel with namespace "${namespace}" already exists on this agent.`,
       );
-    }
-    let createdBy: string | undefined;
-    if (auth.mode === 'user' && options.userStore) {
-      const userId = await options.userStore.resolve(auth.channel, auth.channelUserId);
-      if (userId) createdBy = userId;
     }
     const created = await store.createExternal({
       agentId,

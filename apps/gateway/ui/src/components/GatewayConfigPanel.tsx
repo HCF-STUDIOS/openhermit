@@ -6,6 +6,8 @@ interface GatewayConfig {
   cors?: { origin?: string };
   sandboxPresets?: Record<string, { type: string; config: Record<string, unknown> }>;
   autoProvisionSandbox?: string | null;
+  /** npm package names to dynamic-import as channel plugins at boot. */
+  channelPackages?: string[];
 }
 
 interface ConfigResponse {
@@ -26,6 +28,7 @@ export function GatewayConfigPanel() {
   const [autoProvision, setAutoProvision] = useState('');
   const [presetsText, setPresetsText] = useState('');
   const [presetsError, setPresetsError] = useState('');
+  const [channelPackagesText, setChannelPackagesText] = useState('');
 
   const applyConfig = useCallback((cfg: GatewayConfig) => {
     setConfig(cfg);
@@ -33,6 +36,7 @@ export function GatewayConfigPanel() {
     setAutoProvision(cfg.autoProvisionSandbox ?? '');
     setPresetsText(JSON.stringify(cfg.sandboxPresets ?? {}, null, 2));
     setPresetsError('');
+    setChannelPackagesText((cfg.channelPackages ?? []).join('\n'));
   }, []);
 
   const load = useCallback(async () => {
@@ -67,11 +71,17 @@ export function GatewayConfigPanel() {
       return;
     }
 
+    const channelPackages = channelPackagesText
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     const next: GatewayConfig = {
       ...(config ?? {}),
       cors: { origin: corsOrigin },
       sandboxPresets: presets as GatewayConfig['sandboxPresets'],
       autoProvisionSandbox: autoProvision.trim() === '' ? null : autoProvision.trim(),
+      channelPackages,
     };
     // Never send `ui: false` — server rejects it anyway.
     delete next.ui;
@@ -134,6 +144,24 @@ export function GatewayConfigPanel() {
             onChange={(e) => setAutoProvision(e.target.value)}
             placeholder="(empty = disabled)"
           />
+        </label>
+
+        <label className="field">
+          <span className="field__label">Channel packages</span>
+          <textarea
+            className="field__input"
+            value={channelPackagesText}
+            onChange={(e) => setChannelPackagesText(e.target.value)}
+            rows={3}
+            spellCheck={false}
+            placeholder="@openhermit/channel-wechat"
+            style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+          />
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+            One npm package name per line (or comma-separated). Each must default-export a
+            ChannelManifest. Install with <code>npm install &lt;pkg&gt;</code> in the gateway
+            install dir, then list it here. Restart required.
+          </span>
         </label>
 
         <label className="field">

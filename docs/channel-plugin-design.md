@@ -1,6 +1,6 @@
-# Channel Plugin Architecture (Design Draft)
+# Channel Plugin Architecture
 
-> Status: draft — partially implemented. The manifest contract and `ChannelManifestRegistry` have landed in `@openhermit/protocol`; nothing consumes the registry yet (see migration plan below). Supersedes the "External Channel Adapter API" open question in `pending-decisions.md`.
+> Status: shipped. Manifest contract, `ChannelManifestRegistry`, the `channelPackages` config field, the setup contract, and the first external plugin (`@openhermit/channel-wechat`) have all landed. The migration plan below is kept for historical context; everything in it is done. Supersedes the "External Channel Adapter API" open question in `pending-decisions.md`. For day-to-day operational reference, see [`channel-adapter.md`](channel-adapter.md).
 
 ## Why
 
@@ -29,7 +29,7 @@ Goal: make channels first-class npm-installable plugins. The CLI still bundles a
 │                                                                     │
 │  ┌──────────────────────────┐  ┌─────────────────────────────────┐  │
 │  │ ChannelManifestRegistry  │← │ PluginLoader                    │  │
-│  │ (runtime)                │  │  • read channel_packages config │  │
+│  │ (runtime)                │  │  • read channelPackages config │  │
 │  └──────────────────────────┘  │  • dynamic-import each manifest │  │
 │         ▲                      │  • register {key, namespace,    │  │
 │         │                      │     parseConfig, start}         │  │
@@ -190,12 +190,14 @@ Key design choices:
 Plugins are loaded from two sources, in order:
 
 1. **CLI-bundled defaults.** Manifests imported directly in `apps/cli/src/cli.ts` (or a dedicated `default-channels.ts`) and registered before reading external config. These are bundled by `tsup` and always available.
-2. **External packages listed in config.** Read from `config.yaml`:
+2. **External packages listed in config.** Read from `gateway.config.channelPackages`:
 
-   ```yaml
-   channel_packages:
-     - '@heyamiko/channel-signal'
-     - '@heyamiko/channel-weixin'
+   ```json
+   {
+     "channelPackages": [
+       "@openhermit/channel-wechat"
+     ]
+   }
    ```
 
    At gateway boot, each name is passed to `await import(name)`. Node's module resolution finds the package in the same `node_modules` tree the CLI itself lives in.
@@ -210,31 +212,29 @@ v1 supports npm-installed CLI only — pnpm, bun, homebrew, and standalone-binar
 
 ## CLI Bundling Policy
 
-| Channel | Bundled in CLI? | Loaded via |
-|---|---|---|
-| `@openhermit/channel-telegram` | yes (default) | static import + manifest registration |
-| `@openhermit/channel-slack` | yes (default) | static import + manifest registration |
-| `@openhermit/channel-discord` | yes (default) | static import + manifest registration |
-| `@openhermit/channel-signal` | no | global `node_modules` + `channel_packages` config |
-| `@heyamiko/channel-weixin` | no | global `node_modules` + `channel_packages` config |
-| `@heyamiko/channel-debox` | no | global `node_modules` + `channel_packages` config |
+| Channel | Package | Published to npm? | Bundled in CLI? | Loaded via |
+|---|---|---|---|---|
+| Telegram | `@openhermit/channel-telegram` | no (`private: true`) | yes — `tsup noExternal` | static import + manifest registration |
+| Slack | `@openhermit/channel-slack` | no (`private: true`) | yes — `tsup noExternal` | static import + manifest registration |
+| Discord | `@openhermit/channel-discord` | no (`private: true`) | yes — `tsup noExternal` | static import + manifest registration |
+| WeChat | `@openhermit/channel-wechat` | yes (`0.1.0`) | no | global `node_modules` + `channelPackages` config |
+| Signal (planned) | `@openhermit/channel-signal` | no (in review on PR #92) | no | global `node_modules` + `channelPackages` config |
 
-This honors "default-bundle the three established channels so `hermit` is usable out-of-box" while keeping the loading path uniform — both bundled and external go through the same manifest registration, so there is no special-case code for the built-ins.
-
-`apps/cli/tsup.config.ts` needs no new entries beyond what's there today; the three default channels keep their `noExternal` treatment (slack and discord need to be added; only telegram is listed currently).
+This honors "default-bundle the three established channels so `hermit` is usable out-of-box" while keeping the loading path uniform — both bundled and external go through the same manifest registration, so there is no special-case code for the built-ins. Bundled channels keep `private: true` because the CLI binary is the only consumer; only channels meant for `hermit channel install` are published.
 
 ## Migration Plan
 
-Sequenced so each step is independently shippable:
+The plan below is preserved as the historical record of how the rollout was sequenced. Everything is shipped.
 
-1. **Manifest contract.** Add `ChannelManifest` type and `ChannelManifestRegistry` runtime class in `packages/protocol` and `apps/gateway`. No behavioral change yet — `BUILTIN_CHANNELS` becomes a thin wrapper that constructs three manifests internally.
-2. **Refactor built-ins to export manifests.** `@openhermit/channel-telegram`, `-slack`, `-discord` add `export default manifest`. The CLI imports and registers them explicitly at boot.
-3. **Add `channel_packages` config.** Gateway reads the list, dynamic-imports each, registers. Empty list = no-op, fully backwards compatible.
-4. **Delete `BUILTIN_CHANNELS` constant.** All consumers (`channels.ts` `starters` map, admin UI registry, backfill) now read from the runtime registry. Backfill becomes: "for each manifest registered at boot, ensure an `agent_channels` row exists per active agent."
-5. **Ship Signal as the first external-default channel.** PR #81 rebased: drop from `BUILTIN_CHANNELS`, drop from `tsup` `noExternal`, add `export default manifest`. Operators add `@openhermit/channel-signal` to `channel_packages` to enable.
-6. **Admin UI registry.** `/api/channels/available` returns the runtime registry instead of a hardcoded list. Form rendering uses each manifest's `parseConfig` (or a richer descriptor we add later — `parseConfig` is opaque by design, so the UI may eventually want an explicit JSON-Schema or Zod field for form generation).
+1. **Manifest contract.** ✅ `ChannelManifest` type and `ChannelManifestRegistry` runtime class — landed in PR #87 (`packages/protocol`, `apps/gateway/src/channel-manifests.ts`).
+2. **Refactor built-ins to export manifests.** ✅ Telegram, Slack, Discord now default-export their `ChannelManifest` and register via the registry — landed in PR #88.
+3. **Add `channelPackages` config.** ✅ Gateway config carries a `channelPackages: string[]` field; each entry is dynamic-imported at boot — landed in PR #88 alongside step 2. Empty list = no-op.
+4. **Delete `BUILTIN_CHANNELS` constant.** ✅ All consumers read from the runtime registry; admin UI registry derives from registered manifests — folded into PR #88.
+5. **Interactive setup contract.** ✅ `ChannelSetup` / `ChannelSetupState` plus the four `/setup/*` gateway routes — landed in PR #90.
+6. **First external-plugin channel.** ✅ `@openhermit/channel-wechat@0.1.0` published — landed in PR #94 (manifest) and the corresponding workspace package. Operators add it via `hermit channel install @openhermit/channel-wechat`.
+7. **CLI ergonomics.** ✅ `hermit channel install/uninstall/list` — landed in PR #95.
 
-Steps 1–4 are pure infrastructure with no user-visible change. Step 5 is the first user-visible delivery; step 6 polishes the admin UX.
+Signal (PR #81 / PR #92) is the next external-default channel candidate, awaiting contributor fixes to packaging. It lands as the second published external plugin and requires no further gateway changes.
 
 ## Scope Decisions
 
@@ -243,11 +243,11 @@ Steps 1–4 are pure infrastructure with no user-visible change. Step 5 is the f
 - **No pnpm or bun global resolution.** Their global layouts use symlink trees that Node's default upward resolution from the CLI's location does not traverse. Supporting them is feasible (custom `createRequire` paths, `PNPM_HOME`-aware loader) but each adds a code path that must be maintained. Operators wanting pnpm/bun can install the CLI and channel packages into a project-local `node_modules` and point the gateway at it via env var — but this is unsupported in v1.
 - **No homebrew / `curl | sh` / standalone-binary distributions.** Those install the CLI outside any `node_modules` tree, so a sibling-resolution model doesn't apply. v1 is `npm install -g @openhermit/cli` only. Other distribution channels are a future-work item.
 
-These constraints are documented in the operator-facing channel install docs (added in PR2 alongside the `hermit channel install` command) so users picking pnpm/bun/brew aren't surprised.
+These constraints are documented in [`channel-adapter.md`](channel-adapter.md) so users picking pnpm/bun/brew aren't surprised.
 
-### `hermit channel install` ships in PR2
+### `hermit channel install` (shipped, PR #95)
 
-A thin wrapper around `npm install -g <pkg>` that also appends the package to `channel_packages` in the gateway config. Without it, operators have to run npm directly and edit the config file by hand — workable but not first-class. PR2 includes it as part of the user-visible delivery.
+A thin wrapper around `npm install -g <pkg>` that also appends the package to `channelPackages` in the gateway config. The install does the npm step first so a failed npm install leaves no phantom entry in config; the uninstall writes the config first so a failed npm uninstall doesn't leave the gateway pointing at a package it can't load. A gateway restart is required for changes to take effect.
 
 ### Supply-chain trust is the operator's responsibility
 

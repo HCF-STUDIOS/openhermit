@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { ChannelSetupWizard } from './ChannelSetupWizard';
 
 interface AgentInfo {
   agentId: string;
@@ -7,6 +8,16 @@ interface AgentInfo {
 }
 
 interface ChannelSecretKey { key: string; label: string; placeholder: string }
+
+interface ChannelManifestSummary {
+  key: string;
+  namespace: string;
+  displayName: string;
+  origin: 'built-in' | 'external';
+  supportsSetup: boolean;
+  secretKeys?: ChannelSecretKey[];
+  defaultConfig?: Record<string, unknown>;
+}
 
 interface ChannelRecord {
   id: string;
@@ -30,21 +41,25 @@ interface CreatedChannelResponse extends ChannelRecord {
   token: string;
 }
 
+type GroupKey = 'builtin' | 'package' | 'token';
+
 /**
- * Per-agent channel management: select an agent, see all its channel rows
- * (built-in adapters + owner-issued external tokens), enable/disable,
- * edit config + label, revoke / reset, issue new external tokens.
- *
- * Mirrors the SchedulesPanel UX: agent picker on top, list of cards below.
+ * Per-agent channel management with three groups:
+ *   1. Built-in (telegram/slack/discord, ship with the gateway).
+ *   2. Package-installed (loaded via `channelPackages` config, e.g. WeChat) —
+ *      with a "Set up" wizard for the manifest's interactive auth flow.
+ *   3. Owner-issued external tokens for adapters outside the gateway.
  */
 export function ChannelsPanel() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState('');
   const [channels, setChannels] = useState<ChannelRecord[]>([]);
+  const [manifests, setManifests] = useState<ChannelManifestSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<ChannelRecord | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [setupFor, setSetupFor] = useState<ChannelRecord | null>(null);
+  const [issuing, setIssuing] = useState(false);
   const [createdToken, setCreatedToken] = useState<CreatedChannelResponse | null>(null);
 
   const loadAgents = useCallback(async () => {
@@ -70,8 +85,24 @@ export function ChannelsPanel() {
     }
   }, [agentId]);
 
+  const loadManifests = useCallback(async () => {
+    try {
+      setManifests(await api<ChannelManifestSummary[]>('/api/channel-manifests'));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
   useEffect(() => { void loadAgents(); }, [loadAgents]);
   useEffect(() => { void loadChannels(); }, [loadChannels]);
+  useEffect(() => { void loadManifests(); }, [loadManifests]);
+
+  const manifestByKey = new Map(manifests.map((m) => [m.key, m]));
+
+  const groupOf = (ch: ChannelRecord): GroupKey => {
+    if (ch.kind === 'external') return 'token';
+    return manifestByKey.get(ch.channelType)?.origin === 'external' ? 'package' : 'builtin';
+  };
 
   const handleToggle = async (ch: ChannelRecord) => {
     try {
@@ -102,6 +133,20 @@ export function ChannelsPanel() {
     await loadChannels();
   };
 
+  const handleSetupDone = async (config: Record<string, unknown>): Promise<void> => {
+    if (!setupFor) return;
+    try {
+      await api(`/api/agents/${encodeURIComponent(agentId)}/channels/${encodeURIComponent(setupFor.id)}`, {
+        method: 'PATCH',
+        body: { config, enabled: true },
+      });
+      setSetupFor(null);
+      await loadChannels();
+    } catch (err) {
+      alert(`Set-up failed: ${(err as Error).message}`);
+    }
+  };
+
   const statusClass = (ch: ChannelRecord) => {
     if (ch.runtimeStatus === 'error') return 'badge--failed';
     if (ch.runtimeStatus === 'connected') return 'badge--active';
@@ -115,20 +160,34 @@ export function ChannelsPanel() {
     return ch.enabled ? 'enabled' : 'disabled';
   };
 
-  const builtin = channels.filter((c) => c.kind === 'builtin');
-  const external = channels.filter((c) => c.kind === 'external');
+  const builtin = channels.filter((c) => groupOf(c) === 'builtin');
+  const pkg = channels.filter((c) => groupOf(c) === 'package');
+  const token = channels.filter((c) => groupOf(c) === 'token');
+
+  const renderCard = (ch: ChannelRecord, group: GroupKey) => {
+    const manifest = manifestByKey.get(ch.channelType);
+    const canSetup = group === 'package' && manifest?.supportsSetup === true;
+    const displayName = ch.label ?? manifest?.displayName ?? ch.channelType;
+    return (
+      <ChannelCard
+        key={ch.id}
+        ch={ch}
+        displayName={displayName}
+        statusClass={statusClass(ch)}
+        statusText={statusText(ch)}
+        canSetup={canSetup}
+        onSetup={() => setSetupFor(ch)}
+        onEdit={() => setEditing(ch)}
+        onToggle={() => void handleToggle(ch)}
+        onDelete={() => void handleDelete(ch)}
+      />
+    );
+  };
 
   return (
     <div className="panel">
       <div className="panel__header">
         <h2>Channels</h2>
-        <button
-          className="btn btn--primary btn--sm"
-          onClick={() => setCreating(true)}
-          disabled={!agentId}
-        >
-          New external token
-        </button>
       </div>
 
       <label className="field schedule-agent-select">
@@ -173,45 +232,55 @@ export function ChannelsPanel() {
         </div>
       )}
 
-      <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: '0.9rem', color: 'var(--muted)' }}>Built-in</h3>
+      <h3 style={{ marginTop: 16, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>Built-in</h3>
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        Ship with the gateway. Add secrets, then enable.
+      </p>
       {loading && channels.length === 0 && agentId && (
         <p className="agent-list__empty">Loading channels…</p>
       )}
       {!loading && builtin.length === 0 && agentId && (
-        <p className="agent-list__empty">No built-in channels yet for this agent.</p>
+        <p className="agent-list__empty">No built-in channels for this agent.</p>
       )}
       <div className="schedule-list">
-        {builtin.map((ch) => (
-          <ChannelCard
-            key={ch.id}
-            ch={ch}
-            statusClass={statusClass(ch)}
-            statusText={statusText(ch)}
-            onEdit={() => setEditing(ch)}
-            onToggle={() => void handleToggle(ch)}
-            onDelete={() => void handleDelete(ch)}
-          />
-        ))}
+        {builtin.map((ch) => renderCard(ch, 'builtin'))}
       </div>
 
-      <h3 style={{ marginTop: 24, marginBottom: 8, fontSize: '0.9rem', color: 'var(--muted)' }}>
+      <h3 style={{ marginTop: 24, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>
+        Package-installed
+      </h3>
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        Loaded via the gateway's <code>channelPackages</code> config. Click <strong>Set up</strong> to link.
+      </p>
+      {!loading && pkg.length === 0 && agentId && (
+        <p className="agent-list__empty">
+          No channel packages installed. Run <code>hermit gateway config set channelPackages '["@scope/pkg"]'</code> and restart the gateway.
+        </p>
+      )}
+      <div className="schedule-list">
+        {pkg.map((ch) => renderCard(ch, 'package'))}
+      </div>
+
+      <h3 style={{ marginTop: 24, marginBottom: 4, fontSize: '0.9rem', color: 'var(--muted)' }}>
         External tokens
       </h3>
-      {!loading && external.length === 0 && agentId && (
+      <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: 'var(--muted)' }}>
+        For adapters running outside the gateway. Each token is namespace-scoped.
+      </p>
+      {!loading && token.length === 0 && agentId && (
         <p className="agent-list__empty">No external tokens issued.</p>
       )}
       <div className="schedule-list">
-        {external.map((ch) => (
-          <ChannelCard
-            key={ch.id}
-            ch={ch}
-            statusClass={statusClass(ch)}
-            statusText={statusText(ch)}
-            onEdit={() => setEditing(ch)}
-            onToggle={() => void handleToggle(ch)}
-            onDelete={() => void handleDelete(ch)}
-          />
-        ))}
+        {token.map((ch) => renderCard(ch, 'token'))}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <button
+          className="btn btn--sm"
+          onClick={() => setIssuing(true)}
+          disabled={!agentId}
+        >
+          + Issue new token
+        </button>
       </div>
 
       {editing && (
@@ -222,13 +291,22 @@ export function ChannelsPanel() {
           onSaved={() => { setEditing(null); void loadChannels(); }}
         />
       )}
-      {creating && agentId && (
-        <CreateChannelDialog
+      {setupFor && (
+        <SetupChannelDialog
           agentId={agentId}
-          onClose={() => setCreating(false)}
+          channel={setupFor}
+          displayName={manifestByKey.get(setupFor.channelType)?.displayName ?? setupFor.channelType}
+          onClose={() => setSetupFor(null)}
+          onDone={handleSetupDone}
+        />
+      )}
+      {issuing && agentId && (
+        <IssueTokenDialog
+          agentId={agentId}
+          onClose={() => setIssuing(false)}
           onCreated={(created) => {
             setCreatedToken(created);
-            setCreating(false);
+            setIssuing(false);
             void loadChannels();
           }}
         />
@@ -237,10 +315,13 @@ export function ChannelsPanel() {
   );
 }
 
-function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }: {
+function ChannelCard({ ch, displayName, statusClass, statusText, canSetup, onSetup, onEdit, onToggle, onDelete }: {
   ch: ChannelRecord;
+  displayName: string;
   statusClass: string;
   statusText: string;
+  canSetup: boolean;
+  onSetup: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
@@ -250,7 +331,7 @@ function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }
       <div className="schedule-card__info">
         <div>
           <span className="skill-card__name">
-            {ch.label ?? ch.channelType}
+            {displayName}
             {ch.kind === 'external' && (
               <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>· {ch.namespace}</span>
             )}
@@ -269,6 +350,9 @@ function ChannelCard({ ch, statusClass, statusText, onEdit, onToggle, onDelete }
         </div>
       </div>
       <div className="schedule-card__actions">
+        {canSetup && (
+          <button className="btn btn--sm btn--primary" onClick={onSetup}>Set up</button>
+        )}
         <button className="btn btn--sm" onClick={onEdit}>Edit</button>
         <button className="btn btn--sm" onClick={onToggle}>
           {ch.enabled ? 'Disable' : 'Enable'}
@@ -352,7 +436,32 @@ function EditChannelDialog({ agentId, channel, onClose, onSaved }: {
   );
 }
 
-function CreateChannelDialog({ agentId, onClose, onCreated }: {
+function SetupChannelDialog({ agentId, channel, displayName, onClose, onDone }: {
+  agentId: string;
+  channel: ChannelRecord;
+  displayName: string;
+  onClose: () => void;
+  onDone: (config: Record<string, unknown>) => Promise<void>;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialogRef.current?.showModal(); }, []);
+  return (
+    <dialog ref={dialogRef} className="dialog" onClose={onClose}>
+      <div className="dialog__form">
+        <h3>Link {displayName}</h3>
+        <ChannelSetupWizard
+          agentId={agentId}
+          channelType={channel.channelType}
+          displayName={displayName}
+          onDone={onDone}
+          onCancel={onClose}
+        />
+      </div>
+    </dialog>
+  );
+}
+
+function IssueTokenDialog({ agentId, onClose, onCreated }: {
   agentId: string;
   onClose: () => void;
   onCreated: (created: CreatedChannelResponse) => void;
@@ -364,7 +473,7 @@ function CreateChannelDialog({ agentId, onClose, onCreated }: {
 
   useEffect(() => { dialogRef.current?.showModal(); }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     const ns = namespace.trim();
     if (!ns) { setError('Namespace is required.'); return; }
