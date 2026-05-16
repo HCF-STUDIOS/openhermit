@@ -2783,9 +2783,14 @@ export class AgentRunner implements SessionRuntime {
         // workspace/.openhermit/tool_results/<id>.json in the side-effect.
         // Skill-file reads opt out: SKILL.md is required reading and the
         // head+tail preview would corrupt resumed sessions (DB-restored
-        // history would only ever see the truncated middle marker).
+        // history would only ever see the truncated middle marker). The
+        // bypass is gated on the originating tool being `file_read` so
+        // any other tool that happens to set `skillRead` in its details
+        // (intentionally or by collision) cannot smuggle large output
+        // past truncation.
         const isSkillRead =
-          typeof resultDetails === 'object'
+          event.toolName === 'file_read'
+          && typeof resultDetails === 'object'
           && resultDetails !== null
           && (resultDetails as { skillRead?: unknown }).skillRead === true;
         const truncation = resultText && !isSkillRead
