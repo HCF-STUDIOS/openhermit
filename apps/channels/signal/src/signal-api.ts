@@ -99,6 +99,8 @@ export class SignalApi {
 
   // Reconnect is owned by SignalBot so the bridge can apply its own backoff.
   async *streamMessages(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SignalIncomingMessage> {
+    if (opts.signal?.aborted) return;
+
     const wsUrl = this.httpUrl.replace(/^http/, 'ws')
       + `/v1/receive/${encodeURIComponent(this.account)}`;
     const ws = new WebSocket(wsUrl);
@@ -127,7 +129,7 @@ export class SignalApi {
     ws.on('error', (err) => { openError = err as Error; closed = true; push(null); });
 
     const onAbort = (): void => { try { ws.close(); } catch { /* ignore */ } };
-    opts.signal?.addEventListener('abort', onAbort);
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
       while (true) {
@@ -170,7 +172,12 @@ export class SignalApi {
     const groupInfo = data.groupInfo as { groupId?: string } | undefined;
     const groupId = typeof groupInfo?.groupId === 'string' ? groupInfo.groupId : undefined;
 
-    const isSelf = sourceUuid !== undefined && sourceUuid === this.selfUuid;
+    // Self-loop detection: prefer the strong UUID match when available,
+    // but fall back to E.164 number equality so messages echoed back via
+    // sync-on-linked-device are still suppressed when selfUuid is unset.
+    const isSelf =
+      (this.selfUuid !== undefined && sourceUuid === this.selfUuid) ||
+      (sourceNumber !== undefined && sourceNumber === this.account);
 
     const out: SignalIncomingMessage = { text, timestamp, isSelf };
     if (sourceUuid) out.sourceUuid = sourceUuid;

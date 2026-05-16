@@ -14,6 +14,7 @@ import type {
 } from '@openhermit/protocol';
 
 import { QrLinkSession } from './qr-link.js';
+import { redactId } from './redact.js';
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const E164 = /^\+[1-9]\d{6,14}$/;
@@ -52,7 +53,7 @@ export const createSignalSetup = (
       {
         key: 'phone_number',
         label: 'Bot phone number (E.164)',
-        type: 'text',
+        type: 'phone',
         placeholder: '+15551234567',
       },
     ],
@@ -71,10 +72,21 @@ export const createSignalSetup = (
         sessions.delete(sessionId);
         return { kind: 'error', message: 'Setup session not found or expired.' };
       }
-      const httpUrl = String(input.http_url ?? '').trim();
+      const httpUrlRaw = String(input.http_url ?? '').trim();
       const phone = String(input.phone_number ?? '').trim();
-      if (!httpUrl) {
+      if (!httpUrlRaw) {
         return { kind: 'error', message: 'http_url is required.' };
+      }
+      let httpUrl: string;
+      try {
+        const parsed = new URL(httpUrlRaw);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return { kind: 'error', message: 'http_url must be a valid http(s) URL.' };
+        }
+        parsed.hash = '';
+        httpUrl = parsed.toString().replace(/\/+$/, '');
+      } catch {
+        return { kind: 'error', message: 'http_url must be a valid http(s) URL.' };
       }
       if (!E164.test(phone)) {
         return {
@@ -92,7 +104,7 @@ export const createSignalSetup = (
         session.http_url = httpUrl;
         session.phone_number = phone;
         session.qr = qr;
-        ctx.logger(`QR generated for ${phone}`);
+        ctx.logger(`QR generated for ${redactId(phone)}`);
         return {
           kind: 'awaiting_external',
           instructions:

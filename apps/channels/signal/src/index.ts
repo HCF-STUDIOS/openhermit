@@ -7,6 +7,7 @@ import { SignalApi } from './signal-api.js';
 import { SignalBridge } from './bridge.js';
 import { SignalBot } from './bot.js';
 import { loadConfig } from './config.js';
+import { redactId } from './redact.js';
 
 const log = (message: string): void => {
   console.log(`[openhermit-channel-signal] ${message}`);
@@ -23,7 +24,7 @@ export const main = async (): Promise<void> => {
   const config = await loadConfig();
   log(`agent: ${config.agentBaseUrl}`);
   log(`signal-cli-rest-api: ${config.httpUrl}`);
-  log(`account: ${config.account}`);
+  log(`account: ${redactId(config.account)}`);
 
   const api = new SignalApi({ httpUrl: config.httpUrl, account: config.account });
 

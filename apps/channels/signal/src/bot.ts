@@ -11,8 +11,9 @@ export class SignalBot {
   private readonly signal: SignalApi;
   private readonly bridge: SignalBridge;
   private readonly log: (message: string) => void;
-  private readonly abortController = new AbortController();
+  private abortController: AbortController | undefined;
   private running = false;
+  private startPromise: Promise<void> | undefined;
   private loopPromise: Promise<void> | undefined;
 
   constructor(opts: SignalBotOptions) {
@@ -23,28 +24,46 @@ export class SignalBot {
 
   async start(): Promise<void> {
     if (this.running) return;
-    await this.signal.probeReceiveMode();
-    this.log(`probe ok: signal-cli-rest-api MODE=json-rpc`);
-    this.running = true;
-    this.loopPromise = this.receiveLoop();
+    if (this.startPromise) return this.startPromise;
+
+    // Capture into a local so concurrent stop() can't observe a torn state
+    // mid-construction. A fresh AbortController per start() means a
+    // restart after stop() doesn't inherit an already-aborted signal.
+    const startPromise = (async () => {
+      const controller = new AbortController();
+      this.abortController = controller;
+      await this.signal.probeReceiveMode();
+      this.log('probe ok: signal-cli-rest-api MODE=json-rpc');
+      this.running = true;
+      this.loopPromise = this.receiveLoop(controller.signal);
+    })().finally(() => {
+      this.startPromise = undefined;
+    });
+
+    this.startPromise = startPromise;
+    return startPromise;
   }
 
   async stop(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running && !this.startPromise) return;
     this.running = false;
-    this.abortController.abort();
+    this.abortController?.abort();
+    // Wait for an in-flight start() to settle before declaring stopped,
+    // otherwise the loop it launches escapes our control.
+    await this.startPromise?.catch(() => undefined);
     if (this.loopPromise) await this.loopPromise.catch(() => undefined);
+    this.loopPromise = undefined;
     this.log('bot stopped');
   }
 
-  private async receiveLoop(): Promise<void> {
+  private async receiveLoop(signal: AbortSignal): Promise<void> {
     let backoffMs = 1000;
     const MAX_BACKOFF_MS = 30_000;
 
     while (this.running) {
       try {
         this.log('connecting to receive WS...');
-        const stream = this.signal.streamMessages({ signal: this.abortController.signal });
+        const stream = this.signal.streamMessages({ signal });
         for await (const msg of stream) {
           backoffMs = 1000;
           try {
@@ -62,18 +81,23 @@ export class SignalBot {
       }
 
       if (!this.running) break;
-      await this.sleep(backoffMs);
+      await this.sleep(backoffMs, signal);
       backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
     }
   }
 
-  private async sleep(ms: number): Promise<void> {
+  private async sleep(ms: number, signal: AbortSignal): Promise<void> {
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, ms);
-      this.abortController.signal.addEventListener('abort', () => {
+      const onAbort = (): void => {
         clearTimeout(t);
+        signal.removeEventListener('abort', onAbort);
         resolve();
-      }, { once: true });
+      };
+      const t = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

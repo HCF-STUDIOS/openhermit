@@ -1,10 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
-import type { ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import type {
+  ChannelMessageAction,
+  ChannelOutbound,
+  ChannelOutboundResult,
+} from '@openhermit/protocol';
 
 import type { SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
+import { redactId, redactTarget } from './redact.js';
+
+/** Hard ceiling on how long we'll wait for an agent SSE turn to terminate. */
+const AGENT_RESPONSE_TIMEOUT_MS = 60_000;
 
 export interface ConversationKeyInput {
   sourceUuid?: string;
@@ -29,7 +37,10 @@ export function shouldAcceptSender(
   allowedGroupIds: string[] | undefined,
 ): boolean {
   if (msg.groupId) {
-    if (!allowedGroupIds || allowedGroupIds.length === 0) return true;
+    // Default-deny groups: a bot added to a random group must NOT start
+    // replying to everyone. Operator opts in by listing the groupId in
+    // allowed_group_ids. (Matches README behavior.)
+    if (!allowedGroupIds || allowedGroupIds.length === 0) return false;
     return allowedGroupIds.includes(msg.groupId);
   }
   if (!allowedSenders || allowedSenders.length === 0) return true;
@@ -74,7 +85,15 @@ export class SignalBridge implements ChannelOutbound {
     this.allowedGroupIds = options.allowedGroupIds;
   }
 
-  async send(params: { sessionId: string; to: string; text: string }): Promise<ChannelOutboundResult> {
+  async send(params: {
+    sessionId: string;
+    to: string;
+    text: string;
+    actions?: ChannelMessageAction[];
+  }): Promise<ChannelOutboundResult> {
+    // Signal has no native action/button surface; `actions` are accepted
+    // for ChannelOutbound contract parity but ignored on the wire.
+    void params.actions;
     try {
       const chunks = formatAgentResponse(params.text);
       let lastTimestamp: number | undefined;
@@ -87,7 +106,7 @@ export class SignalBridge implements ChannelOutbound {
       return out;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log(`failed to send to ${params.to}: ${message}`);
+      this.log(`failed to send to ${redactTarget(params.to)}: ${message}`);
       return { success: false, error: message };
     }
   }
@@ -107,7 +126,7 @@ export class SignalBridge implements ChannelOutbound {
 
   async handleIncoming(msg: SignalIncomingMessage): Promise<void> {
     if (!shouldAcceptSender(msg, this.allowedSenders, this.allowedGroupIds)) {
-      this.log(`dropped message from disallowed sender (${msg.sourceUuid ?? msg.sourceNumber})`);
+      this.log(`dropped message from disallowed sender (${redactId(msg.sourceUuid ?? msg.sourceNumber)})`);
       return;
     }
     if (msg.isSelf) return;
@@ -196,10 +215,26 @@ export class SignalBridge implements ChannelOutbound {
   private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
-    const response = await fetch(eventsUrl, {
-      headers: { authorization: `Bearer ${this.clientToken}` },
-    });
+    // Bound the wait so a stalled SSE stream can't pin the receive loop
+    // and back-pressure every other Signal conversation.
+    const controller = new AbortController();
+    const timeoutTimer = setTimeout(() => controller.abort(), AGENT_RESPONSE_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(eventsUrl, {
+        headers: { authorization: `Bearer ${this.clientToken}` },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutTimer);
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = controller.signal.aborted
+        ? `agent event stream timed out after ${AGENT_RESPONSE_TIMEOUT_MS}ms`
+        : `Failed to open event stream (${message})`;
+      return { text: undefined, error: reason };
+    }
     if (!response.ok || !response.body) {
+      clearTimeout(timeoutTimer);
       return { text: undefined, error: `Failed to open event stream (${response.status})` };
     }
 
@@ -264,7 +299,15 @@ export class SignalBridge implements ChannelOutbound {
         }
         if (sawAgentEnd) break;
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (controller.signal.aborted && !error) {
+        error = `agent event stream timed out after ${AGENT_RESPONSE_TIMEOUT_MS}ms`;
+      } else if (!error) {
+        error = message;
+      }
     } finally {
+      clearTimeout(timeoutTimer);
       await reader.cancel().catch(() => undefined);
     }
 

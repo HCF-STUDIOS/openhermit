@@ -30,15 +30,17 @@ const manifest: ChannelManifest = {
   start: async (rawConfig, context) => {
     const config = rawConfig as SignalRuntimeConfig;
     const log = (msg: string): void => context.logger('signal', msg);
+    const httpUrl = config.http_url?.trim() ?? '';
+    const account = config.account?.trim() ?? '';
 
-    if (!config.http_url?.trim() || !config.account?.trim()) {
+    if (!httpUrl || !account) {
       log('missing http_url or account — channel disabled until linked via setup');
       return undefined;
     }
 
     const api = new SignalApi({
-      httpUrl: config.http_url,
-      account: config.account,
+      httpUrl,
+      account,
     });
 
     const bridgeOptions: { allowedSenders?: string[]; allowedGroupIds?: string[] } = {};

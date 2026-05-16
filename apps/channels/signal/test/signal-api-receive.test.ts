@@ -110,15 +110,46 @@ test('streamMessages marks isSelf=true when sourceUuid matches the bot account',
 });
 
 test('streamMessages throws when the WebSocket fails to connect', async () => {
-  // Port 1 is reserved (TCP echo on Unix, never listening). Connection refused.
+  // Reserve an ephemeral port via WSS, immediately close it, then point
+  // the client at it. This is deterministic across OSes — hardcoding
+  // port 1 races with anything the host happens to bind there.
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise<void>((resolve) => wss.once('listening', resolve));
+  const port = (wss.address() as { port: number }).port;
+  await new Promise<void>((resolve) => wss.close(() => resolve()));
+
   const api = new SignalApi({
-    httpUrl: 'http://127.0.0.1:1',
+    httpUrl: `http://127.0.0.1:${port}`,
     account: '+15551234567',
   });
   const iter = api.streamMessages({ signal: AbortSignal.timeout(2000) });
   await assert.rejects(
     async () => { await iter.next(); },
     /ECONNREFUSED|connect/i,
+  );
+});
+
+test('streamMessages marks isSelf=true via E.164 fallback when selfUuid is unset', async () => {
+  await withMockWsServer(
+    (ws) => {
+      ws.send(JSON.stringify({
+        envelope: {
+          sourceNumber: '+15551234567',
+          timestamp: 1705,
+          dataMessage: { message: 'echoed' },
+        },
+      }));
+    },
+    async (port) => {
+      const api = new SignalApi({
+        httpUrl: `http://localhost:${port}`,
+        account: '+15551234567',
+      });
+      const iter = api.streamMessages({ signal: AbortSignal.timeout(1000) });
+      const { value } = await iter.next();
+      assert.equal(value!.isSelf, true);
+      await iter.return?.();
+    },
   );
 });
 

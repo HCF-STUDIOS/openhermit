@@ -68,3 +68,10 @@ test('shouldAcceptSender consults allowedGroupIds only for group messages', () =
     false,
   );
 });
+
+test('shouldAcceptSender drops group messages by default when no allow-list is configured', () => {
+  // Default-deny groups so a bot dropped into a random chat doesn't
+  // immediately start replying. Operator opts in via allowed_group_ids.
+  assert.equal(shouldAcceptSender({ groupId: 'gid==' }, undefined, undefined), false);
+  assert.equal(shouldAcceptSender({ groupId: 'gid==' }, undefined, []), false);
+});
