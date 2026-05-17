@@ -890,6 +890,80 @@ test('AgentRunner injects session resumption context when reopening a persisted 
   );
 });
 
+test('AgentRunner does not duplicate the new user message on the first turn after resume', async (t) => {
+  // Regression: when a channel-driven session resumes (e.g. Telegram receives
+  // a message for an existing chat), the new user message was previously
+  // appearing twice in the LLM context. The DB-restore path and the
+  // in-memory `messages` list both included it, and they were concatenated.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('first reply'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:dup-check-session',
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage('cli:dup-check-session', {
+    text: 'original turn',
+  });
+  await runner.waitForSessionIdle('cli:dup-check-session');
+
+  let capturedMessages: Context['messages'] = [];
+  const restoredRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      (context) => {
+        capturedMessages = context.messages;
+        return createTextResponseStream('resumed reply');
+      },
+    ]),
+  });
+
+  await restoredRunner.openSession({
+    sessionId: 'cli:dup-check-session',
+    source: { kind: 'cli', interactive: true },
+  });
+  await restoredRunner.postMessage('cli:dup-check-session', {
+    text: 'hi',
+  });
+  await restoredRunner.waitForSessionIdle('cli:dup-check-session');
+
+  // Look at user messages and count the ones whose visible text is exactly
+  // the new turn input. Content may be a string or an array of parts; the
+  // resumption context block is a long "Session resumption context: ..."
+  // string and won't be miscounted.
+  const userTexts = capturedMessages
+    .filter((msg) => msg.role === 'user')
+    .map((msg) => {
+      if (typeof msg.content === 'string') return msg.content.trim();
+      if (Array.isArray(msg.content)) {
+        return msg.content
+          .map((c) => (typeof c === 'object' && c && 'text' in c ? String((c as { text: unknown }).text) : ''))
+          .join('')
+          .trim();
+      }
+      return '';
+    });
+  const hiUserCount = userTexts.filter((t) => t === 'hi').length;
+  assert.equal(
+    hiUserCount,
+    1,
+    `new user message "hi" must appear exactly once in the LLM context (got ${hiUserCount})`,
+  );
+});
+
 test('AgentRunner emits Langfuse traces for LLM steps', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {

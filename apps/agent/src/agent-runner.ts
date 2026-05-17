@@ -2481,10 +2481,14 @@ export class AgentRunner implements SessionRuntime {
       });
     }
 
-    // Prepend restored history from DB so it's treated identically to
-    // messages that accumulated in memory during a live session.
+    // When we restored from DB, drop the in-memory `messages`: the current
+    // turn's user input was persisted by `postMessage` before `agent.prompt`
+    // was queued, so it's already at the tail of `restoredMessages`. Keeping
+    // both lists would duplicate the latest user message (observed on the
+    // first turn after channel-driven session resume — e.g. one "hi" arriving
+    // as "hi\n\nhi" to the model).
     const allMessages = restoredMessages.length > 0
-      ? [...restoredMessages, ...messages]
+      ? restoredMessages
       : messages;
 
     // Truncate oversized tool results before compaction so that a single
