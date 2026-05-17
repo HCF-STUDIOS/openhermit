@@ -169,6 +169,13 @@
       "when": 1779100000000,
       "tag": "0023_session_events_message_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1779200000000,
+      "tag": "0024_session_events_usage_idx",
+      "breakpoints": true
     }
   ]
 }
