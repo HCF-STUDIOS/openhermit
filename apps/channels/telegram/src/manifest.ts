@@ -40,6 +40,7 @@ const manifest: ChannelManifest = {
       bridge,
       mode,
       logger: log,
+      reportRuntimeError: context.reportRuntimeError,
     };
     if (mode === 'webhook') {
       let derivedUrl: string;

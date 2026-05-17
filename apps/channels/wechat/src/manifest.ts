@@ -57,6 +57,7 @@ const manifest: ChannelManifest = {
       botToken: config.bot_token,
       bridge,
       logger: log,
+      reportRuntimeError: context.reportRuntimeError,
     });
     await bot.start();
 

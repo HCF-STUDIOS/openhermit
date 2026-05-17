@@ -17,6 +17,12 @@ export interface BotOptions {
   webhookSecret?: string;
   pollingInterval?: number;
   logger?: (message: string) => void;
+  /**
+   * Surface persistent polling-loop errors to the gateway so they show
+   * up in the channels list. Pass `null` once polling recovers. Called
+   * on every iteration — the gateway dedupes identical values.
+   */
+  reportRuntimeError?: (error: string | null) => void;
 }
 
 export interface WebhookRequestLike {
@@ -96,6 +102,7 @@ export class TelegramBot {
     while (this.running) {
       try {
         const updates = await this.api.getUpdates(this.pollOffset, 30, this.pollAbort.signal);
+        this.options.reportRuntimeError?.(null);
         for (const update of updates) {
           // Fire-and-forget so callback_query updates aren't blocked behind
           // long-running message handlers (which wait for agent_end SSE).
@@ -108,6 +115,7 @@ export class TelegramBot {
         const message =
           error instanceof Error ? error.message : String(error);
         this.log(`polling error: ${message}`);
+        this.options.reportRuntimeError?.(`polling error: ${message}`);
         await new Promise((resolve) => setTimeout(resolve, this.options.pollingInterval ?? 1000));
       }
     }

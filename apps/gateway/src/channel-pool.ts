@@ -56,8 +56,43 @@ export interface ChannelPoolOptions {
 export class ChannelPool {
   private readonly handles = new Map<string, ChannelHandle[]>();
   private readonly statuses = new Map<string, ChannelStatus[]>();
+  /**
+   * Per-channel-row dedupe: last error string we've already persisted.
+   * Repeated identical reports skip the DB write so a long-poll loop
+   * failing every 30s doesn't hammer the database.
+   *
+   * `undefined` (absent) means we haven't seen a report yet — distinct
+   * from `null` which means the last report was a "cleared" success.
+   */
+  private readonly lastReportedError = new Map<string, string | null>();
 
   constructor(private readonly opts: ChannelPoolOptions) {}
+
+  /**
+   * Update in-memory status + DB error for a runtime error reported by a
+   * manifest's bot. Deduped: repeated identical reports are dropped.
+   */
+  private async handleRuntimeError(
+    agentId: string,
+    channelName: string,
+    rowId: string,
+    error: string | null,
+  ): Promise<void> {
+    if (this.lastReportedError.get(rowId) === error) return;
+    this.lastReportedError.set(rowId, error);
+
+    const statuses = this.statuses.get(agentId);
+    if (statuses) {
+      const idx = statuses.findIndex((s) => s.name === channelName);
+      if (idx !== -1) {
+        statuses[idx] = error
+          ? { name: channelName, status: 'error', error }
+          : { name: channelName, status: 'connected' };
+      }
+    }
+
+    await this.persistError(rowId, error);
+  }
 
   /**
    * Boot all enabled builtin channels for all known agents. Also registers
@@ -150,10 +185,14 @@ export class ChannelPool {
         publicAgentBaseUrl,
         agentTokens: { [manifest.key]: row.token },
         logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
+        reportRuntimeError: (error) =>
+          void this.handleRuntimeError(agentId, row.channelType, row.id, error),
       });
       if (handle) startedHandles.push(handle);
       startedStatuses.push(status);
-      await this.persistError(row.id, status.status === 'error' ? status.error ?? 'unknown error' : null);
+      const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
+      this.lastReportedError.set(row.id, startErr);
+      await this.persistError(row.id, startErr);
     }
 
     if (startedHandles.length > 0) this.handles.set(agentId, startedHandles);
@@ -275,6 +314,8 @@ export class ChannelPool {
       publicAgentBaseUrl,
       agentTokens: { [manifest.key]: loaded.token },
       logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
+      reportRuntimeError: (error) =>
+        void this.handleRuntimeError(agentId, channelName, row.id, error),
     });
 
     if (handle) {
@@ -292,7 +333,9 @@ export class ChannelPool {
     else statuses.push(status);
     this.statuses.set(agentId, statuses);
 
-    await this.persistError(row.id, status.status === 'error' ? status.error ?? 'unknown error' : null);
+    const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
+    this.lastReportedError.set(row.id, startErr);
+    await this.persistError(row.id, startErr);
 
     return status;
   }
@@ -330,7 +373,10 @@ export class ChannelPool {
     // Disabling is a deliberate user action — clear the stale error so
     // the UI doesn't keep showing it after the user has acknowledged it.
     const row = await this.opts.channelStore.findBuiltin(agentId, channelName);
-    if (row) await this.persistError(row.id, null);
+    if (row) {
+      this.lastReportedError.delete(row.id);
+      await this.persistError(row.id, null);
+    }
 
     this.opts.log(`[${agentId}] pool stopped channel: ${channelName}`);
   }

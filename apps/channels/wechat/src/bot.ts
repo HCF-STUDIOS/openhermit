@@ -17,6 +17,13 @@ export interface WechatBotOptions {
   logger?: (message: string) => void;
   /** Retry delay after a transport failure (ms). */
   retryDelayMs?: number;
+  /**
+   * Surface persistent runtime failures (auth/transport errors, server
+   * errcodes) to the gateway so they appear in the channels list. Pass
+   * `null` once the channel recovers. Called on every loop iteration —
+   * the gateway dedupes identical values.
+   */
+  reportRuntimeError?: (error: string | null) => void;
 }
 
 export class WechatBot {
@@ -71,7 +78,9 @@ export class WechatBot {
         });
       } catch (err) {
         if (!this.running) break;
-        this.log(`getUpdates failed: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = `getUpdates failed: ${err instanceof Error ? err.message : String(err)}`;
+        this.log(msg);
+        this.opts.reportRuntimeError?.(msg);
         await this.sleep(this.retryDelayMs);
         continue;
       }
@@ -81,12 +90,17 @@ export class WechatBot {
       if (resp.get_updates_buf !== undefined) this.getUpdatesBuf = resp.get_updates_buf;
 
       if (resp.errcode && resp.errcode !== 0) {
-        this.log(`getUpdates errcode=${resp.errcode} errmsg=${resp.errmsg ?? ''}`);
+        const msg = `getUpdates errcode=${resp.errcode} ${resp.errmsg ?? ''}`.trim();
+        this.log(msg);
+        this.opts.reportRuntimeError?.(msg);
         // -14 is documented as "session timeout" — reset cursor and retry.
         if (resp.errcode === -14) this.getUpdatesBuf = '';
         await this.sleep(this.retryDelayMs);
         continue;
       }
+
+      // Healthy response — clear any prior runtime error.
+      this.opts.reportRuntimeError?.(null);
 
       const msgs = resp.msgs ?? [];
       for (const msg of msgs) {

@@ -283,6 +283,13 @@ export interface ChannelContext {
   publicAgentBaseUrl: string;
   agentTokens: Record<string, string>;
   logger: (channel: string, message: string) => void;
+  /**
+   * Report a transient runtime error (e.g. long-poll auth failure,
+   * upstream rate-limit) so the gateway can surface it in the channels
+   * list. Pass `null` once the channel recovers. Repeating the same
+   * value is cheap — the gateway dedupes.
+   */
+  reportRuntimeError: (error: string | null) => void;
 }
 
 /**

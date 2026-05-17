@@ -14,6 +14,7 @@ const dummyContext: ChannelContext = {
   publicAgentBaseUrl: 'http://localhost:0',
   agentTokens: {},
   logger: () => {},
+  reportRuntimeError: () => {},
 };
 
 const dummyHandle: ChannelHandle = {
