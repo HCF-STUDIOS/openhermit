@@ -101,9 +101,11 @@ export class AgentLocalClient {
 
   async submitApproval(
     sessionId: string,
-    request: ToolApprovalRequest,
+    request: ToolApprovalRequest & { channelUserId?: string },
   ): Promise<{ resolved: boolean }> {
-    return this.postJson(agentLocalRoutes.sessionApprove(sessionId), request);
+    const { channelUserId, ...body } = request;
+    const headers = channelUserId ? { 'x-channel-user-id': channelUserId } : undefined;
+    return this.postJson(agentLocalRoutes.sessionApprove(sessionId), body, headers);
   }
 
   async checkpointSession(

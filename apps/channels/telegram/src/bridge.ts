@@ -577,10 +577,12 @@ export class TelegramBridge implements ChannelOutbound {
     this.pendingApprovals.delete(id);
 
     try {
-      await this.client.submitApproval(pending.sessionId, {
+      const approvalReq: Parameters<typeof this.client.submitApproval>[1] = {
         toolCallId: pending.toolCallId,
         approved,
-      });
+      };
+      if (query.from?.id) approvalReq.channelUserId = String(query.from.id);
+      await this.client.submitApproval(pending.sessionId, approvalReq);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.log(`approval submission failed: ${msg}`);
