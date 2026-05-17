@@ -313,7 +313,7 @@ export class DbAgentStore implements AgentStore {
         FROM ${sessionEvents}
         WHERE event_type = 'assistant'
           AND payload ? 'usage'
-          AND agent_id = ANY(${agentIds}::text[])
+          AND ${inArray(sessionEvents.agentId, agentIds)}
       ),
       buckets AS (
         SELECT agent_id, 'window24h' AS bucket, payload FROM usage WHERE ts > ${since24h}
