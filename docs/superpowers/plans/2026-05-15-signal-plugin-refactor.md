@@ -37,7 +37,7 @@ Plan covers two coordinated subsystems (openhermit package refactor + amiko-web 
 | `apps/channels/signal/test/setup.test.ts` | **NEW** | state-machine tests for the QR flow |
 | `apps/channels/signal/README.md` | rewrite | reflect plugin install path + setup-wizard flow (model after wechat README) |
 | `apps/agent/src/core/types.ts` | modify | drop `signal` from `BUILTIN_CHANNELS` array (was added by old PR #81) and from `ChannelsConfig` (the type still needs to allow signal config — it stays optional) |
-| `apps/agent/src/channels.ts` | modify | drop `startSignal()` + remove `signal` from `starters` map (both were added by old PR #81) |
+| `apps/agent/src/channels.ts` | NO CHANGE | `startSignal()` and the `signal` entry in the `starters` map are already gone on `main` (William's refactor), so a clean rebase drops the old PR #81 diff entirely — no edit needed |
 | `apps/gateway/src/app.ts` | modify | drop `signal` entry from `BUILTIN_CHANNEL_DEFS` (was added by old PR #81) |
 | `apps/cli/tsup.config.ts` | NO CHANGE | signal must NOT be added to `noExternal` — it's an external plugin |
 | `docs/channel-adapter.md` | revise | move signal row from "Implemented Adapters" to "External Plugins" section if one exists, or add a new section; update Session Routing table |
@@ -798,16 +798,30 @@ Read `apps/channels/signal/src/index.ts` first to confirm current state. Then ov
 ```ts
 import { pathToFileURL } from 'node:url';
 
-import { loadEnv } from '@openhermit/shared';
-
 import manifest from './manifest.js';
 import { SignalApi } from './signal-api.js';
 import { SignalBridge } from './bridge.js';
 import { SignalBot } from './bot.js';
 import { loadConfig } from './config.js';
+import { redactId } from './redact.js';
 
 const log = (message: string): void => {
   console.log(`[openhermit-channel-signal] ${message}`);
+};
+
+// `@openhermit/shared` is a private workspace package that isn't published
+// to npm, so we load its `.env` helper via dynamic import and silently fall
+// back to whatever the operator already put on process.env when running
+// from a published install.
+const loadEnvIfAvailable = async (): Promise<void> => {
+  try {
+    const mod = (await import('@openhermit/shared')) as { loadEnv?: () => Promise<unknown> };
+    if (typeof mod.loadEnv === 'function') {
+      await mod.loadEnv();
+    }
+  } catch {
+    // Helpers not installed — expected for published consumers.
+  }
 };
 
 /**
@@ -817,11 +831,11 @@ const log = (message: string): void => {
  * plugin refactor.
  */
 export const main = async (): Promise<void> => {
-  await loadEnv();
+  await loadEnvIfAvailable();
   const config = await loadConfig();
   log(`agent: ${config.agentBaseUrl}`);
   log(`signal-cli-rest-api: ${config.httpUrl}`);
-  log(`account: ${config.account}`);
+  log(`account: ${redactId(config.account)}`);
 
   const api = new SignalApi({ httpUrl: config.httpUrl, account: config.account });
 
