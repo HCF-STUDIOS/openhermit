@@ -301,7 +301,7 @@ export class DbAgentStore implements AgentStore {
 
     const rows = await this.db.execute<{
       agent_id: string;
-      window: string;
+      bucket: string;
       input_tokens: string | null;
       output_tokens: string | null;
       cache_read_tokens: string | null;
@@ -316,22 +316,22 @@ export class DbAgentStore implements AgentStore {
           AND agent_id = ANY(${agentIds}::text[])
       ),
       buckets AS (
-        SELECT agent_id, 'window24h' AS window, payload FROM usage WHERE ts > ${since24h}
+        SELECT agent_id, 'window24h' AS bucket, payload FROM usage WHERE ts > ${since24h}
         UNION ALL
-        SELECT agent_id, 'window7d'  AS window, payload FROM usage WHERE ts > ${since7d}
+        SELECT agent_id, 'window7d'  AS bucket, payload FROM usage WHERE ts > ${since7d}
         UNION ALL
-        SELECT agent_id, 'allTime'   AS window, payload FROM usage
+        SELECT agent_id, 'allTime'   AS bucket, payload FROM usage
       )
       SELECT
         agent_id,
-        window,
+        bucket,
         SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text       AS input_tokens,
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
         SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
       FROM buckets
-      GROUP BY agent_id, window
+      GROUP BY agent_id, bucket
     `);
 
     const empty = (): UsageWindow => ({
@@ -351,16 +351,16 @@ export class DbAgentStore implements AgentStore {
     };
     for (const row of rows.rows) {
       const entry = ensure(row.agent_id);
-      const bucket: UsageWindow = {
+      const win: UsageWindow = {
         inputTokens: Number(row.input_tokens ?? 0),
         outputTokens: Number(row.output_tokens ?? 0),
         cacheReadTokens: Number(row.cache_read_tokens ?? 0),
         cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
         costUsd: Number(row.usd_total ?? 0),
       };
-      if (row.window === 'window24h') entry.window24h = bucket;
-      else if (row.window === 'window7d') entry.window7d = bucket;
-      else entry.allTime = bucket;
+      if (row.bucket === 'window24h') entry.window24h = win;
+      else if (row.bucket === 'window7d') entry.window7d = win;
+      else entry.allTime = win;
     }
     return result;
   }
@@ -372,7 +372,7 @@ export class DbAgentStore implements AgentStore {
   async usageTotals(): Promise<{ window24h: UsageWindow; allTime: UsageWindow }> {
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const rows = await this.db.execute<{
-      window: string;
+      bucket: string;
       input_tokens: string | null;
       output_tokens: string | null;
       cache_read_tokens: string | null;
@@ -380,23 +380,23 @@ export class DbAgentStore implements AgentStore {
       usd_total: number | null;
     }>(sql`
       WITH buckets AS (
-        SELECT 'window24h' AS window, payload
+        SELECT 'window24h' AS bucket, payload
           FROM ${sessionEvents}
           WHERE event_type = 'assistant' AND payload ? 'usage' AND ts > ${since24h}
         UNION ALL
-        SELECT 'allTime' AS window, payload
+        SELECT 'allTime' AS bucket, payload
           FROM ${sessionEvents}
           WHERE event_type = 'assistant' AND payload ? 'usage'
       )
       SELECT
-        window,
+        bucket,
         SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text       AS input_tokens,
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
         SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
       FROM buckets
-      GROUP BY window
+      GROUP BY bucket
     `);
 
     const empty: UsageWindow = {
@@ -408,15 +408,15 @@ export class DbAgentStore implements AgentStore {
     };
     const out = { window24h: { ...empty }, allTime: { ...empty } };
     for (const row of rows.rows) {
-      const bucket: UsageWindow = {
+      const win: UsageWindow = {
         inputTokens: Number(row.input_tokens ?? 0),
         outputTokens: Number(row.output_tokens ?? 0),
         cacheReadTokens: Number(row.cache_read_tokens ?? 0),
         cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
         costUsd: Number(row.usd_total ?? 0),
       };
-      if (row.window === 'window24h') out.window24h = bucket;
-      else out.allTime = bucket;
+      if (row.bucket === 'window24h') out.window24h = win;
+      else out.allTime = win;
     }
     return out;
   }
