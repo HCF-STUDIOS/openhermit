@@ -151,7 +151,7 @@ git -c commit.gpgsign=false commit -m "chore(channel-signal): import package sou
 - Create: `apps/channels/signal/src/qr-link.ts`
 - Test: `apps/channels/signal/test/qr-link.test.ts`
 
-The QR-link helper is a thin client to the daemon's `GET /v1/qrcodelink/:account` (returns a QR PNG) plus a poll against `GET /v1/accounts` to detect when linking completes.
+The QR-link helper is a thin client to the daemon's `GET /v1/qrcodelink?device_name=<name>` (returns a QR PNG; the phone number is chosen at scan time on the user's device, not pre-bound to the QR) plus a poll against `GET /v1/accounts` to detect when linking completes.
 
 - [ ] **Step A1.1: Read the wechat reference for the setup pattern**
 
@@ -201,7 +201,7 @@ test('begin() requests QR PNG and exposes it as a base64 data URL', async () => 
     account: '+15551234567',
     fetch: spy,
   });
-  assert.equal(calls[0]!.url, 'http://signal:8080/v1/qrcodelink/%2B15551234567');
+  assert.equal(calls[0]!.url, 'http://signal:8080/v1/qrcodelink?device_name=openhermit');
   assert.equal(calls[0]!.method, 'GET');
   assert.match(session.qrPngDataUrl, /^data:image\/png;base64,iVBORw/);
   assert.equal(session.account, '+15551234567');
@@ -279,7 +279,7 @@ export class QrLinkSession {
   static async begin(opts: QrLinkOptions): Promise<QrLinkSession> {
     const fetchImpl = opts.fetch ?? fetch;
     const httpUrl = opts.httpUrl.replace(/\/+$/, '');
-    const url = `${httpUrl}/v1/qrcodelink/${encodeURIComponent(opts.account)}`;
+    const url = `${httpUrl}/v1/qrcodelink?device_name=openhermit`;
     const res = await fetchImpl(url, { method: 'GET' });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -380,7 +380,7 @@ test('submit() with valid input transitions to awaiting_external with a QR data 
   const fakePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
-    if (url.includes('/v1/qrcodelink/')) {
+    if (url.includes('/v1/qrcodelink')) {
       return new Response(fakePng, { status: 200, headers: { 'content-type': 'image/png' } });
     }
     return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
@@ -403,7 +403,7 @@ test('poll() returns done when /v1/accounts contains the linked number', async (
   let pollHits = 0;
   const fetchSpy: typeof fetch = async (input) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
-    if (url.includes('/v1/qrcodelink/')) {
+    if (url.includes('/v1/qrcodelink')) {
       return new Response(fakePng, { status: 200 });
     }
     pollHits += 1;
@@ -1180,7 +1180,7 @@ Supersedes #81. The built-in registrations that #81 added to `BUILTIN_CHANNELS`,
 ## Architecture
 - New `apps/channels/signal/src/manifest.ts` — `ChannelManifest` (default export) wrapping the existing `start` flow + a `setup` for the QR-link wizard.
 - New `apps/channels/signal/src/setup.ts` — implements `ChannelSetup.{begin, submit, poll, cancel}` with a 10-min session TTL.
-- New `apps/channels/signal/src/qr-link.ts` — thin client over `/v1/qrcodelink/:account` and `/v1/accounts` polling.
+- New `apps/channels/signal/src/qr-link.ts` — thin client over `/v1/qrcodelink?device_name=<name>` and `/v1/accounts` polling.
 - Standalone runner (`main()`) preserved for development.
 - README rewritten to reflect plugin install path + wizard flow.
 

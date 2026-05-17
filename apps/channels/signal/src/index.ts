@@ -1,7 +1,5 @@
 import { pathToFileURL } from 'node:url';
 
-import { loadEnv } from '@openhermit/shared';
-
 import manifest from './manifest.js';
 import { SignalApi } from './signal-api.js';
 import { SignalBridge } from './bridge.js';
@@ -13,14 +11,28 @@ const log = (message: string): void => {
   console.log(`[openhermit-channel-signal] ${message}`);
 };
 
+// `@openhermit/shared` is a private workspace package that isn't published
+// to npm, so we load its `.env` helper via dynamic import and silently fall
+// back to whatever the operator already put on process.env when running
+// from a published install.
+const loadEnvIfAvailable = async (): Promise<void> => {
+  try {
+    const mod = (await import('@openhermit/shared')) as { loadEnv?: () => Promise<unknown> };
+    if (typeof mod.loadEnv === 'function') {
+      await mod.loadEnv();
+    }
+  } catch {
+    // Helpers not installed — expected for published consumers.
+  }
+};
+
 /**
  * Standalone runner — used when the operator runs the adapter as its own
  * process (e.g. `npm run dev -w @openhermit/channel-signal`) rather than
- * having the gateway load the manifest plugin. Unchanged from before the
- * plugin refactor.
+ * having the gateway load the manifest plugin.
  */
 export const main = async (): Promise<void> => {
-  await loadEnv();
+  await loadEnvIfAvailable();
   const config = await loadConfig();
   log(`agent: ${config.agentBaseUrl}`);
   log(`signal-cli-rest-api: ${config.httpUrl}`);

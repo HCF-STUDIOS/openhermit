@@ -83,13 +83,21 @@ export class QrLinkSession {
       );
     }
     const qrUri = decoded.data;
+    if (!qrUri.startsWith('sgnl://linkdevice?')) {
+      throw new Error('signal-cli-rest-api returned an unexpected QR payload');
+    }
     return new QrLinkSession(opts, qrUri, dataUrl);
   }
 
   async poll(): Promise<'awaiting' | 'linked'> {
     const res = await this.fetchImpl(`${this.httpUrl}/v1/accounts`);
     if (!res.ok) return 'awaiting';
-    const accounts = (await res.json()) as unknown;
+    let accounts: unknown;
+    try {
+      accounts = (await res.json()) as unknown;
+    } catch {
+      return 'awaiting';
+    }
     if (!Array.isArray(accounts)) return 'awaiting';
     return accounts.includes(this.account) ? 'linked' : 'awaiting';
   }

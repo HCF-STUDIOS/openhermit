@@ -49,12 +49,12 @@
   },
   "dependencies": {
     "@openhermit/sdk": "0.3.7",
-    "@openhermit/shared": "0.2.0",
     "jsqr": "^1.4.0",
     "pngjs": "^7.0.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@openhermit/shared": "0.2.0",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.5.13",
