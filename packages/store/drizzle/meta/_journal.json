@@ -176,6 +176,13 @@
       "when": 1779200000000,
       "tag": "0024_session_events_usage_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0025_agent_channels_last_error",
+      "breakpoints": true
     }
   ]
 }

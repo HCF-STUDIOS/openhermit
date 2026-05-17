@@ -11,6 +11,7 @@ import {
 
 const dummyContext: ChannelContext = {
   agentBaseUrl: 'http://localhost:0',
+  publicAgentBaseUrl: 'http://localhost:0',
   agentTokens: {},
   logger: () => {},
 };

@@ -2324,8 +2324,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         ? def.secretKeys.every((sk) => secretNames.includes(sk.key))
         : true;
       const runtime = runtimeStatuses.find((s) => s.name === row.channelType);
-      const status = !row.enabled ? 'disabled' : runtime?.status ?? 'unknown';
-      const error = runtime?.status === 'error' ? runtime.error : undefined;
+      // Prefer the live in-memory status (always current within this
+      // gateway process), but fall back to the persisted error so a
+      // failed-start that happened before the user's first GET (e.g. on
+      // a fresh gateway boot) is still visible.
+      const status = !row.enabled
+        ? 'disabled'
+        : runtime?.status ?? (row.lastError ? 'error' : 'unknown');
+      const error = runtime
+        ? runtime.status === 'error' ? runtime.error : undefined
+        : row.lastError ?? undefined;
       return {
         ...row,
         ...(def ? { label: row.label ?? def.label, secretKeys: def.secretKeys } : {}),
@@ -2419,6 +2427,21 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         ...(body.config ? { config: body.config } : {}),
         ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       });
+
+      // Auto-start the bridge so the user doesn't need a separate enable
+      // call. If start fails (e.g. webhook mode but no public URL),
+      // surface the error in the response — the row stays in DB so the
+      // user can fix config via PATCH.
+      if (created.enabled) {
+        const pool = instances.getChannelPool();
+        if (pool) {
+          const status = await pool.enableChannel(agentId, channelType);
+          return c.json(
+            { ...created, runtimeStatus: status.status, ...(status.error ? { error: status.error } : {}) },
+            201,
+          );
+        }
+      }
       return c.json(created, 201);
     }
 
@@ -2492,17 +2515,29 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     });
     if (!updated) throw new NotFoundError(`Channel ${channelId} not found.`);
 
-    // Builtin channel runtime side-effects: enable → start, disable → stop.
-    if (existing.kind === 'builtin' && body.enabled !== undefined) {
+    // Builtin runtime side-effects:
+    //   enable=true              → start (or restart if already running)
+    //   enable=false             → stop
+    //   config changed, enabled  → restart so the new config takes effect
+    //                              (e.g. polling↔webhook mode switch)
+    if (existing.kind === 'builtin') {
       const pool = instances.getChannelPool();
       if (!pool) {
         throw new Error('channel pool not available');
       }
-      if (body.enabled) {
-        const status = await pool.enableChannel(agentId, existing.channelType);
-        return c.json({ ...updated, runtimeStatus: status.status, error: status.error });
-      } else {
+      const shouldDisable = body.enabled === false;
+      const shouldEnable =
+        body.enabled === true ||
+        (effectiveConfig !== undefined && updated.enabled);
+      if (shouldDisable) {
         await pool.disableChannel(agentId, existing.channelType);
+      } else if (shouldEnable) {
+        const status = await pool.enableChannel(agentId, existing.channelType);
+        return c.json({
+          ...updated,
+          runtimeStatus: status.status,
+          ...(status.error ? { error: status.error } : {}),
+        });
       }
     }
 

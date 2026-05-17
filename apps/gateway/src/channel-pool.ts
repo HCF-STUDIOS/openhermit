@@ -39,7 +39,15 @@ export interface ChannelPoolOptions {
   secretStore: SecretStore;
   channelRegistry: ChannelRegistry;
   manifestRegistry: ChannelManifestRegistry;
+  /** Internal URL the bridges use to call back into the gateway (loopback). */
   gatewayBaseUrl: string;
+  /**
+   * Public-facing URL of the gateway, used when a manifest registers a
+   * webhook URL with an external service (Telegram setWebhook etc.).
+   * Undefined when the operator has not configured a public URL — in
+   * that case webhook-mode channels should refuse to start.
+   */
+  publicGatewayBaseUrl?: string;
   /** Live-runner lookup so enable/disable can update the hot runner's outbounds. */
   getRunner: (agentId: string) => AgentRunner | undefined;
   log: (message: string) => void;
@@ -109,36 +117,43 @@ export class ChannelPool {
     return security;
   }
 
+  private agentBaseUrls(agentId: string): { agentBaseUrl: string; publicAgentBaseUrl: string } {
+    const segment = `/api/agents/${encodeURIComponent(agentId)}`;
+    const agentBaseUrl = `${this.opts.gatewayBaseUrl}${segment}`;
+    const publicAgentBaseUrl = this.opts.publicGatewayBaseUrl
+      ? `${this.opts.publicGatewayBaseUrl}${segment}`
+      : agentBaseUrl;
+    return { agentBaseUrl, publicAgentBaseUrl };
+  }
+
   private async startBuiltinsForAgent(
     agentId: string,
-    rows: Array<{ channelType: string; token: string; config: Record<string, unknown> }>,
+    rows: Array<{ id: string; channelType: string; token: string; config: Record<string, unknown> }>,
   ): Promise<void> {
     const security = await this.loadSecurity(agentId);
-    const agentBaseUrl = `${this.opts.gatewayBaseUrl}/api/agents/${encodeURIComponent(agentId)}`;
+    const { agentBaseUrl, publicAgentBaseUrl } = this.agentBaseUrls(agentId);
     const startedHandles: ChannelHandle[] = [];
     const startedStatuses: ChannelStatus[] = [];
 
     for (const row of rows) {
       const manifest = this.opts.manifestRegistry.get(row.channelType);
       if (!manifest) {
-        this.opts.log(
-          `[${agentId}] [${row.channelType}] no manifest registered — skipping`,
-        );
-        startedStatuses.push({
-          name: row.channelType,
-          status: 'error',
-          error: `no manifest registered for channel "${row.channelType}"`,
-        });
+        const errMsg = `no manifest registered for channel "${row.channelType}"`;
+        this.opts.log(`[${agentId}] [${row.channelType}] ${errMsg} — skipping`);
+        startedStatuses.push({ name: row.channelType, status: 'error', error: errMsg });
+        await this.persistError(row.id, errMsg);
         continue;
       }
       const resolved = await security.expandSecrets({ ...row.config, enabled: true });
       const { handle, status } = await startSingleChannel(manifest, resolved, {
         agentBaseUrl,
+        publicAgentBaseUrl,
         agentTokens: { [manifest.key]: row.token },
         logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
       });
       if (handle) startedHandles.push(handle);
       startedStatuses.push(status);
+      await this.persistError(row.id, status.status === 'error' ? status.error ?? 'unknown error' : null);
     }
 
     if (startedHandles.length > 0) this.handles.set(agentId, startedHandles);
@@ -146,6 +161,16 @@ export class ChannelPool {
     if (startedHandles.length > 0) {
       this.opts.log(
         `[${agentId}] pool started ${startedHandles.length} channel(s): ${startedHandles.map((h) => h.name).join(', ')}`,
+      );
+    }
+  }
+
+  private async persistError(channelId: string, error: string | null): Promise<void> {
+    try {
+      await this.opts.channelStore.recordError(channelId, error);
+    } catch (err) {
+      this.opts.log(
+        `failed to persist channel error for ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -237,15 +262,17 @@ export class ChannelPool {
       if (existingIdx !== -1) statuses[existingIdx] = errorStatus;
       else statuses.push(errorStatus);
       this.statuses.set(agentId, statuses);
+      await this.persistError(row.id, errorStatus.error ?? 'no manifest');
       return errorStatus;
     }
 
     const security = await this.loadSecurity(agentId);
     const resolved = await security.expandSecrets({ ...row.config, enabled: true });
-    const agentBaseUrl = `${this.opts.gatewayBaseUrl}/api/agents/${encodeURIComponent(agentId)}`;
+    const { agentBaseUrl, publicAgentBaseUrl } = this.agentBaseUrls(agentId);
 
     const { handle, status } = await startSingleChannel(manifest, resolved, {
       agentBaseUrl,
+      publicAgentBaseUrl,
       agentTokens: { [manifest.key]: loaded.token },
       logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
     });
@@ -264,6 +291,8 @@ export class ChannelPool {
     if (existingIdx !== -1) statuses[existingIdx] = status;
     else statuses.push(status);
     this.statuses.set(agentId, statuses);
+
+    await this.persistError(row.id, status.status === 'error' ? status.error ?? 'unknown error' : null);
 
     return status;
   }
@@ -297,6 +326,11 @@ export class ChannelPool {
     const sIdx = statuses.findIndex((s) => s.name === channelName);
     if (sIdx !== -1) statuses.splice(sIdx, 1);
     if (statuses.length === 0) this.statuses.delete(agentId);
+
+    // Disabling is a deliberate user action — clear the stale error so
+    // the UI doesn't keep showing it after the user has acknowledged it.
+    const row = await this.opts.channelStore.findBuiltin(agentId, channelName);
+    if (row) await this.persistError(row.id, null);
 
     this.opts.log(`[${agentId}] pool stopped channel: ${channelName}`);
   }

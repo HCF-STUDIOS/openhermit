@@ -42,9 +42,16 @@ const manifest: ChannelManifest = {
       logger: log,
     };
     if (mode === 'webhook') {
-      const derivedUrl =
-        config.webhook_url ||
-        `${context.agentBaseUrl}/channels/telegram/webhook`;
+      let derivedUrl: string;
+      if (config.webhook_url) {
+        derivedUrl = config.webhook_url;
+      } else if (context.publicAgentBaseUrl === context.agentBaseUrl) {
+        throw new Error(
+          'Telegram webhook mode needs a public URL. Either set OPENHERMIT_GATEWAY_PUBLIC_URL on the gateway or provide webhook_url in the channel config.',
+        );
+      } else {
+        derivedUrl = `${context.publicAgentBaseUrl}/channels/telegram/webhook`;
+      }
       botOptions.webhookUrl = derivedUrl;
       const secret = context.agentTokens['telegram'];
       if (secret) botOptions.webhookSecret = secret;

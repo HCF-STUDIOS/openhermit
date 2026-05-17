@@ -274,6 +274,13 @@ export interface ChannelOutbound {
  */
 export interface ChannelContext {
   agentBaseUrl: string;
+  /**
+   * Public-facing equivalent of `agentBaseUrl`. Used by manifests that
+   * register a URL with an external service that must POST back over
+   * the public internet (e.g. Telegram `setWebhook`). Falls back to
+   * `agentBaseUrl` when the gateway has no public URL configured.
+   */
+  publicAgentBaseUrl: string;
   agentTokens: Record<string, string>;
   logger: (channel: string, message: string) => void;
 }

@@ -39,6 +39,8 @@ export interface AgentChannelRow {
   updatedAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
 }
 
 export interface CreatedAgentChannel extends AgentChannelRow {
@@ -180,6 +182,8 @@ export class DbAgentChannelStore {
       updatedAt: now,
       lastUsedAt: null,
       revokedAt: null,
+      lastError: null,
+      lastErrorAt: null,
       token,
     };
   }
@@ -227,6 +231,20 @@ export class DbAgentChannelStore {
       .where(eq(agentChannels.id, id))
       .returning();
     return row ? rowToPublic(row) : undefined;
+  }
+
+  /**
+   * Record the last bridge-start error so it persists across gateway
+   * restarts and is visible in the channels list. Pass `null` to clear
+   * after a successful start.
+   */
+  async recordError(id: string, error: string | null): Promise<void> {
+    await this.db.update(agentChannels)
+      .set({
+        lastError: error,
+        lastErrorAt: error ? new Date().toISOString() : null,
+      })
+      .where(eq(agentChannels.id, id));
   }
 
   /** Soft-delete: mark revoked so it stops resolving. */
@@ -286,4 +304,6 @@ const rowToPublic = (row: typeof agentChannels.$inferSelect): AgentChannelRow =>
   updatedAt: row.updatedAt,
   lastUsedAt: row.lastUsedAt,
   revokedAt: row.revokedAt,
+  lastError: row.lastError,
+  lastErrorAt: row.lastErrorAt,
 });

@@ -116,6 +116,9 @@ export const agentChannels = pgTable('agent_channels', {
   updatedAt: text('updated_at').notNull(),
   lastUsedAt: text('last_used_at'),
   revokedAt: text('revoked_at'),
+  /** Last bridge-start error, surfaced in the channels list UI. */
+  lastError: text('last_error'),
+  lastErrorAt: text('last_error_at'),
 }, (table) => [
   index('idx_agent_channels_agent').on(table.agentId),
 ]);

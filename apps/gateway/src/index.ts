@@ -417,6 +417,7 @@ export const main = async (): Promise<void> => {
   if (agentChannelStore && agentStore && configStore) {
     const secretStore = instances.getSecretStore();
     if (secretStore) {
+      const publicGatewayBaseUrl = process.env.OPENHERMIT_GATEWAY_PUBLIC_URL?.replace(/\/+$/, '');
       channelPool = new ChannelPool({
         agentStore,
         channelStore: agentChannelStore,
@@ -427,6 +428,7 @@ export const main = async (): Promise<void> => {
         // Channel adapters connect back from inside the host. Use
         // 127.0.0.1 even when the public listener is 0.0.0.0.
         gatewayBaseUrl: `http://127.0.0.1:${info.port}`,
+        ...(publicGatewayBaseUrl ? { publicGatewayBaseUrl } : {}),
         getRunner: (agentId) => instances.getRunner(agentId),
         log: logStartup,
       });
