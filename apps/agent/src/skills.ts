@@ -176,25 +176,13 @@ export const loadSkillIndex = async (
 export const formatSkillsPromptSection = (skills: SkillIndexEntry[]): string | undefined => {
   if (skills.length === 0) return undefined;
 
-  const escapeXml = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  const entries = skills
-    .map(
-      (s) =>
-        `  <skill>
-    <name>${escapeXml(s.name)}</name>
-    <description>${escapeXml(s.description)}</description>
-    <location>${s.path}/SKILL.md</location>
-  </skill>`,
-    )
-    .join('\n');
+  const lines = skills.map(
+    (s) => `- **${s.name}**: ${s.description} — \`file_read ${s.path}/SKILL.md\``,
+  );
 
   return `## Skills
 
-The following skills provide specialized instructions for specific tasks. Before replying, scan the <description> entries below. When one clearly matches the task, read its SKILL.md in full with \`file_read <location>\`. You MUST use the exact <location> value from <available_skills> — never guess, fabricate, or hard-code a skill file path. Do not use \`exec cat\`; \`file_read\` returns skill files verbatim and uncapped.
+The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, read its SKILL.md in full with \`file_read\` (do not use \`exec cat\`; \`file_read\` returns skill files verbatim and uncapped).
 
-<available_skills>
-${entries}
-</available_skills>`;
+${lines.join('\n')}`;
 };

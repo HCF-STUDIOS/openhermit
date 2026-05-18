@@ -158,27 +158,18 @@ test('formatSkillsPromptSection returns undefined for empty list', () => {
   assert.equal(formatSkillsPromptSection([]), undefined);
 });
 
-test('formatSkillsPromptSection formats skills as available_skills XML', () => {
+test('formatSkillsPromptSection formats skills as a bullet list', () => {
   const skills: SkillIndexEntry[] = [
     { id: 'test', name: 'Test', description: 'A test', path: '/skills/test', source: 'system' },
   ];
   const section = formatSkillsPromptSection(skills)!;
   assert.ok(section.includes('## Skills'));
-  // Structured <location> field — model copies path verbatim instead of
-  // reconstructing it from prose, which closes off path-hallucination.
-  assert.ok(section.includes('<available_skills>'));
-  assert.ok(section.includes('<name>Test</name>'));
-  assert.ok(section.includes('<description>A test</description>'));
-  assert.ok(section.includes('<location>/skills/test/SKILL.md</location>'));
-  // Anti-hallucination steer (borrowed from openclaw): the model must use
-  // the location value verbatim and not invent paths.
-  assert.ok(section.includes('never guess, fabricate, or hard-code'));
-  // Skill-aware read steering preserved from prior fix: `file_read` only,
-  // never `exec cat`, since cat output is head+tail-previewed and
-  // unrecoverable across session resumes. The anti-cat steer must appear
-  // in the prose, and there must be no per-skill `cat <path>` listing.
+  assert.ok(section.includes('- **Test**: A test — `file_read /skills/test/SKILL.md`'));
+  // Skill-aware read steering preserved: `file_read` only, never `exec cat`,
+  // since cat output is head+tail-previewed and unrecoverable across session
+  // resumes.
   assert.ok(section.includes('file_read'));
-  assert.ok(section.includes('Do not use `exec cat`'));
+  assert.ok(section.includes('do not use `exec cat`'));
   assert.ok(!section.includes('cat /skills/test/SKILL.md'));
 });
 
@@ -258,11 +249,3 @@ test('isSkillReadResult rejects malformed details', () => {
   assert.equal(isSkillReadResult('file_read', {}, '/home/user'), false);
 });
 
-test('formatSkillsPromptSection escapes XML special chars in name/description', () => {
-  const skills: SkillIndexEntry[] = [
-    { id: 'x', name: 'A & B', description: 'Has <angle> & chars', path: '/skills/x', source: 'system' },
-  ];
-  const section = formatSkillsPromptSection(skills)!;
-  assert.ok(section.includes('<name>A &amp; B</name>'));
-  assert.ok(section.includes('<description>Has &lt;angle&gt; &amp; chars</description>'));
-});
