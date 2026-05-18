@@ -147,6 +147,17 @@ export const prepareAttachmentContent = async (
       size <= maxBytes &&
       imagesInlined < maxImageInline;
 
+    if (isImage && !canInlineImage) {
+      options.log?.(
+        `[attachments] image not inlined for ${id ?? '(no-id)'}: ` +
+          `supportsImageInput=${supportsImageInput} ` +
+          `hasStore=${!!stores.attachmentStore} ` +
+          `hasStorage=${!!stores.attachmentStorage} ` +
+          `mime=${mime} size=${size} maxBytes=${maxBytes} ` +
+          `imagesInlined=${imagesInlined} maxImageInline=${maxImageInline}`,
+      );
+    }
+
     if (canInlineImage) {
       try {
         const row = await stores.attachmentStore!.get(id);
