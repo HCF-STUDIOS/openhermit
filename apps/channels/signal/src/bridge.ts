@@ -90,6 +90,7 @@ export class SignalBridge implements ChannelOutbound {
     text: string;
     actions?: ChannelMessageAction[];
   }): Promise<ChannelOutboundResult> {
+    // Signal has no inline-button surface; actions are accepted for contract parity.
     void params.actions;
     try {
       const chunks = formatAgentResponse(params.text);

@@ -1,5 +1,13 @@
 import { PNG } from 'pngjs';
-import jsQR from 'jsqr';
+// jsqr is a CJS UMD bundle; NodeNext won't synthesize a callable default,
+// so pull it off the namespace import explicitly.
+import * as jsqrModule from 'jsqr';
+type JsQRFn = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+) => { data: string } | null;
+const jsQR = (jsqrModule as unknown as { default: JsQRFn }).default;
 
 export interface QrLinkOptions {
   httpUrl: string;
