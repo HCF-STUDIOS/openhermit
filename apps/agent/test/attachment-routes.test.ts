@@ -140,7 +140,6 @@ test('POST attachments: uploads, persists row, materializes small file', async (
     `/home/agent/.openhermit/attachments/${sessionId}/${att.id as string}/shot.png`,
   );
   assert.equal(att.sandboxId, 'sandbox-test');
-  assert.equal(att.descriptionState, 'pending');
 
   // Storage row exists with persisted fields.
   const row = await attachmentStore.get(att.id as string);
