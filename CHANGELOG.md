@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.8.0 — 2026-05-18
+
+### File attachments end-to-end
+
+Agents now have first-class file attachments. Users upload files in the web composer, attachments are persisted by a pluggable `AttachmentStorage` backend, and the bytes are materialized into the agent's sandbox so tools can `file_read` them by path.
+
+- **Added** `session_attachments` table + `DbAttachmentStore` with `originalName`, `safeName`, `mimeType`, `sizeBytes`, `sha256`, `materializationState` (`pending` / `copied` / `failed`), and sandbox path (#110).
+- **Added** `AttachmentStorage` interface and `LocalAttachmentStorage` provider (#110). S3 and Supabase providers followed in (#116), gated by optional peer deps (`@aws-sdk/client-s3`, `@supabase/supabase-js`).
+- **Added** `POST/GET /api/agents/:id/sessions/:sid/attachments` endpoints with multipart upload, MIME sniffing via magic bytes, and 25 MB default cap (#115). Every successful upload is materialized into the sandbox at `~/.openhermit/attachments/<session>/<attachment>/<safeName>`.
+- **Added** `attachment_fetch` tool, multimodal user messages, web composer drag/drop+paste support, and SDK upload helpers (#117).
+- **Changed** materialization policy to always-on with lazy self-heal (#118). When the sandbox is down at upload time the row is marked `failed`; on first `attachment_fetch` the tool re-materializes from storage. The previous `sandboxCopyMaxBytes` threshold and `'skipped'` state were removed.
+
+### Gateway config UI: Settings + JSON tabs
+
+The admin Gateway Config panel grew a JSON tab alongside Settings. The JSON tab shows the full DB-stored config as editable JSON so fields the form doesn't expose (e.g. `attachments.storage`) can be edited from the UI without shell access. Switching tabs re-derives the destination view from the last applied config, so unsaved edits don't silently leak across tabs.
+
+### Breaking: env vars are for secrets only
+
+Non-secret attachment env vars were dropped — provider selection and non-secret resource pointers must now live in the DB-backed gateway config under `attachments.storage`.
+
+- **Removed** `OPENHERMIT_ATTACHMENT_PROVIDER`, `OPENHERMIT_ATTACHMENT_S3_BUCKET` / `_REGION` / `_PREFIX` / `_ENDPOINT`, `OPENHERMIT_ATTACHMENT_SUPABASE_URL` / `_BUCKET` / `_PREFIX`, `OPENHERMIT_ATTACHMENT_ROOT`, `OPENHERMIT_ATTACHMENT_MAX_BYTES`.
+- **Kept (env-only)** AWS default chain (`AWS_ACCESS_KEY_ID`/etc.), `SUPABASE_URL` (project URL embeds the project ID — treated as part of the credential bundle), `SUPABASE_SERVICE_ROLE_KEY`.
+- Deployments that relied on the env fallbacks must add an `attachments.storage` block to gateway config before upgrading or fall back to local-disk storage on restart.
+
+### Fleet usage analytics
+
+Token usage and cost views surfaced in the Fleet and Stats panels (#100). The per-session Usage modal split into Overview / By model / Daily tabs (#105). Partial index on `session_events` added so the aggregation query stays cheap as event volume grows (#103). Fixes for the aggregation SQL (#101, #102) and time-tab scope (#104).
+
+### Channels
+
+- **Added** `hermit channel install / uninstall / list` for managing channel plugin packages (#95).
+- **Added** public gateway URL config, channel auto-start, and persisted runtime errors so a misconfigured channel doesn't take down boot (#107).
+- **Added** runtime error reporting from bots back to the channel layer (#108).
+- **Fixed** Telegram realtime approval review now passes `channelUserId` so the gate resolves the acting user (#106).
+
+### Fixes
+
+- **agent:** promote thinking to text when `stopReason=toolUse` with no tool_use blocks (#111).
+- **agent:** don't duplicate the new user message on the first turn after resume (#109).
+
+---
+
+## 0.7.0 — 2026-05-15
+
+### Channel plugin contract
+
+Channels are now plugins. Each channel — built-in or external — provides a `ChannelManifest` describing its config schema, secret keys, capabilities, and setup steps. The gateway loads built-in channels through the manifest registry on boot, and external channel packages can be loaded by listing them under `channelPackages` in the gateway config.
+
+- **Added** `ChannelManifest` + `ChannelManifestRegistry` in `@openhermit/protocol` (#87).
+- **Refactored** built-in channels (Telegram / Slack / Discord) to register via the manifest registry (#88).
+- **Added** interactive setup contract for multi-step channel flows (QR scan, OAuth) so plugin channels can drive setup from the admin UI without hardcoded per-channel code (#90).
+- **Added** `channelPackages` gateway config: each entry is an npm package name, dynamic-imported at boot, whose default export must be a `ChannelManifest`. External packages may override a built-in by matching its key (#94).
+
+### @openhermit/channel-wechat (text-only v0)
+
+First external channel plugin published to npm (#91, #93). Connects to WeChat via iLink (browser scan + persistent session), text-only for v0. Install with `npm install @openhermit/channel-wechat`, then add the package name to `channelPackages` in gateway config and restart the gateway.
+
+### Docs
+
+- New user-facing manual (#84, #85) covering identity / soul / rules sections and the everyday agent workflow.
+
+---
+
 ## 0.6.8 — 2026-05-09
 
 ### Breaking: drop `channel_message_sent`
