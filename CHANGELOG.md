@@ -1,5 +1,11 @@
 # Changelog
 
+## SDK 0.5.1 — 2026-05-18
+
+- **Added** `AgentLocalClient.uploadAttachment` / `listAttachments` / `getAttachment` — the same per-session attachment surface that `GatewayClient` already exposed, but on the per-agent client, so callers holding a channel-mode token (not an admin token) can upload directly under `/api/agents/:id/sessions/:sid/attachments`. Server-side auth is unchanged: same `requireAuth` → `enforceSessionNamespace` → `requireSessionAccessHttp` chain that `postMessage` uses, so any token that can `postMessage` on a session can also `uploadAttachment` to it.
+- **Added** `SessionAttachment` and `AttachmentMaterializationState` to the package's top-level exports so downstream consumers no longer need to mirror them locally or recover them via `Awaited<ReturnType<...>>`.
+- **Added** `agentLocalRoutes.sessionAttachments(sessionId)` / `sessionAttachmentById(sessionId, attachmentId)` (plus their `*Pattern` siblings) in `@openhermit/protocol`, mirroring the existing `gatewayRoutes.agentSessionAttachments*` entries.
+
 ## 0.8.0 — 2026-05-18
 
 ### File attachments end-to-end

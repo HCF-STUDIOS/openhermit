@@ -4,6 +4,7 @@ import {
   agentLocalRoutes,
   gatewayRoutes,
   type AgentInfo,
+  type AttachmentMaterializationState,
   type CreateAgentRequest,
   type OutboundEvent,
   type SessionHistoryMessage,
@@ -20,6 +21,8 @@ import {
   type WsServerMessage,
   isWsRequest,
 } from '@openhermit/protocol';
+
+export type { SessionAttachment, AttachmentMaterializationState };
 import {
   OpenHermitError,
   type OpenHermitStatusCode,
@@ -114,6 +117,100 @@ export class AgentLocalClient {
     request: SessionCheckpointRequest = {},
   ): Promise<{ checkpointed: boolean }> {
     return this.postJson(agentLocalRoutes.sessionCheckpoint(sessionId), request);
+  }
+
+  /**
+   * Upload a file as a session attachment, using this client's per-agent
+   * token. Equivalent to `GatewayClient.uploadAttachment(agentId, ...)` but
+   * `agentId` is implicit — the client is already scoped to one agent.
+   *
+   * Pass a `File` (name taken from `file.name`) or a `Blob` with an explicit
+   * `filename`. Resolves with the attachment record; embed `id` in a
+   * subsequent `postMessage` as `{ type: 'file', id }`.
+   */
+  async uploadAttachment(
+    sessionId: string,
+    file: File | Blob,
+    filename?: string,
+  ): Promise<SessionAttachment> {
+    const form = new FormData();
+    const resolvedName =
+      filename ?? (file instanceof File ? file.name : undefined);
+    if (!resolvedName) {
+      throw new OpenHermitError(
+        'uploadAttachment requires a filename when body is a Blob without a name.',
+        'agent_api_error',
+        400,
+      );
+    }
+    form.append('file', file, resolvedName);
+
+    const url = joinUrl(
+      this.options.baseUrl,
+      agentLocalRoutes.sessionAttachments(sessionId),
+    );
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.options.token}` },
+        body: form,
+      });
+    } catch (error) {
+      throw this.buildFetchFailedError(
+        agentLocalRoutes.sessionAttachments(sessionId),
+        error,
+      );
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
+        'agent_api_error',
+        statusCode,
+      );
+    }
+
+    const body = (await response.json()) as { attachment: SessionAttachment };
+    return body.attachment;
+  }
+
+  /**
+   * List attachments for a session. Default scope is the current session
+   * only; `scope: 'user'` widens to every attachment the caller has uploaded
+   * across the agent's sessions (requires an authenticated user).
+   */
+  async listAttachments(
+    sessionId: string,
+    options?: { scope?: 'session' | 'user' },
+  ): Promise<SessionAttachment[]> {
+    let path = agentLocalRoutes.sessionAttachments(sessionId);
+    if (options?.scope === 'user') {
+      path += '?scope=user';
+    }
+    const body = await this.getJson<{ attachments: SessionAttachment[] }>(path);
+    return body.attachments;
+  }
+
+  /**
+   * Fetch a single attachment's metadata by id.
+   */
+  async getAttachment(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<SessionAttachment> {
+    const path = agentLocalRoutes.sessionAttachmentById(sessionId, attachmentId);
+    const body = await this.getJson<{ attachment: SessionAttachment }>(path);
+    return body.attachment;
   }
 
   async reviewApprovalRequest(

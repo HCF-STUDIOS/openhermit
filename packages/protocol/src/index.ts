@@ -677,6 +677,12 @@ export const agentLocalRoutes = {
   sessionCheckpointPattern: '/sessions/:sessionId/checkpoint',
   sessionCheckpoint: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/checkpoint`,
+  sessionAttachmentsPattern: '/sessions/:sessionId/attachments',
+  sessionAttachments: (sessionId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/attachments`,
+  sessionAttachmentByIdPattern: '/sessions/:sessionId/attachments/:attachmentId',
+  sessionAttachmentById: (sessionId: string, attachmentId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
   ws: '/ws',
