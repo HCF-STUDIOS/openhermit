@@ -40,12 +40,17 @@ test('S3AttachmentStorage.open: actionable error when SDK missing', async () => 
   }
 });
 
-test('SupabaseAttachmentStorage.open: missing url rejected', async () => {
-  await assert.rejects(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    () => SupabaseAttachmentStorage.open({ bucket: 'b' } as any),
-    /url.*required/i,
-  );
+test('SupabaseAttachmentStorage.open: missing url rejected (no env, no option)', async () => {
+  const prevUrl = process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_URL;
+  try {
+    await assert.rejects(
+      () => SupabaseAttachmentStorage.open({ bucket: 'b' }),
+      /SUPABASE_URL/,
+    );
+  } finally {
+    if (prevUrl !== undefined) process.env.SUPABASE_URL = prevUrl;
+  }
 });
 
 test('SupabaseAttachmentStorage.open: missing bucket rejected', async () => {

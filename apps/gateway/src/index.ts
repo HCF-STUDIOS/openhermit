@@ -63,10 +63,11 @@ const DEFAULT_CONFIG_FILENAME = 'gateway.json';
 
 /**
  * Resolve the attachment storage provider from gateway config. Credentials
- * are read from env (AWS default chain / SUPABASE_SERVICE_ROLE_KEY); all
- * non-secret pointers (provider, bucket, region, prefix, endpoint, root)
- * live in the gateway config under `attachments.storage` — DB-backed, edited
- * via the admin UI or seeded from gateway.json on first boot. Falls back to
+ * and credential-bound pointers come from env: AWS default chain for S3,
+ * `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` for Supabase. Non-secret
+ * resource pointers (provider, bucket, region, prefix, endpoint, root) live
+ * in the gateway config under `attachments.storage` — DB-backed, edited via
+ * the admin UI or seeded from gateway.json on first boot. Falls back to
  * local-disk storage when no block is configured.
  */
 const buildAttachmentStorage = async (
@@ -96,7 +97,6 @@ const buildAttachmentStorage = async (
   if (storageConfig.provider === 'supabase') {
     log(`attachment storage: supabase bucket=${storageConfig.bucket}`);
     const opts: Parameters<typeof SupabaseAttachmentStorage.open>[0] = {
-      url: storageConfig.url,
       bucket: storageConfig.bucket,
     };
     if (storageConfig.prefix !== undefined) opts.prefix = storageConfig.prefix;

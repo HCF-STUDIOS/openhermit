@@ -47,12 +47,11 @@ test('parseGatewayConfig: attachments s3 parses required + optional fields', () 
   });
 });
 
-test('parseGatewayConfig: attachments supabase requires url + bucket', () => {
+test('parseGatewayConfig: attachments supabase requires bucket only (url comes from env)', () => {
   const out = parseGatewayConfig({
     attachments: {
       storage: {
         provider: 'supabase',
-        url: 'https://xyz.supabase.co',
         bucket: 'attachments',
         prefix: 'agents',
       },
@@ -61,7 +60,6 @@ test('parseGatewayConfig: attachments supabase requires url + bucket', () => {
   assert.equal(out.attachments?.storage.provider, 'supabase');
   assert.deepEqual(out.attachments?.storage, {
     provider: 'supabase',
-    url: 'https://xyz.supabase.co',
     bucket: 'attachments',
     prefix: 'agents',
   });
@@ -74,13 +72,13 @@ test('parseGatewayConfig: s3 without bucket fails', () => {
   );
 });
 
-test('parseGatewayConfig: supabase without url fails', () => {
+test('parseGatewayConfig: supabase without bucket fails', () => {
   assert.throws(
     () =>
       parseGatewayConfig({
-        attachments: { storage: { provider: 'supabase', bucket: 'a' } },
+        attachments: { storage: { provider: 'supabase' } },
       }),
-    /url is required/,
+    /bucket is required/,
   );
 });
 

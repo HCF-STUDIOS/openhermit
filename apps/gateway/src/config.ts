@@ -26,7 +26,6 @@ export type AttachmentStorageConfig =
     }
   | {
       provider: 'supabase';
-      url: string;
       bucket: string;
       prefix?: string;
       signedUrlExpiresIn?: number;
@@ -58,8 +57,9 @@ export interface GatewayConfig {
   /**
    * Optional attachment storage configuration. When omitted, the gateway
    * defaults to local-disk storage rooted at `~/.openhermit/attachments`.
-   * Credentials (AWS chain, SUPABASE_SERVICE_ROLE_KEY) still come from
-   * env; only non-secret pointers belong here.
+   * Credentials and credential-bound pointers (AWS chain, SUPABASE_URL,
+   * SUPABASE_SERVICE_ROLE_KEY) still come from env; only non-secret
+   * resource pointers belong here.
    */
   attachments?: AttachmentsConfig;
 }
@@ -198,15 +198,11 @@ const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => 
     if (signedExp !== undefined) parsedStorage.signedUrlExpiresIn = signedExp;
   } else {
     // supabase
-    const url = storage['url'];
     const bucket = storage['bucket'];
-    if (typeof url !== 'string' || url === '') {
-      throw new Error('attachments.storage.url is required when provider=supabase');
-    }
     if (typeof bucket !== 'string' || bucket === '') {
       throw new Error('attachments.storage.bucket is required when provider=supabase');
     }
-    parsedStorage = { provider: 'supabase', url, bucket };
+    parsedStorage = { provider: 'supabase', bucket };
     const prefix = optionalString(storage['prefix'], 'prefix');
     if (prefix !== undefined) parsedStorage.prefix = prefix;
     const signedExp = optionalPositiveInt(

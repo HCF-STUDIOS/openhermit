@@ -4,8 +4,13 @@ import { Readable } from 'node:stream';
 import type { AttachmentStorage } from '../interfaces.js';
 
 export interface SupabaseAttachmentStorageOptions {
-  /** Supabase project URL, e.g. `https://xyz.supabase.co`. */
-  url: string;
+  /**
+   * Supabase project URL, e.g. `https://xyz.supabase.co`. If omitted, read
+   * from `SUPABASE_URL` env. The URL embeds the project ID and is treated
+   * as part of the credential bundle — operators should set the env var,
+   * not put it in gateway config.
+   */
+  url?: string;
   /** Storage bucket name. Must exist; this provider does not create it. */
   bucket: string;
   /** Optional key prefix within the bucket. No leading/trailing slashes. */
@@ -51,10 +56,11 @@ interface SupabaseSdkModule {
 }
 
 /**
- * Supabase-Storage-backed `AttachmentStorage`. The service role key must
- * be supplied via `SUPABASE_SERVICE_ROLE_KEY` (env) — gateway config
- * only carries the bucket pointer and project URL. Signed URLs are
- * supported and used by `attachment_fetch` for short-lived inline links.
+ * Supabase-Storage-backed `AttachmentStorage`. The project URL and
+ * service-role key both come from env (`SUPABASE_URL`,
+ * `SUPABASE_SERVICE_ROLE_KEY`) — gateway config only carries the
+ * non-secret bucket pointer. Signed URLs are supported and used by
+ * `attachment_fetch` for short-lived inline links.
  */
 export class SupabaseAttachmentStorage implements AttachmentStorage {
   readonly name = 'supabase';
@@ -67,11 +73,17 @@ export class SupabaseAttachmentStorage implements AttachmentStorage {
   static async open(
     options: SupabaseAttachmentStorageOptions,
   ): Promise<SupabaseAttachmentStorage> {
-    if (!options.url) throw new Error('SupabaseAttachmentStorage: `url` is required');
     if (!options.bucket) throw new Error('SupabaseAttachmentStorage: `bucket` is required');
     if (options.prefix && (options.prefix.startsWith('/') || options.prefix.endsWith('/'))) {
       throw new Error(
         `SupabaseAttachmentStorage: prefix must not start or end with "/": ${options.prefix}`,
+      );
+    }
+    const url = options.url ?? process.env.SUPABASE_URL;
+    if (!url) {
+      throw new Error(
+        'SupabaseAttachmentStorage requires SUPABASE_URL. ' +
+          'Set the env var on the gateway; the URL embeds the project ID and is treated as part of the credential.',
       );
     }
     const key =
@@ -90,10 +102,10 @@ export class SupabaseAttachmentStorage implements AttachmentStorage {
       '@supabase/supabase-js',
       'Supabase attachment storage requires @supabase/supabase-js. Install it with: npm install @supabase/supabase-js',
     );
-    const client = sdk.createClient(options.url, key, {
+    const client = sdk.createClient(url, key, {
       auth: { persistSession: false },
     });
-    return new SupabaseAttachmentStorage(client, options);
+    return new SupabaseAttachmentStorage(client, { ...options, url });
   }
 
   async put(input: {

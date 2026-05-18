@@ -230,6 +230,7 @@ Important environment variables:
 | `OPENHERMIT_AGENT_ID` | Default CLI agent ID, default `main` |
 | `OPENHERMIT_WEB_PORT` | End-user web app port, default `4310` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | Standard AWS credential chain — used when `attachments.storage.provider = s3` |
+| `SUPABASE_URL` | Supabase project URL (e.g. `https://xyz.supabase.co`) — required when `attachments.storage.provider = supabase`. Treated as part of the credential bundle since it embeds the project ID |
 | `SUPABASE_SERVICE_ROLE_KEY` | Required when `attachments.storage.provider = supabase`. Never stored in gateway config |
 
 ### Attachment storage backends
@@ -267,14 +268,13 @@ Install the SDK on the gateway: `npm install @aws-sdk/client-s3 @aws-sdk/s3-requ
 
 #### Supabase Storage
 
-Install the SDK on the gateway: `npm install @supabase/supabase-js`. Set `SUPABASE_SERVICE_ROLE_KEY` in env.
+Install the SDK on the gateway: `npm install @supabase/supabase-js`. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in env — the project URL embeds the project ID and is treated as part of the credential bundle.
 
 ```json
 {
   "attachments": {
     "storage": {
       "provider": "supabase",
-      "url": "https://xyz.supabase.co",
       "bucket": "attachments",
       "prefix": "agents"
     }
