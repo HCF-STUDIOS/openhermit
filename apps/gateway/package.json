@@ -20,12 +20,15 @@
     "croner": "^10.0.1",
     "hono": "^4.7.2",
     "jose": "^6.2.2",
+    "magic-bytes.js": "^1.13.0",
+    "mime-types": "^3.0.2",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/mime-types": "^2.1.4",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",

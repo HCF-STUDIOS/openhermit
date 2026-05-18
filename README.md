@@ -229,6 +229,9 @@ Important environment variables:
 | `OPENHERMIT_GATEWAY_URL` | Gateway URL, default `http://127.0.0.1:4000` |
 | `OPENHERMIT_AGENT_ID` | Default CLI agent ID, default `main` |
 | `OPENHERMIT_WEB_PORT` | End-user web app port, default `4310` |
+| `OPENHERMIT_ATTACHMENT_ROOT` | Local attachment storage root, default `~/.openhermit/attachments` |
+| `OPENHERMIT_ATTACHMENT_MAX_BYTES` | Hard upload size cap, default `26214400` (25 MB) |
+| `OPENHERMIT_ATTACHMENT_SANDBOX_COPY_MAX_BYTES` | Files at or below this size are auto-copied into the sandbox, default `2097152` (2 MB) |
 
 ---
 

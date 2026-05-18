@@ -33,9 +33,43 @@ export interface SessionSpec {
   customInstruction?: string;
 }
 
+export type AttachmentMaterializationState =
+  | 'pending'
+  | 'copied'
+  | 'skipped'
+  | 'failed';
+
+export type AttachmentDescriptionState =
+  | 'pending'
+  | 'ready'
+  | 'skipped'
+  | 'failed';
+
+/**
+ * Attachment reference on a session message.
+ *
+ * The `id` is the authoritative handle — durable bytes + metadata live on the
+ * gateway under that id. `sandboxPath` is a convenience pointer for the model
+ * and may go stale if a sandbox is rebuilt; tools should resolve through
+ * `id` rather than trust the path.
+ *
+ * Legacy inline forms (raw `url` / base64 `data`) are still accepted on input
+ * for back-compat — clients should migrate to the id-based shape.
+ */
 export interface SessionAttachment {
+  id?: string;
   type: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  sha256?: string;
+  sandboxPath?: string;
+  materializationState?: AttachmentMaterializationState;
+  description?: string;
+  descriptionState?: AttachmentDescriptionState;
+  /** Legacy: inline URL reference (kept for back-compat). */
   url?: string;
+  /** Legacy: inline base64 payload (kept for back-compat). */
   data?: string;
 }
 
@@ -721,6 +755,18 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`,
   agentSessionInterruptPattern:
     '/api/agents/:agentId/sessions/:sessionId/interrupt',
+  agentSessionAttachments: (agentId: string, sessionId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments`,
+  agentSessionAttachmentsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/attachments',
+  agentSessionAttachmentById: (
+    agentId: string,
+    sessionId: string,
+    attachmentId: string,
+  ): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  agentSessionAttachmentByIdPattern:
+    '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId',
   agentManage: (agentId: string, action: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/manage/${encodeURIComponent(action)}`,
   agentManagePattern: '/api/agents/:agentId/manage/:action',
@@ -754,16 +800,57 @@ const isMetadataValue = (value: unknown): value is MetadataValue =>
   typeof value === 'number' ||
   typeof value === 'boolean';
 
+const MATERIALIZATION_STATES = new Set<string>([
+  'pending',
+  'copied',
+  'skipped',
+  'failed',
+]);
+
+const DESCRIPTION_STATES = new Set<string>([
+  'pending',
+  'ready',
+  'skipped',
+  'failed',
+]);
+
+const isOptionalString = (value: unknown): boolean =>
+  value === undefined || typeof value === 'string';
+
 const isAttachment = (value: unknown): value is SessionAttachment => {
   if (!isRecord(value) || typeof value.type !== 'string') {
     return false;
   }
 
-  if (value.url !== undefined && typeof value.url !== 'string') {
+  if (!isOptionalString(value.id)) return false;
+  if (!isOptionalString(value.name)) return false;
+  if (!isOptionalString(value.mimeType)) return false;
+  if (!isOptionalString(value.sha256)) return false;
+  if (!isOptionalString(value.sandboxPath)) return false;
+  if (!isOptionalString(value.description)) return false;
+  if (!isOptionalString(value.url)) return false;
+  if (!isOptionalString(value.data)) return false;
+
+  if (
+    value.size !== undefined &&
+    (typeof value.size !== 'number' || !Number.isFinite(value.size))
+  ) {
     return false;
   }
 
-  if (value.data !== undefined && typeof value.data !== 'string') {
+  if (
+    value.materializationState !== undefined &&
+    (typeof value.materializationState !== 'string' ||
+      !MATERIALIZATION_STATES.has(value.materializationState))
+  ) {
+    return false;
+  }
+
+  if (
+    value.descriptionState !== undefined &&
+    (typeof value.descriptionState !== 'string' ||
+      !DESCRIPTION_STATES.has(value.descriptionState))
+  ) {
     return false;
   }
 

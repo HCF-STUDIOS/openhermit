@@ -25,6 +25,7 @@ import {
 import type {
   DbAgentStore,
   DbAgentConfigStore,
+  DbAttachmentStore,
   DbMcpServerStore,
   DbPolicyStore,
   DbApprovalRequestStore,
@@ -33,6 +34,7 @@ import type {
   DbUserStore,
   DbAgentChannelStore,
   SandboxStore,
+  AttachmentStorage,
 } from '@openhermit/store';
 import { buildInboxSessionEntry } from '@openhermit/store';
 import type { SandboxPreset } from './config.js';
@@ -57,6 +59,10 @@ import { listProviderCatalog } from '@openhermit/agent/model-catalog';
 
 import type { AgentInstanceManager } from './agent-instance.js';
 import { listSessionsForCaller } from './session-listing.js';
+import {
+  registerAttachmentRoutes,
+  resolveAttachmentLimits,
+} from './attachment-routes.js';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -225,6 +231,12 @@ export interface GatewayAppOptions {
   sandboxStore?: SandboxStore | undefined;
   policyStore?: DbPolicyStore | undefined;
   approvalRequestStore?: DbApprovalRequestStore | undefined;
+  attachmentStore?: DbAttachmentStore | undefined;
+  attachmentStorage?: AttachmentStorage | undefined;
+  /** Hard cap on a single attachment upload, in bytes. */
+  attachmentMaxBytes?: number | undefined;
+  /** Files at or below this size are auto-copied into the sandbox. */
+  attachmentSandboxCopyMaxBytes?: number | undefined;
   metaStore?: import('@openhermit/store').DbMetaStore | undefined;
   sessionStore?: import('@openhermit/store').DbSessionStore | undefined;
   /** Named sandbox presets, keyed by preset name. */
@@ -1376,6 +1388,25 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const interrupted = runtime.interruptSession(sessionId);
     return c.json({ interrupted });
   });
+
+  // --- attachments ---
+
+  if (options.attachmentStore && options.attachmentStorage) {
+    const envLimits = resolveAttachmentLimits();
+    registerAttachmentRoutes(app, {
+      instances,
+      attachmentStore: options.attachmentStore,
+      attachmentStorage: options.attachmentStorage,
+      maxBytes: options.attachmentMaxBytes ?? envLimits.maxBytes,
+      sandboxCopyMaxBytes:
+        options.attachmentSandboxCopyMaxBytes ?? envLimits.sandboxCopyMaxBytes,
+      requireAuth,
+      enforceSessionNamespace,
+      resolveRunner,
+      requireSessionAccessHttp,
+      logger: log,
+    });
+  }
 
   // --- checkpoint ---
 

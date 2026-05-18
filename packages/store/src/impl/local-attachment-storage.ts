@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import type { AttachmentStorage } from '../interfaces.js';
+
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o644;
 
 export interface LocalAttachmentStorageOptions {
   /**
@@ -46,7 +49,7 @@ export class LocalAttachmentStorage implements AttachmentStorage {
       input.filename,
     );
     const target = this.resolveKey(storageKey);
-    await mkdir(path.dirname(target), { recursive: true });
+    await this.mkdirWithPerms(path.dirname(target));
 
     const hasher = createHash('sha256');
     let bytesSeen = 0;
@@ -56,7 +59,8 @@ export class LocalAttachmentStorage implements AttachmentStorage {
       bytesSeen += buf.length;
     });
 
-    await pipeline(input.body, createWriteStream(target));
+    await pipeline(input.body, createWriteStream(target, { mode: FILE_MODE }));
+    await chmod(target, FILE_MODE);
     const stats = await stat(target);
     // Prefer the on-disk size; bytesSeen is a sanity check.
     if (stats.size !== bytesSeen) {
@@ -81,6 +85,30 @@ export class LocalAttachmentStorage implements AttachmentStorage {
 
   async delete(storageKey: string): Promise<void> {
     await rm(this.resolveKey(storageKey), { force: true });
+  }
+
+  /**
+   * Create the directory chain under root with 0o700 perms. Walks
+   * the relative tail of the path so we set perms on the directories
+   * we own (one per agent/session/attachment level), without trying
+   * to chmod the user's home directory.
+   */
+  private async mkdirWithPerms(target: string): Promise<void> {
+    const rootResolved = path.resolve(this.options.root);
+    await mkdir(rootResolved, { recursive: true, mode: DIR_MODE });
+    const rel = path.relative(rootResolved, target);
+    if (!rel || rel.startsWith('..')) return;
+    const parts = rel.split(path.sep);
+    let cur = rootResolved;
+    for (const part of parts) {
+      cur = path.join(cur, part);
+      await mkdir(cur, { recursive: true, mode: DIR_MODE });
+      try {
+        await chmod(cur, DIR_MODE);
+      } catch {
+        // best-effort — perms tighten on disk-backed dev only
+      }
+    }
   }
 
   private resolveKey(storageKey: string): string {

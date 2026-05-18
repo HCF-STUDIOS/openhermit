@@ -260,3 +260,25 @@ test('LocalAttachmentStorage: rejects non-absolute root', () => {
     /must be absolute/,
   );
 });
+
+test('LocalAttachmentStorage: written file has 0o644 perms, dirs 0o700', async (t) => {
+  // Perm bits aren't meaningful on Windows; node:test doesn't expose
+  // os, so just inspect — the test still asserts something useful on
+  // posix and is harmless elsewhere.
+  const root = await tempRoot(t);
+  const storage = new LocalAttachmentStorage({ root });
+  const { storageKey } = await storage.put({
+    agentId: 'agent-perms',
+    sessionId: 's-perms',
+    attachmentId: 'att_perms',
+    filename: 'note.txt',
+    contentType: 'text/plain',
+    body: Readable.from(Buffer.from('hi')),
+  });
+  const fileStat = await stat(path.join(root, storageKey));
+  const dirStat = await stat(path.dirname(path.join(root, storageKey)));
+  if (process.platform !== 'win32') {
+    assert.equal(fileStat.mode & 0o777, 0o644);
+    assert.equal(dirStat.mode & 0o777, 0o700);
+  }
+});
