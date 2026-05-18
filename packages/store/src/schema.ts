@@ -272,10 +272,18 @@ export const skills = pgTable('skills', {
   name: text('name').notNull(),
   description: text('description').notNull(),
   path: text('path').notNull(),
+  // 'system' = operator-managed; synced into <agentHome>/.openhermit/skills/system/.
+  // 'user'   = owner-installed via skill_install; synced into .../skills/user/.
+  source: text('source').notNull().default('system'),
+  // Only set for source='user'. Server-side guard so an owner can't uninstall
+  // a peer's skill (or a system skill) by guessing the id.
+  ownerAgentId: text('owner_agent_id'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  index('idx_skills_owner_agent').on(table.ownerAgentId),
+]);
 
 export const agentSkills = pgTable('agent_skills', {
   agentId: text('agent_id').notNull(),

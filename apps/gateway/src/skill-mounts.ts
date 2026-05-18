@@ -1,10 +1,8 @@
 /**
- * Sync platform/system skills into a running agent's exec backends.
+ * Sync platform/user skills into a running agent's exec backends.
  *
- * Each backend (host/docker/e2b) decides where to write:
- *   - docker → bind-mount source dir (workspace's `.openhermit/skills/system/`)
- *   - host   → `$HOME/.openhermit/skills/system/`
- *   - e2b    → uploaded via SDK to `<agentHome>/.openhermit/skills/system/`
+ * Each backend (host/docker/e2b/daytona) writes into the `system/` or `user/`
+ * subdir under `.openhermit/skills/` based on each row's `source` column.
  */
 
 import type { AgentRunner } from '@openhermit/agent/agent-runner';
@@ -16,5 +14,7 @@ export const syncSkillMounts = async (
   skillStore: DbSkillStore,
 ): Promise<void> => {
   const enabled = await skillStore.listEnabled(agentId);
-  await runner.syncSkills(enabled.map((s) => ({ id: s.id, sourcePath: s.path })));
+  await runner.syncSkills(
+    enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+  );
 };

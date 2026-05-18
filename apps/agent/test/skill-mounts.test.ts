@@ -19,6 +19,9 @@ const fakeContext = (workspaceDir: string): BackendFactoryContext => ({
 const systemDir = (agentHome: string): string =>
   path.join(agentHome, '.openhermit', 'skills', 'system');
 
+const userDir = (agentHome: string): string =>
+  path.join(agentHome, '.openhermit', 'skills', 'user');
+
 // HostExecBackend writes skills to <cwd>/.openhermit/skills/system. Use the
 // `cwd` override to point at a temp dir so we don't touch $HOME.
 
@@ -30,7 +33,7 @@ test('host backend syncSkills copies skill directories into agentHome', async (t
   await fs.writeFile(path.join(skillSrc, 'SKILL.md'), 'content');
 
   const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
-  await backend.syncSkills([{ id: 'skill-a', sourcePath: skillSrc }]);
+  await backend.syncSkills([{ id: 'skill-a', sourcePath: skillSrc, source: 'system' }]);
 
   const copied = await fs.readFile(path.join(systemDir(home), 'skill-a', 'SKILL.md'), 'utf8');
   assert.equal(copied, 'content');
@@ -68,10 +71,10 @@ test('host backend syncSkills replaces existing copy with updated content', asyn
   await fs.writeFile(path.join(skillSrc, 'SKILL.md'), 'v1');
 
   const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
-  await backend.syncSkills([{ id: 'skill-b', sourcePath: skillSrc }]);
+  await backend.syncSkills([{ id: 'skill-b', sourcePath: skillSrc, source: 'system' }]);
 
   await fs.writeFile(path.join(skillSrc, 'SKILL.md'), 'v2');
-  await backend.syncSkills([{ id: 'skill-b', sourcePath: skillSrc }]);
+  await backend.syncSkills([{ id: 'skill-b', sourcePath: skillSrc, source: 'system' }]);
 
   const content = await fs.readFile(path.join(systemDir(home), 'skill-b', 'SKILL.md'), 'utf8');
   assert.equal(content, 'v2');
@@ -88,11 +91,52 @@ test('docker backend syncSkills writes to workspaceDir/.openhermit/skills/system
     { type: 'docker', id: 'docker', image: 'ubuntu:24.04' },
     fakeContext(workspaceDir),
   );
-  await backend.syncSkills([{ id: 'skill-c', sourcePath: skillSrc }]);
+  await backend.syncSkills([{ id: 'skill-c', sourcePath: skillSrc, source: 'system' }]);
 
   const copied = await fs.readFile(
     path.join(systemDir(workspaceDir), 'skill-c', 'SKILL.md'),
     'utf8',
   );
   assert.equal(copied, 'docker-content');
+});
+
+test('host backend syncSkills dispatches by source: user → user/, system → system/', async (t) => {
+  const home = await createTempDir(t, 'home-');
+  const sourceDir = await createTempDir(t, 'source-');
+
+  const sysSrc = path.join(sourceDir, 'sys-skill');
+  await fs.mkdir(sysSrc);
+  await fs.writeFile(path.join(sysSrc, 'SKILL.md'), 'sys');
+
+  const userSrc = path.join(sourceDir, 'user-skill');
+  await fs.mkdir(userSrc);
+  await fs.writeFile(path.join(userSrc, 'SKILL.md'), 'usr');
+
+  const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
+  await backend.syncSkills([
+    { id: 'sys-skill', sourcePath: sysSrc, source: 'system' },
+    { id: 'user-skill', sourcePath: userSrc, source: 'user' },
+  ]);
+
+  assert.equal(
+    await fs.readFile(path.join(systemDir(home), 'sys-skill', 'SKILL.md'), 'utf8'),
+    'sys',
+  );
+  assert.equal(
+    await fs.readFile(path.join(userDir(home), 'user-skill', 'SKILL.md'), 'utf8'),
+    'usr',
+  );
+});
+
+test('host backend syncSkills removes stale entries from both source subdirs', async (t) => {
+  const home = await createTempDir(t, 'home-');
+  // Pre-seed an old user skill that should be cleaned up.
+  await fs.mkdir(path.join(userDir(home), 'old-user-skill'), { recursive: true });
+  await fs.writeFile(path.join(userDir(home), 'old-user-skill', 'SKILL.md'), 'stale');
+
+  const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
+  await backend.syncSkills([]);
+
+  // user/ is created and the stale entry is gone.
+  assert.deepEqual(await fs.readdir(userDir(home)), []);
 });

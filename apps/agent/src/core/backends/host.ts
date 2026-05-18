@@ -51,7 +51,7 @@ class HostExecBackend implements ExecBackend {
 
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     await syncSkillsToHostDir(
-      path.join(this.agentHome, '.openhermit', 'skills', 'system'),
+      path.join(this.agentHome, '.openhermit', 'skills'),
       skills,
     );
   }

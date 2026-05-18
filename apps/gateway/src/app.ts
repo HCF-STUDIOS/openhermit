@@ -2018,6 +2018,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       name: body.name,
       description: body.description,
       path: body.path,
+      source: 'system',
       ...(body.metadata && typeof body.metadata === 'object' ? { metadata: body.metadata as Record<string, unknown> } : {}),
       createdAt: now,
       updatedAt: now,

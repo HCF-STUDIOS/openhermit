@@ -61,7 +61,7 @@ class DockerExecBackend implements ExecBackend {
 
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     await syncSkillsToHostDir(
-      path.join(this.workspaceDir, '.openhermit', 'skills', 'system'),
+      path.join(this.workspaceDir, '.openhermit', 'skills'),
       skills,
     );
   }

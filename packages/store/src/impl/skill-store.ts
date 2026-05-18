@@ -33,6 +33,8 @@ export class DbSkillStore implements SkillStore {
       name: skill.name,
       description: skill.description,
       path: skill.path,
+      source: skill.source,
+      ownerAgentId: skill.ownerAgentId ?? null,
       metadata: (skill.metadata ?? {}) as Record<string, unknown>,
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt,
@@ -88,6 +90,8 @@ export class DbSkillStore implements SkillStore {
       name: skills.name,
       description: skills.description,
       path: skills.path,
+      source: skills.source,
+      ownerAgentId: skills.ownerAgentId,
       metadata: skills.metadata,
       createdAt: skills.createdAt,
       updatedAt: skills.updatedAt,
@@ -128,16 +132,21 @@ export class DbSkillStore implements SkillStore {
     name: string;
     description: string;
     path: string;
+    source: string;
+    ownerAgentId: string | null;
     metadata: unknown;
     createdAt: string;
     updatedAt: string;
   }): SkillRecord {
     const metadata = (row.metadata ?? {}) as Record<string, unknown>;
+    const source = row.source === 'user' ? 'user' : 'system';
     return {
       id: row.id,
       name: row.name,
       description: row.description,
       path: row.path,
+      source,
+      ...(row.ownerAgentId ? { ownerAgentId: row.ownerAgentId } : {}),
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

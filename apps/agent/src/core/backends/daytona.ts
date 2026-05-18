@@ -51,7 +51,7 @@ interface DaytonaBackendPersisted {
 }
 
 interface DaytonaPendingSkillSync {
-  skills: Array<{ id: string; sourcePath: string }>;
+  skills: Array<{ id: string; sourcePath: string; source: 'system' | 'user' }>;
   queuedAt: string;
 }
 
@@ -191,7 +191,7 @@ class DaytonaExecBackend implements ExecBackend {
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.sandbox) {
       await this.savePendingSkillSync({
-        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath })),
+        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
         queuedAt: new Date().toISOString(),
       });
       return;
@@ -203,10 +203,16 @@ class DaytonaExecBackend implements ExecBackend {
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.sandbox) return;
-    const remoteSystemDir = `${this.agentHome}/.openhermit/skills/system`;
-    await this.sandbox.process.executeCommand(`rm -rf ${remoteSystemDir} && mkdir -p ${remoteSystemDir}`);
+    // Always reset both subdirs so uninstalling the last skill of a source
+    // actually clears it remotely.
+    const systemDir = `${this.agentHome}/.openhermit/skills/system`;
+    const userDir = `${this.agentHome}/.openhermit/skills/user`;
+    await this.sandbox.process.executeCommand(
+      `rm -rf ${systemDir} ${userDir} && mkdir -p ${systemDir} ${userDir}`,
+    );
     for (const skill of skills) {
-      const remoteSkillDir = `${remoteSystemDir}/${skill.id}`;
+      const baseDir = skill.source === 'user' ? userDir : systemDir;
+      const remoteSkillDir = `${baseDir}/${skill.id}`;
       await this.sandbox.fs.createFolder(remoteSkillDir, '755');
       await uploadDirToDaytona(this.sandbox, skill.sourcePath, remoteSkillDir);
     }
@@ -218,7 +224,14 @@ class DaytonaExecBackend implements ExecBackend {
     const pending = state?.['daytona_pending_skills'] as DaytonaPendingSkillSync | undefined;
     if (!pending || !pending.skills?.length) return;
     try {
-      await this.applySkillSync(pending.skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath })));
+      await this.applySkillSync(
+        pending.skills.map((s) => ({
+          id: s.id,
+          sourcePath: s.sourcePath,
+          // Tolerate state saved before the source column existed.
+          source: s.source ?? 'system',
+        })),
+      );
       await this.savePendingSkillSync(null);
     } catch (error) {
       console.warn(

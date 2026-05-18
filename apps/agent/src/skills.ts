@@ -123,12 +123,15 @@ export const scanSkillDirectory = async (
 };
 
 /**
- * Load the effective skill index for an agent. Both layers live under the
- * workspace's `.openhermit/skills/` directory:
- * - System skills (DB-managed, copied into `skills/system/<id>`)
- * - Workspace skills (user-installed, in `skills/<id>` excluding `system/`)
+ * Load the effective skill index for an agent. Skills come from two layers:
+ * - DB-managed: each row carries `source` ('system' | 'user'), which decides
+ *   the subdir (`skills/system/<id>` vs `skills/user/<id>`). User skills are
+ *   owner-installed via `skill_install`; system skills are operator-managed.
+ * - Workspace scan: anything dropped directly under `<workspace>/.openhermit/
+ *   skills/` outside the managed subdirs. Treated as 'workspace' source.
  *
- * Workspace skills win on id conflicts.
+ * Workspace entries win on id conflicts so a local copy can override a synced
+ * skill during development.
  */
 export const loadSkillIndex = async (
   agentId: string,
@@ -140,27 +143,28 @@ export const loadSkillIndex = async (
   const entries = new Map<string, SkillIndexEntry>();
   const home = agentHome ?? workspaceRoot;
 
-  // 1. DB-enabled (system) skills — synced into <workspace>/.openhermit/skills/system/
+  // 1. DB-enabled skills — system/ vs user/ subdir determined by row.source.
   if (skillStore) {
     const dbSkills = await skillStore.listEnabled(agentId);
     for (const skill of dbSkills) {
+      const sub = skill.source === 'user' ? 'user' : 'system';
       entries.set(skill.id, {
         id: skill.id,
         name: skill.name,
         description: skill.description,
-        path: `${home}/.openhermit/skills/system/${skill.id}`,
+        path: `${home}/.openhermit/skills/${sub}/${skill.id}`,
         source: 'system',
       });
     }
   }
 
-  // 2. Workspace skills — overwrite system entries on id conflict.
+  // 2. Workspace skills — overwrite DB entries on id conflict.
   const workspaceSkillsDir = path.join(workspaceRoot, '.openhermit', 'skills');
   const wsSkills = await scanSkillDirectory(
     workspaceSkillsDir,
     `${home}/.openhermit/skills`,
     'workspace',
-    { exclude: new Set(['system']) },
+    { exclude: new Set(['system', 'user']) },
   );
   for (const skill of wsSkills) {
     entries.set(skill.id, skill);

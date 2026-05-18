@@ -270,11 +270,16 @@ export interface UserIdentity {
   createdAt: string;
 }
 
+export type SkillSource = 'system' | 'user';
+
 export interface SkillRecord {
   id: string;
   name: string;
   description: string;
   path: string;
+  source: SkillSource;
+  /** Required when source='user'; identifies the agent that installed it. */
+  ownerAgentId?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

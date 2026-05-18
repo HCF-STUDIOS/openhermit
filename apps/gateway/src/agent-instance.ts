@@ -232,7 +232,9 @@ export class AgentInstanceManager {
     if (this.skillStore) {
       try {
         const enabled = await this.skillStore.listEnabled(agentId);
-        await runner.syncSkills(enabled.map((s) => ({ id: s.id, sourcePath: s.path })));
+        await runner.syncSkills(
+          enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+        );
       } catch (err) {
         log(`[${agentId}] skill sync failed: ${err instanceof Error ? err.message : String(err)}`);
       }

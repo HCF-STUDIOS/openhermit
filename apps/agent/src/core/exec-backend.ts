@@ -23,6 +23,14 @@ export interface SyncSkillEntry {
   id: string;
   /** Absolute path on the gateway host to copy from. */
   sourcePath: string;
+  /**
+   * Selects the subdir under `<agentHome>/.openhermit/skills/`:
+   *   'system' → skills/system/<id>
+   *   'user'   → skills/user/<id>
+   * Kept as a discriminator (rather than letting callers pass the path) so the
+   * agent can only see/install into the layouts the runner authorizes.
+   */
+  source: 'system' | 'user';
 }
 
 export interface ExecOpts {
@@ -42,8 +50,9 @@ export interface ExecBackend {
   /** Execute a shell command and return the result. */
   exec(command: string, opts?: ExecOpts): Promise<ExecResult>;
   /**
-   * Make `<agentHome>/.openhermit/skills/system/` reflect exactly the given
-   * skill set inside the exec env: copies in, removes stale entries.
+   * Make `<agentHome>/.openhermit/skills/{system,user}/` reflect exactly the
+   * given skill set inside the exec env: copies in, removes stale entries.
+   * Each entry's `source` field decides the subdir.
    */
   syncSkills(skills: SyncSkillEntry[]): Promise<void>;
   /** Teardown (stop container, etc.). No-op if nothing to clean up. */

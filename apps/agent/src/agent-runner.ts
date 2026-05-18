@@ -93,6 +93,7 @@ import { isSkillReadResult, loadSkillIndex } from './skills.js';
 import type { ScheduleRecord } from '@openhermit/store';
 import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
+import { createSkillManagementToolset } from './tools/skills.js';
 import {
   agentErrorsTotal,
   agentMessagesTotal,
@@ -1922,6 +1923,18 @@ export class AgentRunner implements SessionRuntime {
         },
       });
 
+      const toolHookCtx = {
+        bus: this.bus,
+        agentId: this.scope.agentId,
+        sessionId: input.contextSessionId,
+      };
+      const wrapToolset = (ts: Toolset): Toolset => ({
+        ...ts,
+        tools: ts.tools.map((tool) =>
+          withApproval(tool, this.options.security, input.approvalCallback, input.onToolCall, input.approvedCache, toolHookCtx),
+        ),
+      });
+
       // Connect to enabled MCP servers and add their toolsets
       if (this.options.mcpServerStore) {
         if (!this.mcpClientManager) {
@@ -1936,17 +1949,6 @@ export class AgentRunner implements SessionRuntime {
             this.mcpClientManager.connectAll(mcpServers);
           }
         }
-        const toolHookCtx = {
-          bus: this.bus,
-          agentId: this.scope.agentId,
-          sessionId: input.contextSessionId,
-        };
-        const wrapToolset = (ts: Toolset): Toolset => ({
-          ...ts,
-          tools: ts.tools.map((tool) =>
-            withApproval(tool, this.options.security, input.approvalCallback, input.onToolCall, input.approvedCache, toolHookCtx),
-          ),
-        });
         for (const ts of this.mcpClientManager.getToolsets()) {
           toolsets.push(wrapToolset(ts));
         }
@@ -1955,6 +1957,18 @@ export class AgentRunner implements SessionRuntime {
         } else {
           toolsets.push(wrapToolset(createMcpStatusOnlyToolset(this.mcpClientManager)));
         }
+      }
+
+      if (isOwnerOrUnresolved && this.options.skillStore) {
+        const skillStore = this.options.skillStore;
+        const agentId = this.scope.agentId;
+        const resyncSkills = async (): Promise<void> => {
+          const enabled = await skillStore.listEnabled(agentId);
+          await this.syncSkills(
+            enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+          );
+        };
+        toolsets.push(wrapToolset(createSkillManagementToolset(skillStore, agentId, resyncSkills)));
       }
 
       tools = toolsFromToolsets(toolsets);

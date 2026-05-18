@@ -132,18 +132,45 @@ test('loadSkillIndex workspace skills take priority over DB skills with same id'
   assert.equal(skills[0]!.source, 'workspace');
 });
 
-test('loadSkillIndex skips the system/ subdir when scanning workspace skills', async (t) => {
+test('loadSkillIndex skips the system/ and user/ subdirs when scanning workspace skills', async (t) => {
   const workspaceRoot = await createTempDir(t, 'workspace-');
   const sysSkillDir = path.join(workspaceRoot, '.openhermit', 'skills', 'system', 'sys-only');
+  const userSkillDir = path.join(workspaceRoot, '.openhermit', 'skills', 'user', 'user-only');
   await fs.mkdir(sysSkillDir, { recursive: true });
+  await fs.mkdir(userSkillDir, { recursive: true });
   await fs.writeFile(
     path.join(sysSkillDir, 'SKILL.md'),
     '---\nname: Sys Only\ndescription: System skill copied in\n---\n',
   );
+  await fs.writeFile(
+    path.join(userSkillDir, 'SKILL.md'),
+    '---\nname: User Only\ndescription: User skill copied in\n---\n',
+  );
 
-  // No DB store: workspace scan must not pick up files under system/.
+  // No DB store: workspace scan must not pick up files under system/ or user/.
+  // Those subdirs are owned by the platform-managed DB rows.
   const skills = await loadSkillIndex('agent-1', workspaceRoot);
   assert.deepEqual(skills, []);
+});
+
+test('loadSkillIndex emits user-source DB skills under the user/ subdir', async (t) => {
+  const workspaceRoot = await createTempDir(t, 'workspace-');
+
+  const fakeStore = {
+    listEnabled: async () => [
+      {
+        id: 'mine',
+        name: 'Mine',
+        description: 'Owner-installed',
+        path: '/db/path',
+        source: 'user',
+      },
+    ],
+  };
+
+  const skills = await loadSkillIndex('agent-1', workspaceRoot, fakeStore as any, '/agent/home');
+  assert.equal(skills.length, 1);
+  assert.equal(skills[0]!.path, '/agent/home/.openhermit/skills/user/mine');
 });
 
 test('loadSkillIndex works without skill store', async (t) => {

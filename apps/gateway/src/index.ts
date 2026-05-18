@@ -399,6 +399,7 @@ export const main = async (): Promise<void> => {
         name: skill.name,
         description: skill.description,
         path: skill.path,
+        source: 'system',
         createdAt: now,
         updatedAt: now,
       });
