@@ -9,6 +9,7 @@ import {
   type SessionHistoryMessage,
   type SessionCheckpointRequest,
   type SessionListQuery,
+  type SessionAttachment,
   type SessionMessage,
   type SessionSummary,
   type SessionSpec,
@@ -538,6 +539,115 @@ export class GatewayClient {
     await this.deleteJson(
       `/api/agents/${encodeURIComponent(agentId)}/secrets/${encodeURIComponent(name)}`,
     );
+  }
+
+  // --- attachments (per-session) ---
+
+  /**
+   * Upload a file as a session attachment. The gateway sniffs the MIME
+   * type, stores the bytes, and (for files under the sandbox-copy
+   * threshold) eagerly materialises them into the agent's sandbox so
+   * tools see a real on-disk path. Resolves with the attachment record;
+   * `id` can then be embedded in a subsequent `postMessage` as
+   * `{ type: 'file', id }`.
+   *
+   * Pass a `File` (the name is taken from `file.name`) or a `Blob` with
+   * an explicit `filename`. The two-arg `File` form is the typical
+   * browser path; the `Blob + filename` form is what Node callers use
+   * after constructing a Blob from raw bytes.
+   */
+  async uploadAttachment(
+    agentId: string,
+    sessionId: string,
+    file: File | Blob,
+    filename?: string,
+  ): Promise<SessionAttachment> {
+    const form = new FormData();
+    const resolvedName =
+      filename ?? (file instanceof File ? file.name : undefined);
+    if (!resolvedName) {
+      throw new OpenHermitError(
+        'uploadAttachment requires a filename when body is a Blob without a name.',
+        'gateway_api_error',
+        400,
+      );
+    }
+    form.append('file', file, resolvedName);
+
+    const path = gatewayRoutes.agentSessionAttachments(agentId, sessionId);
+    const url = joinUrl(this.baseUrl, path);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.token}` },
+        body: form,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+
+    const body = (await response.json()) as { attachment: SessionAttachment };
+    return body.attachment;
+  }
+
+  /**
+   * List attachments for a session. Default scope is the current session
+   * only; `scope: 'user'` widens the listing to every attachment the
+   * caller has uploaded across the agent's sessions (requires an
+   * authenticated user).
+   */
+  async listAttachments(
+    agentId: string,
+    sessionId: string,
+    options?: { scope?: 'session' | 'user' },
+  ): Promise<SessionAttachment[]> {
+    let path = gatewayRoutes.agentSessionAttachments(agentId, sessionId);
+    if (options?.scope === 'user') {
+      path += '?scope=user';
+    }
+    const body = await this.getJson<{ attachments: SessionAttachment[] }>(path);
+    return body.attachments;
+  }
+
+  /**
+   * Fetch a single attachment's metadata by id. Returns the wire record
+   * (id, mime, size, sha256, sandbox path, materialization state, etc.).
+   */
+  async getAttachment(
+    agentId: string,
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<SessionAttachment> {
+    const path = gatewayRoutes.agentSessionAttachmentById(
+      agentId,
+      sessionId,
+      attachmentId,
+    );
+    const body = await this.getJson<{ attachment: SessionAttachment }>(path);
+    return body.attachment;
   }
 
   // --- channels (per-agent) ---
