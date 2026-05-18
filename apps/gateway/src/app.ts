@@ -63,6 +63,7 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
+import { resolveInboundAttachments } from './attachment-url-passthrough.js';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -1137,14 +1138,51 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const runtime = await resolveRunner(instances, agentId);
 
     // Verify caller is a participant (user mode only; channels handle identity per-message)
+    let resolvedCallerUserId: string | undefined;
     if (auth.mode === 'user') {
-      await requireSessionAccessHttp(auth, runtime, sessionId);
+      resolvedCallerUserId = await requireSessionAccessHttp(
+        auth,
+        runtime,
+        sessionId,
+      );
     }
 
     const payload = await c.req.json().catch(() => null);
 
     if (!isSessionMessage(payload)) {
       throw new ValidationError('Invalid SessionMessage payload.');
+    }
+
+    // URL-passthrough: convert `{ url, !id }` attachments into real
+    // session_attachments rows (fetch + persist + materialize) before
+    // forwarding. Mutates `payload.attachments` in place. Fetch failures
+    // throw `attachment_fetch_failed` so the whole postMessage 4xxs —
+    // silently dropping the upload would have the vision model "see" only
+    // text and the user wouldn't know their image was lost.
+    if (
+      options.attachmentStore &&
+      options.attachmentStorage &&
+      Array.isArray(payload.attachments)
+    ) {
+      const resolvedAttachments = await resolveInboundAttachments(
+        payload.attachments,
+        {
+          agentId,
+          sessionId,
+          uploaderUserId: resolvedCallerUserId ?? null,
+          maxBytes:
+            options.attachmentMaxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES,
+          attachmentStore: options.attachmentStore,
+          attachmentStorage: options.attachmentStorage,
+          runtime,
+          logger: log,
+        },
+      );
+      if (resolvedAttachments === undefined) {
+        delete payload.attachments;
+      } else {
+        payload.attachments = resolvedAttachments;
+      }
     }
 
     // Channel namespace enforcement
