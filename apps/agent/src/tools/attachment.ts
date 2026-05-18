@@ -72,8 +72,6 @@ const recordSummary = (
   sandboxPath: r.sandboxPath,
   sandboxId: r.sandboxId,
   materializationState: r.materializationState,
-  description: r.description,
-  descriptionState: r.descriptionState,
   createdAt: r.createdAt,
 });
 
@@ -99,7 +97,7 @@ export const createAttachmentListTool = (
   name: 'attachment_list',
   label: 'List Attachments',
   description:
-    'List files the user has uploaded into this session (default) or across the user\'s sessions on this agent (scope=user). Returns id, name, mime, size, sandbox path, and description state.',
+    'List files the user has uploaded into this session (default) or across the user\'s sessions on this agent (scope=user). Returns id, name, mime, size, and sandbox path.',
   parameters: AttachmentListParams,
   execute: async (_toolCallId, args: AttachmentListArgs) => {
     if (!context.attachmentStore || !context.storeScope || !context.sessionId) {
