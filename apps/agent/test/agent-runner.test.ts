@@ -130,6 +130,55 @@ const createToolCallResponseStream = (
   return stream;
 };
 
+/**
+ * Stream where the model emits only thinking and then claims `toolUse` as the
+ * stop reason — but never produces an actual `toolCall` block. Reproduces the
+ * moonshotai/kimi-k2.6-via-OpenRouter pattern where pi-ai has nothing to
+ * dispatch and the turn would otherwise persist with empty content and never
+ * publish a text_final event.
+ */
+const createThinkingOnlyToolUseStream = (thinking: string) => {
+  const stream = createAssistantMessageEventStream();
+  const message = createAssistantMessage(
+    [
+      {
+        type: 'thinking',
+        thinking,
+      },
+    ],
+    'toolUse',
+  );
+
+  stream.push({
+    type: 'start',
+    partial: createAssistantMessage([], 'toolUse'),
+  });
+  stream.push({
+    type: 'thinking_start',
+    contentIndex: 0,
+    partial: message,
+  });
+  stream.push({
+    type: 'thinking_delta',
+    contentIndex: 0,
+    delta: thinking,
+    partial: message,
+  });
+  stream.push({
+    type: 'thinking_end',
+    contentIndex: 0,
+    content: thinking,
+    partial: message,
+  });
+  stream.push({
+    type: 'done',
+    reason: 'toolUse',
+    message,
+  });
+
+  return stream;
+};
+
 const createSequentialStreamFn = (
   responders: Array<(context: Context) => ReturnType<typeof createAssistantMessageEventStream>>,
 ): StreamFn => {
@@ -655,6 +704,62 @@ test('AgentRunner ignores whitespace-only assistant messages emitted before tool
 
   assert.equal(assistantHistory.length, 1);
   assert.equal(assistantHistory[0]?.content, 'The fact is 42.');
+});
+
+test('AgentRunner promotes thinking to text when stopReason=toolUse but no tool_use blocks are emitted', async (t) => {
+  // Regression: moonshotai/kimi-k2.6 via OpenRouter has been observed to set
+  // stopReason="toolUse" while emitting only a thinking block and no actual
+  // toolCall blocks. pi-ai's agent loop has nothing to dispatch and exits, so
+  // without the rescue the runner would persist content="" and the channel
+  // adapter would never see a text_final — looking like an interrupted reply.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () =>
+        createThinkingOnlyToolUseStream(
+          'The user is asking if `lit` is installed. Let me verify.',
+        ),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:tooluse-empty-session',
+    source: {
+      kind: 'cli',
+      interactive: true,
+    },
+  });
+  await runner.postMessage('cli:tooluse-empty-session', {
+    text: 'lit 工具你已经安装了吗？',
+  });
+  await runner.waitForSessionIdle('cli:tooluse-empty-session');
+
+  const backlog = runner.events.getBacklog('cli:tooluse-empty-session');
+
+  // A text_final must be published carrying the thinking content so the
+  // channel adapter has something to deliver to the user. (The runner also
+  // double-publishes from agent_end on this path — same as DeepSeek R1's
+  // final-thinking-only behavior — so we assert ≥1, not exactly 1.)
+  const finalTextEvents = backlog.filter((entry) => entry.event.type === 'text_final');
+  assert.ok(finalTextEvents.length >= 1, 'expected at least one text_final event');
+  for (const entry of finalTextEvents) {
+    assert.match((entry.event as { text: string }).text, /lit/);
+  }
+
+  // The persisted assistant entry must carry the thinking text as content,
+  // not an empty string — otherwise resumed sessions show a phantom turn.
+  const sessionEntries = await readSessionLog(runner, 'cli:tooluse-empty-session');
+  const assistantEntries = sessionEntries.filter((entry) => entry.role === 'assistant');
+  assert.equal(assistantEntries.length, 1);
+  assert.match(String(assistantEntries[0]?.content ?? ''), /lit/);
 });
 
 test('AgentRunner surfaces a missing API key as an error event instead of crashing', async (t) => {

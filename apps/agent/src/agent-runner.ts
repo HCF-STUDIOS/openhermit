@@ -2722,10 +2722,19 @@ export class AgentRunner implements SessionRuntime {
 
         const hasText = assistantText && hasMeaningfulAssistantText(assistantText);
         const hasThinking = thinkingText && thinkingText.length > 0;
+        const toolCallCount = assistantMessage.content.filter((c) => c.type === 'toolCall').length;
 
         // When model outputs only thinking with no text (e.g. DeepSeek R1 final answer),
         // promote thinking to assistant text if this is the final message (not a tool call).
-        const isFinalThinkingOnly = !hasText && hasThinking && assistantMessage.stopReason !== 'toolUse';
+        // `stopReason === 'toolUse'` with zero actual tool_use blocks (observed on
+        // moonshotai/kimi-k2.6 via OpenRouter) is treated as final-thinking-only — pi-ai's
+        // agent loop won't dispatch anything (no toolCall blocks), so without this rescue
+        // the turn would persist with empty content and the channel adapter would never see
+        // a text_final event, producing a phantom "interrupted reply".
+        const isFinalThinkingOnly =
+          !hasText
+          && hasThinking
+          && (assistantMessage.stopReason !== 'toolUse' || toolCallCount === 0);
         const effectiveText = isFinalThinkingOnly ? thinkingText : (assistantText || '');
         const effectiveThinking = isFinalThinkingOnly ? undefined : (hasThinking ? thinkingText : undefined);
 
