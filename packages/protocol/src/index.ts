@@ -41,13 +41,26 @@ export type AttachmentMaterializationState =
 /**
  * Attachment reference on a session message.
  *
- * The `id` is the authoritative handle — durable bytes + metadata live on the
- * gateway under that id. `sandboxPath` is a convenience pointer for the model
- * and may go stale if a sandbox is rebuilt; tools should resolve through
- * `id` rather than trust the path.
+ * Two input shapes are supported on `postMessage` / `appendMessage`:
  *
- * Legacy inline forms (raw `url` / base64 `data`) are still accepted on input
- * for back-compat — clients should migrate to the id-based shape.
+ * 1. **id-shape** — bytes already uploaded via `POST /attachments`; pass
+ *    `{ type, id }`. Authoritative handle; durable bytes + metadata live on
+ *    the gateway under that id.
+ * 2. **url-passthrough** — bytes live in external storage (signed URL,
+ *    public CDN, etc.); pass `{ type: 'file', url, mimeType?, name? }`.
+ *    The gateway will GET the URL server-side, persist into
+ *    `session_attachments`, materialize into the sandbox, and inject into
+ *    the current turn's model context. Failures throw
+ *    `attachment_fetch_failed` (400) — the whole `postMessage` fails so the
+ *    caller can retry; bytes are never silently dropped. SSRF guard
+ *    requires https and refuses private / loopback / link-local hosts.
+ *
+ * On output (history entries, events), only the id-shape is returned —
+ * url-passthrough inputs are persisted and surfaced with their resolved
+ * `id`. `sandboxPath` is a convenience pointer for the model and may go
+ * stale if the sandbox is rebuilt; tools should resolve through `id`.
+ *
+ * Inline base64 (`data`) remains legacy / back-compat only.
  */
 export interface SessionAttachment {
   id?: string;
@@ -58,7 +71,13 @@ export interface SessionAttachment {
   sha256?: string;
   sandboxPath?: string;
   materializationState?: AttachmentMaterializationState;
-  /** Legacy: inline URL reference (kept for back-compat). */
+  /**
+   * URL-passthrough input: gateway fetches and persists the URL into
+   * `session_attachments` on receive, then injects the resolved attachment
+   * into the current turn's model context. Must be https; gateway rejects
+   * private / loopback / link-local / cloud-metadata hosts. Mutually
+   * exclusive with `id` (id-shape wins).
+   */
   url?: string;
   /** Legacy: inline base64 payload (kept for back-compat). */
   data?: string;
