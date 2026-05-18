@@ -181,6 +181,7 @@ export class WechatBridge implements ChannelOutbound {
         channel: 'wechat',
         metadata: { [isGroup ? 'wechat_group_id' : 'wechat_peer_id']: peer },
         limit: 1,
+        includeInactive: true,
       });
       if (sessions.length > 0) {
         const sessionId = sessions[0]!.sessionId;

@@ -153,17 +153,24 @@ export class TelegramBridge implements ChannelOutbound {
     return `telegram:${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}`;
   }
 
-  /** Get or create the current sessionId for a chat. */
+  /**
+   * Resolve the current sessionId for a chat. Prefers an in-memory cache,
+   * then the most recent persisted session for this chat — including ones
+   * marked `inactive` (by `/new` or the 3-day stale-marker), so a reply
+   * after a long pause stays in the same thread instead of forking a new
+   * session and splitting history. The session is auto-reactivated on the
+   * next `ensureSession` (openSession reopens with `status: 'idle'`).
+   */
   private async getSessionId(chatId: number): Promise<string> {
     const cached = this.chatSessions.get(chatId);
     if (cached) return cached;
 
-    // Try to recover the most recent session for this chat from the server.
     try {
       const sessions = await this.client.listSessions({
         channel: 'telegram',
         metadata: { telegram_chat_id: String(chatId) },
         limit: 1,
+        includeInactive: true,
       });
       if (sessions.length > 0) {
         const sessionId = sessions[0]!.sessionId;
@@ -244,9 +251,27 @@ export class TelegramBridge implements ChannelOutbound {
     }
     this.lastEventIds.delete(oldSessionId);
 
-    // Generate a fresh sessionId for this chat.
     const newSessionId = TelegramBridge.generateSessionId();
     this.chatSessions.set(chatId, newSessionId);
+
+    // Persist the new session row eagerly so a gateway restart between
+    // `/new` and the user's first follow-up message doesn't cause the
+    // resolver to reactivate the just-checkpointed old session (its
+    // `lastActivityAt` would otherwise still win the limit:1 lookup).
+    try {
+      await this.client.openSession({
+        sessionId: newSessionId,
+        source: {
+          kind: 'channel',
+          interactive: true,
+          platform: 'telegram',
+        },
+        metadata: { telegram_chat_id: chatId },
+      });
+    } catch {
+      // Server unavailable — old session will resurrect on next message,
+      // which is the same outcome as if `/new` had never been issued.
+    }
 
     await this.telegram.sendMessage(chatId, 'New conversation started.');
   }

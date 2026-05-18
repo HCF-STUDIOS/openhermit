@@ -64,6 +64,7 @@ export class DiscordBridge implements ChannelOutbound {
         channel: 'discord',
         metadata: { discord_channel_id: channelId },
         limit: 1,
+        includeInactive: true,
       });
       if (sessions.length > 0) {
         const sessionId = sessions[0]!.sessionId;
@@ -126,6 +127,18 @@ export class DiscordBridge implements ChannelOutbound {
 
     const newSessionId = DiscordBridge.generateSessionId();
     this.channelSessions.set(channelId, newSessionId);
+
+    // Persist the new session row eagerly so a gateway restart between
+    // `/new` and the next message doesn't cause the resolver to
+    // reactivate the just-checkpointed old session.
+    try {
+      await this.client.openSession({
+        sessionId: newSessionId,
+        source: { kind: 'channel', interactive: true, platform: 'discord' },
+        metadata: { discord_channel_id: channelId },
+      });
+    } catch { /* ignore */ }
+
     await this.discord.sendMessage(channelId, 'New conversation started.');
   }
 

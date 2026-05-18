@@ -160,6 +160,13 @@ const parseSessionListQuery = (request: Request): SessionListQuery => {
     if (observe !== undefined) query.observe = observe;
   }
 
+  if (url.searchParams.has('includeInactive')) {
+    const includeInactive = parseBooleanQuery(
+      url.searchParams.get('includeInactive') ?? undefined,
+    );
+    if (includeInactive !== undefined) query.includeInactive = includeInactive;
+  }
+
   return query;
 };
 

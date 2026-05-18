@@ -68,6 +68,10 @@ export class AgentLocalClient {
       searchParams.set('channel', query.channel);
     }
 
+    if (query.includeInactive) {
+      searchParams.set('includeInactive', 'true');
+    }
+
     if (query.metadata) {
       for (const [key, value] of Object.entries(query.metadata)) {
         searchParams.set(`metadata.${key}`, value);

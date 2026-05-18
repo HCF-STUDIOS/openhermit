@@ -70,6 +70,7 @@ export class SlackBridge implements ChannelOutbound {
         channel: 'slack',
         metadata,
         limit: 1,
+        includeInactive: true,
       });
       if (sessions.length > 0) {
         const sessionId = sessions[0]!.sessionId;
@@ -112,6 +113,20 @@ export class SlackBridge implements ChannelOutbound {
 
     const newSessionId = SlackBridge.generateSessionId();
     this.channelSessions.set(key, newSessionId);
+
+    // Persist the new session row eagerly so a gateway restart between
+    // `/new` and the next message doesn't cause the resolver to
+    // reactivate the just-checkpointed old session.
+    const metadata: Record<string, string> = { slack_channel_id: channelId };
+    if (threadTs) metadata.slack_thread_ts = threadTs;
+    try {
+      await this.client.openSession({
+        sessionId: newSessionId,
+        source: { kind: 'channel', interactive: true, platform: 'slack' },
+        metadata,
+      });
+    } catch { /* ignore */ }
+
     await this.slack.sendMessage(channelId, 'New conversation started.', ...(threadTs ? [{ threadTs }] : []));
   }
 
