@@ -57,8 +57,9 @@ export interface GatewayConfig {
   channelPackages: string[];
   /**
    * Optional attachment storage configuration. When omitted, the gateway
-   * defaults to local-disk storage rooted at
-   * `OPENHERMIT_ATTACHMENT_ROOT` (or `~/.openhermit/attachments`).
+   * defaults to local-disk storage rooted at `~/.openhermit/attachments`.
+   * Credentials (AWS chain, SUPABASE_SERVICE_ROLE_KEY) still come from
+   * env; only non-secret pointers belong here.
    */
   attachments?: AttachmentsConfig;
 }

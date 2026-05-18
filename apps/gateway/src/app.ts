@@ -61,7 +61,7 @@ import type { AgentInstanceManager } from './agent-instance.js';
 import { listSessionsForCaller } from './session-listing.js';
 import {
   registerAttachmentRoutes,
-  resolveAttachmentLimits,
+  DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
 import type { LogBuffer } from './log-buffer.js';
 import {
@@ -1390,12 +1390,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   // --- attachments ---
 
   if (options.attachmentStore && options.attachmentStorage) {
-    const envLimits = resolveAttachmentLimits();
     registerAttachmentRoutes(app, {
       instances,
       attachmentStore: options.attachmentStore,
       attachmentStorage: options.attachmentStorage,
-      maxBytes: options.attachmentMaxBytes ?? envLimits.maxBytes,
+      maxBytes: options.attachmentMaxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES,
       requireAuth,
       enforceSessionNamespace,
       resolveRunner,

@@ -62,84 +62,18 @@ import {
 const DEFAULT_CONFIG_FILENAME = 'gateway.json';
 
 /**
- * Resolve the attachment storage provider from gateway config. Falls back
- * to local-disk storage when the config block is absent so existing
- * deployments keep working. Credentials are read from env (AWS default
- * chain / SUPABASE_SERVICE_ROLE_KEY); the config block only carries
- * non-secret resource pointers.
- *
- * As a convenience, the non-secret pointers may also be supplied via
- * `OPENHERMIT_ATTACHMENT_*` env vars so a deployment can be configured
- * without editing gateway.json. Env-derived config is only used when
- * `config.attachments` is absent.
+ * Resolve the attachment storage provider from gateway config. Credentials
+ * are read from env (AWS default chain / SUPABASE_SERVICE_ROLE_KEY); all
+ * non-secret pointers (provider, bucket, region, prefix, endpoint, root)
+ * live in gateway.json under `attachments.storage`. Falls back to
+ * local-disk storage when no block is configured.
  */
-const buildStorageConfigFromEnv = (): AttachmentStorageConfig | undefined => {
-  const provider = process.env.OPENHERMIT_ATTACHMENT_PROVIDER;
-  if (!provider) {
-    // Allow shorthand: presence of supabase/s3 hints implies that provider.
-    if (process.env.OPENHERMIT_ATTACHMENT_SUPABASE_URL) {
-      return {
-        provider: 'supabase',
-        url: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_URL,
-        bucket: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_BUCKET ?? 'attachments',
-        ...(process.env.OPENHERMIT_ATTACHMENT_SUPABASE_PREFIX
-          ? { prefix: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_PREFIX }
-          : {}),
-      };
-    }
-    if (process.env.OPENHERMIT_ATTACHMENT_S3_BUCKET) {
-      return {
-        provider: 's3',
-        bucket: process.env.OPENHERMIT_ATTACHMENT_S3_BUCKET,
-        ...(process.env.OPENHERMIT_ATTACHMENT_S3_REGION
-          ? { region: process.env.OPENHERMIT_ATTACHMENT_S3_REGION }
-          : {}),
-        ...(process.env.OPENHERMIT_ATTACHMENT_S3_PREFIX
-          ? { prefix: process.env.OPENHERMIT_ATTACHMENT_S3_PREFIX }
-          : {}),
-        ...(process.env.OPENHERMIT_ATTACHMENT_S3_ENDPOINT
-          ? { endpoint: process.env.OPENHERMIT_ATTACHMENT_S3_ENDPOINT }
-          : {}),
-      };
-    }
-    return undefined;
-  }
-  if (provider === 'supabase') {
-    return {
-      provider: 'supabase',
-      url: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_URL ?? '',
-      bucket: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_BUCKET ?? 'attachments',
-      ...(process.env.OPENHERMIT_ATTACHMENT_SUPABASE_PREFIX
-        ? { prefix: process.env.OPENHERMIT_ATTACHMENT_SUPABASE_PREFIX }
-        : {}),
-    };
-  }
-  if (provider === 's3') {
-    return {
-      provider: 's3',
-      bucket: process.env.OPENHERMIT_ATTACHMENT_S3_BUCKET ?? '',
-      ...(process.env.OPENHERMIT_ATTACHMENT_S3_REGION
-        ? { region: process.env.OPENHERMIT_ATTACHMENT_S3_REGION }
-        : {}),
-      ...(process.env.OPENHERMIT_ATTACHMENT_S3_PREFIX
-        ? { prefix: process.env.OPENHERMIT_ATTACHMENT_S3_PREFIX }
-        : {}),
-      ...(process.env.OPENHERMIT_ATTACHMENT_S3_ENDPOINT
-        ? { endpoint: process.env.OPENHERMIT_ATTACHMENT_S3_ENDPOINT }
-        : {}),
-    };
-  }
-  return { provider: 'local' };
-};
-
 const buildAttachmentStorage = async (
   config: GatewayConfig,
   log: (message: string) => void,
 ): Promise<AttachmentStorage> => {
   const storageConfig: AttachmentStorageConfig =
-    config.attachments?.storage ??
-    buildStorageConfigFromEnv() ??
-    { provider: 'local' };
+    config.attachments?.storage ?? { provider: 'local' };
 
   if (storageConfig.provider === 's3') {
     log(`attachment storage: s3 bucket=${storageConfig.bucket}`);
@@ -172,9 +106,7 @@ const buildAttachmentStorage = async (
   }
 
   const root =
-    storageConfig.root ??
-    process.env.OPENHERMIT_ATTACHMENT_ROOT ??
-    path.join(resolveOpenHermitHome(), 'attachments');
+    storageConfig.root ?? path.join(resolveOpenHermitHome(), 'attachments');
   log(`attachment storage: local root=${root}`);
   return new LocalAttachmentStorage({ root });
 };
