@@ -183,6 +183,13 @@
       "when": 1779300000000,
       "tag": "0025_agent_channels_last_error",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0026_session_attachments",
+      "breakpoints": true
     }
   ]
 }

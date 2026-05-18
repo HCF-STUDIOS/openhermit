@@ -98,6 +98,76 @@ export interface ApprovalRequestCreateInput {
   ttlMinutes?: number;
 }
 
+export type AttachmentMaterializationState =
+  | 'pending'
+  | 'copied'
+  | 'skipped'
+  | 'failed';
+
+export type AttachmentDescriptionState =
+  | 'pending'
+  | 'ready'
+  | 'skipped'
+  | 'failed';
+
+/** 'local' | 's3' | 'supabase' — open string so providers can be added without a schema bump. */
+export type AttachmentStorageProvider = string;
+
+export interface AttachmentRecord {
+  id: string;
+  agentId: string;
+  sessionId: string;
+  uploaderUserId: string | null;
+  originalName: string;
+  safeName: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  storageProvider: AttachmentStorageProvider;
+  storageKey: string;
+  sandboxId: string | null;
+  sandboxPath: string | null;
+  materializationState: AttachmentMaterializationState;
+  materializationError: string | null;
+  description: string | null;
+  descriptionState: AttachmentDescriptionState;
+  createdAt: string;
+}
+
+export interface AttachmentCreateInput {
+  id?: string;
+  agentId: string;
+  sessionId: string;
+  uploaderUserId?: string | null;
+  originalName: string;
+  safeName: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  storageProvider: AttachmentStorageProvider;
+  storageKey: string;
+}
+
+export interface AttachmentListOptions {
+  /** Defaults to 'session'. */
+  scope?: 'session' | 'user';
+  /** Required when `scope` is 'user' — never permit cross-user listing. */
+  userId?: string;
+  limit?: number;
+}
+
+export interface AttachmentMaterializationPatch {
+  sandboxId?: string | null;
+  sandboxPath?: string | null;
+  state: AttachmentMaterializationState;
+  error?: string | null;
+}
+
+export interface AttachmentDescriptionPatch {
+  description?: string | null;
+  state: AttachmentDescriptionState;
+}
+
 export interface SandboxCreateInput {
   id?: string;
   agentId: string;

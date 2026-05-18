@@ -9,6 +9,11 @@ import type {
   ApprovalRequestRecord,
   ApprovalResolution,
   ApprovalStatus,
+  AttachmentCreateInput,
+  AttachmentDescriptionPatch,
+  AttachmentListOptions,
+  AttachmentMaterializationPatch,
+  AttachmentRecord,
   McpServerRecord,
   MessageRow,
   InstructionEntry,
@@ -321,6 +326,50 @@ export interface ApprovalRequestStore {
     reason?: string,
   ): Promise<ApprovalRequestRecord>;
   expireOld(): Promise<number>;
+}
+
+/**
+ * Metadata store for uploaded files. Byte payloads live behind an
+ * `AttachmentStorage` provider; this interface is only the row-of-record
+ * for "what file IDs exist and what do we know about them."
+ *
+ * Cross-user listing is never permitted. `list` with `scope: 'user'`
+ * requires `userId` and filters on `uploader_user_id` in addition to
+ * `agentId`.
+ */
+export interface AttachmentStore {
+  create(input: AttachmentCreateInput): Promise<AttachmentRecord>;
+  get(id: string): Promise<AttachmentRecord | undefined>;
+  /** Scoped lookup for tool calls — defaults to session scope. */
+  list(scope: StoreScope, sessionId: string, options?: AttachmentListOptions): Promise<AttachmentRecord[]>;
+  setMaterialization(id: string, patch: AttachmentMaterializationPatch): Promise<void>;
+  setDescription(id: string, patch: AttachmentDescriptionPatch): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+/**
+ * Byte-storage provider for attachments. Independent of the metadata
+ * store so the same provider impl (local disk / s3 / supabase) can be
+ * reused across deployments without leaking storage details to the
+ * gateway or to tools.
+ */
+export interface AttachmentStorage {
+  readonly name: string;
+  put(input: {
+    agentId: string;
+    sessionId: string;
+    attachmentId: string;
+    filename: string;
+    contentType: string;
+    body: NodeJS.ReadableStream;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }>;
+  readStream(storageKey: string): Promise<NodeJS.ReadableStream>;
+  /** Returns null when the provider has no signed-URL concept (e.g. local disk). */
+  getSignedUrl(
+    storageKey: string,
+    options: { expiresInSeconds: number },
+  ): Promise<string | null>;
+  delete(storageKey: string): Promise<void>;
 }
 
 export interface InternalStateStore {

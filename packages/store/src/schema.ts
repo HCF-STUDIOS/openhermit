@@ -333,6 +333,54 @@ export const schedules = pgTable('schedules', {
   index('idx_schedules_next_run').on(table.agentId, table.nextRunAt),
 ]);
 
+/**
+ * Per-session uploaded files. The byte payload lives in an
+ * `AttachmentStorage` provider (local disk / s3 / supabase); this row is
+ * the metadata of record. See `docs/file-attachments-design.md`.
+ *
+ * `materialization_state` tracks whether the file is currently mirrored
+ * into the agent's sandbox as a regular file (so `file_read` / `exec`
+ * can see it directly); `description_state` tracks the bounded
+ * server-side content preview surfaced to the model in
+ * `attachment_list`.
+ */
+export const sessionAttachments = pgTable('session_attachments', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  /** Authenticated user who uploaded the file, when known. */
+  uploaderUserId: text('uploader_user_id'),
+  /** Original client-supplied filename, preserved for display. */
+  originalName: text('original_name').notNull(),
+  /** Sanitized filename used in sandbox paths. */
+  safeName: text('safe_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  sha256: text('sha256').notNull(),
+  /** 'local' | 's3' | 'supabase' (future) */
+  storageProvider: text('storage_provider').notNull(),
+  /** Provider-internal object key — never exposed to the model. */
+  storageKey: text('storage_key').notNull(),
+  /** Sandbox that currently has a materialized copy, if any. */
+  sandboxId: text('sandbox_id'),
+  /** Agent-visible path inside the sandbox, if materialized. */
+  sandboxPath: text('sandbox_path'),
+  /** 'pending' | 'copied' | 'skipped' | 'failed' */
+  materializationState: text('materialization_state').default('pending').notNull(),
+  materializationError: text('materialization_error'),
+  /** Short server-generated content preview (e.g., PDF first page, text head). */
+  description: text('description'),
+  /** 'pending' | 'ready' | 'skipped' | 'failed' */
+  descriptionState: text('description_state').default('pending').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_session_attachments_session').on(table.agentId, table.sessionId, table.createdAt),
+  // Powers `attachment_list` with `scope: 'user'` — every file a given
+  // user uploaded under this agent, newest first.
+  index('idx_session_attachments_user').on(table.agentId, table.uploaderUserId, table.createdAt),
+  index('idx_session_attachments_sha256').on(table.sha256),
+]);
+
 export const scheduleRuns = pgTable('schedule_runs', {
   id: serial('id').primaryKey(),
   agentId: text('agent_id').notNull(),

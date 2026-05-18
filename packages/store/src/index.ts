@@ -14,6 +14,8 @@ export type {
   SandboxStore,
   PolicyStore,
   ApprovalRequestStore,
+  AttachmentStore,
+  AttachmentStorage,
 } from './interfaces.js';
 
 export type {
@@ -54,6 +56,14 @@ export type {
   ApprovalResolution,
   ApprovalRequestRecord,
   ApprovalRequestCreateInput,
+  AttachmentRecord,
+  AttachmentCreateInput,
+  AttachmentListOptions,
+  AttachmentMaterializationPatch,
+  AttachmentMaterializationState,
+  AttachmentDescriptionPatch,
+  AttachmentDescriptionState,
+  AttachmentStorageProvider,
 } from './types.js';
 
 export { STANDALONE_AGENT_ID, standaloneScope } from './types.js';
@@ -97,6 +107,9 @@ export {
   DbSandboxStore,
   DbPolicyStore,
   DbApprovalRequestStore,
+  DbAttachmentStore,
+  LocalAttachmentStorage,
+  type LocalAttachmentStorageOptions,
   DbMetaStore,
   generateSecretsKey,
   runMigrations,
