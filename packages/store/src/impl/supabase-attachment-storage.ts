@@ -74,10 +74,14 @@ export class SupabaseAttachmentStorage implements AttachmentStorage {
         `SupabaseAttachmentStorage: prefix must not start or end with "/": ${options.prefix}`,
       );
     }
-    const key = options.serviceRoleKey ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const key =
+      options.serviceRoleKey ??
+      process.env.SUPABASE_SERVICE_ROLE_KEY ??
+      process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY;
     if (!key) {
       throw new Error(
-        'SupabaseAttachmentStorage requires SUPABASE_SERVICE_ROLE_KEY (env). ' +
+        'SupabaseAttachmentStorage requires SUPABASE_SERVICE_ROLE_KEY ' +
+          '(or OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY). ' +
           'Set the env var on the gateway; do not put it in gateway config.',
       );
     }

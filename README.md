@@ -234,6 +234,10 @@ Important environment variables:
 | `OPENHERMIT_ATTACHMENT_SANDBOX_COPY_MAX_BYTES` | Files at or below this size are auto-copied into the sandbox, default `2097152` (2 MB) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | Standard AWS credential chain — used when `attachments.storage.provider = s3` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Required when `attachments.storage.provider = supabase`. Never stored in gateway config |
+| `OPENHERMIT_ATTACHMENT_PROVIDER` | `local` / `s3` / `supabase` — env-based fallback when no `attachments` block is set in `gateway.json` |
+| `OPENHERMIT_ATTACHMENT_S3_BUCKET` / `_REGION` / `_PREFIX` / `_ENDPOINT` | Env-based pointer config for the S3 provider |
+| `OPENHERMIT_ATTACHMENT_SUPABASE_URL` / `_BUCKET` / `_PREFIX` | Env-based pointer config for the Supabase provider |
+| `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY` | Alias for `SUPABASE_SERVICE_ROLE_KEY` |
 
 ### Attachment storage backends
 
@@ -286,6 +290,10 @@ Install the SDK on the gateway: `npm install @supabase/supabase-js`. Set `SUPABA
 ```
 
 Optional `attachments.limits.maxBytes` and `attachments.limits.sandboxCopyMaxBytes` override the env defaults from gateway config.
+
+#### Env-only configuration
+
+If you'd rather not edit `gateway.json`, the same provider pointers can be supplied via env. Setting `OPENHERMIT_ATTACHMENT_SUPABASE_URL` or `OPENHERMIT_ATTACHMENT_S3_BUCKET` is enough to select the provider; `OPENHERMIT_ATTACHMENT_PROVIDER` lets you pin it explicitly. The env block always loses to an explicit `attachments` block in `gateway.json`.
 
 ---
 
