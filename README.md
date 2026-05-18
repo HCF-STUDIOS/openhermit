@@ -234,11 +234,11 @@ Important environment variables:
 
 ### Attachment storage backends
 
-The gateway supports three storage providers. The provider is selected in `gateway.json` (or via the admin API at `/admin/config`), and **credentials live in env, not config** — only secrets go in env; everything else lives in `gateway.json`.
+The gateway supports three storage providers. The provider is selected in the gateway config (DB-backed, edited via the admin UI at `/admin/config` — JSON tab — or seeded from `gateway.json` on first boot), and **credentials live in env, not config** — only secrets go in env; non-secret pointers (provider, bucket, region, prefix, endpoint, root) live in the gateway config.
 
 #### Local disk (default)
 
-No config block needed; defaults to `~/.openhermit/attachments`. To override the root:
+No config block needed; defaults to `~/.openhermit/attachments`. To override the root, set this under `attachments.storage`:
 
 ```json
 {

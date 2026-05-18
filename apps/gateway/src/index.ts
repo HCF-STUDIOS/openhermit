@@ -65,7 +65,8 @@ const DEFAULT_CONFIG_FILENAME = 'gateway.json';
  * Resolve the attachment storage provider from gateway config. Credentials
  * are read from env (AWS default chain / SUPABASE_SERVICE_ROLE_KEY); all
  * non-secret pointers (provider, bucket, region, prefix, endpoint, root)
- * live in gateway.json under `attachments.storage`. Falls back to
+ * live in the gateway config under `attachments.storage` — DB-backed, edited
+ * via the admin UI or seeded from gateway.json on first boot. Falls back to
  * local-disk storage when no block is configured.
  */
 const buildAttachmentStorage = async (
