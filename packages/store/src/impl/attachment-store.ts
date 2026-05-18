@@ -7,8 +7,6 @@ import pg from 'pg';
 import type { AttachmentStore } from '../interfaces.js';
 import type {
   AttachmentCreateInput,
-  AttachmentDescriptionPatch,
-  AttachmentDescriptionState,
   AttachmentListOptions,
   AttachmentMaterializationPatch,
   AttachmentMaterializationState,
@@ -56,8 +54,6 @@ export class DbAttachmentStore implements AttachmentStore {
       sandboxPath: null,
       materializationState: 'pending' as const,
       materializationError: null,
-      description: null,
-      descriptionState: 'pending' as const,
       createdAt: new Date().toISOString(),
     };
     const [inserted] = await this.db.insert(sessionAttachments).values(row).returning();
@@ -125,20 +121,6 @@ export class DbAttachmentStore implements AttachmentStore {
       .where(eq(sessionAttachments.id, id));
   }
 
-  async setDescription(
-    id: string,
-    patch: AttachmentDescriptionPatch,
-  ): Promise<void> {
-    const update: Partial<typeof sessionAttachments.$inferInsert> = {
-      descriptionState: patch.state,
-    };
-    if (patch.description !== undefined) update.description = patch.description;
-    await this.db
-      .update(sessionAttachments)
-      .set(update)
-      .where(eq(sessionAttachments.id, id));
-  }
-
   async delete(id: string): Promise<void> {
     await this.db.delete(sessionAttachments).where(eq(sessionAttachments.id, id));
   }
@@ -161,8 +143,6 @@ function toRecord(row: typeof sessionAttachments.$inferSelect): AttachmentRecord
     sandboxPath: row.sandboxPath,
     materializationState: row.materializationState as AttachmentMaterializationState,
     materializationError: row.materializationError,
-    description: row.description,
-    descriptionState: row.descriptionState as AttachmentDescriptionState,
     createdAt: row.createdAt,
   };
 }

@@ -340,9 +340,9 @@ export const schedules = pgTable('schedules', {
  *
  * `materialization_state` tracks whether the file is currently mirrored
  * into the agent's sandbox as a regular file (so `file_read` / `exec`
- * can see it directly); `description_state` tracks the bounded
- * server-side content preview surfaced to the model in
- * `attachment_list`.
+ * can see it directly). Multimodal user prompts inline small images
+ * directly into the model context; everything else is referenced by
+ * its sandbox path or fetched via `attachment_fetch`.
  */
 export const sessionAttachments = pgTable('session_attachments', {
   id: text('id').primaryKey(),
@@ -365,13 +365,9 @@ export const sessionAttachments = pgTable('session_attachments', {
   sandboxId: text('sandbox_id'),
   /** Agent-visible path inside the sandbox, if materialized. */
   sandboxPath: text('sandbox_path'),
-  /** 'pending' | 'copied' | 'skipped' | 'failed' */
+  /** 'pending' | 'copied' | 'skipped' | 'failed' — guarded by a CHECK constraint. */
   materializationState: text('materialization_state').default('pending').notNull(),
   materializationError: text('materialization_error'),
-  /** Short server-generated content preview (e.g., PDF first page, text head). */
-  description: text('description'),
-  /** 'pending' | 'ready' | 'skipped' | 'failed' */
-  descriptionState: text('description_state').default('pending').notNull(),
   createdAt: text('created_at').notNull(),
 }, (table) => [
   index('idx_session_attachments_session').on(table.agentId, table.sessionId, table.createdAt),

@@ -104,12 +104,6 @@ export type AttachmentMaterializationState =
   | 'skipped'
   | 'failed';
 
-export type AttachmentDescriptionState =
-  | 'pending'
-  | 'ready'
-  | 'skipped'
-  | 'failed';
-
 /** 'local' | 's3' | 'supabase' — open string so providers can be added without a schema bump. */
 export type AttachmentStorageProvider = string;
 
@@ -129,8 +123,6 @@ export interface AttachmentRecord {
   sandboxPath: string | null;
   materializationState: AttachmentMaterializationState;
   materializationError: string | null;
-  description: string | null;
-  descriptionState: AttachmentDescriptionState;
   createdAt: string;
 }
 
@@ -161,11 +153,6 @@ export interface AttachmentMaterializationPatch {
   sandboxPath?: string | null;
   state: AttachmentMaterializationState;
   error?: string | null;
-}
-
-export interface AttachmentDescriptionPatch {
-  description?: string | null;
-  state: AttachmentDescriptionState;
 }
 
 export interface SandboxCreateInput {

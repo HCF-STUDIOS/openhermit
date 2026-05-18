@@ -59,9 +59,7 @@ test('DbAttachmentStore: create + get round-trips all fields', async (t) => {
   assert.equal(rec.mimeType, 'application/pdf');
   assert.equal(rec.sizeBytes, 1234);
   assert.equal(rec.materializationState, 'pending');
-  assert.equal(rec.descriptionState, 'pending');
   assert.equal(rec.sandboxPath, null);
-  assert.equal(rec.description, null);
 
   const fetched = await store.get(rec.id);
   assert.deepEqual(fetched, rec);
@@ -160,20 +158,6 @@ test('DbAttachmentStore: setMaterialization updates state, sandbox path, and err
   assert.equal(after?.materializationError, 'disk full');
 });
 
-test('DbAttachmentStore: setDescription updates content and state', async (t) => {
-  const store = await openStore(t);
-  const agentId = uniqueAgent();
-  const rec = await store.create(makeInput(agentId, 's1'));
-
-  await store.setDescription(rec.id, {
-    state: 'ready',
-    description: 'First page of a quarterly report.',
-  });
-  const after = await store.get(rec.id);
-  assert.equal(after?.descriptionState, 'ready');
-  assert.equal(after?.description, 'First page of a quarterly report.');
-});
-
 test('DbAttachmentStore: delete removes the row', async (t) => {
   const store = await openStore(t);
   const agentId = uniqueAgent();
@@ -181,6 +165,18 @@ test('DbAttachmentStore: delete removes the row', async (t) => {
 
   await store.delete(rec.id);
   assert.equal(await store.get(rec.id), undefined);
+});
+
+test('DbAttachmentStore: CHECK constraint rejects unknown materialization_state', async (t) => {
+  const store = await openStore(t);
+  const agentId = uniqueAgent();
+  const rec = await store.create(makeInput(agentId, 's1'));
+
+  await assert.rejects(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => store.setMaterialization(rec.id, { state: 'bogus' as any }),
+    /materialization_state|check/i,
+  );
 });
 
 // ── LocalAttachmentStorage ──────────────────────────────────────────────
@@ -237,7 +233,7 @@ test('LocalAttachmentStorage: readStream + delete', async (t) => {
   assert.equal(Buffer.concat(chunks).toString('utf8'), 'hello attachments');
 
   await storage.delete(storageKey);
-  await assert.rejects(stat(path.join(root, storageKey)));
+  await assert.rejects(stat(path.join(root, storageKey)), { code: 'ENOENT' });
 });
 
 test('LocalAttachmentStorage: getSignedUrl returns null (no URL concept)', async (t) => {

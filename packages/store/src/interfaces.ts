@@ -10,7 +10,6 @@ import type {
   ApprovalResolution,
   ApprovalStatus,
   AttachmentCreateInput,
-  AttachmentDescriptionPatch,
   AttachmentListOptions,
   AttachmentMaterializationPatch,
   AttachmentRecord,
@@ -343,7 +342,6 @@ export interface AttachmentStore {
   /** Scoped lookup for tool calls — defaults to session scope. */
   list(scope: StoreScope, sessionId: string, options?: AttachmentListOptions): Promise<AttachmentRecord[]>;
   setMaterialization(id: string, patch: AttachmentMaterializationPatch): Promise<void>;
-  setDescription(id: string, patch: AttachmentDescriptionPatch): Promise<void>;
   delete(id: string): Promise<void>;
 }
 

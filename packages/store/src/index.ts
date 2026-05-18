@@ -61,8 +61,6 @@ export type {
   AttachmentListOptions,
   AttachmentMaterializationPatch,
   AttachmentMaterializationState,
-  AttachmentDescriptionPatch,
-  AttachmentDescriptionState,
   AttachmentStorageProvider,
 } from './types.js';
 
