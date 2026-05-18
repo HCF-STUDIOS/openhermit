@@ -32,6 +32,10 @@ interface BuildAppOptions {
   failMaterialization?: boolean;
   maxBytes?: number;
   uploaderUserId?: string | null;
+  authMode?: 'admin' | 'user' | 'channel';
+  /** When set, requireSessionAccessHttp throws a 404-style error. Used to
+   *  verify that channel/admin modes never hit it. */
+  membershipMissing?: boolean;
 }
 
 async function buildApp(
@@ -41,6 +45,7 @@ async function buildApp(
   app: Hono;
   attachmentStore: DbAttachmentStore;
   storageRoot: string;
+  authCalls: { count: number };
 }> {
   const attachmentStore = await DbAttachmentStore.open();
   t.after(() => attachmentStore.close());
@@ -72,27 +77,39 @@ async function buildApp(
     return c.json({ error: getErrorMessage(err) }, 500);
   });
 
+  const authCalls = { count: 0 };
+  const mode = opts.authMode ?? 'user';
+
   const deps: AttachmentRoutesDeps = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     instances: {} as any,
     attachmentStore,
     attachmentStorage,
     maxBytes: opts.maxBytes ?? 50 * 1024 * 1024,
-    requireAuth: () => ({
-      mode: 'user',
-      channel: 'web',
-      channelUserId: 'web:42',
-    }),
+    requireAuth: () =>
+      mode === 'admin'
+        ? { mode: 'admin', channel: 'admin', channelUserId: 'admin' }
+        : mode === 'channel'
+          ? { mode: 'channel', channel: 'amiko', channelUserId: 'amiko:tw1', agentId: 'a' }
+          : { mode: 'user', channel: 'web', channelUserId: 'web:42' },
     enforceSessionNamespace: () => {},
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resolveRunner: async () => runner as any,
-    requireSessionAccessHttp: async () =>
-      opts.uploaderUserId === null ? undefined : opts.uploaderUserId ?? 'usr-test',
+    requireSessionAccessHttp: async () => {
+      authCalls.count += 1;
+      if (opts.membershipMissing) {
+        const { NotFoundError } = await import('@openhermit/shared');
+        throw new NotFoundError('Session not found: stub');
+      }
+      return opts.uploaderUserId === null
+        ? undefined
+        : opts.uploaderUserId ?? 'usr-test';
+    },
   };
 
   registerAttachmentRoutes(app, deps);
 
-  return { app, attachmentStore, storageRoot };
+  return { app, attachmentStore, storageRoot, authCalls };
 }
 
 function uniqueAgentSession(): { agentId: string; sessionId: string } {
@@ -328,6 +345,147 @@ test('GET attachments?scope=user: lists this user across sessions', async (t) =>
   };
   const names = attachments.map((a) => a.name).sort();
   assert.deepEqual(names, ['one.txt', 'two.txt']);
+});
+
+// ─── Channel-mode auth ────────────────────────────────────────────────────
+// Channel-mode tokens are scoped to an agent namespace, not a user. The
+// per-session user_ids membership check (requireSessionAccessHttp) must be
+// skipped for these tokens — mirrors the postMessage / events policy. If we
+// regressed, channel tokens would 404 the way amiko-chat hit in production.
+
+test('POST attachments: channel-mode skips per-session user membership check', async (t) => {
+  // membershipMissing=true would throw 404 if invoked; channel mode must not call it.
+  const { app, authCalls, attachmentStore } = await buildApp(t, {
+    authMode: 'channel',
+    membershipMissing: true,
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([Buffer.from('img-bytes')], { type: 'image/png' }),
+    'p.png',
+  );
+  const res = await app.request(attachmentsUrl(agentId, sessionId), {
+    method: 'POST',
+    body: form,
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(authCalls.count, 0);
+  const { attachment } = (await res.json()) as { attachment: { id: string } };
+  const row = await attachmentStore.get(attachment.id);
+  // uploaderUserId is null because no user-id was resolved.
+  assert.equal(row!.uploaderUserId, null);
+});
+
+test('GET attachments: channel-mode lists session without user membership check', async (t) => {
+  const { app, authCalls } = await buildApp(t, {
+    authMode: 'channel',
+    membershipMissing: true,
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  // Upload one file under the same channel-mode auth, then list.
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([Buffer.from('q-bytes')], { type: 'text/plain' }),
+    'q.txt',
+  );
+  const up = await app.request(attachmentsUrl(agentId, sessionId), {
+    method: 'POST',
+    body: form,
+  });
+  assert.equal(up.status, 201);
+
+  const listRes = await app.request(attachmentsUrl(agentId, sessionId));
+  assert.equal(listRes.status, 200);
+  const { attachments } = (await listRes.json()) as {
+    attachments: Array<{ name: string }>;
+  };
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0]!.name, 'q.txt');
+  assert.equal(authCalls.count, 0);
+});
+
+test('GET attachments?scope=user: channel-mode falls through to session scope', async (t) => {
+  // No throw; channel tokens have no user id, so scope=user degrades to session.
+  const { app } = await buildApp(t, {
+    authMode: 'channel',
+    membershipMissing: true,
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([Buffer.from('z')], { type: 'text/plain' }),
+    'z.txt',
+  );
+  await app.request(attachmentsUrl(agentId, sessionId), {
+    method: 'POST',
+    body: form,
+  });
+
+  const listRes = await app.request(
+    attachmentsUrl(agentId, sessionId) + '?scope=user',
+  );
+  assert.equal(listRes.status, 200);
+  const { attachments } = (await listRes.json()) as {
+    attachments: Array<{ name: string }>;
+  };
+  assert.equal(attachments.length, 1);
+});
+
+test('GET attachments/:id: channel-mode skips per-session user membership check', async (t) => {
+  const { app, authCalls } = await buildApp(t, {
+    authMode: 'channel',
+    membershipMissing: true,
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([Buffer.from('y')], { type: 'text/plain' }),
+    'y.txt',
+  );
+  const up = await app.request(attachmentsUrl(agentId, sessionId), {
+    method: 'POST',
+    body: form,
+  });
+  const { attachment } = (await up.json()) as { attachment: { id: string } };
+
+  const getRes = await app.request(
+    attachmentsUrl(agentId, sessionId) + '/' + attachment.id,
+  );
+  assert.equal(getRes.status, 200);
+  assert.equal(authCalls.count, 0);
+});
+
+// ─── User mode regression ────────────────────────────────────────────────
+test('POST attachments: user-mode still enforces session membership (regression)', async (t) => {
+  const { app, authCalls } = await buildApp(t, {
+    authMode: 'user',
+    membershipMissing: true,
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([Buffer.from('x')], { type: 'text/plain' }),
+    'x.txt',
+  );
+  const res = await app.request(attachmentsUrl(agentId, sessionId), {
+    method: 'POST',
+    body: form,
+  });
+
+  assert.equal(res.status, 404);
+  assert.equal(authCalls.count, 1);
 });
 
 test('GET attachments/:id 404s for cross-session lookup', async (t) => {
