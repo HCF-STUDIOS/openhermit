@@ -39,12 +39,6 @@ export type AttachmentMaterializationState =
   | 'skipped'
   | 'failed';
 
-export type AttachmentDescriptionState =
-  | 'pending'
-  | 'ready'
-  | 'skipped'
-  | 'failed';
-
 /**
  * Attachment reference on a session message.
  *
@@ -65,8 +59,6 @@ export interface SessionAttachment {
   sha256?: string;
   sandboxPath?: string;
   materializationState?: AttachmentMaterializationState;
-  description?: string;
-  descriptionState?: AttachmentDescriptionState;
   /** Legacy: inline URL reference (kept for back-compat). */
   url?: string;
   /** Legacy: inline base64 payload (kept for back-compat). */
@@ -807,15 +799,8 @@ const MATERIALIZATION_STATES = new Set<string>([
   'failed',
 ]);
 
-const DESCRIPTION_STATES = new Set<string>([
-  'pending',
-  'ready',
-  'skipped',
-  'failed',
-]);
-
 const isOptionalString = (value: unknown): boolean =>
-  value === undefined || typeof value === 'string';
+  value === undefined || value === null || typeof value === 'string';
 
 const isAttachment = (value: unknown): value is SessionAttachment => {
   if (!isRecord(value) || typeof value.type !== 'string') {
@@ -827,12 +812,12 @@ const isAttachment = (value: unknown): value is SessionAttachment => {
   if (!isOptionalString(value.mimeType)) return false;
   if (!isOptionalString(value.sha256)) return false;
   if (!isOptionalString(value.sandboxPath)) return false;
-  if (!isOptionalString(value.description)) return false;
   if (!isOptionalString(value.url)) return false;
   if (!isOptionalString(value.data)) return false;
 
   if (
     value.size !== undefined &&
+    value.size !== null &&
     (typeof value.size !== 'number' || !Number.isFinite(value.size))
   ) {
     return false;
@@ -840,16 +825,9 @@ const isAttachment = (value: unknown): value is SessionAttachment => {
 
   if (
     value.materializationState !== undefined &&
+    value.materializationState !== null &&
     (typeof value.materializationState !== 'string' ||
       !MATERIALIZATION_STATES.has(value.materializationState))
-  ) {
-    return false;
-  }
-
-  if (
-    value.descriptionState !== undefined &&
-    (typeof value.descriptionState !== 'string' ||
-      !DESCRIPTION_STATES.has(value.descriptionState))
   ) {
     return false;
   }

@@ -51,8 +51,6 @@ export interface SessionAttachment {
   sandboxPath?: string;
   materializationState?: 'pending' | 'copied' | 'failed' | 'skipped';
   materializationError?: string;
-  description?: string;
-  descriptionState?: 'pending' | 'ready' | 'failed' | 'skipped';
 }
 
 export interface HistoryMessage {
