@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq, and, ne, lt, desc, sql } from 'drizzle-orm';
+import { eq, and, ne, desc, sql } from 'drizzle-orm';
 import pg from 'pg';
 import type { MetadataValue, SessionStatus, SessionType } from '@openhermit/protocol';
 
@@ -109,17 +109,6 @@ export class DbSessionStore implements SessionStore {
     await this.db.delete(sessionEvents)
       .where(and(eq(sessionEvents.agentId, scope.agentId), eq(sessionEvents.sessionId, sessionId)));
     await this.db.delete(sessions).where(where);
-  }
-
-  async markStaleInactive(scope: StoreScope, olderThanIso: string): Promise<number> {
-    const result = await this.db.update(sessions).set({ status: 'inactive' })
-      .where(and(
-        eq(sessions.agentId, scope.agentId),
-        ne(sessions.status, 'inactive'),
-        lt(sessions.lastActivityAt, olderThanIso),
-      ))
-      .returning();
-    return result.length;
   }
 
   private rowToEntry(row: typeof sessions.$inferSelect): PersistedSessionIndexEntry {

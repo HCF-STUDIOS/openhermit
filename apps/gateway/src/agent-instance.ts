@@ -238,10 +238,6 @@ export class AgentInstanceManager {
       }
     }
 
-    // 8. Start background timers (stale-session sweep, etc.). Schedule
-    //    firing happens at the gateway level (see CentralScheduler).
-    runner.startBackgroundTimers();
-
     this.touch(agentId);
     return runner;
   }

@@ -45,7 +45,6 @@ export interface SessionStore {
   updateDescription(scope: StoreScope, sessionId: string, description: string, source: 'fallback' | 'ai'): Promise<void>;
   updateStatus(scope: StoreScope, sessionId: string, status: string): Promise<void>;
   delete(scope: StoreScope, sessionId: string): Promise<void>;
-  markStaleInactive(scope: StoreScope, olderThanIso: string): Promise<number>;
   waitForIdle(): Promise<void>;
 }
 

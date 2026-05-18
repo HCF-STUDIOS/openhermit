@@ -133,7 +133,6 @@ export class AgentRunner implements SessionRuntime {
 
   private workspaceIdleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  private staleSessionTimer: ReturnType<typeof setInterval> | undefined;
   private mcpClientManager: McpClientManager | undefined;
 
   private static DEBUG = false;
@@ -173,19 +172,6 @@ export class AgentRunner implements SessionRuntime {
       at: new Date().toISOString(),
     });
     return runner;
-  }
-
-  /**
-   * Start the periodic stale-session sweep. Scheduling itself lives in
-   * the gateway-level central scheduler (see
-   * `apps/gateway/src/central-scheduler.ts`); the runner only exposes
-   * `runScheduledJob` so the central scheduler can drive a fire.
-   */
-  startBackgroundTimers(): void {
-    void this.markStaleSessions();
-    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-    this.staleSessionTimer = setInterval(() => void this.markStaleSessions(), ONE_DAY_MS);
-    this.staleSessionTimer.unref?.();
   }
 
   /**
@@ -431,11 +417,6 @@ export class AgentRunner implements SessionRuntime {
       }
     }
 
-    if (this.staleSessionTimer) {
-      clearInterval(this.staleSessionTimer);
-      this.staleSessionTimer = undefined;
-    }
-
     if (this.workspaceIdleTimer) {
       clearTimeout(this.workspaceIdleTimer);
       this.workspaceIdleTimer = undefined;
@@ -455,20 +436,6 @@ export class AgentRunner implements SessionRuntime {
       agentId: this.scope.agentId,
       at: new Date().toISOString(),
     });
-  }
-
-  private static STALE_SESSION_DAYS = 3;
-
-  private async markStaleSessions(): Promise<void> {
-    try {
-      const cutoff = new Date(Date.now() - AgentRunner.STALE_SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-      const count = await this.store.sessions.markStaleInactive(this.scope, cutoff);
-      if (count > 0) {
-        this.logRuntime(`marked ${count} stale session(s) as inactive (no activity for ${AgentRunner.STALE_SESSION_DAYS}+ days)`);
-      }
-    } catch (error) {
-      this.logRuntime(`failed to mark stale sessions: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
 
   async openSession(spec: SessionSpec, caller?: Caller): Promise<SessionDescriptor> {
