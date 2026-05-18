@@ -4,7 +4,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import remend from 'remend';
 import DOMPurify from 'dompurify';
-import { apiFetch } from '../api';
+import { apiFetch, type SessionAttachment } from '../api';
 
 // ─── KaTeX extension for marked ────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ const renderMarkdown = (text: string, streaming = false): string => {
 export type MessageAction = { type: string; [key: string]: unknown };
 
 export type ChatItem =
-  | { type: 'user'; text: string; streaming: false; name?: string }
+  | { type: 'user'; text: string; streaming: false; name?: string; attachments?: SessionAttachment[] }
   | { type: 'assistant'; text: string; streaming: boolean; name?: string; actions?: MessageAction[]; actionsResolved?: boolean; actionsApproved?: boolean }
   | { type: 'event'; text: string; isError: boolean }
   | { type: 'tool'; tool: string; toolCallId?: string; args?: unknown; phase: 'running' | 'done'; isError?: boolean; result?: string }
@@ -185,6 +185,29 @@ function ToolCard({ item }: { item: Extract<ChatItem, { type: 'tool' }> }) {
   );
 }
 
+function formatChipSize(n?: number): string {
+  if (!n || n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentChip({ attachment }: { attachment: SessionAttachment }) {
+  const name = attachment.name || attachment.id || 'attachment';
+  const size = formatChipSize(attachment.size);
+  return (
+    <div className="attachment-chip" title={attachment.mimeType || undefined}>
+      <span className="attachment-chip__icon" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        </svg>
+      </span>
+      <span className="attachment-chip__name">{name}</span>
+      {size && <span className="attachment-chip__size">{size}</span>}
+    </div>
+  );
+}
+
 function ApprovalCard({ item, onApproval }: { item: Extract<ChatItem, { type: 'approval' }>; onApproval: Props['onApproval'] }) {
   if (item.resolved) {
     return (
@@ -278,7 +301,14 @@ export function ChatMessages({ items, agentName, loading, emptyMessage, onApprov
           return (
             <article key={ti} className="message message--user">
               <div className="message__title">{item.name || 'You'}</div>
-              <div className="message__body">{item.text}</div>
+              {item.text && <div className="message__body">{item.text}</div>}
+              {item.attachments && item.attachments.length > 0 && (
+                <div className="message__attachments">
+                  {item.attachments.map((a, ai) => (
+                    <AttachmentChip key={a.id || `${ai}-${a.name}`} attachment={a} />
+                  ))}
+                </div>
+              )}
             </article>
           );
         }

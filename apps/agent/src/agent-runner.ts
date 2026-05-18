@@ -52,6 +52,7 @@ import {
   extractThinkingText,
   extractThinkingSignature,
   hasMeaningfulAssistantText,
+  prepareAttachmentContent,
   extractToolResultDetails,
   extractToolResultText,
   isAssistantMessage,
@@ -1089,6 +1090,9 @@ export class AgentRunner implements SessionRuntime {
       sessionId,
       text: message.text,
       ...(messageUserName ? { name: messageUserName } : {}),
+      ...(message.attachments && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
     });
 
     agentMessagesTotal.inc({
@@ -1142,7 +1146,19 @@ export class AgentRunner implements SessionRuntime {
           );
         }
         session.turnStartMs = Date.now();
-        await session.agent.prompt(createUserMessage(promptMessage));
+        const attachmentBlocks = await prepareAttachmentContent(
+          promptMessage.attachments,
+          {
+            ...(this.options.attachmentStore
+              ? { attachmentStore: this.options.attachmentStore }
+              : {}),
+            ...(this.options.attachmentStorage
+              ? { attachmentStorage: this.options.attachmentStorage }
+              : {}),
+          },
+          { log: (m) => console.warn(`[agent-runner] ${m}`) },
+        );
+        await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
       } catch (error) {
         await this.handleRunError(session, error);
       }
@@ -1922,6 +1938,8 @@ export class AgentRunner implements SessionRuntime {
         scheduleStore: this.store.schedules,
         ...(this.options.policyStore ? { policyStore: this.options.policyStore } : {}),
         ...(this.options.approvalRequestStore ? { approvalRequestStore: this.options.approvalRequestStore } : {}),
+        ...(this.options.attachmentStore ? { attachmentStore: this.options.attachmentStore } : {}),
+        ...(this.options.attachmentStorage ? { attachmentStorage: this.options.attachmentStorage } : {}),
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),

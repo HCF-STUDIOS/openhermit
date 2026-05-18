@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { AgentWsClient, apiFetch, fetchAgentInfo, getDisplayName, getUserId, type Connection, type SessionSummary, type HistoryMessage, type OutboundEvent } from '../api';
+import { AgentWsClient, apiFetch, fetchAgentInfo, getDisplayName, getUserId, type Connection, type SessionSummary, type HistoryMessage, type OutboundEvent, type SessionAttachment } from '../api';
 import { SessionList } from './SessionList';
 import { ChatMessages, type ChatItem } from './ChatMessages';
 import { Composer } from './Composer';
@@ -253,6 +253,9 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
         streaming: false,
         name: entry.name,
         ...(entry.role === 'assistant' && entry.actions && entry.actions.length > 0 ? { actions: entry.actions } : {}),
+        ...(entry.role === 'user' && entry.attachments && entry.attachments.length > 0
+          ? { attachments: entry.attachments }
+          : {}),
       });
       if (entry.role === 'assistant' && entry.name) setAgentName(entry.name);
     }
@@ -324,7 +327,16 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
           pendingSentTexts.current.splice(idx, 1);
           break;
         }
-        setItems(prev => [...prev, { type: 'user', text: msgText, streaming: false, name: event.name as string | undefined }]);
+        const attachments = Array.isArray(event.attachments)
+          ? (event.attachments as SessionAttachment[])
+          : undefined;
+        setItems(prev => [...prev, {
+          type: 'user',
+          text: msgText,
+          streaming: false,
+          name: event.name as string | undefined,
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        }]);
         break;
       }
 
@@ -549,13 +561,23 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     ws.listSessions().then(setSessions).catch(() => {});
   }, []);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, attachments?: SessionAttachment[]) => {
     const ws = wsRef.current;
     const sessionId = currentSessionRef.current;
-    if (!ws || !sessionId || !text.trim()) return;
+    if (!ws || !sessionId) return;
+    if (!text.trim() && (!attachments || attachments.length === 0)) return;
 
     pendingSentTexts.current.push(text);
-    setItems(prev => [...prev, { type: 'user', text, streaming: false }, { type: 'thinking' }]);
+    setItems(prev => [
+      ...prev,
+      {
+        type: 'user',
+        text,
+        streaming: false,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      },
+      { type: 'thinking' },
+    ]);
     setSending(true);
     setStatus('Running');
     streamingTextRef.current = '';
@@ -563,7 +585,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     thinkingAsAssistantRef.current = false;
 
     try {
-      await ws.sendMessage(sessionId, text);
+      await ws.sendMessage(sessionId, text, attachments);
     } catch (error) {
       setSending(false);
       setStatus('Connected');
@@ -936,6 +958,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                 disabled={!currentSessionId}
                 running={sending}
                 onInterrupt={interruptTurn}
+                sessionId={currentSessionId}
               />
             )}
           </>

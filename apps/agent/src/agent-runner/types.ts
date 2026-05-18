@@ -1,6 +1,6 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
 import type { SessionStatus } from '@openhermit/protocol';
-import type { ApprovalRequestStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
+import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
 
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
@@ -63,4 +63,6 @@ export interface AgentRunnerOptions {
   sandboxStore?: SandboxStore;
   policyStore?: PolicyStore;
   approvalRequestStore?: ApprovalRequestStore;
+  attachmentStore?: AttachmentStore;
+  attachmentStorage?: AttachmentStorage;
 }

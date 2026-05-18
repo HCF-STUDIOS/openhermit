@@ -361,6 +361,21 @@ export const main = async (): Promise<void> => {
     instances.setApprovalRequestStore(approvalRequestStore);
   }
 
+  // Build attachment storage (local/s3/supabase per gateway config) once so
+  // both the HTTP layer and the AgentInstanceManager share the same
+  // provider instance. When no DATABASE_URL is set we have no attachment
+  // store either, so just skip — the agent tools no-op gracefully.
+  const attachmentStorage = attachmentStore
+    ? await buildAttachmentStorage(config, logStartup)
+    : undefined;
+
+  if (attachmentStore) {
+    instances.setAttachmentStore(attachmentStore);
+  }
+  if (attachmentStorage) {
+    instances.setAttachmentStorage(attachmentStorage);
+  }
+
   if (sandboxStore) {
     instances.setSandboxStore(sandboxStore);
     if (agentStore && configStore) {
@@ -408,9 +423,7 @@ export const main = async (): Promise<void> => {
     ...(policyStore ? { policyStore } : {}),
     ...(approvalRequestStore ? { approvalRequestStore } : {}),
     ...(attachmentStore ? { attachmentStore } : {}),
-    ...(attachmentStore
-      ? { attachmentStorage: await buildAttachmentStorage(config, logStartup) }
-      : {}),
+    ...(attachmentStorage ? { attachmentStorage } : {}),
     ...(config.attachments?.limits?.maxBytes !== undefined
       ? { attachmentMaxBytes: config.attachments.limits.maxBytes }
       : {}),

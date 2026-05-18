@@ -7,7 +7,7 @@ import {
   createLangfuseShutdownHandler,
   type LangfuseClientLike,
 } from '@openhermit/agent/langfuse';
-import type { AgentConfigStore, AgentStore, ApprovalRequestStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillStore } from '@openhermit/store';
+import type { AgentConfigStore, AgentStore, ApprovalRequestStore, AttachmentStorage, AttachmentStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillStore } from '@openhermit/store';
 
 import type { ChannelPool } from './channel-pool.js';
 
@@ -113,6 +113,17 @@ export class AgentInstanceManager {
     this.approvalRequestStore = store;
   }
 
+  private attachmentStore: AttachmentStore | undefined;
+  private attachmentStorage: AttachmentStorage | undefined;
+
+  setAttachmentStore(store: AttachmentStore): void {
+    this.attachmentStore = store;
+  }
+
+  setAttachmentStorage(storage: AttachmentStorage): void {
+    this.attachmentStorage = storage;
+  }
+
   getConfigStore(): AgentConfigStore | undefined {
     return this.configStore;
   }
@@ -197,6 +208,8 @@ export class AgentInstanceManager {
       ...(this.sandboxStore ? { sandboxStore: this.sandboxStore } : {}),
       ...(this.policyStore ? { policyStore: this.policyStore } : {}),
       ...(this.approvalRequestStore ? { approvalRequestStore: this.approvalRequestStore } : {}),
+      ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
+      ...(this.attachmentStorage ? { attachmentStorage: this.attachmentStorage } : {}),
     });
 
     this.runners.set(agentId, runner);
