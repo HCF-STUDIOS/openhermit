@@ -25,6 +25,9 @@ import {
   DbAgentChannelStore,
   DbMetaStore,
   LocalAttachmentStorage,
+  S3AttachmentStorage,
+  SupabaseAttachmentStorage,
+  type AttachmentStorage,
   runMigrations,
 } from '@openhermit/store';
 import { scanSkillDirectory } from '@openhermit/agent/skills';
@@ -43,7 +46,11 @@ import { CentralScheduler } from './central-scheduler.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
 import { createGatewayApp } from './app.js';
 import { buildChannelManifestRegistry } from './channel-manifests.js';
-import { loadGatewayConfig } from './config.js';
+import {
+  loadGatewayConfig,
+  type AttachmentStorageConfig,
+  type GatewayConfig,
+} from './config.js';
 import { attachGatewayWs } from './ws-handler.js';
 import {
   type AuthResolverOptions,
@@ -53,6 +60,58 @@ import {
 } from './auth.js';
 
 const DEFAULT_CONFIG_FILENAME = 'gateway.json';
+
+/**
+ * Resolve the attachment storage provider from gateway config. Falls back
+ * to local-disk storage when the config block is absent so existing
+ * deployments keep working. Credentials are read from env (AWS default
+ * chain / SUPABASE_SERVICE_ROLE_KEY); the config block only carries
+ * non-secret resource pointers.
+ */
+const buildAttachmentStorage = async (
+  config: GatewayConfig,
+  log: (message: string) => void,
+): Promise<AttachmentStorage> => {
+  const storageConfig: AttachmentStorageConfig =
+    config.attachments?.storage ?? { provider: 'local' };
+
+  if (storageConfig.provider === 's3') {
+    log(`attachment storage: s3 bucket=${storageConfig.bucket}`);
+    const opts: Parameters<typeof S3AttachmentStorage.open>[0] = {
+      bucket: storageConfig.bucket,
+    };
+    if (storageConfig.region !== undefined) opts.region = storageConfig.region;
+    if (storageConfig.prefix !== undefined) opts.prefix = storageConfig.prefix;
+    if (storageConfig.endpoint !== undefined) opts.endpoint = storageConfig.endpoint;
+    if (storageConfig.forcePathStyle !== undefined) {
+      opts.forcePathStyle = storageConfig.forcePathStyle;
+    }
+    if (storageConfig.signedUrlExpiresIn !== undefined) {
+      opts.signedUrlExpiresIn = storageConfig.signedUrlExpiresIn;
+    }
+    return S3AttachmentStorage.open(opts);
+  }
+
+  if (storageConfig.provider === 'supabase') {
+    log(`attachment storage: supabase bucket=${storageConfig.bucket}`);
+    const opts: Parameters<typeof SupabaseAttachmentStorage.open>[0] = {
+      url: storageConfig.url,
+      bucket: storageConfig.bucket,
+    };
+    if (storageConfig.prefix !== undefined) opts.prefix = storageConfig.prefix;
+    if (storageConfig.signedUrlExpiresIn !== undefined) {
+      opts.signedUrlExpiresIn = storageConfig.signedUrlExpiresIn;
+    }
+    return SupabaseAttachmentStorage.open(opts);
+  }
+
+  const root =
+    storageConfig.root ??
+    process.env.OPENHERMIT_ATTACHMENT_ROOT ??
+    path.join(resolveOpenHermitHome(), 'attachments');
+  log(`attachment storage: local root=${root}`);
+  return new LocalAttachmentStorage({ root });
+};
 
 type NodeFetchCallback = Parameters<typeof createAdaptorServer>[0]['fetch'];
 
@@ -350,13 +409,13 @@ export const main = async (): Promise<void> => {
     ...(approvalRequestStore ? { approvalRequestStore } : {}),
     ...(attachmentStore ? { attachmentStore } : {}),
     ...(attachmentStore
-      ? {
-          attachmentStorage: new LocalAttachmentStorage({
-            root:
-              process.env.OPENHERMIT_ATTACHMENT_ROOT ??
-              path.join(resolveOpenHermitHome(), 'attachments'),
-          }),
-        }
+      ? { attachmentStorage: await buildAttachmentStorage(config, logStartup) }
+      : {}),
+    ...(config.attachments?.limits?.maxBytes !== undefined
+      ? { attachmentMaxBytes: config.attachments.limits.maxBytes }
+      : {}),
+    ...(config.attachments?.limits?.sandboxCopyMaxBytes !== undefined
+      ? { attachmentSandboxCopyMaxBytes: config.attachments.limits.sandboxCopyMaxBytes }
       : {}),
     ...(metaStore ? { metaStore } : {}),
     ...(sessionStore ? { sessionStore } : {}),
