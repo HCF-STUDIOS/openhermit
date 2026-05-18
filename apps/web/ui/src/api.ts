@@ -41,7 +41,22 @@ export interface SessionSummary {
   metadata?: Record<string, unknown>;
 }
 
+export interface SessionAttachment {
+  id?: string;
+  type: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  sha256?: string;
+  sandboxPath?: string;
+  materializationState?: 'pending' | 'copied' | 'failed' | 'skipped';
+  materializationError?: string;
+  description?: string;
+  descriptionState?: 'pending' | 'ready' | 'failed' | 'skipped';
+}
+
 export interface HistoryMessage {
+  ts?: string;
   role: string;
   content: string;
   name?: string;
@@ -56,6 +71,7 @@ export interface HistoryMessage {
   introspectionSummary?: string;
   actions?: { type: string; [key: string]: unknown }[];
   metadata?: Record<string, unknown>;
+  attachments?: SessionAttachment[];
 }
 
 export interface OutboundEvent {
@@ -500,8 +516,16 @@ export class AgentWsClient {
     await this.send('session.unsubscribe', { sessionId }).catch(() => {});
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<void> {
-    await this.send('session.message', { sessionId, text });
+  async sendMessage(
+    sessionId: string,
+    text: string,
+    attachments?: SessionAttachment[],
+  ): Promise<void> {
+    await this.send('session.message', {
+      sessionId,
+      text,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    });
   }
 
   async approve(sessionId: string, toolCallId: string, approved: boolean): Promise<void> {
@@ -578,6 +602,35 @@ export async function apiFetch<T>(path: string, options?: { method?: string; bod
 /** Call a non-agent-scoped gateway endpoint (e.g. /api/providers). */
 export async function apiFetchGlobal<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> {
   return rawFetch<T>(`${gatewayBase}${path}`, options);
+}
+
+/**
+ * Upload a single file to the gateway and return the attachment wire shape
+ * (id, name, mimeType, size, sandboxPath, …). Caller passes the returned
+ * record on the next `session.message` so the agent runner can reference it.
+ */
+export async function uploadAttachment(
+  sessionId: string,
+  file: File,
+): Promise<SessionAttachment> {
+  const token = await getJwt();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const url = `${gatewayBase}/api/agents/${encodeURIComponent(currentAgentId)}/sessions/${encodeURIComponent(sessionId)}/attachments`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      (err as { error?: { message?: string } }).error?.message
+        || `Upload failed (${res.status})`,
+    );
+  }
+  const data = (await res.json()) as { attachment: SessionAttachment };
+  return data.attachment;
 }
 
 // Agent info

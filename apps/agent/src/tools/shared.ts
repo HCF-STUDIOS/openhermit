@@ -2,7 +2,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { TSchema } from 'typebox';
 import type { ChannelOutbound } from '@openhermit/protocol';
 import { ValidationError } from '@openhermit/shared';
-import type { InstructionStore, MemoryProvider, MessageStore, PolicyStore, ScheduleStore, SessionStore, StoreScope, UserStore } from '@openhermit/store';
+import type { AttachmentStorage, AttachmentStore, InstructionStore, MemoryProvider, MessageStore, PolicyStore, ScheduleStore, SessionStore, StoreScope, UserStore } from '@openhermit/store';
 
 import { AgentSecurity, type ExecBackendManager, type ToolPolicy } from '../core/index.js';
 import type { WebProvider } from '../web/index.js';
@@ -56,6 +56,8 @@ export interface ToolContext {
   scheduleStore?: ScheduleStore;
   policyStore?: PolicyStore;
   approvalRequestStore?: import('@openhermit/store').ApprovalRequestStore;
+  attachmentStore?: AttachmentStore | undefined;
+  attachmentStorage?: AttachmentStorage | undefined;
   /** Channel outbound adapters keyed by channel name (e.g. 'telegram'). */
   channelOutbound?: Map<string, ChannelOutbound>;
   onExec?: () => void;

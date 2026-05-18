@@ -1,7 +1,8 @@
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, Message } from '@mariozechner/pi-ai';
+import type { AssistantMessage, ImageContent, Message, TextContent } from '@mariozechner/pi-ai';
 
-import type { SessionMessage } from '@openhermit/protocol';
+import type { SessionAttachment, SessionMessage } from '@openhermit/protocol';
+import type { AttachmentStorage, AttachmentStore } from '@openhermit/store';
 
 export const isAssistantMessage = (
   message: AgentMessage,
@@ -47,23 +48,170 @@ export const extractThinkingSignature = (message: AssistantMessage): string | un
 export const hasMeaningfulAssistantText = (text: string): boolean =>
   text.trim().length > 0;
 
-export const createUserMessage = (message: SessionMessage): Message => {
-  const text =
-    message.attachments && message.attachments.length > 0
-      ? `${message.text}\n\n[Attachments are not yet mapped into the model context. Count: ${message.attachments.length}]`
-      : message.text;
-
+export const createUserMessage = (
+  message: SessionMessage,
+  attachmentContent: (TextContent | ImageContent)[] = [],
+): Message => {
+  const blocks: (TextContent | ImageContent)[] = [];
+  if (message.text && message.text.length > 0) {
+    blocks.push({ type: 'text', text: message.text });
+  }
+  for (const block of attachmentContent) {
+    blocks.push(block);
+  }
+  // pi-ai allows an empty array but the model providers reject it. If
+  // nothing came in (no text + no attachments), fall back to a single
+  // empty string text block so the request still typechecks.
+  if (blocks.length === 0) {
+    blocks.push({ type: 'text', text: '' });
+  }
   return {
     role: 'user',
-    content: [
-      {
-        type: 'text',
-        text,
-      },
-    ],
+    content: blocks,
     timestamp: Date.now(),
   };
 };
+
+/**
+ * Image MIME types pi-ai providers will accept inline. PNG/JPEG/GIF/WebP
+ * are universally supported; HEIC and AVIF land outside the safe set.
+ */
+const INLINE_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+]);
+
+export interface PrepareAttachmentContentOptions {
+  /** Hard cap on bytes embedded per attachment. Default 1 MiB. */
+  maxInlineBytes?: number;
+  /** Max number of image attachments to embed inline. Default 4. */
+  maxImageInline?: number;
+  /** Logger for soft failures (storage read errors, oversized files). */
+  log?: (msg: string) => void;
+}
+
+const DEFAULT_INLINE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_IMAGE_INLINE = 4;
+
+/**
+ * Resolve `SessionAttachment[]` into model-ready content blocks. Small
+ * supported images are embedded as `ImageContent` (multimodal fast path).
+ * Everything else becomes a structured text reference pointing at the
+ * sandbox path, so the agent can call `attachment_fetch` or use Read /
+ * Bash without us having to inline the bytes.
+ *
+ * Soft failures (storage outage, oversized file) downgrade to a text
+ * reference rather than throwing — the user can still see what they
+ * uploaded even if we can't embed it.
+ */
+export const prepareAttachmentContent = async (
+  attachments: SessionAttachment[] | undefined,
+  stores: {
+    attachmentStore?: AttachmentStore | undefined;
+    attachmentStorage?: AttachmentStorage | undefined;
+  },
+  options: PrepareAttachmentContentOptions = {},
+): Promise<(TextContent | ImageContent)[]> => {
+  if (!attachments || attachments.length === 0) return [];
+  const maxBytes = options.maxInlineBytes ?? DEFAULT_INLINE_BYTES;
+  const maxImageInline = options.maxImageInline ?? DEFAULT_MAX_IMAGE_INLINE;
+  const out: (TextContent | ImageContent)[] = [];
+  let imagesInlined = 0;
+
+  for (const att of attachments) {
+    const id = att.id;
+    const name = att.name ?? '(unnamed)';
+    const mime = att.mimeType ?? 'application/octet-stream';
+    const size = att.size ?? 0;
+    const path = att.sandboxPath ?? null;
+
+    const canInlineImage =
+      stores.attachmentStore &&
+      stores.attachmentStorage &&
+      id &&
+      INLINE_IMAGE_MIMES.has(mime.toLowerCase()) &&
+      size > 0 &&
+      size <= maxBytes &&
+      imagesInlined < maxImageInline;
+
+    if (canInlineImage) {
+      try {
+        const row = await stores.attachmentStore!.get(id);
+        if (row) {
+          const stream = await stores.attachmentStorage!.readStream(row.storageKey);
+          const buf = await streamToBoundedBuffer(stream, maxBytes);
+          if (buf.length > 0) {
+            out.push({
+              type: 'image',
+              data: buf.toString('base64'),
+              mimeType: mime,
+            });
+            imagesInlined += 1;
+            continue;
+          }
+        }
+      } catch (err) {
+        options.log?.(
+          `[attachments] inline image read failed for ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          } — falling back to reference`,
+        );
+      }
+    }
+
+    const ref = formatAttachmentReference({
+      ...(id ? { id } : {}),
+      name,
+      mime,
+      size,
+      path,
+    });
+    out.push({ type: 'text', text: ref });
+  }
+  return out;
+};
+
+const formatAttachmentReference = (info: {
+  id?: string;
+  name: string;
+  mime: string;
+  size: number;
+  path: string | null;
+}): string => {
+  const lines: string[] = [];
+  lines.push('[attachment]');
+  if (info.id) lines.push(`id: ${info.id}`);
+  lines.push(`name: ${info.name}`);
+  lines.push(`mime: ${info.mime}`);
+  if (info.size > 0) lines.push(`size: ${info.size} bytes`);
+  if (info.path) {
+    lines.push(`sandbox_path: ${info.path}`);
+    lines.push('(use the Read tool on the sandbox_path, or call attachment_fetch with this id.)');
+  } else {
+    lines.push('(no sandbox copy available — call attachment_fetch with this id to load it.)');
+  }
+  return lines.join('\n');
+};
+
+async function streamToBoundedBuffer(
+  stream: NodeJS.ReadableStream,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let seen = 0;
+  for await (const chunk of stream) {
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
+    seen += buf.length;
+    chunks.push(buf);
+    if (seen >= maxBytes) {
+      return Buffer.concat(chunks).subarray(0, maxBytes);
+    }
+  }
+  return Buffer.concat(chunks);
+}
 
 export const serializeDetails = (value: unknown): string =>
   `${JSON.stringify(value, null, 2)}\n`;

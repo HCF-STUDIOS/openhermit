@@ -815,6 +815,137 @@ h2 { font-size: 14px; font-weight: 600; }
 
 .composer__hint { margin: 0; font-size: 11px; color: var(--muted); }
 
+.composer__actions-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer__attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 100ms ease, border-color 100ms ease, background 100ms ease;
+}
+
+.composer__attach-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.composer__attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 11px;
+  color: var(--text);
+  max-width: 240px;
+}
+
+.composer__chip--pending { opacity: 0.7; }
+
+.composer__chip--error {
+  border-color: #c53030;
+  color: #c53030;
+}
+
+.composer__chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.composer__chip-size {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.composer__chip-status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.composer__chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.composer__chip-remove:hover { color: var(--text); background: var(--accent-soft); }
+
+.message__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 11px;
+  color: var(--text);
+  max-width: 240px;
+}
+
+.attachment-chip__icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.attachment-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.attachment-chip__size {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 /* ─── Markdown rendering ────────────────────────────────────────── */
 
 .message__body h2, .message__body h3, .message__body h4 { margin: 0.6em 0 0.3em; }
