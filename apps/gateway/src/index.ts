@@ -16,6 +16,7 @@ import {
   DbSandboxStore,
   DbPolicyStore,
   DbApprovalRequestStore,
+  DbAttachmentStore,
   DbScheduleStore,
   DbSkillStore,
   DbUserStore,
@@ -23,6 +24,7 @@ import {
   DbSecretStore,
   DbAgentChannelStore,
   DbMetaStore,
+  LocalAttachmentStorage,
   runMigrations,
 } from '@openhermit/store';
 import { scanSkillDirectory } from '@openhermit/agent/skills';
@@ -123,6 +125,7 @@ export const main = async (): Promise<void> => {
   let sandboxStore: DbSandboxStore | undefined;
   let policyStore: DbPolicyStore | undefined;
   let approvalRequestStore: DbApprovalRequestStore | undefined;
+  let attachmentStore: DbAttachmentStore | undefined;
   let metaStore: DbMetaStore | undefined;
   let sessionStore: DbSessionStore | undefined;
   if (process.env.DATABASE_URL) {
@@ -139,6 +142,7 @@ export const main = async (): Promise<void> => {
       sandboxStore = await DbSandboxStore.open();
       policyStore = await DbPolicyStore.open();
       approvalRequestStore = await DbApprovalRequestStore.open();
+      attachmentStore = await DbAttachmentStore.open();
       metaStore = await DbMetaStore.open();
       sessionStore = await DbSessionStore.open();
       if (process.env.OPENHERMIT_SECRETS_KEY) {
@@ -344,6 +348,16 @@ export const main = async (): Promise<void> => {
     ...(sandboxStore ? { sandboxStore } : {}),
     ...(policyStore ? { policyStore } : {}),
     ...(approvalRequestStore ? { approvalRequestStore } : {}),
+    ...(attachmentStore ? { attachmentStore } : {}),
+    ...(attachmentStore
+      ? {
+          attachmentStorage: new LocalAttachmentStorage({
+            root:
+              process.env.OPENHERMIT_ATTACHMENT_ROOT ??
+              path.join(resolveOpenHermitHome(), 'attachments'),
+          }),
+        }
+      : {}),
     ...(metaStore ? { metaStore } : {}),
     ...(sessionStore ? { sessionStore } : {}),
     sandboxPresets: config.sandboxPresets,
@@ -478,6 +492,7 @@ export const main = async (): Promise<void> => {
     await scheduleStore?.close();
     await mcpServerStore?.close();
     await sessionStore?.close();
+    await attachmentStore?.close();
 
     server.close(() => {
       logStartup('server closed');

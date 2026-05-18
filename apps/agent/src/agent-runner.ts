@@ -371,6 +371,31 @@ export class AgentRunner implements SessionRuntime {
     await manager.syncSkills(skills);
   }
 
+  /**
+   * Copy raw attachment bytes into the agent's default execution backend
+   * under `<agentHome>/.openhermit/attachments/<sessionId>/<attachmentId>/<safeName>`.
+   *
+   * Called by the gateway upload route immediately after persisting the
+   * attachment row. Returns the backend id and the in-sandbox path so
+   * the caller can store them on the attachment record. The path is a
+   * cache entry: a future sandbox rebuild may invalidate it, in which
+   * case tools re-materialize on demand.
+   */
+  async materializeAttachmentToSandbox(input: {
+    sessionId: string;
+    attachmentId: string;
+    safeName: string;
+    bytes: Buffer;
+  }): Promise<{ sandboxId: string; sandboxPath: string }> {
+    const config = await this.options.security.readConfig();
+    const manager = await this.ensureExecBackendManager(config);
+    const backend = manager.getDefault();
+    await backend.ensure();
+    const sandboxPath = `${backend.agentHome}/.openhermit/attachments/${input.sessionId}/${input.attachmentId}/${input.safeName}`;
+    await backend.files.write(sandboxPath, input.bytes, 'overwrite');
+    return { sandboxId: backend.id, sandboxPath };
+  }
+
   async stopWorkspaceContainerIfSessionPolicy(): Promise<void> {
     const config = await this.options.security.readConfig();
 
