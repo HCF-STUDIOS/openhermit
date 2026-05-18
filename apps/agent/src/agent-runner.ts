@@ -1146,6 +1146,10 @@ export class AgentRunner implements SessionRuntime {
           );
         }
         session.turnStartMs = Date.now();
+        const modelInputs = session.agent.state.model?.input;
+        const supportsImageInput = Array.isArray(modelInputs)
+          ? modelInputs.includes('image')
+          : true;
         const attachmentBlocks = await prepareAttachmentContent(
           promptMessage.attachments,
           {
@@ -1156,7 +1160,7 @@ export class AgentRunner implements SessionRuntime {
               ? { attachmentStorage: this.options.attachmentStorage }
               : {}),
           },
-          { log: (m) => console.warn(`[agent-runner] ${m}`) },
+          { supportsImageInput, log: (m) => console.warn(`[agent-runner] ${m}`) },
         );
         await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
       } catch (error) {

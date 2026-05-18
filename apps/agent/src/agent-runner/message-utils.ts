@@ -89,6 +89,13 @@ export interface PrepareAttachmentContentOptions {
   maxInlineBytes?: number;
   /** Max number of image attachments to embed inline. Default 4. */
   maxImageInline?: number;
+  /**
+   * Whether the active model accepts image input. When false, image
+   * attachments are downgraded to text references (the model can't see
+   * them but knows they exist). Defaults to true for backwards-compat;
+   * the runner passes the actual capability from pi-ai's model registry.
+   */
+  supportsImageInput?: boolean;
   /** Logger for soft failures (storage read errors, oversized files). */
   log?: (msg: string) => void;
 }
@@ -118,6 +125,7 @@ export const prepareAttachmentContent = async (
   if (!attachments || attachments.length === 0) return [];
   const maxBytes = options.maxInlineBytes ?? DEFAULT_INLINE_BYTES;
   const maxImageInline = options.maxImageInline ?? DEFAULT_MAX_IMAGE_INLINE;
+  const supportsImageInput = options.supportsImageInput ?? true;
   const out: (TextContent | ImageContent)[] = [];
   let imagesInlined = 0;
 
@@ -127,12 +135,14 @@ export const prepareAttachmentContent = async (
     const mime = att.mimeType ?? 'application/octet-stream';
     const size = att.size ?? 0;
     const path = att.sandboxPath ?? null;
+    const isImage = INLINE_IMAGE_MIMES.has(mime.toLowerCase());
 
     const canInlineImage =
+      supportsImageInput &&
       stores.attachmentStore &&
       stores.attachmentStorage &&
       id &&
-      INLINE_IMAGE_MIMES.has(mime.toLowerCase()) &&
+      isImage &&
       size > 0 &&
       size <= maxBytes &&
       imagesInlined < maxImageInline;
@@ -168,6 +178,7 @@ export const prepareAttachmentContent = async (
       mime,
       size,
       path,
+      imageDowngraded: isImage && !supportsImageInput,
     });
     out.push({ type: 'text', text: ref });
   }
@@ -180,6 +191,7 @@ const formatAttachmentReference = (info: {
   mime: string;
   size: number;
   path: string | null;
+  imageDowngraded?: boolean;
 }): string => {
   const lines: string[] = [];
   lines.push('[attachment]');
@@ -192,6 +204,12 @@ const formatAttachmentReference = (info: {
     lines.push('(use the Read tool on the sandbox_path, or call attachment_fetch with this id.)');
   } else {
     lines.push('(no sandbox copy available — call attachment_fetch with this id to load it.)');
+  }
+  if (info.imageDowngraded) {
+    lines.push(
+      '(note: this is an image, but the active model is text-only and cannot view it directly. ' +
+        'Acknowledge the upload to the user and, if needed, ask them to switch to a multimodal model.)',
+    );
   }
   return lines.join('\n');
 };
