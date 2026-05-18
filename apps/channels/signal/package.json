@@ -5,6 +5,7 @@
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "development": "./src/index.ts",
@@ -14,7 +15,6 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.js.map",
-    "dist/**/*.d.ts",
     "README.md",
     "LICENSE"
   ],
