@@ -8,6 +8,38 @@ export interface SandboxPreset {
   config: Record<string, unknown>;
 }
 
+/**
+ * Backend selector + non-secret pointers for attachment byte storage.
+ * Credentials are NEVER stored here — AWS uses the default credential
+ * chain (env / IAM); Supabase reads `SUPABASE_SERVICE_ROLE_KEY` from env.
+ */
+export type AttachmentStorageConfig =
+  | { provider: 'local'; root?: string }
+  | {
+      provider: 's3';
+      bucket: string;
+      region?: string;
+      prefix?: string;
+      endpoint?: string;
+      forcePathStyle?: boolean;
+      signedUrlExpiresIn?: number;
+    }
+  | {
+      provider: 'supabase';
+      url: string;
+      bucket: string;
+      prefix?: string;
+      signedUrlExpiresIn?: number;
+    };
+
+export interface AttachmentsConfig {
+  storage: AttachmentStorageConfig;
+  limits?: {
+    maxBytes?: number;
+    sandboxCopyMaxBytes?: number;
+  };
+}
+
 export interface GatewayConfig {
   ui: boolean;
   cors: { origin: string };
@@ -24,6 +56,12 @@ export interface GatewayConfig {
    * may override a built-in channel by matching its key.
    */
   channelPackages: string[];
+  /**
+   * Optional attachment storage configuration. When omitted, the gateway
+   * defaults to local-disk storage rooted at
+   * `OPENHERMIT_ATTACHMENT_ROOT` (or `~/.openhermit/attachments`).
+   */
+  attachments?: AttachmentsConfig;
 }
 
 export const META_KEY = 'gateway.config';
@@ -89,6 +127,116 @@ const parseChannelPackages = (raw: unknown): string[] => {
   });
 };
 
+const ATTACHMENT_PROVIDERS = new Set(['local', 's3', 'supabase']);
+
+const optionalString = (raw: unknown, field: string): string | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') {
+    throw new Error(`attachments.storage.${field} must be a string`);
+  }
+  return raw;
+};
+
+const optionalPositiveInt = (raw: unknown, field: string): number | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0 || !Number.isInteger(raw)) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  return raw;
+};
+
+const optionalBoolean = (raw: unknown, field: string): boolean | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'boolean') throw new Error(`${field} must be a boolean`);
+  return raw;
+};
+
+const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('attachments must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const storageRaw = obj['storage'];
+  if (!storageRaw || typeof storageRaw !== 'object' || Array.isArray(storageRaw)) {
+    throw new Error('attachments.storage must be an object');
+  }
+  const storage = storageRaw as Record<string, unknown>;
+  const provider = storage['provider'];
+  if (typeof provider !== 'string' || !ATTACHMENT_PROVIDERS.has(provider)) {
+    throw new Error(
+      `attachments.storage.provider must be one of: ${[...ATTACHMENT_PROVIDERS].join(', ')}`,
+    );
+  }
+
+  let parsedStorage: AttachmentStorageConfig;
+  if (provider === 'local') {
+    parsedStorage = { provider: 'local' };
+    const root = optionalString(storage['root'], 'root');
+    if (root !== undefined) parsedStorage.root = root;
+  } else if (provider === 's3') {
+    const bucket = storage['bucket'];
+    if (typeof bucket !== 'string' || bucket === '') {
+      throw new Error('attachments.storage.bucket is required when provider=s3');
+    }
+    parsedStorage = { provider: 's3', bucket };
+    const region = optionalString(storage['region'], 'region');
+    if (region !== undefined) parsedStorage.region = region;
+    const prefix = optionalString(storage['prefix'], 'prefix');
+    if (prefix !== undefined) parsedStorage.prefix = prefix;
+    const endpoint = optionalString(storage['endpoint'], 'endpoint');
+    if (endpoint !== undefined) parsedStorage.endpoint = endpoint;
+    const forcePathStyle = optionalBoolean(
+      storage['forcePathStyle'],
+      'attachments.storage.forcePathStyle',
+    );
+    if (forcePathStyle !== undefined) parsedStorage.forcePathStyle = forcePathStyle;
+    const signedExp = optionalPositiveInt(
+      storage['signedUrlExpiresIn'],
+      'attachments.storage.signedUrlExpiresIn',
+    );
+    if (signedExp !== undefined) parsedStorage.signedUrlExpiresIn = signedExp;
+  } else {
+    // supabase
+    const url = storage['url'];
+    const bucket = storage['bucket'];
+    if (typeof url !== 'string' || url === '') {
+      throw new Error('attachments.storage.url is required when provider=supabase');
+    }
+    if (typeof bucket !== 'string' || bucket === '') {
+      throw new Error('attachments.storage.bucket is required when provider=supabase');
+    }
+    parsedStorage = { provider: 'supabase', url, bucket };
+    const prefix = optionalString(storage['prefix'], 'prefix');
+    if (prefix !== undefined) parsedStorage.prefix = prefix;
+    const signedExp = optionalPositiveInt(
+      storage['signedUrlExpiresIn'],
+      'attachments.storage.signedUrlExpiresIn',
+    );
+    if (signedExp !== undefined) parsedStorage.signedUrlExpiresIn = signedExp;
+  }
+
+  const result: AttachmentsConfig = { storage: parsedStorage };
+  const limitsRaw = obj['limits'];
+  if (limitsRaw !== undefined && limitsRaw !== null) {
+    if (typeof limitsRaw !== 'object' || Array.isArray(limitsRaw)) {
+      throw new Error('attachments.limits must be an object');
+    }
+    const limits = limitsRaw as Record<string, unknown>;
+    const maxBytes = optionalPositiveInt(limits['maxBytes'], 'attachments.limits.maxBytes');
+    const sandboxCopyMaxBytes = optionalPositiveInt(
+      limits['sandboxCopyMaxBytes'],
+      'attachments.limits.sandboxCopyMaxBytes',
+    );
+    if (maxBytes !== undefined || sandboxCopyMaxBytes !== undefined) {
+      result.limits = {};
+      if (maxBytes !== undefined) result.limits.maxBytes = maxBytes;
+      if (sandboxCopyMaxBytes !== undefined) result.limits.sandboxCopyMaxBytes = sandboxCopyMaxBytes;
+    }
+  }
+  return result;
+};
+
 const parseAutoProvision = (
   raw: unknown,
   presets: Record<string, SandboxPreset>,
@@ -120,7 +268,7 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
     ? parseAutoProvision(raw['autoProvisionSandbox'], presets)
     : DEFAULT_CONFIG.autoProvisionSandbox;
 
-  return {
+  const out: GatewayConfig = {
     ui: typeof raw.ui === 'boolean' ? raw.ui : DEFAULT_CONFIG.ui,
     cors: {
       origin: getCorsOrigin(raw) ?? DEFAULT_CONFIG.cors.origin,
@@ -129,6 +277,9 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
     autoProvisionSandbox: autoProvision,
     channelPackages: parseChannelPackages(raw['channelPackages']),
   };
+  const attachments = parseAttachmentsConfig(raw['attachments']);
+  if (attachments) out.attachments = attachments;
+  return out;
 };
 
 const readFileIfExists = async (filePath: string): Promise<Record<string, unknown> | null> => {

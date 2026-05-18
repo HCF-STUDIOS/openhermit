@@ -72,6 +72,14 @@ export {
   LocalAttachmentStorage,
   type LocalAttachmentStorageOptions,
 } from './local-attachment-storage.js';
+export {
+  S3AttachmentStorage,
+  type S3AttachmentStorageOptions,
+} from './s3-attachment-storage.js';
+export {
+  SupabaseAttachmentStorage,
+  type SupabaseAttachmentStorageOptions,
+} from './supabase-attachment-storage.js';
 export { FileSecretStore, type ConfigDirResolver } from './file-secret-store.js';
 export { DbSecretStore, generateSecretsKey } from './db-secret-store.js';
 export {

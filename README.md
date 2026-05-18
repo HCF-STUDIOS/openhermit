@@ -232,6 +232,60 @@ Important environment variables:
 | `OPENHERMIT_ATTACHMENT_ROOT` | Local attachment storage root, default `~/.openhermit/attachments` |
 | `OPENHERMIT_ATTACHMENT_MAX_BYTES` | Hard upload size cap, default `26214400` (25 MB) |
 | `OPENHERMIT_ATTACHMENT_SANDBOX_COPY_MAX_BYTES` | Files at or below this size are auto-copied into the sandbox, default `2097152` (2 MB) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | Standard AWS credential chain — used when `attachments.storage.provider = s3` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Required when `attachments.storage.provider = supabase`. Never stored in gateway config |
+
+### Attachment storage backends
+
+The gateway supports three storage providers. The provider is selected in `gateway.json` (or via the admin API), and **credentials live in env, not config**.
+
+#### Local disk (default)
+
+No config block needed. Falls back to `OPENHERMIT_ATTACHMENT_ROOT` (or `~/.openhermit/attachments`):
+
+```json
+{
+  "attachments": { "storage": { "provider": "local", "root": "/srv/openhermit/attachments" } }
+}
+```
+
+#### S3 (or any S3-compatible service: R2, MinIO, B2)
+
+Install the SDK on the gateway: `npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner`. Credentials come from the AWS default chain (env vars / IAM role / IRSA).
+
+```json
+{
+  "attachments": {
+    "storage": {
+      "provider": "s3",
+      "bucket": "oh-attachments",
+      "region": "us-east-1",
+      "prefix": "prod",
+      "endpoint": "https://abc.r2.cloudflarestorage.com",
+      "forcePathStyle": false
+    }
+  }
+}
+```
+
+#### Supabase Storage
+
+Install the SDK on the gateway: `npm install @supabase/supabase-js`. Set `SUPABASE_SERVICE_ROLE_KEY` in env.
+
+```json
+{
+  "attachments": {
+    "storage": {
+      "provider": "supabase",
+      "url": "https://xyz.supabase.co",
+      "bucket": "attachments",
+      "prefix": "agents"
+    }
+  }
+}
+```
+
+Optional `attachments.limits.maxBytes` and `attachments.limits.sandboxCopyMaxBytes` override the env defaults from gateway config.
 
 ---
 
