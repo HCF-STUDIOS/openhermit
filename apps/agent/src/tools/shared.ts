@@ -58,6 +58,15 @@ export interface ToolContext {
   approvalRequestStore?: import('@openhermit/store').ApprovalRequestStore;
   attachmentStore?: AttachmentStore | undefined;
   attachmentStorage?: AttachmentStorage | undefined;
+  /** Copy attachment bytes into the agent's default sandbox at the canonical
+   *  per-session path. `attachment_fetch` uses this to self-heal when an
+   *  attachment's `materializationState` is `pending` or `failed`. */
+  materializeAttachment?: (input: {
+    sessionId: string;
+    attachmentId: string;
+    safeName: string;
+    bytes: Buffer;
+  }) => Promise<{ sandboxId: string; sandboxPath: string }>;
   /** Channel outbound adapters keyed by channel name (e.g. 'telegram'). */
   channelOutbound?: Map<string, ChannelOutbound>;
   onExec?: () => void;

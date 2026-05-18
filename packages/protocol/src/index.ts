@@ -36,7 +36,6 @@ export interface SessionSpec {
 export type AttachmentMaterializationState =
   | 'pending'
   | 'copied'
-  | 'skipped'
   | 'failed';
 
 /**
@@ -795,7 +794,6 @@ const isMetadataValue = (value: unknown): value is MetadataValue =>
 const MATERIALIZATION_STATES = new Set<string>([
   'pending',
   'copied',
-  'skipped',
   'failed',
 ]);
 

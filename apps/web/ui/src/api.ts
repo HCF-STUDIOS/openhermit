@@ -49,7 +49,7 @@ export interface SessionAttachment {
   size?: number;
   sha256?: string;
   sandboxPath?: string;
-  materializationState?: 'pending' | 'copied' | 'failed' | 'skipped';
+  materializationState?: 'pending' | 'copied' | 'failed';
   materializationError?: string;
 }
 

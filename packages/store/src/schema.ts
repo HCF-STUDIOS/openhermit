@@ -365,7 +365,7 @@ export const sessionAttachments = pgTable('session_attachments', {
   sandboxId: text('sandbox_id'),
   /** Agent-visible path inside the sandbox, if materialized. */
   sandboxPath: text('sandbox_path'),
-  /** 'pending' | 'copied' | 'skipped' | 'failed' — guarded by a CHECK constraint. */
+  /** 'pending' | 'copied' | 'failed' — guarded by a CHECK constraint. */
   materializationState: text('materialization_state').default('pending').notNull(),
   materializationError: text('materialization_error'),
   createdAt: text('created_at').notNull(),

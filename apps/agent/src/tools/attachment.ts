@@ -153,7 +153,7 @@ export const createAttachmentFetchTool = (
     if (!id) {
       throw new ValidationError('attachment_fetch requires a non-empty attachment_id.');
     }
-    const row = await context.attachmentStore.get(id);
+    let row = await context.attachmentStore.get(id);
     if (!row || row.agentId !== context.storeScope.agentId) {
       throw new ValidationError(`attachment_fetch: no such attachment ${id}.`);
     }
@@ -193,7 +193,49 @@ export const createAttachmentFetchTool = (
       );
     }
 
-    // Files larger than the cap aren't pulled into model context.
+    // Pull bytes once. We use them for inline content (text/image) and,
+    // when the sandbox copy hasn't happened yet, for the self-heal step
+    // below. The maxBytes upload cap is our implicit memory budget here.
+    const stream = await context.attachmentStorage.readStream(row.storageKey);
+    const buf = await streamToBuffer(stream, Math.max(cap, row.sizeBytes));
+
+    // Self-heal: lazy-materialize into the sandbox if the original upload
+    // didn't (sandbox down, restart, or the row predates always-on
+    // materialization). Best-effort — a heal failure still lets us return
+    // inline content; metadata branches will surface the failure note.
+    if (row.materializationState !== 'copied' && context.materializeAttachment) {
+      try {
+        const m = await context.materializeAttachment({
+          sessionId: row.sessionId,
+          attachmentId: row.id,
+          safeName: row.safeName,
+          bytes: buf.subarray(0, row.sizeBytes),
+        });
+        await context.attachmentStore.setMaterialization(row.id, {
+          sandboxId: m.sandboxId,
+          sandboxPath: m.sandboxPath,
+          state: 'copied',
+        });
+        row = {
+          ...row,
+          sandboxId: m.sandboxId,
+          sandboxPath: m.sandboxPath,
+          materializationState: 'copied',
+          materializationError: null,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await context.attachmentStore.setMaterialization(row.id, {
+          state: 'failed',
+          error: msg,
+        });
+        row = { ...row, materializationState: 'failed', materializationError: msg };
+      }
+    }
+
+    // Files larger than the cap aren't pulled into model context. Now that
+    // self-heal has run, `row.sandboxPath` is populated and the agent can
+    // act on it via Read / Bash.
     if (row.sizeBytes > cap && !wantsImage) {
       return {
         content: asTextContent(
@@ -205,12 +247,6 @@ export const createAttachmentFetchTool = (
         details: { id: row.id, mode: 'metadata-oversize', cap, size: row.sizeBytes },
       };
     }
-
-    // For images we still respect the cap as a safety net, but most
-    // production thresholds (a few MB) are below typical model image
-    // limits.
-    const stream = await context.attachmentStorage.readStream(row.storageKey);
-    const buf = await streamToBuffer(stream, Math.max(cap, row.sizeBytes));
 
     if (wantsImage) {
       return {

@@ -235,8 +235,6 @@ export interface GatewayAppOptions {
   attachmentStorage?: AttachmentStorage | undefined;
   /** Hard cap on a single attachment upload, in bytes. */
   attachmentMaxBytes?: number | undefined;
-  /** Files at or below this size are auto-copied into the sandbox. */
-  attachmentSandboxCopyMaxBytes?: number | undefined;
   metaStore?: import('@openhermit/store').DbMetaStore | undefined;
   sessionStore?: import('@openhermit/store').DbSessionStore | undefined;
   /** Named sandbox presets, keyed by preset name. */
@@ -1398,8 +1396,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       attachmentStore: options.attachmentStore,
       attachmentStorage: options.attachmentStorage,
       maxBytes: options.attachmentMaxBytes ?? envLimits.maxBytes,
-      sandboxCopyMaxBytes:
-        options.attachmentSandboxCopyMaxBytes ?? envLimits.sandboxCopyMaxBytes,
       requireAuth,
       enforceSessionNamespace,
       resolveRunner,

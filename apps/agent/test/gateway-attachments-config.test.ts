@@ -29,7 +29,7 @@ test('parseGatewayConfig: attachments s3 parses required + optional fields', () 
         forcePathStyle: true,
         signedUrlExpiresIn: 900,
       },
-      limits: { maxBytes: 100_000_000, sandboxCopyMaxBytes: 4_000_000 },
+      limits: { maxBytes: 100_000_000 },
     },
   });
   assert.equal(out.attachments?.storage.provider, 's3');
@@ -43,7 +43,7 @@ test('parseGatewayConfig: attachments s3 parses required + optional fields', () 
       forcePathStyle: true,
       signedUrlExpiresIn: 900,
     },
-    limits: { maxBytes: 100_000_000, sandboxCopyMaxBytes: 4_000_000 },
+    limits: { maxBytes: 100_000_000 },
   });
 });
 
@@ -120,7 +120,7 @@ test('parseGatewayConfig: rejects negative or non-integer limits', () => {
       parseGatewayConfig({
         attachments: {
           storage: { provider: 'local' },
-          limits: { sandboxCopyMaxBytes: 1.5 },
+          limits: { maxBytes: 1.5 },
         },
       }),
     /must be a positive integer/,

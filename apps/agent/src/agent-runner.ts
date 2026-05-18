@@ -1944,6 +1944,7 @@ export class AgentRunner implements SessionRuntime {
         ...(this.options.approvalRequestStore ? { approvalRequestStore: this.options.approvalRequestStore } : {}),
         ...(this.options.attachmentStore ? { attachmentStore: this.options.attachmentStore } : {}),
         ...(this.options.attachmentStorage ? { attachmentStorage: this.options.attachmentStorage } : {}),
+        materializeAttachment: (mat) => this.materializeAttachmentToSandbox(mat),
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),

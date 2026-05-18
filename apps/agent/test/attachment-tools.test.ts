@@ -257,3 +257,68 @@ test('attachment_fetch auto: large text falls back to metadata + sandbox pointer
     .find((c) => c.type === 'text')!.text;
   assert.match(text, /exceeds max_bytes/);
 });
+
+test('attachment_fetch: self-heals materialization when row is failed/pending', async (t) => {
+  // Simulates a fresh upload that landed in storage but never got copied
+  // into the sandbox (sandbox was down at upload time). attachment_fetch
+  // should call materializeAttachment, persist the new sandbox path, and
+  // return the bytes inline as text.
+  const { store, storage, agentId, sessionId, baseCtx } = await setup(t);
+  const id = await uploadFile({
+    store, storage, agentId, sessionId,
+    name: 'orphan.txt', body: Buffer.from('healed bytes'), mime: 'text/plain',
+  });
+  // Mark the row as failed materialization so the heal path fires.
+  await store.setMaterialization(id, { state: 'failed', error: 'sandbox down at upload' });
+
+  let healCalls = 0;
+  const tool = createAttachmentFetchTool({
+    ...baseCtx,
+    materializeAttachment: async ({ sessionId: sid, attachmentId, safeName, bytes }) => {
+      healCalls += 1;
+      assert.equal(attachmentId, id);
+      assert.equal(safeName, 'orphan.txt');
+      assert.equal(bytes.toString('utf8'), 'healed bytes');
+      return {
+        sandboxId: 'sandbox-heal',
+        sandboxPath: `/home/agent/.openhermit/attachments/${sid}/${attachmentId}/${safeName}`,
+      };
+    },
+  });
+
+  const out = await tool.execute('tc-1', { attachment_id: id });
+  const text = (out.content as Array<{ type: string; text: string }>)
+    .find((c) => c.type === 'text')!.text;
+  assert.match(text, /healed bytes/);
+  assert.equal(healCalls, 1);
+
+  const row = await store.get(id);
+  assert.equal(row!.materializationState, 'copied');
+  assert.equal(row!.sandboxId, 'sandbox-heal');
+  assert.ok(row!.sandboxPath?.endsWith('/orphan.txt'));
+});
+
+test('attachment_fetch: heal failure is recorded, content still returned', async (t) => {
+  const { store, storage, agentId, sessionId, baseCtx } = await setup(t);
+  const id = await uploadFile({
+    store, storage, agentId, sessionId,
+    name: 'still-orphan.txt', body: Buffer.from('inline ok'), mime: 'text/plain',
+  });
+  await store.setMaterialization(id, { state: 'pending' });
+
+  const tool = createAttachmentFetchTool({
+    ...baseCtx,
+    materializeAttachment: async () => {
+      throw new Error('sandbox still down');
+    },
+  });
+
+  const out = await tool.execute('tc-1', { attachment_id: id });
+  const text = (out.content as Array<{ type: string; text: string }>)
+    .find((c) => c.type === 'text')!.text;
+  assert.match(text, /inline ok/);
+
+  const row = await store.get(id);
+  assert.equal(row!.materializationState, 'failed');
+  assert.match(row!.materializationError ?? '', /sandbox still down/);
+});

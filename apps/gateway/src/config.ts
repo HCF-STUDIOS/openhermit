@@ -36,7 +36,6 @@ export interface AttachmentsConfig {
   storage: AttachmentStorageConfig;
   limits?: {
     maxBytes?: number;
-    sandboxCopyMaxBytes?: number;
   };
 }
 
@@ -224,14 +223,8 @@ const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => 
     }
     const limits = limitsRaw as Record<string, unknown>;
     const maxBytes = optionalPositiveInt(limits['maxBytes'], 'attachments.limits.maxBytes');
-    const sandboxCopyMaxBytes = optionalPositiveInt(
-      limits['sandboxCopyMaxBytes'],
-      'attachments.limits.sandboxCopyMaxBytes',
-    );
-    if (maxBytes !== undefined || sandboxCopyMaxBytes !== undefined) {
-      result.limits = {};
-      if (maxBytes !== undefined) result.limits.maxBytes = maxBytes;
-      if (sandboxCopyMaxBytes !== undefined) result.limits.sandboxCopyMaxBytes = sandboxCopyMaxBytes;
+    if (maxBytes !== undefined) {
+      result.limits = { maxBytes };
     }
   }
   return result;

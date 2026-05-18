@@ -493,9 +493,6 @@ export const main = async (): Promise<void> => {
     ...(config.attachments?.limits?.maxBytes !== undefined
       ? { attachmentMaxBytes: config.attachments.limits.maxBytes }
       : {}),
-    ...(config.attachments?.limits?.sandboxCopyMaxBytes !== undefined
-      ? { attachmentSandboxCopyMaxBytes: config.attachments.limits.sandboxCopyMaxBytes }
-      : {}),
     ...(metaStore ? { metaStore } : {}),
     ...(sessionStore ? { sessionStore } : {}),
     sandboxPresets: config.sandboxPresets,

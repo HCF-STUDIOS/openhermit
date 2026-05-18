@@ -101,7 +101,6 @@ export interface ApprovalRequestCreateInput {
 export type AttachmentMaterializationState =
   | 'pending'
   | 'copied'
-  | 'skipped'
   | 'failed';
 
 /** 'local' | 's3' | 'supabase' — open string so providers can be added without a schema bump. */

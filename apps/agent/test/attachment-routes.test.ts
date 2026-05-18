@@ -30,7 +30,6 @@ interface StubRunner {
 
 interface BuildAppOptions {
   failMaterialization?: boolean;
-  sandboxCopyMaxBytes?: number;
   maxBytes?: number;
   uploaderUserId?: string | null;
 }
@@ -79,7 +78,6 @@ async function buildApp(
     attachmentStore,
     attachmentStorage,
     maxBytes: opts.maxBytes ?? 50 * 1024 * 1024,
-    sandboxCopyMaxBytes: opts.sandboxCopyMaxBytes ?? 1024 * 1024,
     requireAuth: () => ({
       mode: 'user',
       channel: 'web',
@@ -161,14 +159,15 @@ test('POST attachments: uploads, persists row, materializes small file', async (
   await assert.doesNotReject(() => import('node:fs/promises').then((fs) => fs.stat(onDisk)));
 });
 
-test('POST attachments: large file skips sandbox copy', async (t) => {
-  const { app, attachmentStore } = await buildApp(t, {
-    sandboxCopyMaxBytes: 8, // anything bigger than 8 bytes is "large"
-  });
+test('POST attachments: always materializes regardless of size', async (t) => {
+  // No size threshold any more — every successful upload tries to copy into
+  // the sandbox. A failure (sandbox down, write error) sets state=failed
+  // and attachment_fetch is responsible for self-healing later.
+  const { app, attachmentStore } = await buildApp(t);
   const { agentId, sessionId } = uniqueAgentSession();
 
   const form = new FormData();
-  const body = Buffer.from('this content is bigger than eight bytes');
+  const body = Buffer.alloc(4 * 1024 * 1024, 'x'); // 4 MiB — well above the old 1 MiB default
   form.append('file', new Blob([body], { type: 'text/plain' }), 'note.txt');
 
   const res = await app.request(attachmentsUrl(agentId, sessionId), {
@@ -178,11 +177,11 @@ test('POST attachments: large file skips sandbox copy', async (t) => {
 
   assert.equal(res.status, 201);
   const { attachment } = (await res.json()) as { attachment: Record<string, unknown> };
-  assert.equal(attachment.materializationState, 'skipped');
-  assert.equal(attachment.sandboxPath, null);
+  assert.equal(attachment.materializationState, 'copied');
+  assert.ok(typeof attachment.sandboxPath === 'string' && attachment.sandboxPath.length > 0);
 
   const row = await attachmentStore.get(attachment.id as string);
-  assert.equal(row!.materializationState, 'skipped');
+  assert.equal(row!.materializationState, 'copied');
 });
 
 test('POST attachments: materialization error is captured, row still created', async (t) => {
