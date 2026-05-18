@@ -81,8 +81,6 @@ export class SignalApi {
     }
   }
 
-  // /v1/receive only upgrades cleanly in MODE=json-rpc; other modes silently
-  // connect-then-disconnect, which is brutal to diagnose. Probe at boot.
   async probeReceiveMode(): Promise<void> {
     const res = await this.fetchImpl(`${this.httpUrl}/v1/about`);
     if (!res.ok) {
@@ -97,7 +95,6 @@ export class SignalApi {
     }
   }
 
-  // Reconnect is owned by SignalBot so the bridge can apply its own backoff.
   async *streamMessages(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SignalIncomingMessage> {
     if (opts.signal?.aborted) return;
 
@@ -172,9 +169,6 @@ export class SignalApi {
     const groupInfo = data.groupInfo as { groupId?: string } | undefined;
     const groupId = typeof groupInfo?.groupId === 'string' ? groupInfo.groupId : undefined;
 
-    // Self-loop detection: prefer the strong UUID match when available,
-    // but fall back to E.164 number equality so messages echoed back via
-    // sync-on-linked-device are still suppressed when selfUuid is unset.
     const isSelf =
       (this.selfUuid !== undefined && sourceUuid === this.selfUuid) ||
       (sourceNumber !== undefined && sourceNumber === this.account);

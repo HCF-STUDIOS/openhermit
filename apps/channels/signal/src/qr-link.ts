@@ -1,24 +1,5 @@
-/**
- * Thin client over signal-cli-rest-api's QR-link endpoint plus the
- * `/v1/accounts` poll used to detect when linking completes.
- *
- * signal-cli-rest-api returns the link payload as a PNG; we decode it
- * once at session start and expose the underlying `sgnl://linkdevice?…`
- * URI so callers can render their own QR (which is what the wizard
- * spec asks for).
- */
 import { PNG } from 'pngjs';
-// jsqr ships a UMD bundle: under NodeNext its types resolve as a CJS
-// module whose default export is the callable. esModuleInterop's synthetic
-// default doesn't bind under NodeNext, so we pull the default off the
-// namespace import explicitly.
-import * as jsqrModule from 'jsqr';
-type JsQRFn = (
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-) => { data: string } | null;
-const jsQR = (jsqrModule as unknown as { default: JsQRFn }).default;
+import jsQR from 'jsqr';
 
 export interface QrLinkOptions {
   httpUrl: string;
@@ -31,10 +12,6 @@ export class QrLinkSession {
   readonly account: string;
   /** Decoded `sgnl://linkdevice?…` URI from the daemon-rendered QR PNG. */
   readonly qrUri: string;
-  /**
-   * @deprecated Kept for backward compat with earlier 0.2.x consumers.
-   *   New code should render its own QR from {@link qrUri}.
-   */
   readonly qrPngDataUrl: string;
   private readonly fetchImpl: typeof fetch;
 
@@ -53,9 +30,6 @@ export class QrLinkSession {
   static async begin(opts: QrLinkOptions): Promise<QrLinkSession> {
     const fetchImpl = opts.fetch ?? fetch;
     const httpUrl = opts.httpUrl.replace(/\/+$/, '');
-    // signal-cli-rest-api's link endpoint takes device_name as a query
-    // param and does NOT take the phone number — the number is chosen at
-    // scan time on the user's phone, not pre-bound to the QR.
     const url = `${httpUrl}/v1/qrcodelink?device_name=openhermit`;
     const res = await fetchImpl(url, { method: 'GET' });
     if (!res.ok) {

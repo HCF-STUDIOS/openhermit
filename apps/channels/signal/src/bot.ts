@@ -26,9 +26,6 @@ export class SignalBot {
     if (this.running) return;
     if (this.startPromise) return this.startPromise;
 
-    // Capture into a local so concurrent stop() can't observe a torn state
-    // mid-construction. A fresh AbortController per start() means a
-    // restart after stop() doesn't inherit an already-aborted signal.
     const startPromise = (async () => {
       const controller = new AbortController();
       this.abortController = controller;
@@ -48,8 +45,6 @@ export class SignalBot {
     if (!this.running && !this.startPromise) return;
     this.running = false;
     this.abortController?.abort();
-    // Wait for an in-flight start() to settle before declaring stopped,
-    // otherwise the loop it launches escapes our control.
     await this.startPromise?.catch(() => undefined);
     if (this.loopPromise) await this.loopPromise.catch(() => undefined);
     this.loopPromise = undefined;

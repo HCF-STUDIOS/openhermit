@@ -11,7 +11,6 @@ import type { SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
 import { redactId, redactTarget } from './redact.js';
 
-/** Hard ceiling on how long we'll wait for an agent SSE turn to terminate. */
 const AGENT_RESPONSE_TIMEOUT_MS = 60_000;
 
 export interface ConversationKeyInput {
@@ -91,8 +90,6 @@ export class SignalBridge implements ChannelOutbound {
     text: string;
     actions?: ChannelMessageAction[];
   }): Promise<ChannelOutboundResult> {
-    // Signal has no native action/button surface; `actions` are accepted
-    // for ChannelOutbound contract parity but ignored on the wire.
     void params.actions;
     try {
       const chunks = formatAgentResponse(params.text);
@@ -137,7 +134,6 @@ export class SignalBridge implements ChannelOutbound {
 
     const senderChannelUserId = msg.sourceUuid ?? msg.sourceNumber ?? 'unknown';
     const senderName = msg.sourceName;
-    // Signal has no first-class mentions; group filtering is handled by allowedGroupIds.
     const postResult = await this.client.postMessage(sessionId, {
       text: msg.text,
       mentioned: true,
@@ -215,8 +211,6 @@ export class SignalBridge implements ChannelOutbound {
   private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
-    // Bound the wait so a stalled SSE stream can't pin the receive loop
-    // and back-pressure every other Signal conversation.
     const controller = new AbortController();
     const timeoutTimer = setTimeout(() => controller.abort(), AGENT_RESPONSE_TIMEOUT_MS);
     let response: Response;
