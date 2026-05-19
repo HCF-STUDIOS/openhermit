@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Readable } from 'node:stream';
 import { test } from 'node:test';
 
 import type { StreamFn } from '@mariozechner/pi-agent-core';
@@ -10,9 +15,11 @@ import {
   type Usage,
 } from '@mariozechner/pi-ai';
 
+import type { SessionAttachment } from '@openhermit/protocol';
+
 import { AgentRunner } from '../src/agent-runner.js';
 import type { LangfuseClientLike } from '../src/langfuse.js';
-import { DbInternalStateStore } from '@openhermit/store';
+import { DbAttachmentStore, DbInternalStateStore, LocalAttachmentStorage } from '@openhermit/store';
 
 // Each test now uses a unique agentId from the security fixture.
 import { createSecurityFixture } from './helpers.js';
@@ -1066,6 +1073,135 @@ test('AgentRunner does not duplicate the new user message on the first turn afte
     hiUserCount,
     1,
     `new user message "hi" must appear exactly once in the LLM context (got ${hiUserCount})`,
+  );
+});
+
+test('AgentRunner restores user-message attachments on the first turn after resume', async (t) => {
+  // Regression: before this fix, when a session was rehydrated from DB (e.g.
+  // after a gateway redeploy), `buildResumptionMessages` read only the text
+  // content of historical user entries. Any attachments on those entries —
+  // including the current turn's brand-new attachment, which the postMessage
+  // handler had just inlined — were dropped when `transformContext` replaced
+  // the in-memory message list with the DB-restored one. Result: vision models
+  // saw plain text and had no idea a file was ever attached. Observed in prod
+  // as a kimi-k2.6 reply of literally "&" (thinking-only fallback).
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const attachmentStore = await DbAttachmentStore.open();
+  t.after(() => attachmentStore.close());
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'openhermit-resume-att-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const attachmentStorage = new LocalAttachmentStorage({ root });
+
+  // Minimal valid 1x1 PNG so magic-bytes.js can sniff `image/png`.
+  const PNG_BYTES = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4' +
+      '890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082',
+    'hex',
+  );
+
+  const sessionId = 'cli:resume-att-session';
+  const attachmentId = `att_${randomBytes(16).toString('hex')}`;
+  const putResult = await attachmentStorage.put({
+    agentId,
+    sessionId,
+    attachmentId,
+    filename: 'pic.png',
+    contentType: 'image/png',
+    body: Readable.from(PNG_BYTES),
+  });
+  await attachmentStore.create({
+    id: attachmentId,
+    agentId,
+    sessionId,
+    uploaderUserId: null,
+    originalName: 'pic.png',
+    safeName: 'pic.png',
+    mimeType: 'image/png',
+    sizeBytes: putResult.sizeBytes,
+    sha256: putResult.sha256,
+    storageProvider: attachmentStorage.name,
+    storageKey: putResult.storageKey,
+  });
+
+  const sessionAttachment: SessionAttachment = {
+    id: attachmentId,
+    type: 'file',
+    name: 'pic.png',
+    mimeType: 'image/png',
+    size: PNG_BYTES.length,
+    sha256: putResult.sha256,
+    sandboxPath: '/sandbox/pic.png',
+    materializationState: 'copied',
+  };
+
+  const runner1 = await AgentRunner.create({
+    workspace,
+    security,
+    attachmentStore,
+    attachmentStorage,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('first reply'),
+    ]),
+  });
+  await runner1.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner1.postMessage(sessionId, {
+    text: 'look at this',
+    attachments: [sessionAttachment],
+  });
+  await runner1.waitForSessionIdle(sessionId);
+
+  // Fresh runner instance simulates a gateway restart: in-memory session is
+  // gone, but the persistent DB + storage are shared.
+  let capturedMessages: Context['messages'] = [];
+  const runner2 = await AgentRunner.create({
+    workspace,
+    security,
+    attachmentStore,
+    attachmentStorage,
+    streamFn: createSequentialStreamFn([
+      (context) => {
+        capturedMessages = context.messages;
+        return createTextResponseStream('second reply');
+      },
+    ]),
+  });
+  await runner2.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner2.postMessage(sessionId, {
+    text: 'how about this one',
+    attachments: [sessionAttachment],
+  });
+  await runner2.waitForSessionIdle(sessionId);
+
+  const hasAttachmentBlock = (msg: { content: unknown }): boolean => {
+    if (!Array.isArray(msg.content)) return false;
+    return (msg.content as unknown[]).some((part) => {
+      if (typeof part !== 'object' || part === null) return false;
+      const p = part as { type?: string; text?: string };
+      if (p.type === 'image') return true;
+      if (p.type === 'text' && typeof p.text === 'string' && p.text.includes('[attachment]')) {
+        return true;
+      }
+      return false;
+    });
+  };
+
+  const userMessages = capturedMessages.filter((m) => m.role === 'user');
+  const withAttachmentBlock = userMessages.filter(hasAttachmentBlock);
+  assert.ok(
+    withAttachmentBlock.length >= 1,
+    `expected at least one resumed user message to carry an inlined image or [attachment] reference; got ${withAttachmentBlock.length} of ${userMessages.length} user messages`,
   );
 });
 

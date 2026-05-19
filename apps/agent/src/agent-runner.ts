@@ -13,7 +13,7 @@ type AfterToolCallHook = (
   ctx: AfterToolCallContext,
   signal?: AbortSignal,
 ) => Promise<AfterToolCallResult | undefined>;
-import type { MessageSender, SessionHistoryMessage, SessionListQuery, SessionMessage, SessionSpec, SessionSummary } from '@openhermit/protocol';
+import type { MessageSender, SessionAttachment, SessionHistoryMessage, SessionListQuery, SessionMessage, SessionSpec, SessionSummary } from '@openhermit/protocol';
 import { NotFoundError, ValidationError, getErrorMessage } from '@openhermit/shared';
 import {
   type InternalStateStore,
@@ -2252,7 +2252,7 @@ export class AgentRunner implements SessionRuntime {
    */
   private async buildResumptionMessages(
     sessionId: string,
-    targetModel?: { provider: string; api: string; modelId: string },
+    targetModel?: { provider: string; api: string; modelId: string; supportsImageInput?: boolean },
   ): Promise<AgentMessage[]> {
     // Some providers (DeepSeek thinking models) reject any historical
     // tool-use assistant turn that lacks reasoning_content. When the
@@ -2290,10 +2290,43 @@ export class AgentRunner implements SessionRuntime {
       if (entry.role === 'user' && typeof entry.content === 'string') {
         lastAssistant = null;
         const userName = typeof entry.userName === 'string' ? entry.userName : undefined;
-        const content = isGroup && userName
+        const textContent = isGroup && userName
           ? `[${userName}] ${entry.content}`
           : entry.content;
-        messages.push({ role: 'user', content, timestamp: ts });
+        const rawAttachments = (entry as { attachments?: unknown }).attachments;
+        const attachments = Array.isArray(rawAttachments)
+          ? (rawAttachments as SessionAttachment[])
+          : [];
+        if (attachments.length === 0) {
+          messages.push({ role: 'user', content: textContent, timestamp: ts });
+          continue;
+        }
+        // Mirror the live postMessage path: rebuild the user message as
+        // structured blocks so vision-capable models see the image inline,
+        // and text-only models still get an `[attachment]` reference. Without
+        // this, the first turn after a session is rehydrated from DB loses
+        // every historical attachment — the model only sees the plain text,
+        // and cannot tell that a file was ever attached.
+        const attachmentBlocks = await prepareAttachmentContent(
+          attachments,
+          {
+            ...(this.options.attachmentStore
+              ? { attachmentStore: this.options.attachmentStore }
+              : {}),
+            ...(this.options.attachmentStorage
+              ? { attachmentStorage: this.options.attachmentStorage }
+              : {}),
+          },
+          {
+            supportsImageInput: targetModel?.supportsImageInput ?? true,
+            log: (m) => console.warn(`[agent-runner] ${m}`),
+          },
+        );
+        const blocks: typeof attachmentBlocks = [];
+        if (textContent.length > 0) blocks.push({ type: 'text', text: textContent });
+        for (const b of attachmentBlocks) blocks.push(b);
+        if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
+        messages.push({ role: 'user', content: blocks, timestamp: ts });
         continue;
       }
 
@@ -2489,10 +2522,15 @@ export class AgentRunner implements SessionRuntime {
     let restoredMessages: AgentMessage[] = [];
     if (session?.resumed && messages.length <= 1) {
       const resolved = resolveModel(config);
+      const modelInputs = (resolved as { input?: string[] }).input;
+      const supportsImageInput = Array.isArray(modelInputs)
+        ? modelInputs.includes('image')
+        : true;
       restoredMessages = await this.buildResumptionMessages(sessionId, {
         provider: config.model.provider,
         api: resolved.api,
         modelId: resolved.id,
+        supportsImageInput,
       });
       session.resumed = false;
     }
