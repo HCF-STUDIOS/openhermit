@@ -42,7 +42,7 @@ export const createSignalSetup = (
   const userInputState = (): ChannelSetupState => ({
     kind: 'awaiting_user_input',
     instructions:
-      'Enter the URL of your signal-cli-rest-api daemon and the bot phone number. Use the HCF fork ghcr.io/hcf-studios/signal-cli-rest-api:0.99-pr2038 (or the official image once signal-cli PR #2038 ships) so QR-link and receive work without switching modes.',
+      'Enter the URL of your signal-cli-rest-api daemon (use the HCF fork — see README) and the bot phone number.',
     fields: [
       {
         key: 'http_url',
