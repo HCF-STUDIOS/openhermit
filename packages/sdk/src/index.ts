@@ -112,9 +112,13 @@ export class AgentLocalClient {
   async appendMessage(
     sessionId: string,
     message: SessionMessage,
+    opts?: { channelUserId?: string },
   ): Promise<{ sessionId: string; appended: boolean; deduped?: true }> {
     const path = `${agentLocalRoutes.sessionMessages(sessionId)}?append=true`;
-    return this.postJson(path, message);
+    const headers = opts?.channelUserId
+      ? { 'x-channel-user-id': opts.channelUserId }
+      : undefined;
+    return this.postJson(path, message, headers);
   }
 
   async submitApproval(
@@ -248,18 +252,21 @@ export class AgentLocalClient {
   async postMessageSync(
     sessionId: string,
     message: SessionMessage,
-    options?: { timeout?: number },
+    options?: { timeout?: number; channelUserId?: string },
   ): Promise<SyncResponse> {
     const params = new URLSearchParams({ wait: 'true' });
     if (options?.timeout) params.set('timeout', String(options.timeout));
     const path = `${agentLocalRoutes.sessionMessages(sessionId)}?${params.toString()}`;
-    return this.postJson(path, message);
+    const headers = options?.channelUserId
+      ? { 'x-channel-user-id': options.channelUserId }
+      : undefined;
+    return this.postJson(path, message, headers);
   }
 
   async *postMessageStream(
     sessionId: string,
     message: SessionMessage,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; channelUserId?: string },
   ): AsyncIterable<OutboundEvent> {
     const path = `${agentLocalRoutes.sessionMessages(sessionId)}?stream=true`;
     const url = joinUrl(this.options.baseUrl, path);
@@ -269,6 +276,9 @@ export class AgentLocalClient {
       headers: {
         authorization: `Bearer ${this.options.token}`,
         'content-type': 'application/json',
+        ...(options?.channelUserId
+          ? { 'x-channel-user-id': options.channelUserId }
+          : {}),
       },
       body: JSON.stringify(message),
       signal: options?.signal ?? null,

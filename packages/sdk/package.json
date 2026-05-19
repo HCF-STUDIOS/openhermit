@@ -1,6 +1,6 @@
 {
   "name": "@openhermit/sdk",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "TypeScript SDK for the OpenHermit gateway and agent APIs.",
   "license": "MIT",
   "type": "module",
