@@ -1106,7 +1106,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // Pass caller identity directly to the runtime instead of injecting
     // it into session metadata — keeps "who's calling now" cleanly
     // separated from the session's persisted attributes.
-    const caller = auth.mode === 'user' && auth.channelUserId
+    const caller = (auth.mode === 'user' || auth.mode === 'channel') && auth.channelUserId
       ? { channel: auth.channel, channelUserId: auth.channelUserId }
       : undefined;
     const session = await runtime.openSession(payload, caller);
