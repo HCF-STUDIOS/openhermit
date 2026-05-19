@@ -42,7 +42,7 @@ export const createSignalSetup = (
   const userInputState = (): ChannelSetupState => ({
     kind: 'awaiting_user_input',
     instructions:
-      'Enter the URL of your signal-cli-rest-api daemon and the bot phone number. The daemon must run with MODE=normal for the QR-link step (you can switch to MODE=json-rpc after linking).',
+      'Enter the URL of your signal-cli-rest-api daemon and the bot phone number.',
     fields: [
       {
         key: 'http_url',
