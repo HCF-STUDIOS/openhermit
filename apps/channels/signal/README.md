@@ -1,7 +1,7 @@
 # Signal Channel Adapter
 
 `@openhermit/channel-signal` connects an OpenHermit agent to a Signal
-account via [`bbernhard/signal-cli-rest-api`](https://github.com/bbernhard/signal-cli-rest-api).
+account via [HCF Studios' fork of `signal-cli-rest-api`](https://github.com/HCF-STUDIOS/signal-cli-rest-api) (pinned to `ghcr.io/hcf-studios/signal-cli-rest-api:0.99-pr2038`, which back-ports [signal-cli PR #2038](https://github.com/AsamK/signal-cli/pull/2038)).
 The plugin is **not bundled** in the CLI — operators install it
 explicitly when they want Signal support.
 
@@ -11,8 +11,7 @@ explicitly when they want Signal support.
 - DMs and group messages
 - QR-link wizard via `ChannelSetup`
 - Optional allow-lists (`allowed_senders`, `allowed_group_ids`)
-- `MODE=json-rpc` enforced at runtime; the wizard temporarily uses the
-  daemon's `MODE=normal` mode for the QR-link step
+- Single-mode operation: the HCF fork handles QR-link and the receive WebSocket without flipping `MODE` mid-flow.
 
 ## Loading the plugin
 
@@ -49,42 +48,19 @@ admin UI's "Add channel" picker.
 4. Once the daemon registers the new linked device, the wizard auto-
    advances to `done` and the channel row is persisted.
 
-For the QR-link to work, the daemon must run in `MODE=normal` (its
-default). After the device is linked, restart the daemon with
-`MODE=json-rpc` so the receive WebSocket comes online — that's what
-the bridge uses for inbound messages.
+The HCF fork handles both QR-link and receive in a single mode, so the daemon just needs to be running with a linked account. The plugin's startup probe only checks `/v1/about` is reachable.
 
-## Daemon docker-compose snippets
-
-The daemon's `MODE` env var must change between linking and steady-state
-operation. Restart (or redeploy) the container after switching.
-
-### 1. Linking mode (first-time QR link)
+## Daemon docker-compose snippet
 
 ```yaml
-signal:
-  image: bbernhard/signal-cli-rest-api:latest
-  environment:
-    # MODE=normal exposes the QR-link endpoint used by the wizard.
-    MODE: normal
-  volumes:
-    - signal-data:/home/.local/share/signal-cli
-  ports:
-    - "8080:8080"
-```
-
-### 2. Runtime mode (after linking)
-
-```yaml
-signal:
-  image: bbernhard/signal-cli-rest-api:latest
-  environment:
-    # MODE=json-rpc enables the receive WebSocket the bridge consumes.
-    MODE: json-rpc
-  volumes:
-    - signal-data:/home/.local/share/signal-cli
-  ports:
-    - "8080:8080"
+services:
+  signal:
+    image: ghcr.io/hcf-studios/signal-cli-rest-api:0.99-pr2038
+    ports: ['8080:8080']
+    volumes:
+      - signal_data:/home/.local/share/signal-cli
+volumes:
+  signal_data:
 ```
 
 ## Stored config

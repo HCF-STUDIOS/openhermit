@@ -86,13 +86,11 @@ export class SignalApi {
     if (!res.ok) {
       throw new Error(`signal-cli-rest-api /v1/about returned ${res.status}; is the URL correct?`);
     }
-    const json = (await res.json()) as { mode?: string };
-    if (json.mode !== 'json-rpc') {
-      throw new Error(
-        `signal-cli-rest-api must run with MODE=json-rpc (got ${json.mode ?? 'unknown'}). ` +
-          `Set MODE=json-rpc in the container env and restart.`,
-      );
-    }
+    // The HCF fork (signal-cli-rest-api:0.99-pr2038) handles both QR-link and
+    // receive WS in any mode, so we only verify the daemon is reachable.
+    await res.json().catch(() => {
+      throw new Error(`signal-cli-rest-api /v1/about did not return JSON; is the URL correct?`);
+    });
   }
 
   async *streamMessages(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SignalIncomingMessage> {

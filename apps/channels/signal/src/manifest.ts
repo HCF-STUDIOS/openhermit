@@ -1,5 +1,5 @@
 /**
- * Channel plugin manifest for Signal (signal-cli-rest-api).
+ * Channel plugin manifest for Signal (signal-cli-rest-api; HCF fork ghcr.io/hcf-studios/signal-cli-rest-api:0.99-pr2038).
  *
  * Loaded by the gateway when `@openhermit/channel-signal` is listed under
  * `channelPackages` in gateway config. See `docs/channel-plugin-design.md`.

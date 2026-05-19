@@ -102,7 +102,7 @@ Existing built-in channels (`telegram`, `slack`, `discord`) are refactored to ex
 
 ## Interactive Setup
 
-Token-only channels (telegram, slack, discord) start with a known config: the operator pastes a bot token into the admin UI, the row is saved, the channel is enabled. Some channels — Signal (QR-link via [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)), WhatsApp-Web, anything OAuth — have a multi-step interactive flow that produces the persistent config only *after* the user completes an external action (scanning a QR, granting consent in a browser).
+Token-only channels (telegram, slack, discord) start with a known config: the operator pastes a bot token into the admin UI, the row is saved, the channel is enabled. Some channels — Signal (QR-link via [HCF fork of signal-cli-rest-api](https://github.com/HCF-STUDIOS/signal-cli-rest-api)), WhatsApp-Web, anything OAuth — have a multi-step interactive flow that produces the persistent config only *after* the user completes an external action (scanning a QR, granting consent in a browser).
 
 The `setup` field on `ChannelManifest` describes a state machine for this flow:
 

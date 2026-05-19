@@ -30,7 +30,7 @@ export class SignalBot {
       const controller = new AbortController();
       this.abortController = controller;
       await this.signal.probeReceiveMode();
-      this.log('probe ok: signal-cli-rest-api MODE=json-rpc');
+      this.log('probe ok: signal-cli-rest-api reachable');
       this.running = true;
       this.loopPromise = this.receiveLoop(controller.signal);
     })().finally(() => {

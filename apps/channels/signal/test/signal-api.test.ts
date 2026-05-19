@@ -86,19 +86,29 @@ test('SignalApi.sendDirectMessage throws on non-2xx with the response body', asy
   await assert.rejects(() => api.sendDirectMessage('+1', 'x'), /invalid recipient/);
 });
 
-test('SignalApi.probeReceiveMode rejects when probe endpoint returns non-json-rpc mode', async () => {
-  const { fetch: spy } = makeFetchSpy({ body: { mode: 'normal', version: '0.x' } });
-  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
+test('SignalApi.probeReceiveMode resolves for any mode the daemon reports', async () => {
+  for (const body of [{ mode: 'json-rpc' }, { mode: 'normal' }, { mode: 'native' }, {}]) {
+    const { fetch: spy } = makeFetchSpy({ body });
+    const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
+    await api.probeReceiveMode();
+  }
+});
 
+test('SignalApi.probeReceiveMode rejects when /v1/about returns non-2xx', async () => {
+  const { fetch: spy } = makeFetchSpy({ status: 502, body: { error: 'bad gateway' } });
+  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
   await assert.rejects(
     () => api.probeReceiveMode(),
-    /MODE=json-rpc/,
+    /returned 502/,
   );
 });
 
-test('SignalApi.probeReceiveMode resolves when /v1/about reports mode=json-rpc', async () => {
-  const { fetch: spy } = makeFetchSpy({ body: { mode: 'json-rpc', version: '0.x' } });
+test('SignalApi.probeReceiveMode rejects when /v1/about returns non-JSON', async () => {
+  const spy = (async () =>
+    new Response('hello world', { status: 200, headers: { 'content-type': 'text/plain' } })) as typeof fetch;
   const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
-
-  await api.probeReceiveMode(); // does not throw
+  await assert.rejects(
+    () => api.probeReceiveMode(),
+    /did not return JSON/,
+  );
 });

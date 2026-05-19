@@ -20,7 +20,7 @@ Not bundled in the CLI. Operators install them with `hermit channel install <pkg
 
 | Platform | Package | Connection |
 |----------|---------|------------|
-| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard |
+| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket via HCF fork (`ghcr.io/hcf-studios/signal-cli-rest-api:0.99-pr2038`); QR-link setup wizard |
 | WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text-only v0 |
 
 External plugins follow the same manifest contract as bundled ones — there is no special-case loading path. Adding a new external plugin requires no gateway code change, only a config edit and a restart.
