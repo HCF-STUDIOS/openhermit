@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../../..",
+    "outDir": "dist",
+    "composite": false,
+    "incremental": false
+  },
+  "include": [
+    "src",
+    "../../../packages/protocol/src",
+    "../../../packages/shared/src"
+  ]
+}
