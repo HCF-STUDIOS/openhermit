@@ -67,12 +67,13 @@ any non-empty combination.
   (`apps/agent/src/events.ts:183-184`); plugin contributions go through the
   same enforcement.
 
-### Tier 2 — infrastructure swap-ins, deferred
+### Tier 2 — infrastructure provider capabilities, deferred
 
-These exist today but as "pick one global implementation," not "many enabled
-in parallel." They could share the `plugins` manifest registry but would not
-use `agent_plugins` enablement — they're gateway-wide selections, not
-per-agent toggles.
+These exist today as provider selections rather than runtime capabilities that
+an agent can enable many of at once. They may still become plugin-shaped, but
+they should not be forced into the v1 `agent_plugins.enabled` model: a gateway
+or agent usually chooses one storage provider, one memory provider, or one
+sandbox backend from config.
 
 - **Storage backend** — `local` / `s3` / `supabase` for attachments
   (`packages/store/src/impl/*-attachment-storage.ts`).
@@ -81,14 +82,17 @@ per-agent toggles.
 - **LLM provider** — already abstracted via pi-agent-core, but provider
   registration is not plugin-shaped.
 
-Out of scope for v1. The manifest contract leaves room to add a
-`backends?: BackendCapability` field later without a schema migration.
+Out of scope for v1. Future provider capabilities such as `storage`, `memory`,
+or `sandbox` may use the same package registry, but their enablement and
+selection model can be gateway-level or backend-config-level rather than
+per-agent whole-plugin enablement.
 
 ### Out of scope entirely
 
-- **Skill bundles** — skills remain filesystem-managed
-  (`~/.openhermit/skills/user/`). A plugin manifest may declare that it copies
-  files into the skills directory on install, but skills are not a capability.
+- **Skill bundles** — skills remain a first-class filesystem-managed mechanism
+  (`~/.openhermit/skills/user/`) and can already be registered directly. A
+  plugin package may include files or an install script that places skills on
+  disk, but `skills` is not a plugin capability.
 - **Prompt modules / default instructions** — operator config, not plugins.
 - **Telemetry sinks** — gateway config (currently Langfuse), not plugins.
 
@@ -136,9 +140,12 @@ export interface ToolCapability {
 }
 
 export interface ChannelCapability {
-  /** Absorbed from the current ChannelManifest. Fields: start, parseConfig,
-   *  setup?, healthCheck?, runtimeError?, etc. */
-  start: (config: unknown, context: PluginContext) => Promise<ChannelHandle>;
+  /** Absorbed from the current ChannelManifest. The channel start context
+   *  must remain compatible with the existing ChannelContext (`agentBaseUrl`,
+   *  `publicAgentBaseUrl`, `agentTokens`, channel-aware logging, runtime
+   *  error reporting, etc.) so legacy ChannelManifest exports can be wrapped
+   *  mechanically during the migration. */
+  start: (config: unknown, context: PluginChannelContext) => Promise<ChannelHandle>;
   setup?: ChannelSetup;
   // … rest of the current ChannelManifest body, minus the duplicated
   // `key` / `displayName` / `parseConfig` which move up to PluginManifest.
@@ -168,6 +175,12 @@ export interface PluginContext {
    *  last_error`). Same contract as the existing channel
    *  `reportRuntimeError` (`packages/protocol/src/index.ts:336`). */
   reportRuntimeError: (error: string | null) => void;
+}
+
+export interface PluginChannelContext extends PluginContext {
+  agentBaseUrl: string;
+  publicAgentBaseUrl: string;
+  agentTokens: Record<string, string>;
 }
 ```
 
@@ -331,8 +344,9 @@ first access for an agent:
 
 1. Load enabled `agent_plugins` rows.
 2. For each row: resolve manifest in the registry, expand `${SECRET}`
-   references in `config`, run `manifest.parseConfig` and per-capability
-   `parseConfig` if present.
+   references in `config`, and run `manifest.parseConfig` if present. The
+   returned value is the normalized config object passed to each declared
+   capability's `start()` method.
 3. For each declared capability, call its `start(config, context)` and cache
    the returned handle.
 4. Hooks are subscribed to the `AgentEventBus` here, not per-turn.
@@ -429,9 +443,11 @@ Mounted under `/api/agents/:agentId/plugins`:
   existing veto/listener contract (`apps/agent/src/events.ts:183-184`).
   A buggy hook that always vetoes will be obvious from `tool.after@v1`
   telemetry and can be disabled per-agent without a gateway restart.
-- **Secrets stay in the secret store.** Plugin config can reference
-  `${TOKEN}` but plaintext never leaves the secret store; plugins receive
-  pre-expanded values via `PluginContext.secrets`.
+- **Secrets are resolved by the platform, then exposed in-process.** Plugin
+  config can reference `${TOKEN}`; values are resolved from the secret store
+  and provided to plugin code via `PluginContext.secrets` (not persisted back
+  into plugin config rows by this flow). Plugins and their runtime environment
+  must be trusted accordingly.
 - **Untrusted plugin code is still in-process.** This is the central
   trust trade-off: an in-process plugin can do anything Node lets it do.
   Document loudly in the manual; recommend MCP for code from third parties
