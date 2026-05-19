@@ -148,7 +148,13 @@ export class CentralScheduler {
         return;
       }
 
-      const sessionId = `schedule:${fresh.scheduleId}`;
+      // Cron schedules use a per-firing sessionId so history doesn't
+      // accumulate forever in one session (which previously produced
+      // 200K+ input-token turns and runaway cost). One-off schedules
+      // keep the stable id; they only fire once anyway.
+      const sessionId = fresh.type === 'cron'
+        ? `schedule:${fresh.scheduleId}:${new Date().toISOString().replace(/[:.]/g, '-')}`
+        : `schedule:${fresh.scheduleId}`;
       const run = await this.store.startRun(scope, fresh.scheduleId, sessionId, fresh.prompt);
 
       try {

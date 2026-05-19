@@ -178,8 +178,9 @@ export class AgentRunner implements SessionRuntime {
   /**
    * Fire a single scheduled job. Called by the central scheduler. The
    * caller owns row bookkeeping (`startRun` / `markRun` / `finishRun`);
-   * this method only opens the session, runs the prompt, and tears the
-   * session down for one-off schedules.
+   * this method opens the session, runs the prompt, and tears the
+   * session down at the end of each firing. Cron schedules pass a
+   * per-firing sessionId so history doesn't accumulate across firings.
    */
   async runScheduledJob(schedule: ScheduleRecord, sessionId: string): Promise<void> {
     await this.openSession({
@@ -208,22 +209,23 @@ export class AgentRunner implements SessionRuntime {
     };
     await this.postMessage(sessionId, { text: transformed.prompt, metadata });
 
-    if (schedule.type === 'once') {
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'inactive';
-        this.clearIdleSummaryTimer(session);
-        this.persistSessionIndex(session);
-        this.sessions.delete(sessionId);
-      } else {
-        await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
-      }
-      await this.bus.emit('session.closed@v1', {
-        agentId: this.scope.agentId,
-        sessionId,
-        reason: 'idle',
-      });
+    // Every scheduled firing tears down its session. Cron schedules use
+    // a per-firing sessionId (see central-scheduler) so this leaves no
+    // long-lived "schedule:<id>" session accumulating history forever.
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.status = 'inactive';
+      this.clearIdleSummaryTimer(session);
+      this.persistSessionIndex(session);
+      this.sessions.delete(sessionId);
+    } else {
+      await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
     }
+    await this.bus.emit('session.closed@v1', {
+      agentId: this.scope.agentId,
+      sessionId,
+      reason: 'idle',
+    });
   }
 
   /**

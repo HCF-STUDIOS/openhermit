@@ -14,6 +14,12 @@ export const DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS = 2_400;
 
 export const DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS = 2_048;
 
+// Hard ceiling on the auto-derived compaction threshold. Without this,
+// models with huge context windows (e.g. Gemini's 1M) would only compact
+// at ~1M input tokens — single turns hit 700K+ tokens before kicking in.
+// Users with explicit `contextCompactionMaxTokens` set can still raise it.
+export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
+
 // ── Token estimation ───────────────────────────────────────────────────
 
 export const estimateTextTokens = (text: string): number =>
@@ -232,9 +238,12 @@ export const getContextCompactionMaxTokens = (
 
   return Math.max(
     2_048,
-    model.contextWindow
-    - reservedOutputTokens
-    - DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS,
+    Math.min(
+      DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING,
+      model.contextWindow
+      - reservedOutputTokens
+      - DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS,
+    ),
   );
 };
 
