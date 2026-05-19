@@ -722,7 +722,14 @@ export const fetchChannelManifests = () =>
 export interface ChannelSetupStateAwaitingInput {
   kind: 'awaiting_user_input';
   instructions?: string;
-  fields: Array<{ name: string; label: string; type?: 'text' | 'password'; placeholder?: string }>;
+  fields: Array<{
+    key: string;
+    label: string;
+    type?: 'text' | 'password' | 'phone' | 'number';
+    required?: boolean;
+    placeholder?: string;
+    help?: string;
+  }>;
 }
 export interface ChannelSetupStateAwaitingExternal {
   kind: 'awaiting_external';

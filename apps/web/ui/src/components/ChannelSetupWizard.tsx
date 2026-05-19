@@ -40,7 +40,7 @@ export function ChannelSetupWizard({ channelType, displayName, onDone, onCancel 
     setError('');
     if (resp.state.kind === 'awaiting_user_input') {
       const initial: Record<string, string> = {};
-      for (const f of resp.state.fields) initial[f.name] = '';
+      for (const f of resp.state.fields) initial[f.key] = '';
       setFormInput(initial);
     }
   }, []);
@@ -124,16 +124,17 @@ export function ChannelSetupWizard({ channelType, displayName, onDone, onCancel 
         <div className="manage__field">
           {state.instructions && <p className="manage__hint">{state.instructions}</p>}
           {state.fields.map((f) => (
-            <div className="manage__field" key={f.name}>
+            <div className="manage__field" key={f.key}>
               <label className="manage__field-label">{f.label}</label>
               <input
                 className="manage__field-input"
-                type={f.type === 'password' ? 'password' : 'text'}
+                type={inputTypeFor(f.type)}
                 placeholder={f.placeholder ?? ''}
-                value={formInput[f.name] ?? ''}
-                onChange={(e) => setFormInput({ ...formInput, [f.name]: e.target.value })}
+                value={formInput[f.key] ?? ''}
+                onChange={(e) => setFormInput({ ...formInput, [f.key]: e.target.value })}
                 autoComplete="off"
               />
+              {f.help && <p className="manage__hint">{f.help}</p>}
             </div>
           ))}
           <button
@@ -158,6 +159,17 @@ export function ChannelSetupWizard({ channelType, displayName, onDone, onCancel 
       </div>
     </div>
   );
+}
+
+function inputTypeFor(
+  fieldType: 'text' | 'password' | 'phone' | 'number' | undefined,
+): 'text' | 'password' | 'tel' | 'number' {
+  switch (fieldType) {
+    case 'password': return 'password';
+    case 'phone': return 'tel';
+    case 'number': return 'number';
+    default: return 'text';
+  }
 }
 
 function ExternalStep({ state }: { state: Extract<ChannelSetupState, { kind: 'awaiting_external' }> }): JSX.Element {
