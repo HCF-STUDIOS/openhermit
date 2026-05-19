@@ -44,8 +44,14 @@ export class AgentLocalClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
-  async openSession(spec: SessionSpec): Promise<{ sessionId: string }> {
-    return this.postJson(agentLocalRoutes.sessions, spec);
+  async openSession(
+    spec: SessionSpec,
+    opts?: { channelUserId?: string },
+  ): Promise<{ sessionId: string }> {
+    const headers = opts?.channelUserId
+      ? { 'x-channel-user-id': opts.channelUserId }
+      : undefined;
+    return this.postJson(agentLocalRoutes.sessions, spec, headers);
   }
 
   async listSessions(query: SessionListQuery = {}): Promise<SessionSummary[]> {
@@ -91,8 +97,16 @@ export class AgentLocalClient {
   async postMessage(
     sessionId: string,
     message: SessionMessage,
+    opts?: { channelUserId?: string },
   ): Promise<{ sessionId: string; messageId?: string }> {
-    return this.postJson(agentLocalRoutes.sessionMessages(sessionId), message);
+    const headers = opts?.channelUserId
+      ? { 'x-channel-user-id': opts.channelUserId }
+      : undefined;
+    return this.postJson(
+      agentLocalRoutes.sessionMessages(sessionId),
+      message,
+      headers,
+    );
   }
 
   async appendMessage(

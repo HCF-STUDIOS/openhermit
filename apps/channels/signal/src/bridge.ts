@@ -131,10 +131,16 @@ export class SignalBridge implements ChannelOutbound {
 
     const key = conversationKey(msg);
     const sessionId = await this.getSessionId(key, msg);
-    await this.ensureSession(sessionId, msg);
-
     const senderChannelUserId = msg.sourceUuid ?? msg.sourceNumber ?? 'unknown';
+    await this.ensureSession(sessionId, msg, senderChannelUserId);
+
     const senderName = msg.sourceName;
+    // For DMs the sender IS the session user — surface that identity to the
+    // gateway via `x-channel-user-id` so tools like identity_link_request
+    // see a populated `currentChannel` / `currentChannelUserId`. For groups
+    // identity is per-message (the agent-runner derives it from the sender
+    // body field on each turn), so we don't claim a session-level user.
+    const postOpts = msg.groupId ? undefined : { channelUserId: senderChannelUserId };
     const postResult = await this.client.postMessage(sessionId, {
       text: msg.text,
       mentioned: true,
@@ -143,7 +149,7 @@ export class SignalBridge implements ChannelOutbound {
         channelUserId: senderChannelUserId,
         ...(senderName ? { displayName: senderName } : {}),
       },
-    });
+    }, postOpts);
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
@@ -190,6 +196,7 @@ export class SignalBridge implements ChannelOutbound {
   private async ensureSession(
     sessionId: string,
     msg: SignalIncomingMessage,
+    senderChannelUserId: string,
   ): Promise<void> {
     const metadata: Record<string, string> = {};
     if (msg.groupId) metadata.signal_group_id = msg.groupId;
@@ -197,6 +204,9 @@ export class SignalBridge implements ChannelOutbound {
     else if (msg.sourceNumber) metadata.signal_source = msg.sourceNumber;
     if (msg.sourceNumber) metadata.signal_source_number = msg.sourceNumber;
 
+    // DMs: pass the sender so the runtime sees a populated caller. Groups:
+    // don't claim a session-level user (identity is per-message).
+    const openOpts = msg.groupId ? undefined : { channelUserId: senderChannelUserId };
     await this.client.openSession({
       sessionId,
       source: {
@@ -206,7 +216,7 @@ export class SignalBridge implements ChannelOutbound {
         type: msg.groupId ? 'group' : 'direct',
       },
       metadata,
-    });
+    }, openOpts);
   }
 
   private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
