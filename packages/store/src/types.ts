@@ -317,6 +317,22 @@ export interface AgentMcpServerRecord {
 export type ScheduleType = 'cron' | 'once';
 export type ScheduleStatus = 'active' | 'paused' | 'completed' | 'failed';
 
+/**
+ * How firings of a schedule map onto sessions.
+ *
+ * - `dedicated` — every firing of this schedule writes to the same
+ *   long-lived session `schedule:<id>`. Useful when the agent should
+ *   accumulate context across firings (e.g. "compare today's metrics to
+ *   yesterday's"). Watch out for unbounded history growth.
+ * - `ephemeral` — every firing opens a fresh session
+ *   `schedule:<id>:<iso-ts>` that is torn down at the end of the firing.
+ *   Use for stateless work (feed scans, periodic notifications) to keep
+ *   per-firing token cost bounded.
+ */
+export interface ScheduleSessionMode {
+  kind: 'dedicated' | 'ephemeral';
+}
+
 export interface ScheduleDelivery {
   kind: 'silent' | 'session';
   sessionId?: string;
@@ -337,6 +353,7 @@ export interface ScheduleRecord {
   cronExpression?: string;
   runAt?: string;
   prompt: string;
+  sessionMode: ScheduleSessionMode;
   delivery: ScheduleDelivery;
   policy: SchedulePolicy;
   createdBy?: string;
@@ -355,6 +372,7 @@ export interface ScheduleCreateInput {
   cronExpression?: string;
   runAt?: string;
   prompt: string;
+  sessionMode?: ScheduleSessionMode;
   delivery?: ScheduleDelivery;
   policy?: SchedulePolicy;
   createdBy?: string;
@@ -365,6 +383,7 @@ export interface ScheduleUpdateInput {
   cronExpression?: string;
   runAt?: string;
   prompt?: string;
+  sessionMode?: ScheduleSessionMode;
   delivery?: ScheduleDelivery;
   policy?: SchedulePolicy;
 }

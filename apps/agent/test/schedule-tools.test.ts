@@ -22,6 +22,7 @@ const makeRecord = (overrides: Partial<ScheduleRecord> = {}): ScheduleRecord => 
   status: 'active',
   cronExpression: '0 9 * * *',
   prompt: 'do something',
+  sessionMode: { kind: 'dedicated' },
   delivery: { kind: 'silent' },
   policy: {},
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -148,7 +149,7 @@ test('schedule_create once without run_at throws ValidationError', async (t) => 
   );
 });
 
-test('schedule_create does NOT pass sessionMode', async (t) => {
+test('schedule_create defaults sessionMode to dedicated', async (t) => {
   let capturedInput: Record<string, unknown> = {};
   const { tools } = await setupContext(t, {
     create: async (_scope, input) => {
@@ -158,7 +159,38 @@ test('schedule_create does NOT pass sessionMode', async (t) => {
   });
   const tool = findTool(tools, 'schedule_create');
   await tool.execute('call-1', { type: 'cron', prompt: 'test', cron_expression: '0 * * * *' });
-  assert.equal(capturedInput.sessionMode, undefined, 'create input should not have sessionMode');
+  assert.deepEqual(capturedInput.sessionMode, { kind: 'dedicated' });
+});
+
+test('schedule_create with session_mode=ephemeral passes through', async (t) => {
+  let capturedInput: Record<string, unknown> = {};
+  const { tools } = await setupContext(t, {
+    create: async (_scope, input) => {
+      capturedInput = input as Record<string, unknown>;
+      return makeRecord({ sessionMode: { kind: 'ephemeral' } });
+    },
+  });
+  const tool = findTool(tools, 'schedule_create');
+  await tool.execute('call-1', {
+    type: 'cron',
+    prompt: 'test',
+    cron_expression: '0 * * * *',
+    session_mode: 'ephemeral',
+  });
+  assert.deepEqual(capturedInput.sessionMode, { kind: 'ephemeral' });
+});
+
+test('schedule_update with session_mode passes through to store', async (t) => {
+  let capturedPatch: Record<string, unknown> = {};
+  const { tools } = await setupContext(t, {
+    update: async (_scope, id, input) => {
+      capturedPatch = input as Record<string, unknown>;
+      return makeRecord({ scheduleId: id, sessionMode: { kind: 'ephemeral' } });
+    },
+  });
+  const tool = findTool(tools, 'schedule_update');
+  await tool.execute('call-1', { id: 'sched-1', session_mode: 'ephemeral' });
+  assert.deepEqual(capturedPatch.sessionMode, { kind: 'ephemeral' });
 });
 
 test('schedule_create with delivery config passes through correctly', async (t) => {

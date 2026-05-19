@@ -11,6 +11,7 @@ import type {
   ScheduleRecord,
   ScheduleRunRecord,
   ScheduleRunStatus,
+  ScheduleSessionMode,
   ScheduleStatus,
   ScheduleType,
   ScheduleUpdateInput,
@@ -37,6 +38,7 @@ export class DbScheduleStore implements ScheduleStore {
   async create(scope: StoreScope, input: ScheduleCreateInput): Promise<ScheduleRecord> {
     const now = new Date().toISOString();
     const scheduleId = input.scheduleId ?? randomUUID().slice(0, 8);
+    const sessionMode: ScheduleSessionMode = input.sessionMode ?? { kind: 'dedicated' };
     const delivery: ScheduleDelivery = input.delivery ?? { kind: 'silent' };
     const policy = input.policy ?? {};
     const nextRunAt = input.type === 'once' ? (input.runAt ?? null) : null;
@@ -49,7 +51,7 @@ export class DbScheduleStore implements ScheduleStore {
       cronExpression: input.cronExpression ?? null,
       runAt: input.runAt ?? null,
       prompt: input.prompt,
-      sessionMode: JSON.stringify({ kind: 'dedicated' }),
+      sessionMode: JSON.stringify(sessionMode),
       delivery: delivery as unknown,
       policy: policy as Record<string, unknown>,
       createdBy: input.createdBy ?? null,
@@ -133,6 +135,7 @@ export class DbScheduleStore implements ScheduleStore {
       data.nextRunAt = input.runAt;
     }
     if (input.prompt !== undefined) data.prompt = input.prompt;
+    if (input.sessionMode !== undefined) data.sessionMode = JSON.stringify(input.sessionMode);
     if (input.delivery !== undefined) data.delivery = input.delivery;
     if (input.policy !== undefined) data.policy = input.policy;
 
@@ -239,6 +242,7 @@ export class DbScheduleStore implements ScheduleStore {
       ...(row.cronExpression ? { cronExpression: row.cronExpression } : {}),
       ...(row.runAt ? { runAt: row.runAt } : {}),
       prompt: row.prompt,
+      sessionMode: parseSessionMode(row.sessionMode),
       delivery: (row.delivery ?? { kind: 'silent' }) as ScheduleDelivery,
       policy: (row.policy ?? {}) as SchedulePolicy,
       ...(row.createdBy ? { createdBy: row.createdBy } : {}),
@@ -251,4 +255,24 @@ export class DbScheduleStore implements ScheduleStore {
       ...(row.lastError ? { lastError: row.lastError } : {}),
     };
   }
+}
+
+// Legacy rows have either the JSON-encoded `{"kind":"dedicated"}` (written
+// while the field was dead) or the bare default `dedicated` (column
+// default for rows inserted via raw SQL). Accept both.
+function parseSessionMode(raw: string | null | undefined): ScheduleSessionMode {
+  if (!raw) return { kind: 'dedicated' };
+  const trimmed = raw.trim();
+  if (trimmed === 'dedicated' || trimmed === 'ephemeral') {
+    return { kind: trimmed };
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as { kind?: unknown };
+    if (parsed && (parsed.kind === 'dedicated' || parsed.kind === 'ephemeral')) {
+      return { kind: parsed.kind };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { kind: 'dedicated' };
 }
