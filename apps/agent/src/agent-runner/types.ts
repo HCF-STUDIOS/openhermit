@@ -55,6 +55,7 @@ export interface AgentRunnerOptions {
   contextCompactionMaxTokens?: number;
   contextCompactionRecentMessageCount?: number;
   contextCompactionSummaryMaxChars?: number;
+  contextCompactionMaxMessages?: number;
   /**
    * Sandbox store — when provided, ExecBackendManager loads backends from
    * sandbox rows (one per agent). Without it, AgentRunner falls back to

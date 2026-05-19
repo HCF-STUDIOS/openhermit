@@ -82,6 +82,7 @@ import {
 import {
   compactContextIfNeeded,
   estimateAgentMessagesTokens,
+  estimateFixedOverheadTokens,
   estimateTextTokens,
   getContextCompactionMaxTokens,
   truncateToolResults,
@@ -2285,7 +2286,26 @@ export class AgentRunner implements SessionRuntime {
     // Track the last assistant message so tool_call entries can be appended to it.
     let lastAssistant: import('@mariozechner/pi-ai').AssistantMessage | null = null;
 
-    for (const entry of entries) {
+    // To prevent post-resume payload blowups (observed at 773K input
+    // tokens on a session that had accumulated several image uploads),
+    // inline images only for the *most recent* user-with-attachment
+    // entry. Earlier entries are still preserved as text references so
+    // the model knows the file existed and can call `attachment_fetch`,
+    // but we don't re-encode every historical image as base64 on every
+    // turn after resumption.
+    let lastAttachmentEntryIndex = -1;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const e = entries[i];
+      if (e?.role !== 'user') continue;
+      const att = (e as { attachments?: unknown }).attachments;
+      if (Array.isArray(att) && att.length > 0) {
+        lastAttachmentEntryIndex = i;
+        break;
+      }
+    }
+
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const entry = entries[entryIndex]!;
       const ts = new Date(entry.ts).getTime() || Date.now();
 
       if (entry.role === 'system') continue;
@@ -2312,6 +2332,15 @@ export class AgentRunner implements SessionRuntime {
         // this, the first turn after a session is rehydrated from DB loses
         // every historical attachment — the model only sees the plain text,
         // and cannot tell that a file was ever attached.
+        //
+        // Inlining image bytes is only done for the *most recent* user
+        // message with attachments. Older entries keep a text reference
+        // pointing at the sandbox path / attachment id, so the model
+        // still knows "an image existed here" but we don't re-encode
+        // every historical PNG as base64 on every resumed turn. A real
+        // session that uploaded 5 images previously could otherwise
+        // ship ~5 MB of base64 ⇒ ~700 K tokens on a single LLM call.
+        const isLatestAttachmentMessage = entryIndex === lastAttachmentEntryIndex;
         const attachmentBlocks = await prepareAttachmentContent(
           attachments,
           {
@@ -2323,7 +2352,8 @@ export class AgentRunner implements SessionRuntime {
               : {}),
           },
           {
-            supportsImageInput: targetModel?.supportsImageInput ?? true,
+            supportsImageInput:
+              isLatestAttachmentMessage && (targetModel?.supportsImageInput ?? true),
             log: (m) => console.warn(`[agent-runner] ${m}`),
           },
         );
@@ -2574,6 +2604,17 @@ export class AgentRunner implements SessionRuntime {
     const canRunLlmCompaction =
       !this.options.streamFn && Boolean(this.resolveApiKey(config.model.provider));
 
+    // System prompt + tool catalog also live in every request payload.
+    // Surface them to compaction so its budget check sees the real wire
+    // size, not just the messages portion. Read from the active session's
+    // agent state when available — that's the same `systemPrompt` /
+    // `tools` snapshot the LLM call will use.
+    const agentState = this.sessions.get(sessionId)?.agent.state;
+    const overheadTokens = estimateFixedOverheadTokens({
+      systemPrompt: agentState?.systemPrompt,
+      tools: agentState?.tools,
+    });
+
     const finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, truncatedMessages, {
       store: this.store,
       scope: this.scope,
@@ -2581,6 +2622,8 @@ export class AgentRunner implements SessionRuntime {
         contextCompactionMaxTokens: this.options.contextCompactionMaxTokens,
         contextCompactionRecentMessageCount: this.options.contextCompactionRecentMessageCount,
         contextCompactionSummaryMaxChars: this.options.contextCompactionSummaryMaxChars,
+        contextCompactionMaxMessages: this.options.contextCompactionMaxMessages,
+        fixedOverheadTokens: overheadTokens,
       },
       createCompactionAgent: canRunLlmCompaction
         ? (sid) => this.createCompactionAgent(sid, config)

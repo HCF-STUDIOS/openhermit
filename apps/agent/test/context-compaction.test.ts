@@ -9,18 +9,22 @@ import {
   estimateContentTokens,
   estimateAgentMessageTokens,
   estimateAgentMessagesTokens,
+  estimateFixedOverheadTokens,
   getCompactionRetainedStartIndex,
   summarizeMessageForCompaction,
   buildContextCompactionBlock,
   compactContextIfNeeded,
   truncateToolResults,
   TOOL_RESULT_MAX_CONTEXT_RATIO,
+  TOOL_RESULT_MAX_CHARS_CAP,
   getContextCompactionMaxTokens,
+  getContextCompactionMaxMessages,
   getContextCompactionRecentMessageCount,
   getContextCompactionSummaryMaxChars,
   DEFAULT_CONTEXT_COMPACTION_RECENT_MESSAGE_COUNT,
   DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS,
   DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS,
+  DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES,
   runCompactionSummaryTurn,
   type CompactionDeps,
   type CompactionOptions,
@@ -724,4 +728,141 @@ test('compactContextIfNeeded returns original when compaction does not reduce to
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   // When compacted >= original, should return original combined
   assert.ok(result.length >= 2);
+});
+
+// ── estimateFixedOverheadTokens ───────────────────────────────────────
+
+test('estimateFixedOverheadTokens returns 0 for empty input', () => {
+  assert.equal(estimateFixedOverheadTokens({}), 0);
+});
+
+test('estimateFixedOverheadTokens counts system prompt only', () => {
+  const tokens = estimateFixedOverheadTokens({ systemPrompt: 'a'.repeat(400) });
+  assert.equal(tokens, estimateTextTokens('a'.repeat(400)));
+});
+
+test('estimateFixedOverheadTokens counts each tool independently', () => {
+  const tools = [
+    { name: 'echo', description: 'echoes back', parameters: { type: 'object' } },
+    { name: 'read', description: 'read file', parameters: { type: 'object' } },
+  ];
+  const tokens = estimateFixedOverheadTokens({ tools });
+  const expected = tools.reduce((sum, t) => sum + estimateTextTokens(JSON.stringify(t)), 0);
+  assert.equal(tokens, expected);
+});
+
+test('estimateFixedOverheadTokens tolerates circular tool refs', () => {
+  const circular: Record<string, unknown> = { name: 'self' };
+  circular.self = circular;
+  // Should fall back to the 256-token placeholder rather than throwing.
+  const tokens = estimateFixedOverheadTokens({ tools: [circular] });
+  assert.equal(tokens, 256);
+});
+
+test('estimateFixedOverheadTokens sums prompt and tools', () => {
+  const tools = [{ name: 't' }];
+  const prompt = 'hello world';
+  const tokens = estimateFixedOverheadTokens({ systemPrompt: prompt, tools });
+  assert.equal(
+    tokens,
+    estimateTextTokens(prompt) + estimateTextTokens(JSON.stringify(tools[0])),
+  );
+});
+
+// ── fixedOverheadTokens compaction trigger ────────────────────────────
+
+test('compactContextIfNeeded compacts when overhead pushes payload past budget', async () => {
+  // Messages alone fit comfortably under a 1500-token budget, but
+  // overhead pushes the real payload over — must still compact.
+  const messages = [
+    makeUserMessage('word '.repeat(80).trim()),   // ~100 tokens
+    makeAssistantMessage('word '.repeat(80).trim()),
+    makeUserMessage('word '.repeat(80).trim()),
+    makeAssistantMessage('word '.repeat(80).trim()),
+    makeUserMessage('recent question'),
+    makeAssistantMessage('recent answer'),
+  ];
+  const messageTokens = estimateAgentMessagesTokens(messages);
+  assert.ok(messageTokens < 1500, `precondition: messages should fit under budget; got ${messageTokens}`);
+
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 1500,
+      contextCompactionRecentMessageCount: 2,
+      // 2000 tokens of overhead — easily exceeds the 1500 budget.
+      fixedOverheadTokens: 2000,
+    },
+  });
+
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  assert.ok(result.length < messages.length, 'overhead alone must trigger compaction');
+});
+
+test('compactContextIfNeeded skips compaction when overhead absent and messages fit', async () => {
+  const messages = [
+    makeUserMessage('word '.repeat(80).trim()),
+    makeAssistantMessage('word '.repeat(80).trim()),
+  ];
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 1500,
+      contextCompactionRecentMessageCount: 2,
+    },
+  });
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  assert.equal(result.length, messages.length);
+});
+
+// ── message-count secondary trigger ───────────────────────────────────
+
+test('getContextCompactionMaxMessages returns option when set', () => {
+  assert.equal(getContextCompactionMaxMessages({ contextCompactionMaxMessages: 5 }), 5);
+});
+
+test('getContextCompactionMaxMessages returns default when unset', () => {
+  assert.equal(getContextCompactionMaxMessages({}), DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES);
+});
+
+test('compactContextIfNeeded compacts when message count exceeds threshold even under budget', async () => {
+  // 12 tiny messages — well under any reasonable token budget, but
+  // pushing past a 5-message count threshold.
+  const messages: AgentMessage[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    messages.push(makeUserMessage(`q${i}`));
+    messages.push(makeAssistantMessage(`a${i}`));
+  }
+  const totalTokens = estimateAgentMessagesTokens(messages);
+  assert.ok(totalTokens < 100_000, 'precondition: well under token budget');
+
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 100_000,
+      contextCompactionRecentMessageCount: 3,
+      contextCompactionMaxMessages: 5,
+    },
+  });
+
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  assert.ok(result.length < messages.length, 'message-count trigger must compact');
+});
+
+// ── truncateToolResults absolute cap ──────────────────────────────────
+
+test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context window', () => {
+  // Even with a huge context window where ratio*4 would allow 256K
+  // chars, the absolute cap kicks in.
+  const text = 'x'.repeat(50_000);
+  const messages: AgentMessage[] = [{
+    role: 'toolResult',
+    toolCallId: 'call-doc',
+    toolName: 'doc_read',
+    content: [{ type: 'text', text }],
+    isError: false,
+    timestamp: Date.now(),
+  }];
+  const result = truncateToolResults(messages, 1_000_000);
+  const resultText = (result[0] as { content: Array<{ text: string }> }).content[0]!.text;
+  assert.ok(resultText.length <= TOOL_RESULT_MAX_CHARS_CAP + 200, // +marker overhead
+    `result kept ${resultText.length} chars, expected ≤ ~${TOOL_RESULT_MAX_CHARS_CAP}`);
+  assert.ok(resultText.includes('[truncated:'));
 });
