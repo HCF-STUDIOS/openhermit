@@ -846,6 +846,33 @@ test('compactContextIfNeeded compacts when message count exceeds threshold even 
   assert.ok(result.length < messages.length, 'message-count trigger must compact');
 });
 
+test('compactContextIfNeeded enforces count cap when recentMessageCount > maxMessages', async () => {
+  // Initial retainCount (10) starts ABOVE the count cap (5). Tokens fit
+  // under budget so the token-only shrink loop would never enter — the
+  // candidate must still come back at or under the cap.
+  const messages: AgentMessage[] = [];
+  for (let i = 0; i < 14; i += 1) {
+    messages.push(makeUserMessage(`q${i}`));
+    messages.push(makeAssistantMessage(`a${i}`));
+  }
+  const totalTokens = estimateAgentMessagesTokens(messages);
+  assert.ok(totalTokens < 100_000, 'precondition: well under token budget');
+
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 100_000,
+      contextCompactionRecentMessageCount: 10,
+      contextCompactionMaxMessages: 5,
+    },
+  });
+
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  assert.ok(
+    result.length <= 5 + 1, // +1 leeway for a leading compaction summary block
+    `result kept ${result.length} retained messages, expected ≤ 6 including summary`,
+  );
+});
+
 // ── truncateToolResults absolute cap ──────────────────────────────────
 
 test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context window', () => {

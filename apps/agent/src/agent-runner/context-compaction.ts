@@ -548,7 +548,10 @@ export const compactContextIfNeeded = async (
   // First pass: find the retain count without LLM summary (text-extraction only).
   let compacted = buildCandidate(retainCount, undefined);
 
-  while (effectiveTokens(compacted) > budget && retainCount > 1) {
+  while (
+    (effectiveTokens(compacted) > budget || compacted.length > maxMessages)
+    && retainCount > 1
+  ) {
     retainCount -= 1;
     compacted = buildCandidate(retainCount, undefined);
   }
