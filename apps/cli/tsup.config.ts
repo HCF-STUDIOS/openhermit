@@ -45,5 +45,17 @@ export default defineConfig({
   // Shebang on every entry — harmless on gateway.js / web.js (they're never
   // exec'd directly), required for cli.js when invoked as the `openhermit` bin.
   // The per-entry callback didn't fire under `splitting: true`.
-  banner: { js: '#!/usr/bin/env node' },
+  //
+  // createRequire shim: tsup inlines transitive CJS deps (e.g. `mime-types`
+  // pulled in by @openhermit/gateway) and emits `__require("path")` calls
+  // that fall back to a throw because ESM has no `require`. Defining
+  // `require` per chunk via `createRequire(import.meta.url)` lets those
+  // calls resolve like normal Node CJS.
+  banner: {
+    js: [
+      '#!/usr/bin/env node',
+      "import { createRequire as __cjsCreateRequire } from 'node:module';",
+      'const require = __cjsCreateRequire(import.meta.url);',
+    ].join('\n'),
+  },
 });
