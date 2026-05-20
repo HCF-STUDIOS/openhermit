@@ -390,6 +390,70 @@ export interface ChannelHandle {
 /** Highest manifest version supported by this build of the protocol. */
 export const CHANNEL_MANIFEST_VERSION = 1 as const;
 
+/**
+ * A secret the channel needs at runtime. Surfaces in the admin UI as a
+ * masked input; the value is written to the agent's secret store under
+ * `key` and the persisted config references it via the `${{KEY}}`
+ * placeholder.
+ */
+export interface ChannelSecretKeySpec {
+  /** Env-var-style key, e.g. `DEBOX_API_KEY`. */
+  key: string;
+  /** Label rendered next to the input. */
+  label: string;
+  /** Placeholder shown in the empty input. */
+  placeholder?: string;
+}
+
+/**
+ * A non-secret config field rendered by the admin UI. Plugins declare a
+ * `configFields` array; the UI renders a typed control per entry and
+ * merges the captured values into the persisted config (on top of
+ * `defaultConfig`).
+ *
+ * The `showWhen` predicate lets a field appear conditionally based on
+ * another field's value — e.g. a webhook-URL panel that only shows when
+ * `mode === 'webhook'`.
+ */
+export type ChannelConfigField =
+  | {
+      kind: 'select';
+      key: string;
+      label: string;
+      options: ReadonlyArray<{ value: string; label: string }>;
+      defaultValue?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'text';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'string_list';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      /**
+       * Read-only display of the webhook URL the gateway will dispatch
+       * to. The UI computes the URL from `window.location.origin` plus
+       * the channel's namespace; no `key` is needed because nothing is
+       * persisted.
+       */
+      kind: 'webhook_url';
+      label: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    };
+
 export interface ChannelManifest {
   /**
    * Manifest contract version. Always `1` in this revision. Plugins built
@@ -408,6 +472,24 @@ export interface ChannelManifest {
   namespace: string;
   /** Human-readable label for the admin UI. */
   displayName: string;
+  /**
+   * Secrets the admin UI should prompt for. Each entry yields a masked
+   * input; on save the value is written to the agent's secret store and
+   * referenced from `defaultConfig` via `${{KEY}}`.
+   */
+  secretKeys?: ReadonlyArray<ChannelSecretKeySpec>;
+  /**
+   * Non-secret structured fields to render in the admin edit form. When
+   * unset (or empty), the UI falls back to a raw JSON textarea for this
+   * channel.
+   */
+  configFields?: ReadonlyArray<ChannelConfigField>;
+  /**
+   * Skeleton config persisted when the user saves the structured form.
+   * The UI merges captured `configFields` values on top of this object,
+   * so put `${{SECRET}}` placeholders for secret references here.
+   */
+  defaultConfig?: Record<string, unknown>;
   /**
    * Optional config parser. When set, the loader calls this before
    * `start()` to validate the persisted config. The shape is left

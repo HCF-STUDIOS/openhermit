@@ -6,6 +6,7 @@ import {
   removeChannel,
   createExternalChannel,
   setAgentSecret,
+  type ChannelConfigField,
   type ChannelInfo,
   type ChannelManifestSummary,
   type CreatedChannel,
@@ -13,32 +14,122 @@ import {
 import { ChannelSetupWizard } from './ChannelSetupWizard';
 
 /**
- * Fixed config skeletons for built-in channels. Token fields are kept as
- * `${{SECRET}}` placeholders that resolve at adapter-start time; the actual
- * secret is written via setAgentSecret.
+ * Hardcoded fallback skeletons for the original built-in channels. Used
+ * only when the gateway didn't ship a `defaultConfig` for the row (older
+ * gateway, or a channel without its own manifest schema). Newer channels
+ * declare their own `secretKeys` / `configFields` / `defaultConfig` on
+ * the manifest, which the UI consumes directly.
  */
-const BUILTIN_CONFIG_TEMPLATES: Record<string, (extras: Record<string, unknown>) => Record<string, unknown>> = {
-  telegram: (extras) => ({
-    bot_token: '${{TELEGRAM_BOT_TOKEN}}',
-    mode: extras.mode ?? 'polling',
-    ...(Array.isArray(extras.allowed_chat_ids) && extras.allowed_chat_ids.length
-      ? { allowed_chat_ids: extras.allowed_chat_ids }
-      : {}),
-  }),
-  discord: (extras) => ({
-    bot_token: '${{DISCORD_BOT_TOKEN}}',
-    ...(Array.isArray(extras.allowed_channel_ids) && extras.allowed_channel_ids.length
-      ? { allowed_channel_ids: extras.allowed_channel_ids }
-      : {}),
-  }),
-  slack: (extras) => ({
-    bot_token: '${{SLACK_BOT_TOKEN}}',
-    app_token: '${{SLACK_APP_TOKEN}}',
-    ...(Array.isArray(extras.allowed_channel_ids) && extras.allowed_channel_ids.length
-      ? { allowed_channel_ids: extras.allowed_channel_ids }
-      : {}),
-  }),
+const BUILTIN_DEFAULT_CONFIGS: Record<string, Record<string, unknown>> = {
+  telegram: { bot_token: '${{TELEGRAM_BOT_TOKEN}}', mode: 'polling' },
+  discord: { bot_token: '${{DISCORD_BOT_TOKEN}}' },
+  slack: { bot_token: '${{SLACK_BOT_TOKEN}}', app_token: '${{SLACK_APP_TOKEN}}' },
 };
+
+const BUILTIN_CONFIG_FIELDS: Record<string, ChannelConfigField[]> = {
+  telegram: [
+    {
+      kind: 'select', key: 'mode', label: 'Mode', defaultValue: 'polling',
+      options: [
+        { value: 'polling', label: 'Polling' },
+        { value: 'webhook', label: 'Webhook' },
+      ],
+    },
+    {
+      kind: 'webhook_url', label: 'Webhook URL',
+      help: 'Auto-derived from the gateway URL. Telegram is registered with a per-channel secret_token, so requests are verified server-side.',
+      showWhen: { field: 'mode', equals: 'webhook' },
+    },
+    {
+      kind: 'string_list', key: 'allowed_chat_ids', label: 'Allowed Chat IDs (optional)',
+      placeholder: 'comma-separated, e.g. 12345, 67890',
+      help: 'Leave blank to allow all chats.',
+    },
+  ],
+  discord: [
+    {
+      kind: 'string_list', key: 'allowed_channel_ids', label: 'Allowed Channel IDs (optional)',
+      placeholder: 'comma-separated, e.g. C0123, C0456',
+      help: 'Leave blank to allow all channels.',
+    },
+  ],
+  slack: [
+    {
+      kind: 'string_list', key: 'allowed_channel_ids', label: 'Allowed Channel IDs (optional)',
+      placeholder: 'comma-separated, e.g. C0123, C0456',
+      help: 'Leave blank to allow all channels.',
+    },
+  ],
+};
+
+/**
+ * Resolve the form schema for a channel row. Plugin-declared schema on
+ * the row wins; otherwise fall back to the hardcoded built-in defaults.
+ */
+function resolveSchema(ch: ChannelInfo): {
+  secretKeys: ChannelInfo['secretKeys'];
+  configFields: ChannelConfigField[];
+  defaultConfig: Record<string, unknown>;
+} | null {
+  const fields = ch.configFields ?? BUILTIN_CONFIG_FIELDS[ch.channelType];
+  const defaultConfig = ch.defaultConfig ?? BUILTIN_DEFAULT_CONFIGS[ch.channelType];
+  const hasSecrets = (ch.secretKeys?.length ?? 0) > 0;
+  if (!hasSecrets && (!fields || fields.length === 0)) return null;
+  return {
+    secretKeys: ch.secretKeys,
+    configFields: fields ?? [],
+    defaultConfig: defaultConfig ?? {},
+  };
+}
+
+function parseStringList(raw: string, numeric: boolean): Array<string | number> {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => (numeric && !Number.isNaN(Number(s)) ? Number(s) : s));
+}
+
+function shouldShow(field: ChannelConfigField, extras: Record<string, unknown>): boolean {
+  if (!field.showWhen) return true;
+  return extras[field.showWhen.field] === field.showWhen.equals;
+}
+
+function pickInitialExtras(fields: ChannelConfigField[], persisted: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (f.kind === 'webhook_url') continue;
+    const existing = persisted[f.key];
+    if (existing !== undefined && existing !== null) {
+      out[f.key] = existing;
+    } else if (f.kind === 'select' && f.defaultValue !== undefined) {
+      out[f.key] = f.defaultValue;
+    }
+  }
+  return out;
+}
+
+function buildConfigFromExtras(
+  fields: ChannelConfigField[],
+  extras: Record<string, unknown>,
+  defaultConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...defaultConfig };
+  for (const f of fields) {
+    if (f.kind === 'webhook_url') continue;
+    if (!shouldShow(f, extras)) continue;
+    const value = extras[f.key];
+    if (f.kind === 'select') {
+      if (typeof value === 'string' && value.length > 0) merged[f.key] = value;
+      else if (f.defaultValue !== undefined) merged[f.key] = f.defaultValue;
+    } else if (f.kind === 'text') {
+      if (typeof value === 'string' && value.trim() !== '') merged[f.key] = value.trim();
+    } else if (f.kind === 'string_list') {
+      if (Array.isArray(value) && value.length > 0) merged[f.key] = value;
+    }
+  }
+  return merged;
+}
 
 type GroupKey = 'builtin' | 'package' | 'token';
 
@@ -144,16 +235,9 @@ export function ChannelsPanel() {
     setEditLabel(ch.label ?? '');
     setEditSecrets({});
     setError('');
-    if (ch.kind === 'builtin' && BUILTIN_CONFIG_TEMPLATES[ch.channelType]) {
-      const cfg = ch.config ?? {};
-      const extras: Record<string, unknown> = {};
-      if (ch.channelType === 'telegram') {
-        extras.mode = cfg.mode ?? 'polling';
-        if (Array.isArray(cfg.allowed_chat_ids)) extras.allowed_chat_ids = cfg.allowed_chat_ids;
-      } else if (ch.channelType === 'discord' || ch.channelType === 'slack') {
-        if (Array.isArray(cfg.allowed_channel_ids)) extras.allowed_channel_ids = cfg.allowed_channel_ids;
-      }
-      setEditExtras(extras);
+    const schema = resolveSchema(ch);
+    if (schema) {
+      setEditExtras(pickInitialExtras(schema.configFields, ch.config ?? {}));
       setEditConfig('');
     } else {
       setEditExtras({});
@@ -169,14 +253,14 @@ export function ChannelsPanel() {
     setSaving(true);
     try {
       let nextConfig: Record<string, unknown>;
-      const tmpl = ch.kind === 'builtin' ? BUILTIN_CONFIG_TEMPLATES[ch.channelType] : undefined;
-      if (tmpl) {
+      const schema = resolveSchema(ch);
+      if (schema) {
         for (const [key, value] of Object.entries(editSecrets)) {
           if (value.trim()) {
             await setAgentSecret(key, value.trim());
           }
         }
-        nextConfig = tmpl(editExtras);
+        nextConfig = buildConfigFromExtras(schema.configFields, editExtras, schema.defaultConfig);
       } else {
         try {
           nextConfig = JSON.parse(editConfig || '{}') as Record<string, unknown>;
@@ -389,9 +473,10 @@ export function ChannelsPanel() {
                   onChange={(e) => setEditLabel(e.target.value)}
                 />
               </div>
-              {editingChannel.kind === 'builtin' && BUILTIN_CONFIG_TEMPLATES[editingChannel.channelType] ? (
-                <BuiltinChannelFields
+              {resolveSchema(editingChannel) ? (
+                <ChannelConfigFormFields
                   channel={editingChannel}
+                  schema={resolveSchema(editingChannel)!}
                   secrets={editSecrets}
                   setSecrets={setEditSecrets}
                   extras={editExtras}
@@ -423,8 +508,20 @@ export function ChannelsPanel() {
   );
 }
 
-function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras }: {
+function ChannelConfigFormFields({
+  channel,
+  schema,
+  secrets,
+  setSecrets,
+  extras,
+  setExtras,
+}: {
   channel: ChannelInfo;
+  schema: {
+    secretKeys: ChannelInfo['secretKeys'];
+    configFields: ChannelConfigField[];
+    defaultConfig: Record<string, unknown>;
+  };
   secrets: Record<string, string>;
   setSecrets: (s: Record<string, string>) => void;
   extras: Record<string, unknown>;
@@ -435,7 +532,7 @@ function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras 
 
   return (
     <>
-      {(channel.secretKeys ?? []).map((sk) => (
+      {(schema.secretKeys ?? []).map((sk) => (
         <div className="manage__field" key={sk.key}>
           <label className="manage__field-label">{sk.label}</label>
           <input
@@ -452,65 +549,69 @@ function BuiltinChannelFields({ channel, secrets, setSecrets, extras, setExtras 
         </div>
       ))}
 
-      {channel.channelType === 'telegram' && (
-        <>
-          <div className="manage__field">
-            <label className="manage__field-label">Mode</label>
-            <select
-              className="manage__field-input"
-              value={(extras.mode as string) ?? 'polling'}
-              onChange={(e) => setExtra('mode', e.target.value)}
-            >
-              <option value="polling">Polling</option>
-              <option value="webhook">Webhook</option>
-            </select>
-          </div>
-          {extras.mode === 'webhook' && (
-            <div className="manage__field">
-              <label className="manage__field-label">Webhook URL</label>
-              <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface, #f4f4f5)', borderRadius: 4, fontSize: 12, wordBreak: 'break-all' }}>
-                {`${typeof window !== 'undefined' ? window.location.origin : ''}/api/agents/${channel.agentId}/channels/${channel.namespace}/webhook`}
-              </code>
-              <span className="manage__field-hint">
-                Auto-derived from the gateway URL. Telegram is registered with a per-channel secret_token, so requests are verified server-side.
-              </span>
+      {schema.configFields.map((field) => {
+        if (!shouldShow(field, extras)) return null;
+        if (field.kind === 'select') {
+          const current = (extras[field.key] as string | undefined) ?? field.defaultValue ?? '';
+          return (
+            <div className="manage__field" key={field.key}>
+              <label className="manage__field-label">{field.label}</label>
+              <select
+                className="manage__field-input"
+                value={current}
+                onChange={(e) => setExtra(field.key, e.target.value)}
+              >
+                {field.options.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              {field.help && <span className="manage__field-hint">{field.help}</span>}
             </div>
-          )}
-          <div className="manage__field">
-            <label className="manage__field-label">Allowed Chat IDs (optional)</label>
-            <input
-              className="manage__field-input"
-              placeholder="comma-separated, e.g. 12345, 67890"
-              value={Array.isArray(extras.allowed_chat_ids) ? extras.allowed_chat_ids.join(', ') : ''}
-              onChange={(e) => {
-                const ids = e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                  .map((s) => (Number.isNaN(Number(s)) ? s : Number(s)));
-                setExtra('allowed_chat_ids', ids);
-              }}
-            />
-            <span className="manage__field-hint">Leave blank to allow all chats.</span>
+          );
+        }
+        if (field.kind === 'text') {
+          return (
+            <div className="manage__field" key={field.key}>
+              <label className="manage__field-label">{field.label}</label>
+              <input
+                className="manage__field-input"
+                placeholder={field.placeholder}
+                value={(extras[field.key] as string | undefined) ?? ''}
+                onChange={(e) => setExtra(field.key, e.target.value)}
+              />
+              {field.help && <span className="manage__field-hint">{field.help}</span>}
+            </div>
+          );
+        }
+        if (field.kind === 'string_list') {
+          const numeric = field.key.endsWith('_chat_ids');
+          const value = Array.isArray(extras[field.key]) ? (extras[field.key] as Array<string | number>) : [];
+          return (
+            <div className="manage__field" key={field.key}>
+              <label className="manage__field-label">{field.label}</label>
+              <input
+                className="manage__field-input"
+                placeholder={field.placeholder}
+                value={value.join(', ')}
+                onChange={(e) => setExtra(field.key, parseStringList(e.target.value, numeric))}
+              />
+              {field.help && <span className="manage__field-hint">{field.help}</span>}
+            </div>
+          );
+        }
+        // webhook_url — read-only informational display.
+        const origin = typeof window !== 'undefined' ? window.location.origin : '';
+        const url = `${origin}/api/agents/${channel.agentId}/channels/${channel.namespace}/webhook`;
+        return (
+          <div className="manage__field" key={`webhook-url-${field.label}`}>
+            <label className="manage__field-label">{field.label}</label>
+            <code style={{ display: 'block', padding: '8px 10px', background: 'var(--surface, #f4f4f5)', borderRadius: 4, fontSize: 12, wordBreak: 'break-all' }}>
+              {url}
+            </code>
+            {field.help && <span className="manage__field-hint">{field.help}</span>}
           </div>
-        </>
-      )}
-
-      {(channel.channelType === 'discord' || channel.channelType === 'slack') && (
-        <div className="manage__field">
-          <label className="manage__field-label">Allowed Channel IDs (optional)</label>
-          <input
-            className="manage__field-input"
-            placeholder="comma-separated, e.g. C0123, C0456"
-            value={Array.isArray(extras.allowed_channel_ids) ? extras.allowed_channel_ids.join(', ') : ''}
-            onChange={(e) => {
-              const ids = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
-              setExtra('allowed_channel_ids', ids);
-            }}
-          />
-          <span className="manage__field-hint">Leave blank to allow all channels.</span>
-        </div>
-      )}
+        );
+      })}
     </>
   );
 }

@@ -2385,8 +2385,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     const result = rows.map((row) => {
       const def = row.kind === 'builtin' ? BUILTIN_CHANNEL_DEFS[row.channelType] : undefined;
-      const secretsSet = def
-        ? def.secretKeys.every((sk) => secretNames.includes(sk.key))
+      // Plugins declare their own form schema on the manifest; if the
+      // channel isn't a hardcoded gateway built-in, fall back to whatever
+      // the registered manifest exposes.
+      const manifest = !def ? options.manifestRegistry.get(row.channelType) : undefined;
+      const manifestSecretKeys = manifest?.secretKeys;
+      const manifestConfigFields = manifest?.configFields;
+      const manifestDefaultConfig = manifest?.defaultConfig;
+      const manifestLabel = manifest?.displayName;
+      const effectiveSecretKeys = def?.secretKeys ?? manifestSecretKeys;
+      const secretsSet = effectiveSecretKeys
+        ? effectiveSecretKeys.every((sk) => secretNames.includes(sk.key))
         : true;
       const runtime = runtimeStatuses.find((s) => s.name === row.channelType);
       // Prefer the live in-memory status (always current within this
@@ -2401,7 +2410,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         : row.lastError ?? undefined;
       return {
         ...row,
-        ...(def ? { label: row.label ?? def.label, secretKeys: def.secretKeys } : {}),
+        ...(def
+          ? { label: row.label ?? def.label, secretKeys: def.secretKeys }
+          : manifest
+            ? {
+                label: row.label ?? manifestLabel ?? row.channelType,
+                ...(manifestSecretKeys ? { secretKeys: manifestSecretKeys } : {}),
+                ...(manifestConfigFields ? { configFields: manifestConfigFields } : {}),
+                ...(manifestDefaultConfig ? { defaultConfig: manifestDefaultConfig } : {}),
+              }
+            : {}),
         secretsSet,
         runtimeStatus: status,
         ...(error ? { error } : {}),
@@ -2437,13 +2455,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const out = options.manifestRegistry.all().map((m) => {
       const origin = options.manifestRegistry.originOf(m.key) ?? 'external';
       const def = BUILTIN_CHANNEL_DEFS[m.key];
+      const secretKeys = def?.secretKeys ?? m.secretKeys;
+      const defaultConfig = def?.defaultConfig ?? m.defaultConfig;
       return {
         key: m.key,
         namespace: m.namespace,
         displayName: m.displayName,
         origin,
         supportsSetup: !!m.setup,
-        ...(def ? { secretKeys: def.secretKeys, defaultConfig: def.defaultConfig } : {}),
+        ...(secretKeys ? { secretKeys } : {}),
+        ...(m.configFields ? { configFields: m.configFields } : {}),
+        ...(defaultConfig ? { defaultConfig } : {}),
       };
     });
     return c.json(out);

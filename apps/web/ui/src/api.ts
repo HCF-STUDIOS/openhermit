@@ -669,7 +669,39 @@ export const fetchScheduleRuns = (id: string) => apiFetch<ScheduleRunInfo[]>(`/s
 // (owner-issued) tokens. The server returns a single list with `kind` and
 // runtime status enriched on top of the DB row.
 export type ChannelKind = 'builtin' | 'external';
-export interface ChannelSecretKey { key: string; label: string; placeholder: string }
+export interface ChannelSecretKey { key: string; label: string; placeholder?: string }
+export type ChannelConfigField =
+  | {
+      kind: 'select';
+      key: string;
+      label: string;
+      options: ReadonlyArray<{ value: string; label: string }>;
+      defaultValue?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'text';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'string_list';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'webhook_url';
+      label: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    };
 export interface ChannelInfo {
   id: string;
   agentId: string;
@@ -682,8 +714,12 @@ export interface ChannelInfo {
   tokenPrefix: string;
   createdAt: string;
   updatedAt: string;
-  /** Only for builtin rows: which env-var keys feed this channel. */
+  /** Secret env-var keys the channel needs (built-ins + plugins that declare them). */
   secretKeys?: ChannelSecretKey[];
+  /** Structured (non-secret) form fields, declared by the manifest. */
+  configFields?: ChannelConfigField[];
+  /** Skeleton config the UI should layer extras on top of (with ${{SECRET}} placeholders). */
+  defaultConfig?: Record<string, unknown>;
   /** Server-side check that those env vars are populated. */
   secretsSet: boolean;
   /** 'connected' | 'disabled' | 'error' | 'unknown' — derived from runtime. */
@@ -712,6 +748,7 @@ export interface ChannelManifestSummary {
   origin: 'built-in' | 'external';
   supportsSetup: boolean;
   secretKeys?: ChannelSecretKey[];
+  configFields?: ChannelConfigField[];
   defaultConfig?: Record<string, unknown>;
 }
 export const fetchChannelManifests = () =>
