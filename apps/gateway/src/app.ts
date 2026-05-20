@@ -2395,7 +2395,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const manifestLabel = manifest?.displayName;
       const effectiveSecretKeys = def?.secretKeys ?? manifestSecretKeys;
       const secretsSet = effectiveSecretKeys
-        ? effectiveSecretKeys.every((sk) => secretNames.includes(sk.key))
+        ? effectiveSecretKeys
+            .filter((sk) => !('optional' in sk && sk.optional === true))
+            .every((sk) => secretNames.includes(sk.key))
         : true;
       const runtime = runtimeStatuses.find((s) => s.name === row.channelType);
       // Prefer the live in-memory status (always current within this

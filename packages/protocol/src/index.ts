@@ -403,6 +403,13 @@ export interface ChannelSecretKeySpec {
   label: string;
   /** Placeholder shown in the empty input. */
   placeholder?: string;
+  /**
+   * When `true`, the channel can start without this secret set — the
+   * gateway won't include it in the "secrets missing" check, and the
+   * plugin's `start()` is expected to treat the unresolved placeholder
+   * as unset (see Debox API Secret for the canonical example).
+   */
+  optional?: boolean;
 }
 
 /**

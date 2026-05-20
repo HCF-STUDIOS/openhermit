@@ -534,7 +534,9 @@ function ChannelConfigFormFields({
     <>
       {(schema.secretKeys ?? []).map((sk) => (
         <div className="manage__field" key={sk.key}>
-          <label className="manage__field-label">{sk.label}</label>
+          <label className="manage__field-label">
+            {sk.label}{sk.optional ? <span style={{ opacity: 0.6, fontWeight: 'normal' }}> (optional)</span> : null}
+          </label>
           <input
             className="manage__field-input"
             type="password"

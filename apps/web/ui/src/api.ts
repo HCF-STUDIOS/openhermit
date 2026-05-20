@@ -669,7 +669,7 @@ export const fetchScheduleRuns = (id: string) => apiFetch<ScheduleRunInfo[]>(`/s
 // (owner-issued) tokens. The server returns a single list with `kind` and
 // runtime status enriched on top of the DB row.
 export type ChannelKind = 'builtin' | 'external';
-export interface ChannelSecretKey { key: string; label: string; placeholder?: string }
+export interface ChannelSecretKey { key: string; label: string; placeholder?: string; optional?: boolean }
 export type ChannelConfigField =
   | {
       kind: 'select';
