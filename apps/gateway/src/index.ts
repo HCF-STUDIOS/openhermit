@@ -253,7 +253,14 @@ export const main = async (): Promise<void> => {
             if (existing) continue;
             const legacy = legacyChannels[key];
             const enabled = !!legacy?.enabled;
-            const cfg = legacy ? { ...legacy } : {};
+            // Seed config from manifest.defaultConfig (carries `${{SECRET}}`
+            // placeholders) so the interpolation step has something to
+            // expand at start time. Legacy values from the pre-DB
+            // `channels` blob, if any, override the defaults.
+            const defaults = manifestRegistry.get(key)?.defaultConfig ?? {};
+            const cfg: Record<string, unknown> = legacy
+              ? { ...defaults, ...legacy }
+              : { ...defaults };
             delete (cfg as { enabled?: unknown }).enabled;
             await agentChannelStore.createBuiltin({
               agentId: agent.agentId,

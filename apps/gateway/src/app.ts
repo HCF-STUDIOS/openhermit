@@ -937,10 +937,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // built-in token-based ones).
     if (options.agentChannelStore) {
       for (const key of options.manifestRegistry.keys()) {
+        // Seed config from the manifest so secret placeholders
+        // (`${{TOKEN}}`) are already in place when the owner first enables
+        // the channel — no need to know the field names by heart.
+        const defaults = options.manifestRegistry.get(key)?.defaultConfig;
         await options.agentChannelStore.createBuiltin({
           agentId: record.agentId,
           channelType: key,
           enabled: false,
+          ...(defaults ? { config: { ...defaults } } : {}),
         });
       }
     }
@@ -2517,11 +2522,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
           `A channel of type "${channelType}" already exists on this agent.`,
         );
       }
+      const defaults = manifest.defaultConfig;
       const created = await store.createBuiltin({
         agentId,
         channelType,
         ...(body.label ? { label: body.label } : {}),
-        ...(body.config ? { config: body.config } : {}),
+        ...(body.config
+          ? { config: body.config }
+          : defaults
+            ? { config: { ...defaults } }
+            : {}),
         ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       });
 
@@ -2594,6 +2604,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     // For builtin channels, when first enabling we apply the default
     // config skeleton so the user doesn't have to know the field names.
+    // Prefer the hardcoded gateway table (telegram/discord/slack) for
+    // continuity, then fall back to the manifest — covers any channel
+    // plugin (debox, wechat, future externals) that declares its own
+    // `defaultConfig` with `${{SECRET}}` placeholders.
     let effectiveConfig: Record<string, unknown> | undefined = body.config;
     if (
       existing.kind === 'builtin'
@@ -2602,7 +2616,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       && !body.config
     ) {
       const def = BUILTIN_CHANNEL_DEFS[existing.channelType];
-      if (def) effectiveConfig = { ...def.defaultConfig };
+      const manifestDefaults = options.manifestRegistry.get(existing.channelType)?.defaultConfig;
+      const fallback = def?.defaultConfig ?? manifestDefaults;
+      if (fallback) effectiveConfig = { ...fallback };
     }
 
     const updated = await store.update(channelId, {
