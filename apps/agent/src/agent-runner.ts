@@ -217,6 +217,14 @@ export class AgentRunner implements SessionRuntime {
     if (shouldTearDown) {
       const session = this.sessions.get(sessionId);
       if (session) {
+        // postMessage returns as soon as the turn is queued; wait for the
+        // LLM call and any side effects to actually finish before tearing
+        // the session down. Without this the central scheduler treats a
+        // firing as "done" the moment it's queued, so a burst of missed
+        // cron slots all run in parallel.
+        await session.queue;
+        await session.sideEffects;
+        await session.backgroundTasks;
         session.status = 'inactive';
         this.clearIdleSummaryTimer(session);
         this.persistSessionIndex(session);
