@@ -233,7 +233,9 @@ export class AgentInstanceManager {
       try {
         const enabled = await this.skillStore.listEnabled(agentId);
         await runner.syncSkills(
-          enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+          // SyncSkillEntry.id is the folder basename — use slug, not the
+          // encoded storage id.
+          enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
         );
       } catch (err) {
         log(`[${agentId}] skill sync failed: ${err instanceof Error ? err.message : String(err)}`);

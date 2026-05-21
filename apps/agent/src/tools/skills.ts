@@ -19,7 +19,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 
 import { Type, type Static } from '@mariozechner/pi-ai';
 import { resolveAgentDataDir, ValidationError } from '@openhermit/shared';
-import type { SkillStore } from '@openhermit/store';
+import { skillStorageId, type SkillStore } from '@openhermit/store';
 
 import { asTextContent, formatJson, type PolicyAwareTool, type Toolset } from './shared.js';
 
@@ -117,13 +117,16 @@ export const createSkillInstallTool = (
       );
     }
 
-    // Refuse to overwrite a system skill (or any skill not owned by this agent)
-    // by re-using its id. The DB constraint isn't enough — the upsert would
-    // happily flip source out from under it.
-    const existing = await skillStore.get(args.id);
-    if (existing && (existing.source !== 'user' || existing.ownerAgentId !== agentId)) {
+    // Refuse to shadow a system skill with the same slug. User skills are
+    // already scoped per-owner by the storage id, so two agents can install
+    // a user skill named "foo" without colliding — but a user-skill "foo"
+    // alongside a system-skill "foo" would confuse the prompt index.
+    const storageId = skillStorageId('user', args.id, agentId);
+    const existing = await skillStore.get(storageId);
+    const systemConflict = await skillStore.get(args.id);
+    if (systemConflict && systemConflict.source === 'system') {
       throw new ValidationError(
-        `Skill "${args.id}" already exists and is not owned by this agent. Choose a different id.`,
+        `Skill "${args.id}" is already in use by a system skill. Choose a different id.`,
       );
     }
 
@@ -139,7 +142,8 @@ export const createSkillInstallTool = (
 
     const now = new Date().toISOString();
     await skillStore.upsert({
-      id: args.id,
+      id: storageId,
+      slug: args.id,
       name: args.name,
       description: args.description,
       path: sourceDir,
@@ -148,7 +152,7 @@ export const createSkillInstallTool = (
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     });
-    await skillStore.enable(agentId, args.id);
+    await skillStore.enable(agentId, storageId);
 
     await resyncSkills();
 
@@ -181,18 +185,16 @@ export const createSkillUninstallTool = (
   parameters: SkillUninstallParams,
   execute: async (_toolCallId, args: Static<typeof SkillUninstallParams>) => {
     validateSkillId(args.id);
-    const existing = await skillStore.get(args.id);
-    if (!existing) {
-      throw new ValidationError(`Skill "${args.id}" not found.`);
-    }
-    if (existing.source !== 'user' || existing.ownerAgentId !== agentId) {
+    const storageId = skillStorageId('user', args.id, agentId);
+    const existing = await skillStore.get(storageId);
+    if (!existing || existing.source !== 'user' || existing.ownerAgentId !== agentId) {
       throw new ValidationError(
         `Skill "${args.id}" is not a user skill installed by this agent and cannot be removed via skill_uninstall.`,
       );
     }
 
-    await skillStore.disable(agentId, args.id);
-    await skillStore.delete(args.id);
+    await skillStore.disable(agentId, storageId);
+    await skillStore.delete(storageId);
     await rm(userSkillSourceDir(agentId, args.id), { recursive: true, force: true });
 
     await resyncSkills();

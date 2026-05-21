@@ -211,6 +211,13 @@
       "when": 1779700000000,
       "tag": "0029_skill_source",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1779800000000,
+      "tag": "0030_skill_slug",
+      "breakpoints": true
     }
   ]
 }

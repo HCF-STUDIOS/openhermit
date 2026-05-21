@@ -1979,7 +1979,9 @@ export class AgentRunner implements SessionRuntime {
         const resyncSkills = async (): Promise<void> => {
           const enabled = await skillStore.listEnabled(agentId);
           await this.syncSkills(
-            enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+            // SyncSkillEntry.id is the folder basename — must be the slug,
+            // not the (possibly encoded) storage id.
+            enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
           );
         };
         toolsets.push(wrapToolset(createSkillManagementToolset(skillStore, agentId, resyncSkills)));

@@ -100,7 +100,7 @@ test('loadSkillIndex merges DB and workspace skills', async (t) => {
 
   const fakeStore = {
     listEnabled: async () => [
-      { id: 'db-skill', name: 'DB Skill', description: 'From DB', path: '/some/path' },
+      { id: 'db-skill', slug: 'db-skill', name: 'DB Skill', description: 'From DB', path: '/some/path' },
     ],
   };
 
@@ -122,7 +122,7 @@ test('loadSkillIndex workspace skills take priority over DB skills with same id'
 
   const fakeStore = {
     listEnabled: async () => [
-      { id: 'shared', name: 'DB Version', description: 'From DB', path: '/db/path' },
+      { id: 'shared', slug: 'shared', name: 'DB Version', description: 'From DB', path: '/db/path' },
     ],
   };
 
@@ -159,7 +159,8 @@ test('loadSkillIndex emits user-source DB skills under the user/ subdir', async 
   const fakeStore = {
     listEnabled: async () => [
       {
-        id: 'mine',
+        id: 'user:agent-1:mine',
+        slug: 'mine',
         name: 'Mine',
         description: 'Owner-installed',
         path: '/db/path',

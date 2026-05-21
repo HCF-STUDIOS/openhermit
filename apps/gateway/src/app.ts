@@ -2058,6 +2058,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const now = new Date().toISOString();
     await store.upsert({
       id: body.id,
+      // System skills: slug equals id (storage id == user-visible id).
+      slug: body.id,
       name: body.name,
       description: body.description,
       path: body.path,
@@ -2134,8 +2136,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // No workspace info available — return DB-enabled skills only.
     const dbSkills = await store.listEnabled(agentId);
     return c.json(dbSkills.map((s) => ({
-      id: s.id, name: s.name, description: s.description,
-      path: `/skills/${s.id}`, source: 'system' as const,
+      id: s.slug, name: s.name, description: s.description,
+      path: `/skills/${s.slug}`, source: 'system' as const,
     })));
   });
 

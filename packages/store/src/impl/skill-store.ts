@@ -30,6 +30,7 @@ export class DbSkillStore implements SkillStore {
 
   async upsert(skill: SkillRecord): Promise<void> {
     const data = {
+      slug: skill.slug,
       name: skill.name,
       description: skill.description,
       path: skill.path,
@@ -87,6 +88,7 @@ export class DbSkillStore implements SkillStore {
       assignmentAgentId: agentSkills.agentId,
       enabled: agentSkills.enabled,
       id: skills.id,
+      slug: skills.slug,
       name: skills.name,
       description: skills.description,
       path: skills.path,
@@ -129,6 +131,7 @@ export class DbSkillStore implements SkillStore {
 
   private rowToRecord(row: {
     id: string;
+    slug: string;
     name: string;
     description: string;
     path: string;
@@ -142,6 +145,7 @@ export class DbSkillStore implements SkillStore {
     const source = row.source === 'user' ? 'user' : 'system';
     return {
       id: row.id,
+      slug: row.slug,
       name: row.name,
       description: row.description,
       path: row.path,

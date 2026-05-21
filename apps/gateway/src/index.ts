@@ -403,6 +403,7 @@ export const main = async (): Promise<void> => {
       const now = new Date().toISOString();
       await skillStore.upsert({
         id: skill.id,
+        slug: skill.id,
         name: skill.name,
         description: skill.description,
         path: skill.path,
