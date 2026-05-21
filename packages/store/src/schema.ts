@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   text,
@@ -292,6 +293,15 @@ export const skills = pgTable('skills', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   index('idx_skills_owner_agent').on(table.ownerAgentId),
+  // Mirrors the partial unique indexes created in migration 0030. Source of
+  // truth lives here so drizzle-kit generate stays consistent with the
+  // applied schema.
+  uniqueIndex('skills_system_slug_unique')
+    .on(table.slug)
+    .where(sql`source = 'system'`),
+  uniqueIndex('skills_user_owner_slug_unique')
+    .on(table.ownerAgentId, table.slug)
+    .where(sql`source = 'user'`),
 ]);
 
 export const agentSkills = pgTable('agent_skills', {
