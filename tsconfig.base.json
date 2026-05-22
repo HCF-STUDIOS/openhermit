@@ -31,6 +31,9 @@
       ],
       "@openhermit/agent/channels": [
         "apps/agent/src/channels.ts"
+      ],
+      "@openhermit/agent/voice": [
+        "apps/agent/src/voice.ts"
       ]
     },
     "lib": [

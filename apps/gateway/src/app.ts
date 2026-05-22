@@ -3280,6 +3280,88 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json({ ok: true });
   });
 
+  // --- voice: STT / TTS pass-through ---
+  //
+  // Channel adapters call these to transcribe inbound audio and
+  // synthesize outbound text. Auth is the same scope as session routes
+  // (channel token or user JWT), so a Telegram bridge can submit voice
+  // from a chat-scoped token without needing the agent's secrets.
+
+  app.post(gatewayRoutes.agentVoiceSttPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    requireAuth(c, agentId);
+    const body = await c.req.json().catch(() => null) as
+      | { bytes?: string; mimeType?: string; languageHint?: string }
+      | null;
+    if (!body || typeof body.mimeType !== 'string') {
+      throw new ValidationError('Body must be { bytes: base64, mimeType, languageHint? }.');
+    }
+    if (typeof body.bytes !== 'string' || body.bytes.length === 0) {
+      throw new ValidationError('bytes (base64) is required.');
+    }
+
+    const runner = await resolveRunner(instances, agentId);
+    const { buildVoiceForAgent } = await import('@openhermit/agent/voice');
+    const voice = await buildVoiceForAgent(runner.security);
+    if (!voice.stt) {
+      throw new ValidationError('voice.stt is not configured for this agent.');
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(Buffer.from(body.bytes, 'base64'));
+    } catch {
+      throw new ValidationError('bytes must be valid base64.');
+    }
+
+    const result = await voice.stt.transcribe({
+      bytes,
+      mimeType: body.mimeType,
+      ...(body.languageHint ? { languageHint: body.languageHint } : {}),
+    });
+    return c.json(result);
+  });
+
+  app.post(gatewayRoutes.agentVoiceTtsPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    requireAuth(c, agentId);
+    const body = await c.req.json().catch(() => null) as
+      | {
+          text?: string;
+          outputMimeType?: string;
+          voiceId?: string;
+          modelId?: string;
+          speed?: number;
+        }
+      | null;
+    if (!body || typeof body.text !== 'string' || body.text.length === 0) {
+      throw new ValidationError('text is required.');
+    }
+    if (typeof body.outputMimeType !== 'string' || body.outputMimeType.length === 0) {
+      throw new ValidationError('outputMimeType is required.');
+    }
+
+    const runner = await resolveRunner(instances, agentId);
+    const { buildVoiceForAgent } = await import('@openhermit/agent/voice');
+    const voice = await buildVoiceForAgent(runner.security);
+    if (!voice.tts) {
+      throw new ValidationError('voice.tts is not configured for this agent.');
+    }
+
+    const result = await voice.tts.synthesize({
+      text: body.text,
+      outputMimeType: body.outputMimeType,
+      ...(body.voiceId ? { voiceId: body.voiceId } : {}),
+      ...(body.modelId ? { modelId: body.modelId } : {}),
+      ...(typeof body.speed === 'number' ? { speed: body.speed } : {}),
+    });
+    return c.json({
+      bytes: Buffer.from(result.bytes).toString('base64'),
+      mimeType: result.mimeType,
+      provider: result.provider,
+    });
+  });
+
   // --- admin UI: static files ---
 
   if (options.publicDir) {

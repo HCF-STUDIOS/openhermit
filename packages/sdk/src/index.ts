@@ -31,6 +31,29 @@ import {
 
 type FetchLike = typeof fetch;
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  // Browser fallback: chunked to avoid call-stack blow-up on large inputs.
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+};
+
+const base64ToBytes = (b64: string): Uint8Array => {
+  if (typeof Buffer !== 'undefined') {
+    return Uint8Array.from(Buffer.from(b64, 'base64'));
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+};
+
 export interface AgentLocalClientOptions {
   baseUrl: string;
   token: string;
@@ -324,6 +347,54 @@ export class AgentLocalClient {
 
   buildEventsUrl(sessionId: string): string {
     return joinUrl(this.options.baseUrl, agentLocalRoutes.eventsUrl(sessionId));
+  }
+
+  /**
+   * Transcribe inbound audio via the agent's configured STT provider.
+   * The agent resolves provider + secrets server-side; the caller only
+   * sees text in / text out.
+   */
+  async transcribeAudio(input: {
+    bytes: Uint8Array;
+    mimeType: string;
+    languageHint?: string;
+  }): Promise<{ text: string; durationMs?: number; provider: string }> {
+    const body = {
+      bytes: bytesToBase64(input.bytes),
+      mimeType: input.mimeType,
+      ...(input.languageHint ? { languageHint: input.languageHint } : {}),
+    };
+    return this.postJson(agentLocalRoutes.voiceStt, body);
+  }
+
+  /**
+   * Synthesize a reply via the agent's configured TTS provider. Returns
+   * raw bytes ready to hand off to the channel's native voice-send API.
+   */
+  async synthesizeAudio(input: {
+    text: string;
+    outputMimeType: string;
+    voiceId?: string;
+    modelId?: string;
+    speed?: number;
+  }): Promise<{ bytes: Uint8Array; mimeType: string; provider: string }> {
+    const body = {
+      text: input.text,
+      outputMimeType: input.outputMimeType,
+      ...(input.voiceId ? { voiceId: input.voiceId } : {}),
+      ...(input.modelId ? { modelId: input.modelId } : {}),
+      ...(typeof input.speed === 'number' ? { speed: input.speed } : {}),
+    };
+    const response = await this.postJson<{
+      bytes: string;
+      mimeType: string;
+      provider: string;
+    }>(agentLocalRoutes.voiceTts, body);
+    return {
+      bytes: base64ToBytes(response.bytes),
+      mimeType: response.mimeType,
+      provider: response.provider,
+    };
   }
 
   buildWsUrl(): string {

@@ -35,6 +35,10 @@
     "./events": {
       "development": "./src/events.ts",
       "default": "./dist/events.js"
+    },
+    "./voice": {
+      "development": "./src/voice.ts",
+      "default": "./dist/voice.js"
     }
   },
   "scripts": {

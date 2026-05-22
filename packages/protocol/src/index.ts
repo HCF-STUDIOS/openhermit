@@ -793,6 +793,8 @@ export const agentLocalRoutes = {
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
+  voiceStt: '/voice/stt',
+  voiceTts: '/voice/tts',
   ws: '/ws',
 } as const;
 
@@ -883,6 +885,14 @@ export const gatewayRoutes = {
   agentSandboxByAlias: (agentId: string, alias: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/sandboxes/${encodeURIComponent(alias)}`,
   agentSandboxByAliasPattern: '/api/agents/:agentId/sandboxes/:alias',
+
+  /** Voice STT/TTS pass-through endpoints; consumed by channel adapters. */
+  agentVoiceStt: (agentId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/voice/stt`,
+  agentVoiceSttPattern: '/api/agents/:agentId/voice/stt',
+  agentVoiceTts: (agentId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/voice/tts`,
+  agentVoiceTtsPattern: '/api/agents/:agentId/voice/tts',
 
   /** Gateway-level token exchange (device key → user JWT). */
   authToken: '/api/auth/token',

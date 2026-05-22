@@ -29,6 +29,32 @@ export interface TelegramMessageEntity {
   user?: TelegramUser;
 }
 
+export interface TelegramVoice {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramAudio {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  performer?: string;
+  title?: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramFile {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+}
+
 export interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
@@ -37,6 +63,8 @@ export interface TelegramMessage {
   text?: string;
   entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
+  voice?: TelegramVoice;
+  audio?: TelegramAudio;
 }
 
 export interface TelegramCallbackQuery {
@@ -60,9 +88,11 @@ interface TelegramApiResponse<T> {
 
 export class TelegramApi {
   private readonly baseUrl: string;
+  private readonly fileBaseUrl: string;
 
   constructor(private readonly botToken: string) {
     this.baseUrl = `${BASE_URL}/bot${botToken}`;
+    this.fileBaseUrl = `${BASE_URL}/file/bot${botToken}`;
   }
 
   private async call<T>(
@@ -187,5 +217,73 @@ export class TelegramApi {
 
   async deleteWebhook(): Promise<boolean> {
     return this.call<boolean>('deleteWebhook');
+  }
+
+  /**
+   * Resolve a file_id to a temporary download path. The path is valid
+   * for at least one hour. Combine with `downloadFile` to fetch bytes.
+   */
+  async getFile(fileId: string): Promise<TelegramFile> {
+    return this.call<TelegramFile>('getFile', { file_id: fileId });
+  }
+
+  /**
+   * Download bytes for a file previously resolved via `getFile`. The
+   * returned bytes are exactly what Telegram has on disk — voice
+   * messages are ogg/opus, audio messages may be mp3/m4a/etc.
+   */
+  async downloadFile(filePath: string): Promise<Uint8Array> {
+    const url = `${this.fileBaseUrl}/${filePath}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Telegram file download failed (${response.status}) for ${filePath}`);
+    }
+    const buf = await response.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  /**
+   * Send a voice message. `bytes` must be encoded as ogg with opus codec
+   * — Telegram only accepts that format for inline voice playback.
+   * Anything else (mp3, m4a, etc.) should go through `sendAudio` instead.
+   */
+  async sendVoice(
+    chatId: number,
+    bytes: Uint8Array,
+    options?: {
+      caption?: string;
+      replyMarkup?: unknown;
+      duration?: number;
+    },
+  ): Promise<TelegramMessage> {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (options?.caption) form.append('caption', options.caption);
+    if (options?.duration !== undefined) {
+      form.append('duration', String(options.duration));
+    }
+    if (options?.replyMarkup) {
+      form.append('reply_markup', JSON.stringify(options.replyMarkup));
+    }
+    // Copy into a fresh ArrayBuffer to satisfy strict Blob typings —
+    // Uint8Array's backing buffer may be ArrayBufferLike (incl.
+    // SharedArrayBuffer) which BlobPart refuses.
+    const buf = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(buf).set(bytes);
+    const blob = new Blob([buf], { type: 'audio/ogg' });
+    form.append('voice', blob, 'voice.ogg');
+
+    const response = await fetch(`${this.baseUrl}/sendVoice`, {
+      method: 'POST',
+      body: form,
+    });
+
+    const body = (await response.json()) as TelegramApiResponse<TelegramMessage>;
+    if (!body.ok) {
+      throw new Error(
+        `Telegram API error (sendVoice): ${body.description ?? 'unknown error'}`,
+      );
+    }
+    return body.result;
   }
 }
