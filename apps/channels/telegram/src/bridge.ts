@@ -247,8 +247,16 @@ export class TelegramBridge implements ChannelOutbound {
       return;
     }
 
+    // Tell the agent that this turn was spoken, not typed. Without this
+    // marker the LLM has no way to know the text came from STT and the
+    // reply will be spoken — it may answer with code blocks, long lists,
+    // or even try to call a TTS tool itself.
+    const agentText = inboundWasVoice
+      ? `[Voice message, transcribed. Your reply will be converted to speech, so respond in plain prose without code blocks, markdown formatting, or long lists.]\n\n${text}`
+      : text;
+
     const sessionId = await this.getSessionId(chatId);
-    await this.sendToAgent(chatId, sessionId, text, message, isGroup, inboundWasVoice);
+    await this.sendToAgent(chatId, sessionId, agentText, message, isGroup, inboundWasVoice);
   }
 
   private async transcribeAttachment(message: TelegramMessage): Promise<string> {
