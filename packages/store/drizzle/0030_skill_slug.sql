@@ -19,16 +19,11 @@ UPDATE "skills" SET "slug" = "id";
 
 ALTER TABLE "skills" ALTER COLUMN "slug" SET NOT NULL;
 
--- Re-key user skills first in agent_skills, then in skills itself. Order
--- matters: the join needs the old slug to still be present on skills.id.
--- Catch every assignment regardless of whose agent_id is on the row, since
--- admin endpoints can cross-enable a user skill onto another agent.
-UPDATE "agent_skills" AS a
-SET "skill_id" = 'user:' || s."owner_agent_id" || ':' || s."id"
-FROM "skills" AS s
-WHERE s."source" = 'user'
-  AND s."id" = a."skill_id";
-
+-- Re-key user skills. The FK agent_skills.skill_id -> skills.id is declared
+-- ON UPDATE CASCADE, so updating skills.id propagates to every referencing
+-- agent_skills row in the same statement. An earlier draft of this file
+-- also issued an explicit UPDATE on agent_skills first, which violated the
+-- FK because the new id did not yet exist in skills at that point.
 UPDATE "skills"
 SET "id" = 'user:' || "owner_agent_id" || ':' || "slug"
 WHERE "source" = 'user';
