@@ -232,7 +232,10 @@ export class AgentRunner implements SessionRuntime {
         await session.backgroundTasks;
         session.status = 'inactive';
         this.clearIdleSummaryTimer(session);
-        this.persistSessionIndex(session);
+        // Await so the inactive row is committed before we drop the
+        // in-memory session. Otherwise a later-resolving 'idle' persist
+        // from the same turn can overwrite us in the DB.
+        await this.persistSessionIndex(session);
         this.sessions.delete(sessionId);
       } else {
         await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
@@ -914,7 +917,7 @@ export class AgentRunner implements SessionRuntime {
     // so it no longer shows up in default session listings.
     if (reason === 'new_session') {
       session.status = 'inactive';
-      this.persistSessionIndex(session);
+      await this.persistSessionIndex(session);
     }
 
     return result;
@@ -2910,7 +2913,7 @@ export class AgentRunner implements SessionRuntime {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
           const ts = new Date().toISOString();
           session.updatedAt = ts;
-          void this.persistSessionIndex(session);
+          void this.queueSideEffect(session, () => this.persistSessionIndex(session));
 
           agentErrorsTotal.inc({ agent_id: this.scope.agentId, source: 'model' });
 
@@ -2975,7 +2978,7 @@ export class AgentRunner implements SessionRuntime {
         session.lastMessagePreview = effectiveText;
         const ts = new Date().toISOString();
         session.updatedAt = ts;
-        void this.persistSessionIndex(session);
+        void this.queueSideEffect(session, () => this.persistSessionIndex(session));
 
         if (assistantMessage.usage) {
           const u = assistantMessage.usage;
@@ -3073,7 +3076,10 @@ export class AgentRunner implements SessionRuntime {
           );
           delete session.turnStartMs;
         }
-        void this.persistSessionIndex(session);
+        // Queue rather than fire-and-forget so teardown's
+        // `await session.sideEffects` waits for this row to be written
+        // before flipping status to 'inactive'.
+        void this.queueSideEffect(session, () => this.persistSessionIndex(session));
         this.scheduleIdleSummary(session);
         void this.queueBackgroundTask(session, async () => {
           const config = await this.options.security.readConfig();
