@@ -96,6 +96,10 @@ import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
 import { createSkillManagementToolset } from './tools/skills.js';
 import {
+  DEFAULT_ATTACHMENT_MAX_BYTES,
+  persistAttachmentFromSandbox,
+} from './attachments/index.js';
+import {
   agentErrorsTotal,
   agentMessagesTotal,
   agentTokensTotal,
@@ -396,6 +400,73 @@ export class AgentRunner implements SessionRuntime {
     const sandboxPath = `${backend.agentHome}/.openhermit/attachments/${input.sessionId}/${input.attachmentId}/${input.safeName}`;
     await backend.files.write(sandboxPath, input.bytes, 'overwrite');
     return { sandboxId: backend.id, sandboxPath };
+  }
+
+  /**
+   * Read a file out of the running session's sandbox. Used by the
+   * `attachment_upload` tool to bridge sandbox-generated files into the
+   * durable attachment store. Resolves relative paths against `agentHome`.
+   * `maxBytes` is checked against the on-disk stat before reading so we never
+   * pull a 1 GB blob into memory just to reject it.
+   */
+  async readSandboxFile(input: {
+    sessionId: string;
+    path: string;
+    maxBytes: number;
+  }): Promise<{ bytes: Buffer; resolvedPath: string }> {
+    const config = await this.options.security.readConfig();
+    const manager = await this.ensureExecBackendManager(config);
+    const backend = manager.getDefault();
+    await backend.ensure();
+    const resolvedPath = input.path.startsWith('/')
+      ? input.path
+      : `${backend.agentHome}/${input.path}`;
+    const stat = await backend.files.stat(resolvedPath);
+    if (!stat) {
+      throw new Error(`file not found in sandbox: ${input.path}`);
+    }
+    if (stat.type !== 'file') {
+      throw new Error(`path is not a file: ${input.path}`);
+    }
+    if (stat.size > input.maxBytes) {
+      throw new Error(
+        `file size ${stat.size} exceeds limit ${input.maxBytes}`,
+      );
+    }
+    const { data } = await backend.files.read(resolvedPath);
+    return { bytes: data, resolvedPath };
+  }
+
+  /**
+   * Promote a sandbox-generated file into the durable attachment store. Used
+   * by the `attachment_upload` tool; mirrors the inbound POST /attachments
+   * pipeline so the resulting record is indistinguishable from a real user
+   * upload. Returns the id-shaped `SessionAttachment` with `id`, `sandboxPath`
+   * and metadata ready to feed into `attachment_send`.
+   */
+  async uploadSandboxAttachment(input: {
+    sessionId: string;
+    uploaderUserId: string | null;
+    path: string;
+    name?: string;
+  }): Promise<SessionAttachment> {
+    if (!this.options.attachmentStore || !this.options.attachmentStorage) {
+      throw new ValidationError(
+        'attachment_upload is unavailable: attachment storage is not configured.',
+      );
+    }
+    return persistAttachmentFromSandbox({
+      agentId: this.scope.agentId,
+      sessionId: input.sessionId,
+      uploaderUserId: input.uploaderUserId,
+      sandboxRelativePath: input.path,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      maxBytes: DEFAULT_ATTACHMENT_MAX_BYTES,
+      attachmentStore: this.options.attachmentStore,
+      attachmentStorage: this.options.attachmentStorage,
+      runtime: this,
+      logger: (msg) => this.logRuntime(msg),
+    });
   }
 
   async stopWorkspaceContainerIfSessionPolicy(): Promise<void> {
@@ -1927,6 +1998,17 @@ export class AgentRunner implements SessionRuntime {
         ...(this.options.attachmentStore ? { attachmentStore: this.options.attachmentStore } : {}),
         ...(this.options.attachmentStorage ? { attachmentStorage: this.options.attachmentStorage } : {}),
         materializeAttachment: (mat) => this.materializeAttachmentToSandbox(mat),
+        ...((this.options.attachmentStore && this.options.attachmentStorage)
+          ? {
+              uploadSandboxAttachment: (req: { path: string; name?: string }) =>
+                this.uploadSandboxAttachment({
+                  sessionId: input.contextSessionId,
+                  uploaderUserId: input.userId ?? null,
+                  path: req.path,
+                  ...(req.name !== undefined ? { name: req.name } : {}),
+                }),
+            }
+          : {}),
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),

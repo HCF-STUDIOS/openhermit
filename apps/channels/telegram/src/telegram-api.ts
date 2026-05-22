@@ -243,6 +243,117 @@ export class TelegramApi {
   }
 
   /**
+   * Upload media as multipart and call one of the typed Telegram send
+   * endpoints (sendPhoto / sendAudio / sendVideo / sendDocument / sendVoice).
+   * Centralizes the FormData + Blob plumbing so each variant only has to
+   * pick the right endpoint and field name.
+   */
+  private async sendMediaMultipart(
+    endpoint: 'sendPhoto' | 'sendAudio' | 'sendVideo' | 'sendDocument',
+    chatId: number,
+    fieldName: 'photo' | 'audio' | 'video' | 'document',
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string,
+    options?: { caption?: string; replyMarkup?: unknown },
+  ): Promise<TelegramMessage> {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (options?.caption) form.append('caption', options.caption);
+    if (options?.replyMarkup) {
+      form.append('reply_markup', JSON.stringify(options.replyMarkup));
+    }
+    const buf = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(buf).set(bytes);
+    const blob = new Blob([buf], { type: contentType });
+    form.append(fieldName, blob, filename);
+
+    const response = await fetch(`${this.baseUrl}/${endpoint}`, {
+      method: 'POST',
+      body: form,
+    });
+    const body = (await response.json()) as TelegramApiResponse<TelegramMessage>;
+    if (!body.ok) {
+      throw new Error(
+        `Telegram API error (${endpoint}): ${body.description ?? 'unknown error'}`,
+      );
+    }
+    return body.result;
+  }
+
+  async sendPhoto(
+    chatId: number,
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string,
+    options?: { caption?: string; replyMarkup?: unknown },
+  ): Promise<TelegramMessage> {
+    return this.sendMediaMultipart(
+      'sendPhoto',
+      chatId,
+      'photo',
+      bytes,
+      filename,
+      contentType,
+      options,
+    );
+  }
+
+  async sendAudio(
+    chatId: number,
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string,
+    options?: { caption?: string; replyMarkup?: unknown },
+  ): Promise<TelegramMessage> {
+    return this.sendMediaMultipart(
+      'sendAudio',
+      chatId,
+      'audio',
+      bytes,
+      filename,
+      contentType,
+      options,
+    );
+  }
+
+  async sendVideo(
+    chatId: number,
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string,
+    options?: { caption?: string; replyMarkup?: unknown },
+  ): Promise<TelegramMessage> {
+    return this.sendMediaMultipart(
+      'sendVideo',
+      chatId,
+      'video',
+      bytes,
+      filename,
+      contentType,
+      options,
+    );
+  }
+
+  async sendDocument(
+    chatId: number,
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string,
+    options?: { caption?: string; replyMarkup?: unknown },
+  ): Promise<TelegramMessage> {
+    return this.sendMediaMultipart(
+      'sendDocument',
+      chatId,
+      'document',
+      bytes,
+      filename,
+      contentType,
+      options,
+    );
+  }
+
+  /**
    * Send a voice message. `bytes` must be encoded as ogg with opus codec
    * — Telegram only accepts that format for inline voice playback.
    * Anything else (mp3, m4a, etc.) should go through `sendAudio` instead.

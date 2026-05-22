@@ -375,6 +375,63 @@ export class TelegramBridge implements ChannelOutbound {
     }
   }
 
+  /**
+   * Translate an `attachment` SSE event into the right Telegram Bot API
+   * upload. We let the rendering hint pick the endpoint (image → sendPhoto,
+   * audio → sendAudio, video → sendVideo, document → sendDocument); the bytes
+   * are pulled lazily from the agent-local API so we never inline them on the
+   * SSE channel.
+   */
+  private async deliverAttachmentToTelegram(
+    chatId: number,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0
+        ? payload.caption
+        : undefined;
+    const hintedKind = String(payload.kind ?? '');
+    const filename =
+      typeof payload.name === 'string' && payload.name.length > 0
+        ? payload.name
+        : 'attachment';
+
+    const { bytes, mimeType, kind: resolvedKind } =
+      await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    const kind = (hintedKind || resolvedKind || 'document') as
+      | 'image'
+      | 'audio'
+      | 'video'
+      | 'document';
+    const opts = caption ? { caption } : undefined;
+
+    if (kind === 'image') {
+      await this.telegram.sendPhoto(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    if (kind === 'audio') {
+      // ogg/opus → use sendVoice for the native voice-message bubble; other
+      // audio formats stay as a regular audio attachment.
+      if (mimeType === 'audio/ogg' || mimeType === 'audio/opus') {
+        await this.telegram.sendVoice(chatId, bytes, opts);
+        return;
+      }
+      await this.telegram.sendAudio(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    if (kind === 'video') {
+      await this.telegram.sendVideo(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    await this.telegram.sendDocument(chatId, bytes, filename, mimeType, opts);
+  }
+
   private async ensureSession(
     sessionId: string,
     message?: TelegramMessage,
@@ -556,6 +613,15 @@ export class TelegramBridge implements ChannelOutbound {
             const toolCallId = String(payload.toolCallId ?? '');
             const args = payload.args as Record<string, unknown> | undefined;
             void this.sendApprovalPrompt(chatId, sessionId, toolName, toolCallId, args).catch(() => undefined);
+            continue;
+          }
+
+          if (frame.event === 'attachment') {
+            void this.deliverAttachmentToTelegram(chatId, payload).catch((err) => {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
             continue;
           }
 

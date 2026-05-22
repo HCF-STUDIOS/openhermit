@@ -607,6 +607,35 @@ export async function apiFetchGlobal<T>(path: string, options?: { method?: strin
  * (id, name, mimeType, size, sandboxPath, …). Caller passes the returned
  * record on the next `session.message` so the agent runner can reference it.
  */
+/**
+ * Fetch an attachment's bytes as a blob URL for inline rendering. The web UI
+ * uses this for `<img src=...>` / `<audio src=...>` / `<video src=...>` so the
+ * bearer token never has to leak into a public URL. Caller is responsible for
+ * `URL.revokeObjectURL` once the element unmounts.
+ */
+export async function fetchAttachmentBlobUrl(
+  sessionId: string,
+  attachmentId: string,
+): Promise<{ url: string; mimeType: string }> {
+  const token = await getJwt();
+  const url =
+    `${gatewayBase}/api/agents/${encodeURIComponent(currentAgentId)}` +
+    `/sessions/${encodeURIComponent(sessionId)}` +
+    `/attachments/${encodeURIComponent(attachmentId)}/bytes`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Attachment bytes fetch failed (${res.status})`);
+  }
+  const mimeType =
+    res.headers.get('content-type')?.split(';')[0]?.trim() ||
+    'application/octet-stream';
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), mimeType };
+}
+
 export async function uploadAttachment(
   sessionId: string,
   file: File,

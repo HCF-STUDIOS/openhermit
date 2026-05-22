@@ -254,6 +254,61 @@ export class AgentLocalClient {
     return body.attachment;
   }
 
+  /**
+   * Build the absolute URL for the attachment-bytes endpoint. Channels use
+   * this to stream the bytes back to the end user (Telegram multipart upload,
+   * web `<img src=...>`). The endpoint requires the same bearer token as the
+   * rest of the agent-local API.
+   */
+  buildAttachmentBytesUrl(sessionId: string, attachmentId: string): string {
+    return joinUrl(
+      this.options.baseUrl,
+      agentLocalRoutes.sessionAttachmentBytes(sessionId, attachmentId),
+    );
+  }
+
+  /**
+   * Fetch the raw bytes for an attachment. Returned alongside the resolved
+   * MIME type and (best-effort) filename so callers can hand them straight to
+   * a channel-native multipart upload.
+   */
+  async downloadAttachmentBytes(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<{
+    bytes: Uint8Array;
+    mimeType: string;
+    filename: string | undefined;
+    kind: 'image' | 'audio' | 'video' | 'document' | undefined;
+  }> {
+    const url = this.buildAttachmentBytesUrl(sessionId, attachmentId);
+    const response = await this.fetchImpl(url, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${this.options.token}` },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Attachment bytes download failed (${response.status}) for ${attachmentId}`,
+      );
+    }
+    const buf = new Uint8Array(await response.arrayBuffer());
+    const mimeType =
+      response.headers.get('content-type')?.split(';')[0]?.trim() ||
+      'application/octet-stream';
+    const dispo = response.headers.get('content-disposition') ?? '';
+    const m = /filename="([^"]+)"/i.exec(dispo);
+    const filename = m?.[1];
+    const kindHeader = response.headers.get('x-attachment-kind') ?? '';
+    const kind =
+      kindHeader === 'image' ||
+      kindHeader === 'audio' ||
+      kindHeader === 'video' ||
+      kindHeader === 'document'
+        ? kindHeader
+        : undefined;
+    return { bytes: buf, mimeType, filename, kind };
+  }
+
   async reviewApprovalRequest(
     requestId: string,
     input: { decision: 'approved' | 'rejected'; resolution?: 'once' | 'persistent'; reason?: string; channelUserId?: string },

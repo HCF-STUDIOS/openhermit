@@ -63,7 +63,7 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
-import { resolveInboundAttachments } from './attachment-url-passthrough.js';
+import { resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,

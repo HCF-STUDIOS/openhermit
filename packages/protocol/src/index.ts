@@ -264,6 +264,26 @@ export type OutboundEventBody =
       mode: 'realtime' | 'async';
     }
   | { type: 'user_message'; sessionId: string; text: string; name?: string }
+  | {
+      /**
+       * Outbound attachment emitted by the agent (e.g. `attachment_send`
+       * tool). Channels subscribe to this event to deliver the bytes to the
+       * end user — Telegram streams via Bot API, the web UI inlines via
+       * `<img>` / `<audio>` / `<video>` etc. Bytes are fetched lazily by
+       * the channel against `GET /api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId/bytes`.
+       */
+      type: 'attachment';
+      sessionId: string;
+      attachmentId: string;
+      mimeType: string;
+      /** Coarse rendering hint: image, audio, video, document (other/binary). */
+      kind: 'image' | 'audio' | 'video' | 'document';
+      name?: string;
+      size?: number;
+      sha256?: string;
+      caption?: string;
+      correlationId?: string;
+    }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
   | { type: 'error'; sessionId: string; message: string };
@@ -791,6 +811,9 @@ export const agentLocalRoutes = {
   sessionAttachmentByIdPattern: '/sessions/:sessionId/attachments/:attachmentId',
   sessionAttachmentById: (sessionId: string, attachmentId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  sessionAttachmentBytesPattern: '/sessions/:sessionId/attachments/:attachmentId/bytes',
+  sessionAttachmentBytes: (sessionId: string, attachmentId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
   voiceStt: '/voice/stt',
@@ -874,6 +897,14 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
   agentSessionAttachmentByIdPattern:
     '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId',
+  agentSessionAttachmentBytes: (
+    agentId: string,
+    sessionId: string,
+    attachmentId: string,
+  ): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
+  agentSessionAttachmentBytesPattern:
+    '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId/bytes',
   agentManage: (agentId: string, action: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/manage/${encodeURIComponent(action)}`,
   agentManagePattern: '/api/agents/:agentId/manage/:action',

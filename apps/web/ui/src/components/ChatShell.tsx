@@ -246,17 +246,48 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
       if (entry.role === 'assistant' && entry.thinking) {
         historyItems.push({ type: 'thinking', text: entry.thinking, streaming: false });
       }
-      if (entry.role === 'assistant' && !entry.content) { if (entry.name) setAgentName(entry.name); continue; }
-      historyItems.push({
-        type: entry.role as 'user' | 'assistant',
-        text: entry.content,
-        streaming: false,
-        name: entry.name,
-        ...(entry.role === 'assistant' && entry.actions && entry.actions.length > 0 ? { actions: entry.actions } : {}),
-        ...(entry.role === 'user' && entry.attachments && entry.attachments.length > 0
-          ? { attachments: entry.attachments }
-          : {}),
-      });
+      const assistantAttachments =
+        entry.role === 'assistant' && entry.attachments && entry.attachments.length > 0
+          ? entry.attachments
+          : undefined;
+      if (entry.role === 'assistant' && !entry.content && !assistantAttachments) {
+        if (entry.name) setAgentName(entry.name);
+        continue;
+      }
+      if (entry.content || entry.role !== 'assistant') {
+        historyItems.push({
+          type: entry.role as 'user' | 'assistant',
+          text: entry.content,
+          streaming: false,
+          name: entry.name,
+          ...(entry.role === 'assistant' && entry.actions && entry.actions.length > 0 ? { actions: entry.actions } : {}),
+          ...(entry.role === 'user' && entry.attachments && entry.attachments.length > 0
+            ? { attachments: entry.attachments }
+            : {}),
+        });
+      }
+      if (assistantAttachments) {
+        for (const att of assistantAttachments) {
+          if (!att.id) continue;
+          const mime = att.mimeType || 'application/octet-stream';
+          const kind: 'image' | 'audio' | 'video' | 'document' = mime.startsWith('image/')
+            ? 'image'
+            : mime.startsWith('audio/')
+              ? 'audio'
+              : mime.startsWith('video/')
+                ? 'video'
+                : 'document';
+          historyItems.push({
+            type: 'attachment',
+            sessionId,
+            attachmentId: att.id,
+            mimeType: mime,
+            kind,
+            ...(att.name ? { name: att.name } : {}),
+            ...(typeof att.size === 'number' ? { size: att.size } : {}),
+          });
+        }
+      }
       if (entry.role === 'assistant' && entry.name) setAgentName(entry.name);
     }
     flushIntrospection();
@@ -485,6 +516,25 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
           }
           return [...prev, { type: 'assistant', text: finalText, streaming: false }];
         });
+        break;
+      }
+
+      case 'attachment': {
+        const attachmentItem = {
+          type: 'attachment' as const,
+          sessionId: String(event.sessionId ?? ''),
+          attachmentId: String(event.attachmentId ?? ''),
+          mimeType: String(event.mimeType ?? 'application/octet-stream'),
+          kind: ((event.kind as string) || 'document') as
+            | 'image'
+            | 'audio'
+            | 'video'
+            | 'document',
+          ...(typeof event.name === 'string' ? { name: event.name } : {}),
+          ...(typeof event.size === 'number' ? { size: event.size } : {}),
+          ...(typeof event.caption === 'string' ? { caption: event.caption } : {}),
+        };
+        setItems(prev => [...collapseThinking(dropPlaceholder(prev)), attachmentItem]);
         break;
       }
 
