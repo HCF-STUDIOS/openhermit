@@ -8,12 +8,12 @@ import { Composer } from './Composer';
 const ManagePanel = lazy(() => import('./ManagePanel').then((m) => ({ default: m.ManagePanel })));
 
 type View = 'chat' | 'manage' | 'observe';
-type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'policies';
+type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'voice' | 'policies';
 
 const createSessionId = () =>
   `web:${new Date().toISOString().slice(0, 10)}-${crypto.randomUUID().slice(0, 8)}`;
 
-const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'skills', 'mcp', 'schedules', 'policies'];
+const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'voice', 'skills', 'mcp', 'schedules', 'policies'];
 
 type Route =
   | { view: 'chat'; sessionId: string | null }
