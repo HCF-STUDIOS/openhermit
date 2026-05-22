@@ -321,3 +321,89 @@ test('createElevenLabsTts: respects baseUrl override and trims trailing slashes'
   await tts.synthesize({ text: 'hi', outputMimeType: 'audio/mpeg' });
   assert.match(calls[0]!.url, /^https:\/\/proxy\.internal\/v1\/text-to-speech\//);
 });
+
+// ── per-agent defaults forwarding ─────────────────────────────────────
+
+test('createElevenLabsTts: uses defaultVoiceId / defaultModelId / defaultSpeed when caller omits them', async () => {
+  const { fetchImpl, calls } = makeFetchStub({
+    response: new Response(new Uint8Array([0]), { status: 200 }),
+  });
+  const tts = createElevenLabsTts({
+    apiKey: 'sk-test',
+    fetchImpl,
+    defaultVoiceId: 'agent-voice',
+    defaultModelId: 'agent-model',
+    defaultSpeed: 0.9,
+  });
+  await tts.synthesize({ text: 'hi', outputMimeType: 'audio/mpeg' });
+  assert.match(calls[0]!.url, /\/v1\/text-to-speech\/agent-voice\?/);
+  const body = JSON.parse(calls[0]!.init!.body as string) as {
+    model_id: string;
+    voice_settings?: { speed: number };
+  };
+  assert.equal(body.model_id, 'agent-model');
+  assert.deepEqual(body.voice_settings, { speed: 0.9 });
+});
+
+test('createElevenLabsTts: per-call input still overrides per-agent defaults', async () => {
+  const { fetchImpl, calls } = makeFetchStub({
+    response: new Response(new Uint8Array([0]), { status: 200 }),
+  });
+  const tts = createElevenLabsTts({
+    apiKey: 'sk-test',
+    fetchImpl,
+    defaultVoiceId: 'agent-voice',
+    defaultSpeed: 0.9,
+  });
+  await tts.synthesize({
+    text: 'hi',
+    outputMimeType: 'audio/mpeg',
+    voiceId: 'call-voice',
+    speed: 1.5,
+  });
+  assert.match(calls[0]!.url, /\/v1\/text-to-speech\/call-voice\?/);
+  const body = JSON.parse(calls[0]!.init!.body as string) as {
+    voice_settings?: { speed: number };
+  };
+  assert.deepEqual(body.voice_settings, { speed: 1.5 });
+});
+
+test('createElevenLabsStt: uses defaultModelId from per-agent config', async () => {
+  const { fetchImpl, calls } = makeFetchStub({
+    response: jsonResponse(200, { text: 'ok' }),
+  });
+  const stt = createElevenLabsStt({
+    apiKey: 'sk-test',
+    fetchImpl,
+    defaultModelId: 'scribe_custom',
+  });
+  await stt.transcribe({ bytes: new Uint8Array([0]), mimeType: 'audio/mpeg' });
+  const form = calls[0]!.init!.body as FormData;
+  assert.equal(form.get('model_id'), 'scribe_custom');
+});
+
+// ── timeout ───────────────────────────────────────────────────────────
+
+test('fetchWithTimeout aborts hung requests and surfaces VoiceTransportError', async () => {
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    // Simulate a server that never responds — resolve only when the caller
+    // aborts the request via the AbortSignal the adapter passes in.
+    return new Promise<Response>((_, reject) => {
+      const signal = init?.signal;
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }
+    });
+  }) as unknown as typeof fetch;
+
+  const tts = createElevenLabsTts({ apiKey: 'sk-test', fetchImpl, timeoutMs: 25 });
+  await assert.rejects(
+    () => tts.synthesize({ text: 'hi', outputMimeType: 'audio/mpeg' }),
+    (err: Error) =>
+      err instanceof VoiceTransportError && /timeout/i.test(err.message),
+  );
+});

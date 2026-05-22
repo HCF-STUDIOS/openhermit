@@ -41,15 +41,21 @@ const safeGet = (resolver: VoiceSecretResolver, name: string): string | undefine
   }
 };
 
+/**
+ * Look up an API key by name. Mirrors the model-provider resolver in
+ * `agent-runner/model-utils.ts`: per-agent secret store first, then
+ * `process.env` as a host-level fallback so a single shared key works
+ * for agents that haven't set their own.
+ */
 const requireKey = (
   resolver: VoiceSecretResolver,
   name: string,
   direction: 'stt' | 'tts',
 ): string => {
-  const value = safeGet(resolver, name);
+  const value = safeGet(resolver, name) ?? process.env[name];
   if (!value) {
     throw new VoiceAuthError(
-      `voice.${direction}: secret ${name} is not set on this agent`,
+      `voice.${direction}: secret ${name} is not set on this agent and no ${name} env var is exported`,
     );
   }
   return value;
@@ -66,6 +72,7 @@ const buildStt = (
   }
   return createElevenLabsStt({
     apiKey: requireKey(resolver, ELEVENLABS_KEY_NAME, 'stt'),
+    ...(cfg.model_id ? { defaultModelId: cfg.model_id } : {}),
   });
 };
 
@@ -80,6 +87,9 @@ const buildTts = (
   }
   return createElevenLabsTts({
     apiKey: requireKey(resolver, ELEVENLABS_KEY_NAME, 'tts'),
+    ...(cfg.voice_id ? { defaultVoiceId: cfg.voice_id } : {}),
+    ...(cfg.model_id ? { defaultModelId: cfg.model_id } : {}),
+    ...(cfg.speed !== undefined ? { defaultSpeed: cfg.speed } : {}),
   });
 };
 

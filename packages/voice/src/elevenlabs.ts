@@ -36,13 +36,21 @@ export interface ElevenLabsClientOptions {
   baseUrl?: string;
   /** Injectable fetch for tests. Defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Per-request timeout in milliseconds. A hung ElevenLabs request would
+   * otherwise block whichever channel/runner awaits it indefinitely.
+   */
+  timeoutMs?: number;
 }
 
 interface InternalOptions {
   apiKey: string;
   baseUrl: string;
   fetchImpl: typeof fetch;
+  timeoutMs: number;
 }
+
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 const normalize = (opts: ElevenLabsClientOptions): InternalOptions => {
   if (!opts.apiKey) {
@@ -53,7 +61,31 @@ const normalize = (opts: ElevenLabsClientOptions): InternalOptions => {
     apiKey: opts.apiKey,
     baseUrl,
     fetchImpl: opts.fetchImpl ?? fetch,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   };
+};
+
+const fetchWithTimeout = async (
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+  context: string,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { ...(init ?? {}), signal: controller.signal });
+  } catch (err) {
+    if ((err as { name?: string }).name === 'AbortError') {
+      throw new VoiceTransportError(
+        `elevenlabs ${context}: request exceeded ${timeoutMs}ms timeout`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const mimeToOutputFormat = (mimeType: string): string => {
@@ -90,12 +122,19 @@ const outputFormatToMime = (format: string): string => {
 
 const fetchAudioBytes = async (
   url: string,
-  fetchImpl: typeof fetch,
+  opts: InternalOptions,
 ): Promise<Uint8Array> => {
   let res: Response;
   try {
-    res = await fetchImpl(url);
+    res = await fetchWithTimeout(
+      opts.fetchImpl,
+      url,
+      undefined,
+      opts.timeoutMs,
+      'audio fetch',
+    );
   } catch (err) {
+    if (err instanceof VoiceTransportError) throw err;
     throw new VoiceTransportError(
       `elevenlabs: failed to fetch audio from URL — ${(err as Error).message}`,
     );
@@ -130,10 +169,19 @@ const throwForResponse = async (
 
 // ── STT (Scribe) ──────────────────────────────────────────────────────
 
+export interface ElevenLabsSttOptions extends ElevenLabsClientOptions {
+  /**
+   * Per-agent default model id (from `voice.stt.model_id`). Used when the
+   * caller doesn't override on a specific transcribe() call.
+   */
+  defaultModelId?: string;
+}
+
 export const createElevenLabsStt = (
-  options: ElevenLabsClientOptions,
+  options: ElevenLabsSttOptions,
 ): SttProvider => {
   const opts = normalize(options);
+  const defaultModelId = options.defaultModelId ?? DEFAULT_STT_MODEL;
 
   const transcribe = async (input: SttInput): Promise<SttResult> => {
     if (!input.url && !input.bytes) {
@@ -141,7 +189,7 @@ export const createElevenLabsStt = (
     }
     const audioBytes = input.bytes
       ? input.bytes
-      : await fetchAudioBytes(input.url!, opts.fetchImpl);
+      : await fetchAudioBytes(input.url!, opts);
 
     const form = new FormData();
     form.set(
@@ -149,19 +197,26 @@ export const createElevenLabsStt = (
       new Blob([audioBytes as BlobPart], { type: input.mimeType }),
       'audio',
     );
-    form.set('model_id', DEFAULT_STT_MODEL);
+    form.set('model_id', defaultModelId);
     if (input.languageHint) {
       form.set('language_code', input.languageHint);
     }
 
     let res: Response;
     try {
-      res = await opts.fetchImpl(`${opts.baseUrl}/v1/speech-to-text`, {
-        method: 'POST',
-        headers: { 'xi-api-key': opts.apiKey },
-        body: form,
-      });
+      res = await fetchWithTimeout(
+        opts.fetchImpl,
+        `${opts.baseUrl}/v1/speech-to-text`,
+        {
+          method: 'POST',
+          headers: { 'xi-api-key': opts.apiKey },
+          body: form,
+        },
+        opts.timeoutMs,
+        'stt',
+      );
     } catch (err) {
+      if (err instanceof VoiceTransportError) throw err;
       throw new VoiceTransportError(
         `elevenlabs.stt: transport failure — ${(err as Error).message}`,
       );
@@ -197,22 +252,35 @@ export const createElevenLabsStt = (
 
 // ── TTS ───────────────────────────────────────────────────────────────
 
+export interface ElevenLabsTtsOptions extends ElevenLabsClientOptions {
+  /** Per-agent default voice id (from `voice.tts.voice_id`). */
+  defaultVoiceId?: string;
+  /** Per-agent default model id (from `voice.tts.model_id`). */
+  defaultModelId?: string;
+  /** Per-agent default playback speed (from `voice.tts.speed`). */
+  defaultSpeed?: number;
+}
+
 export const createElevenLabsTts = (
-  options: ElevenLabsClientOptions,
+  options: ElevenLabsTtsOptions,
 ): TtsProvider => {
   const opts = normalize(options);
+  const defaultVoiceId = options.defaultVoiceId ?? DEFAULT_VOICE_ID;
+  const defaultModelId = options.defaultModelId ?? DEFAULT_TTS_MODEL;
+  const defaultSpeed = options.defaultSpeed;
 
   const synthesize = async (input: TtsInput): Promise<TtsResult> => {
     if (!input.text.trim()) {
       throw new VoiceValidationError('elevenlabs.tts: text must not be empty');
     }
     const outputFormat = mimeToOutputFormat(input.outputMimeType);
-    const voiceId = input.voiceId ?? DEFAULT_VOICE_ID;
-    const modelId = input.modelId ?? DEFAULT_TTS_MODEL;
+    const voiceId = input.voiceId ?? defaultVoiceId;
+    const modelId = input.modelId ?? defaultModelId;
+    const speed = input.speed ?? defaultSpeed;
 
     const body: Record<string, unknown> = { text: input.text, model_id: modelId };
-    if (typeof input.speed === 'number') {
-      body.voice_settings = { speed: input.speed };
+    if (typeof speed === 'number') {
+      body.voice_settings = { speed };
     }
 
     const url =
@@ -221,16 +289,23 @@ export const createElevenLabsTts = (
 
     let res: Response;
     try {
-      res = await opts.fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'xi-api-key': opts.apiKey,
-          'Content-Type': 'application/json',
-          Accept: outputFormatToMime(outputFormat),
+      res = await fetchWithTimeout(
+        opts.fetchImpl,
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'xi-api-key': opts.apiKey,
+            'Content-Type': 'application/json',
+            Accept: outputFormatToMime(outputFormat),
+          },
+          body: JSON.stringify(body),
         },
-        body: JSON.stringify(body),
-      });
+        opts.timeoutMs,
+        'tts',
+      );
     } catch (err) {
+      if (err instanceof VoiceTransportError) throw err;
       throw new VoiceTransportError(
         `elevenlabs.tts: transport failure — ${(err as Error).message}`,
       );

@@ -4,6 +4,8 @@ export {
   createElevenLabsStt,
   createElevenLabsTts,
   type ElevenLabsClientOptions,
+  type ElevenLabsSttOptions,
+  type ElevenLabsTtsOptions,
 } from './elevenlabs.js';
 export {
   createVoiceForAgent,

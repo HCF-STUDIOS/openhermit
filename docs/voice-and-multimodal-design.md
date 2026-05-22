@@ -125,11 +125,11 @@ Relevant scaffolding already exists:
 
 Three subsystems, one package, no protocol change to `ChannelOutbound`:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │ packages/voice                                              │
-│   • SttChain (providers, fallback order)                    │
-│   • TtsChain (providers, fallback order)                    │
+│   • STT provider (single, per-agent)                        │
+│   • TTS provider (single, per-agent)                        │
 │   • per-mime codec selection (audio/ogg vs audio/mp4 …)     │
 └─────────────────────────────────────────────────────────────┘
         ▲                                  ▲
