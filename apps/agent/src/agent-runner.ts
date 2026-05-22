@@ -1,5 +1,6 @@
 import { userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { posix as posixPath } from 'node:path';
 
 import {
   Agent,
@@ -418,9 +419,20 @@ export class AgentRunner implements SessionRuntime {
     const manager = await this.ensureExecBackendManager(config);
     const backend = manager.getDefault();
     await backend.ensure();
-    const resolvedPath = input.path.startsWith('/')
-      ? input.path
-      : `${backend.agentHome}/${input.path}`;
+    // Sandbox is POSIX; resolve relative paths against agentHome and refuse
+    // anything that escapes the root (absolute paths outside the home, `..`
+    // traversal, etc.). Without this an agent could read /etc/passwd via the
+    // upload tool.
+    const root = posixPath.resolve(backend.agentHome);
+    const candidate = input.path.startsWith('/')
+      ? posixPath.resolve(input.path)
+      : posixPath.resolve(root, input.path);
+    if (candidate !== root && !candidate.startsWith(root + '/')) {
+      throw new Error(
+        `path escapes sandbox root: ${input.path}`,
+      );
+    }
+    const resolvedPath = candidate;
     const stat = await backend.files.stat(resolvedPath);
     if (!stat) {
       throw new Error(`file not found in sandbox: ${input.path}`);

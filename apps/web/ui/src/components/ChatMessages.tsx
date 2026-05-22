@@ -223,6 +223,8 @@ function AttachmentMedia({ item }: { item: Extract<ChatItem, { type: 'attachment
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setBlobUrl(null);
+    setError(null);
     let cancelled = false;
     let url: string | null = null;
     fetchAttachmentBlobUrl(item.sessionId, item.attachmentId)

@@ -333,24 +333,10 @@ export const createAttachmentUploadTool = (
 });
 
 const AttachmentSendParams = Type.Object({
-  id: Type.Optional(
-    Type.String({
-      description:
-        'Existing attachment id (e.g. `att_xxx`) returned by `attachment_upload`, `attachment_list`, or a previous user upload. One of `id` or `url` is required.',
-    }),
-  ),
-  url: Type.Optional(
-    Type.String({
-      description:
-        'External https URL pointing at media to deliver. The gateway fetches the bytes server-side (SSRF-guarded), persists them into the attachment store, and proceeds as if `id` was passed. Mutually exclusive with `id`.',
-    }),
-  ),
-  name: Type.Optional(
-    Type.String({
-      description:
-        'Optional display name (used when `url` is supplied and the URL does not encode one).',
-    }),
-  ),
+  id: Type.String({
+    description:
+      'Existing attachment id (e.g. `att_xxx`) returned by `attachment_upload`, `attachment_list`, or a previous user upload.',
+  }),
   caption: Type.Optional(
     Type.String({
       description:
@@ -382,7 +368,7 @@ export const createAttachmentSendTool = (
   name: 'attachment_send',
   label: 'Send Attachment',
   description:
-    'Deliver an attachment to the current session — the bytes will be streamed back to the user through their channel (Telegram photo/voice/video/document, web inline media). Provide either `id` (preferred — already stored) or `url` (https; gateway will fetch and persist before delivery).',
+    'Deliver an already-stored attachment to the current session — the bytes will be streamed back to the user through their channel (Telegram photo/voice/video/document, web inline media). Provide `id` from `attachment_upload` or `attachment_list`.',
   parameters: AttachmentSendParams,
   execute: async (_toolCallId, args: AttachmentSendArgs) => {
     if (!context.attachmentStore || !context.storeScope || !context.sessionId) {
@@ -399,23 +385,9 @@ export const createAttachmentSendTool = (
     const sessionId = context.sessionId;
     const agentId = context.storeScope.agentId;
 
-    let id = args.id?.trim();
-    if (!id && args.url) {
-      // URL path: lean on the same `uploadSandboxAttachment` plumbing would be
-      // wrong (it reads from sandbox). Instead, route through the gateway's
-      // existing url-passthrough by emitting a synthetic upload via the
-      // runtime. But tools don't have direct access to that helper, so we
-      // expose it through the runtime when wiring the toolset. For now we
-      // surface this clearly to the caller — they should upload first then
-      // pass the id. Future revision: add `uploadAttachmentFromUrl` callback.
-      throw new ValidationError(
-        'attachment_send: url-mode is not yet supported here — call attachment_upload first to obtain an id.',
-      );
-    }
+    const id = args.id.trim();
     if (!id) {
-      throw new ValidationError(
-        'attachment_send requires either `id` or `url`.',
-      );
+      throw new ValidationError('attachment_send requires `id`.');
     }
 
     const row = await context.attachmentStore.get(id);
@@ -450,7 +422,7 @@ export const createAttachmentSendTool = (
       attachmentId: row.id,
       mimeType: row.mimeType,
       kind,
-      name: args.name ?? row.originalName,
+      name: row.originalName,
       size: row.sizeBytes,
       sha256: row.sha256,
     };

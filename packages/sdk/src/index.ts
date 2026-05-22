@@ -281,14 +281,30 @@ export class AgentLocalClient {
     filename: string | undefined;
     kind: 'image' | 'audio' | 'video' | 'document' | undefined;
   }> {
-    const url = this.buildAttachmentBytesUrl(sessionId, attachmentId);
-    const response = await this.fetchImpl(url, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${this.options.token}` },
-    });
+    const path = agentLocalRoutes.sessionAttachmentBytes(sessionId, attachmentId);
+    const url = joinUrl(this.options.baseUrl, path);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${this.options.token}` },
+      });
+    } catch (error) {
+      throw this.buildFetchFailedError(path, error);
+    }
     if (!response.ok) {
-      throw new Error(
-        `Attachment bytes download failed (${response.status}) for ${attachmentId}`,
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `Attachment bytes download failed (${response.status}) for ${attachmentId}: ${responseText || response.statusText}`,
+        'agent_api_error',
+        statusCode,
       );
     }
     const buf = new Uint8Array(await response.arrayBuffer());

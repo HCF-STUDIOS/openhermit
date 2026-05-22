@@ -617,11 +617,13 @@ export class TelegramBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'attachment') {
-            void this.deliverAttachmentToTelegram(chatId, payload).catch((err) => {
+            try {
+              await this.deliverAttachmentToTelegram(chatId, payload);
+            } catch (err) {
               this.log(
                 `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
               );
-            });
+            }
             continue;
           }
 

@@ -28,6 +28,8 @@ const ATTACHMENT_FETCH_TIMEOUT_MS = 30_000;
 
 const ALLOWED_PROTOCOLS = new Set(['https:']);
 
+const MAX_REDIRECT_HOPS = 5;
+
 const fail = (message: string, code = 'attachment_fetch_failed'): never => {
   throw new OpenHermitError(message, code, 400);
 };
@@ -92,32 +94,63 @@ export const resolveAttachmentByUrl = async (
     fail(`attachment_fetch_failed: malformed URL`);
     throw new Error('unreachable');
   }
-  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    fail(
-      `attachment_fetch_failed: protocol "${parsed.protocol}" not allowed (https only)`,
-    );
-  }
-  if (isBlockedHost(parsed.hostname)) {
-    fail(
-      `attachment_fetch_failed: host "${parsed.hostname}" is not allowed (SSRF guard)`,
-    );
-  }
+  // Manual redirect follow so the SSRF protocol+host guards run on *every*
+  // hop. `redirect: 'follow'` would only validate the initial URL — a 302 to
+  // http://169.254.169.254/ would otherwise sneak past.
+  const validateHop = (u: URL): void => {
+    if (!ALLOWED_PROTOCOLS.has(u.protocol)) {
+      fail(
+        `attachment_fetch_failed: protocol "${u.protocol}" not allowed (https only)`,
+      );
+    }
+    if (isBlockedHost(u.hostname)) {
+      fail(
+        `attachment_fetch_failed: host "${u.hostname}" is not allowed (SSRF guard)`,
+      );
+    }
+  };
+  validateHop(parsed);
 
+  const signal = AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS);
   let res: Response;
-  try {
-    res = await fetch(parsed.toString(), {
-      method: 'GET',
-      redirect: 'follow',
-      signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    fail(`attachment_fetch_failed: ${msg} (url=${parsed.toString()})`);
-    throw new Error('unreachable');
+  let current = parsed;
+  let hops = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      res = await fetch(current.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      fail(`attachment_fetch_failed: ${msg} (url=${current.toString()})`);
+      throw new Error('unreachable');
+    }
+    if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
+      if (hops >= MAX_REDIRECT_HOPS) {
+        fail(
+          `attachment_fetch_failed: too many redirects (>${MAX_REDIRECT_HOPS})`,
+        );
+      }
+      let next: URL;
+      try {
+        next = new URL(res.headers.get('location')!, current);
+      } catch {
+        fail(`attachment_fetch_failed: malformed redirect target`);
+        throw new Error('unreachable');
+      }
+      validateHop(next);
+      current = next;
+      hops += 1;
+      continue;
+    }
+    break;
   }
   if (!res.ok) {
     fail(
-      `attachment_fetch_failed: upstream returned ${res.status} (url=${parsed.toString()})`,
+      `attachment_fetch_failed: upstream returned ${res.status} (url=${current.toString()})`,
     );
   }
 
@@ -321,19 +354,35 @@ const persistAttachmentBytes = async (
     body: Readable.from(input.bytes),
   });
 
-  const record = await input.attachmentStore.create({
-    id: attachmentId,
-    agentId: input.agentId,
-    sessionId: input.sessionId,
-    uploaderUserId: input.uploaderUserId,
-    originalName: input.originalName,
-    safeName: input.safeName,
-    mimeType: input.mimeType,
-    sizeBytes: putResult.sizeBytes,
-    sha256: putResult.sha256,
-    storageProvider: input.attachmentStorage.name,
-    storageKey: putResult.storageKey,
-  });
+  // If the metadata create fails after a successful blob put, the bytes
+  // would be orphaned in storage forever. Best-effort compensating delete
+  // before re-throwing so callers see the real error.
+  let record;
+  try {
+    record = await input.attachmentStore.create({
+      id: attachmentId,
+      agentId: input.agentId,
+      sessionId: input.sessionId,
+      uploaderUserId: input.uploaderUserId,
+      originalName: input.originalName,
+      safeName: input.safeName,
+      mimeType: input.mimeType,
+      sizeBytes: putResult.sizeBytes,
+      sha256: putResult.sha256,
+      storageProvider: input.attachmentStorage.name,
+      storageKey: putResult.storageKey,
+    });
+  } catch (createErr) {
+    try {
+      await input.attachmentStorage.delete(putResult.storageKey);
+    } catch (cleanupErr) {
+      const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      input.logger?.(
+        `[attachments-persist] failed to clean up orphan blob ${putResult.storageKey} after metadata create failure: ${msg}`,
+      );
+    }
+    throw createErr;
+  }
 
   let sandboxPath: string | undefined;
   let materializationState: 'copied' | 'failed' = 'copied';

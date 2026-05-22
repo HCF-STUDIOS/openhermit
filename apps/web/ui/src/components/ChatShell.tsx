@@ -522,7 +522,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
       case 'attachment': {
         const attachmentItem = {
           type: 'attachment' as const,
-          sessionId: String(event.sessionId ?? ''),
+          sessionId,
           attachmentId: String(event.attachmentId ?? ''),
           mimeType: String(event.mimeType ?? 'application/octet-stream'),
           kind: ((event.kind as string) || 'document') as
