@@ -133,6 +133,14 @@ export interface AgentRuntimeConfig {
   web?: WebConfig;
   channels?: ChannelsConfig;
   notifications?: OwnerNotificationConfig;
+  /**
+   * Voice (STT/TTS) settings for channels that handle audio. Either
+   * direction may be omitted independently; if the whole `voice` block is
+   * absent the agent has no voice support. The runtime constructs
+   * providers from `voice` at boot via `createVoiceForAgent` (see
+   * `@openhermit/voice`).
+   */
+  voice?: import('@openhermit/voice').VoiceConfig;
 }
 
 export type AgentConfig = AgentRuntimeConfig;

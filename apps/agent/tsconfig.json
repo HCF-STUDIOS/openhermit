@@ -10,6 +10,7 @@
     { "path": "../../packages/sdk" },
     { "path": "../../packages/shared" },
     { "path": "../../packages/store" },
+    { "path": "../../packages/voice" },
     { "path": "../channels/telegram" }
   ],
   "include": [

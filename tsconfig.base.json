@@ -17,6 +17,9 @@
       "@openhermit/store": [
         "packages/store/src/index.ts"
       ],
+      "@openhermit/voice": [
+        "packages/voice/src/index.ts"
+      ],
       "@openhermit/agent/agent-runner": [
         "apps/agent/src/agent-runner.ts"
       ],

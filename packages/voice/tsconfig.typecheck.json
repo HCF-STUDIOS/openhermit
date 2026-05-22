@@ -9,10 +9,6 @@
   "include": [
     "src",
     "test",
-    "../../packages/protocol/src",
-    "../../packages/sdk/src",
-    "../../packages/shared/src",
-    "../../packages/store/src",
-    "../../packages/voice/src"
+    "../shared/src"
   ]
 }

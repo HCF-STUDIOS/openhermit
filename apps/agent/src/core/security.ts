@@ -124,6 +124,28 @@ const ChannelsConfigSchema = z.object({
   discord: DiscordChannelSchema.optional(),
 });
 
+// Phase 1: only ElevenLabs is wired. The enum stays a single value
+// rather than a free-form string so a typo in the config surfaces at
+// validation time rather than at first transcribe / synthesize call.
+const VoiceProviderSchema = z.enum(['elevenlabs']);
+
+const SttConfigSchema = z.object({
+  provider: VoiceProviderSchema,
+  model_id: z.string().min(1).optional(),
+});
+
+const TtsConfigSchema = z.object({
+  provider: VoiceProviderSchema,
+  voice_id: z.string().min(1).optional(),
+  model_id: z.string().min(1).optional(),
+  speed: z.number().positive().optional(),
+});
+
+const VoiceConfigSchema = z.object({
+  stt: SttConfigSchema.optional(),
+  tts: TtsConfigSchema.optional(),
+});
+
 const AgentRuntimeConfigSchema = z.object({
   workspace_root: z.string(),
   model: ModelConfigSchema,
@@ -131,6 +153,7 @@ const AgentRuntimeConfigSchema = z.object({
   exec: ExecConfigSchema.optional(),
   web: WebConfigSchema.optional(),
   channels: ChannelsConfigSchema.optional(),
+  voice: VoiceConfigSchema.optional(),
 });
 
 function validateConfig(config: unknown, filePath: string): asserts config is AgentRuntimeConfig {

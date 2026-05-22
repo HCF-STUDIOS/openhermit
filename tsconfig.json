@@ -4,6 +4,7 @@
     { "path": "./packages/protocol" },
     { "path": "./packages/shared" },
     { "path": "./packages/sdk" },
+    { "path": "./packages/voice" },
     { "path": "./apps/agent" },
     { "path": "./apps/cli" },
     { "path": "./apps/web" },
