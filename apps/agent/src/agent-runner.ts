@@ -1320,7 +1320,14 @@ export class AgentRunner implements SessionRuntime {
       return { appended: false, deduped: true };
     }
 
-    session.updatedAt = new Date().toISOString();
+    // Mirror postMessage: count the appended message toward the session's
+    // activity. Use the message's occurredAt (so real-time backfill from
+    // a channel adapter advances `lastActivityAt`) but never regress the
+    // timestamp when older messages are appended out of order.
+    session.messageCount += 1;
+    if (ts > session.updatedAt) {
+      session.updatedAt = ts;
+    }
     await this.persistSessionIndex(session);
 
     if (role === 'user') {

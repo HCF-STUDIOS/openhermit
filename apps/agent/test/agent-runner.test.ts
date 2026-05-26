@@ -1492,3 +1492,87 @@ test('AgentRunner.appendMessage honours occurredAt as the persisted ts', async (
   assert.ok(entry, 'entry persisted');
   assert.equal(entry!.ts, occurredAt, 'persisted ts should match occurredAt');
 });
+
+test('AgentRunner.appendMessage bumps messageCount and lastActivityAt', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([]),
+  });
+
+  const sessionId = 'cli:append-counters';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  const before = (await runner.listSessions({ includeInactive: true })).find(
+    (s) => s.sessionId === sessionId,
+  );
+  assert.ok(before, 'session should exist');
+  const beforeCount = before!.messageCount;
+  const beforeActivity = before!.lastActivityAt;
+
+  const occurredAt = '2099-01-02T03:04:05.000Z';
+  const first = await runner.appendMessage(sessionId, {
+    messageId: 'msg-counters-1',
+    text: 'real-time backfill',
+    appendAs: 'user',
+    occurredAt,
+  });
+  assert.deepEqual(first, { appended: true });
+
+  const after = (await runner.listSessions({ includeInactive: true })).find(
+    (s) => s.sessionId === sessionId,
+  );
+  assert.ok(after);
+  assert.equal(after!.messageCount, beforeCount + 1, 'messageCount should bump by 1');
+  assert.equal(after!.lastActivityAt, occurredAt, 'lastActivityAt should advance to occurredAt');
+
+  // A dedup hit should NOT double-count.
+  const second = await runner.appendMessage(sessionId, {
+    messageId: 'msg-counters-1',
+    text: 'real-time backfill',
+    appendAs: 'user',
+    occurredAt,
+  });
+  assert.deepEqual(second, { appended: false, deduped: true });
+
+  const afterDedup = (await runner.listSessions({ includeInactive: true })).find(
+    (s) => s.sessionId === sessionId,
+  );
+  assert.equal(
+    afterDedup!.messageCount,
+    beforeCount + 1,
+    'dedup should not bump messageCount',
+  );
+
+  // An older occurredAt should not regress lastActivityAt.
+  await runner.appendMessage(sessionId, {
+    messageId: 'msg-counters-old',
+    text: 'older backfill',
+    appendAs: 'user',
+    occurredAt: '2000-01-01T00:00:00.000Z',
+  });
+  const afterOld = (await runner.listSessions({ includeInactive: true })).find(
+    (s) => s.sessionId === sessionId,
+  );
+  assert.equal(
+    afterOld!.lastActivityAt,
+    occurredAt,
+    'out-of-order older append should not regress lastActivityAt',
+  );
+  assert.equal(
+    afterOld!.messageCount,
+    beforeCount + 2,
+    'older append still counts toward messageCount',
+  );
+
+  // Suppress unused-variable warning.
+  void beforeActivity;
+});
