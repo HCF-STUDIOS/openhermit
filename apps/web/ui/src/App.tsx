@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import {
+  joinAgent,
   loadConnection,
   loadGatewayUrl,
   saveConnection,
@@ -20,10 +21,69 @@ const ChatShell = lazy(() => import('./components/ChatShell').then((m) => ({ def
 
 type Screen = 'loading' | 'setup' | 'pick-agent' | 'chat';
 
+interface PendingJoin {
+  agentId: string;
+  token?: string;
+}
+
+// Read `?agent_id=…` / `?agentId=…` (+ optional `?token=…`) from the current
+// URL, then strip them so a refresh doesn't re-trigger the auto-join.
+function readPendingJoin(): PendingJoin | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const agentId = (params.get('agent_id') ?? params.get('agentId') ?? '').trim();
+  if (!agentId) return null;
+  const token = (params.get('token') ?? '').trim();
+  params.delete('agent_id');
+  params.delete('agentId');
+  params.delete('token');
+  const qs = params.toString();
+  const url = window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash;
+  window.history.replaceState(null, '', url);
+  return token ? { agentId, token } : { agentId };
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>('loading');
   const [connection, setConn] = useState<Connection | null>(null);
   const [gatewayUrl, setGatewayUrl] = useState<string>('');
+  const [pendingJoin, setPendingJoin] = useState<PendingJoin | null>(() => readPendingJoin());
+  const [pendingError, setPendingError] = useState<string>('');
+
+  // Try to satisfy a pending /connect?agent_id=… intent: prefer an existing
+  // membership, otherwise call joinAgent. On success switches to chat; on
+  // failure clears the intent and surfaces the error on PickAgentScreen.
+  const consumePendingJoin = async (intent: PendingJoin, gateway: string): Promise<boolean> => {
+    try {
+      const memberships = await listMyAgents();
+      const existing = memberships.find((m) => m.agentId === intent.agentId);
+      if (existing) {
+        const conn: Connection = { gatewayUrl: gateway, agentId: existing.agentId, role: existing.role };
+        setConn(conn);
+        setConnection(conn);
+        saveConnection(conn);
+        setPendingJoin(null);
+        setScreen('chat');
+        return true;
+      }
+      const membership = await joinAgent(intent.agentId, intent.token);
+      const conn: Connection = {
+        gatewayUrl: gateway,
+        agentId: intent.agentId,
+        role: membership.role,
+        ...(intent.token ? { token: intent.token } : {}),
+      };
+      setConn(conn);
+      setConnection(conn);
+      saveConnection(conn);
+      setPendingJoin(null);
+      setScreen('chat');
+      return true;
+    } catch (err) {
+      setPendingError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  };
 
   useEffect(() => {
     initJwt();
@@ -45,6 +105,12 @@ export function App() {
         await exchangeToken(displayName);
       } catch {
         setScreen('setup');
+        return;
+      }
+
+      if (pendingJoin) {
+        if (await consumePendingJoin(pendingJoin, savedGateway)) return;
+        setScreen('pick-agent');
         return;
       }
 
@@ -74,9 +140,12 @@ export function App() {
     })();
   }, []);
 
-  const handleSetupComplete = (): void => {
+  const handleSetupComplete = async (): Promise<void> => {
     const url = loadGatewayUrl();
     if (url) setGatewayUrl(url);
+    if (pendingJoin && url) {
+      if (await consumePendingJoin(pendingJoin, url)) return;
+    }
     setScreen('pick-agent');
   };
 
@@ -104,7 +173,7 @@ export function App() {
   if (screen === 'loading') return null;
 
   if (screen === 'setup') {
-    return <SetupScreen onComplete={handleSetupComplete} />;
+    return <SetupScreen onComplete={() => void handleSetupComplete()} />;
   }
 
   if (screen === 'pick-agent') {
@@ -113,6 +182,9 @@ export function App() {
         gatewayUrl={gatewayUrl}
         onPick={handlePickAgent}
         onSignOut={handleSignOut}
+        initialJoinAgentId={pendingJoin?.agentId}
+        initialJoinToken={pendingJoin?.token}
+        initialError={pendingError || undefined}
       />
     );
   }

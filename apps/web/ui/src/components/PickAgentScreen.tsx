@@ -15,6 +15,9 @@ interface Props {
   gatewayUrl: string;
   onPick: (conn: Connection) => Promise<void>;
   onSignOut: () => void;
+  initialJoinAgentId?: string;
+  initialJoinToken?: string;
+  initialError?: string;
 }
 
 /**
@@ -24,13 +27,20 @@ interface Props {
  * to join a new agent. For protected agents the access token field is
  * required; otherwise it's left blank.
  */
-export function PickAgentScreen({ gatewayUrl, onPick, onSignOut }: Props) {
+export function PickAgentScreen({
+  gatewayUrl,
+  onPick,
+  onSignOut,
+  initialJoinAgentId,
+  initialJoinToken,
+  initialError,
+}: Props) {
   const [memberships, setMemberships] = useState<AgentMembership[] | null>(null);
-  const [error, setError] = useState('');
-  const [joinAgentId, setJoinAgentId] = useState('');
-  const [joinToken, setJoinToken] = useState('');
+  const [error, setError] = useState(initialError ?? '');
+  const [joinAgentId, setJoinAgentId] = useState(initialJoinAgentId ?? '');
+  const [joinToken, setJoinToken] = useState(initialJoinToken ?? '');
   const [busy, setBusy] = useState(false);
-  const [joinOpen, setJoinOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(Boolean(initialJoinAgentId));
   const [tokensOpen, setTokensOpen] = useState(false);
   const [accessToken, setAccessToken] = useState('');
   const [deviceKeyJson, setDeviceKeyJson] = useState('');
