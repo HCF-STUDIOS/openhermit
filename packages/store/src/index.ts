@@ -114,6 +114,7 @@ export {
   SupabaseAttachmentStorage,
   type SupabaseAttachmentStorageOptions,
   DbMetaStore,
+  DbConsumedJtiStore,
   generateSecretsKey,
   runMigrations,
 } from './impl/index.js';

@@ -3,12 +3,14 @@ import {
   joinAgent,
   loadConnection,
   loadGatewayUrl,
+  saveGatewayUrl,
   saveConnection,
   clearConnection,
   setConnection,
   setGateway,
   initJwt,
   exchangeToken,
+  redeemExchangeToken,
   getDisplayName,
   listMyAgents,
   type Connection,
@@ -33,14 +35,35 @@ function readPendingJoin(): PendingJoin | null {
   const params = new URLSearchParams(window.location.search);
   const agentId = (params.get('agent_id') ?? params.get('agentId') ?? '').trim();
   if (!agentId) return null;
-  const token = (params.get('token') ?? '').trim();
+  const accessToken = (params.get('token') ?? '').trim();
   params.delete('agent_id');
   params.delete('agentId');
   params.delete('token');
   const qs = params.toString();
   const url = window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash;
   window.history.replaceState(null, '', url);
-  return token ? { agentId, token } : { agentId };
+  return accessToken ? { agentId, token: accessToken } : { agentId };
+}
+
+// Read a single-use exchange JWT from the URL fragment (`#token=…`), then
+// strip it. Fragments don't hit the server log or `referer`, which makes
+// them the right place to carry a short-lived credential. Returning a
+// non-null token means the caller should swap it for a session JWT via
+// `redeemExchangeToken` before any other auth work runs.
+function readPendingExchangeToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  const token = (params.get('token') ?? '').trim();
+  if (!token) return null;
+  params.delete('token');
+  const rest = params.toString();
+  const url = window.location.pathname + window.location.search + (rest ? `#${rest}` : '');
+  window.history.replaceState(null, '', url);
+  return token;
 }
 
 export function App() {
@@ -48,6 +71,7 @@ export function App() {
   const [connection, setConn] = useState<Connection | null>(null);
   const [gatewayUrl, setGatewayUrl] = useState<string>('');
   const [pendingJoin, setPendingJoin] = useState<PendingJoin | null>(() => readPendingJoin());
+  const [pendingExchange] = useState<string | null>(() => readPendingExchangeToken());
   const [pendingError, setPendingError] = useState<string>('');
 
   // Try to satisfy a pending /connect?agent_id=… intent: prefer an existing
@@ -87,6 +111,36 @@ export function App() {
 
   useEffect(() => {
     initJwt();
+
+    // `/connect#token=…` deep link: the exchange JWT IS the credential, so
+    // we skip the device-key flow (Setup + exchangeToken) entirely. The
+    // gateway origin is assumed to match `window.location.origin` because
+    // the link only makes sense when issued by the same gateway serving
+    // this SPA. We deliberately do NOT touch `openhermit_device` — if the
+    // user already had a separate device-key identity, keeping it around
+    // is the desired behavior (two identities on one device is fine).
+    if (pendingExchange) {
+      const exchangeGateway = loadGatewayUrl() ?? window.location.origin;
+      setGateway(exchangeGateway);
+      setGatewayUrl(exchangeGateway);
+      saveGatewayUrl(exchangeGateway);
+      (async () => {
+        try {
+          await redeemExchangeToken(exchangeGateway, pendingExchange);
+        } catch (err) {
+          setPendingError(err instanceof Error ? err.message : String(err));
+          setScreen('setup');
+          return;
+        }
+        if (pendingJoin) {
+          if (await consumePendingJoin(pendingJoin, exchangeGateway)) return;
+          setScreen('pick-agent');
+          return;
+        }
+        setScreen('pick-agent');
+      })();
+      return;
+    }
 
     // Need both display name AND a remembered gateway URL to skip setup.
     const displayName = getDisplayName();

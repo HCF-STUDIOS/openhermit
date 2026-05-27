@@ -18,7 +18,7 @@
  */
 
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -237,6 +237,27 @@ export interface JwtConfig {
   expiry?: string;
 }
 
+/**
+ * What a JWT is allowed to do.
+ *
+ * - `'session'` — normal API access (default for all routes that take a JWT).
+ *   Issued by device-key flow or by the admin-issued path.
+ * - `'exchange'` — single-use bearer for the web `/connect` deep-link flow.
+ *   Cannot access any API; only `POST /api/auth/exchange` accepts it, and
+ *   the gateway records its `jti` so each token is usable exactly once.
+ */
+export type JwtPurpose = 'session' | 'exchange';
+
+/**
+ * Where a JWT was minted from, for audit only.
+ *
+ * - `'device-key'` — the browser proved possession of an ECDSA key via
+ *   `POST /api/auth/token`.
+ * - `'admin-issued'` — the gateway's admin token requested it on behalf
+ *   of an external identity (`POST /api/admin/auth/issue-token`).
+ */
+export type JwtIssuer = 'device-key' | 'admin-issued';
+
 export interface JwtTokenPayload extends JWTPayload {
   /** Subject: "channel:channelUserId". */
   sub: string;
@@ -244,6 +265,12 @@ export interface JwtTokenPayload extends JWTPayload {
   channel: string;
   /** Channel user ID. */
   channelUserId: string;
+  /** What the token is allowed to do. Missing on legacy tokens = 'session'. */
+  purpose?: JwtPurpose;
+  /** Where the token was minted from. Missing on legacy tokens. */
+  issuer?: JwtIssuer;
+  /** Unique token id (set on every signed token; used for one-shot revocation). */
+  jti?: string;
   // NOTE: agentId is no longer in the JWT — tokens are gateway-level
   // identity now. Agent access is gated per-request via the user_agents
   // membership table.
@@ -262,15 +289,30 @@ export const createJwtConfig = (secretEnv?: string): JwtConfig => {
 
 export const signJwt = async (
   config: JwtConfig,
-  payload: { channel: string; channelUserId: string },
-): Promise<{ token: string; expiresAt: number }> => {
-  const expiry = config.expiry ?? JWT_DEFAULT_EXPIRY;
+  payload: {
+    channel: string;
+    channelUserId: string;
+    /** Default 'session'. */
+    purpose?: JwtPurpose;
+    /** Default 'device-key'. Audit-only. */
+    issuer?: JwtIssuer;
+    /** Override `config.expiry` (jose duration string, e.g. "60s", "24h"). */
+    expiry?: string;
+  },
+): Promise<{ token: string; expiresAt: number; jti: string }> => {
+  const expiry = payload.expiry ?? config.expiry ?? JWT_DEFAULT_EXPIRY;
+  const purpose: JwtPurpose = payload.purpose ?? 'session';
+  const issuer: JwtIssuer = payload.issuer ?? 'device-key';
+  const jti = randomUUID();
   const jwt = await new SignJWT({
     channel: payload.channel,
     channelUserId: payload.channelUserId,
+    purpose,
+    issuer,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(`${payload.channel}:${payload.channelUserId}`)
+    .setJti(jti)
     .setIssuedAt()
     .setExpirationTime(expiry)
     .sign(config.secret);
@@ -279,12 +321,20 @@ export const signJwt = async (
   const [, payloadB64] = jwt.split('.');
   const decoded = JSON.parse(atob(payloadB64!.replace(/-/g, '+').replace(/_/g, '/'))) as { exp: number };
 
-  return { token: jwt, expiresAt: decoded.exp };
+  return { token: jwt, expiresAt: decoded.exp, jti };
 };
 
 export const verifyJwt = async (
   config: JwtConfig,
   token: string,
+  /**
+   * Restrict accepted purposes. Defaults to `['session']` so callers don't
+   * accidentally honor exchange tokens for normal API access; the exchange
+   * endpoint passes `{ allowPurpose: 'exchange' }` to flip that.
+   *
+   * Legacy tokens without a `purpose` claim are treated as `'session'`.
+   */
+  opts?: { allowPurpose?: JwtPurpose | JwtPurpose[] },
 ): Promise<JwtTokenPayload | null> => {
   try {
     // Pin algorithm to prevent `alg:none` and algorithm-confusion attacks.
@@ -292,6 +342,11 @@ export const verifyJwt = async (
     if (!payload.sub || !payload.channel || !payload.channelUserId) {
       return null;
     }
+    const allowed: readonly JwtPurpose[] = opts?.allowPurpose
+      ? Array.isArray(opts.allowPurpose) ? opts.allowPurpose : [opts.allowPurpose]
+      : ['session'];
+    const purpose: JwtPurpose = (payload.purpose as JwtPurpose | undefined) ?? 'session';
+    if (!allowed.includes(purpose)) return null;
     return payload as JwtTokenPayload;
   } catch (err) {
     if (process.env.OPENHERMIT_LOG_AUTH === '1') {

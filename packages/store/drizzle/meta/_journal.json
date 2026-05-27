@@ -218,6 +218,13 @@
       "when": 1779800000000,
       "tag": "0030_skill_slug",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1779900000000,
+      "tag": "0031_consumed_jtis",
+      "breakpoints": true
     }
   ]
 }

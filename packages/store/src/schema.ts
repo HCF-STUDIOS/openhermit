@@ -418,3 +418,11 @@ export const scheduleRuns = pgTable('schedule_runs', {
 }, (table) => [
   index('idx_schedule_runs_schedule').on(table.agentId, table.scheduleId, table.startedAt),
 ]);
+
+export const consumedJtis = pgTable('consumed_jtis', {
+  jti: text('jti').primaryKey(),
+  expiresAt: integer('expires_at').notNull(),
+  consumedAt: text('consumed_at').notNull(),
+}, (table) => [
+  index('consumed_jtis_expires_at_idx').on(table.expiresAt),
+]);

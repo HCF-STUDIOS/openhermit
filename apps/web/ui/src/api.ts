@@ -361,6 +361,43 @@ export const joinAgent = async (agentId: string, accessToken?: string): Promise<
   return res.json() as Promise<AgentMembership>;
 };
 
+/**
+ * Redeem a single-use `purpose: 'exchange'` token (carried in the URL
+ * fragment of a `/connect#token=…` deep link) for a normal session JWT.
+ *
+ * The exchange token IS the credential — no device key is involved, and
+ * a successful redemption seeds `openhermit_jwt` with the resulting JWT
+ * so the rest of the app behaves identically to a device-key-derived
+ * session. The token is single-use; a second attempt is rejected.
+ */
+export const redeemExchangeToken = async (
+  gatewayUrl: string,
+  exchangeJwt: string,
+): Promise<{ token: string; expiresAt: number; userId?: string; displayName?: string }> => {
+  const base = gatewayUrl.replace(/\/+$/, '');
+  const response = await fetch(`${base}/api/auth/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: exchangeJwt }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      (err as { error?: { message?: string } }).error?.message
+      || `Exchange failed (${response.status})`,
+    );
+  }
+  const result = await response.json() as {
+    token: string;
+    expiresAt: number;
+    userId?: string;
+    displayName?: string;
+  };
+  saveJwt(result.token, result.expiresAt);
+  if (result.userId) userId = result.userId;
+  return result;
+};
+
 export const initJwt = (): void => { loadJwt(); };
 
 // ─── WebSocket RPC client ─────────────────────────────────────────────────

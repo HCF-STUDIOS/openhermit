@@ -660,6 +660,19 @@ export class GatewayClient {
     channel: string;
     channelUserId: string;
     displayName?: string;
+    /**
+     * `'session'` (default) returns a normal 24h JWT the caller can hand to
+     * the user as a long-lived credential. `'exchange'` returns a short-lived
+     * single-use JWT intended to be embedded in a `/connect#token=…` URL and
+     * immediately swapped for a session JWT via {@link exchangeConnectToken}.
+     */
+    purpose?: 'session' | 'exchange';
+    /**
+     * Override the token TTL. Capped at 600s for `'exchange'` and 86400s for
+     * `'session'` by the gateway. Defaults to 120s for `'exchange'` and the
+     * gateway's normal default for `'session'`.
+     */
+    ttlSeconds?: number;
     fetch?: FetchLike;
   }): Promise<{
     token: string;
@@ -667,6 +680,7 @@ export class GatewayClient {
     userId: string;
     isNewDevice: boolean;
     displayName?: string;
+    purpose: 'session' | 'exchange';
   }> {
     const fetchImpl = input.fetch ?? fetch;
     const url = joinUrl(input.baseUrl, '/api/admin/auth/issue-token');
@@ -675,6 +689,8 @@ export class GatewayClient {
       channelUserId: input.channelUserId,
     };
     if (input.displayName !== undefined) body.displayName = input.displayName;
+    if (input.purpose !== undefined) body.purpose = input.purpose;
+    if (input.ttlSeconds !== undefined) body.ttlSeconds = input.ttlSeconds;
 
     let response: Response;
     try {
@@ -716,6 +732,63 @@ export class GatewayClient {
       expiresAt: number;
       userId: string;
       isNewDevice: boolean;
+      displayName?: string;
+      purpose: 'session' | 'exchange';
+    };
+  }
+
+  /**
+   * Swap a single-use `purpose: 'exchange'` token for a normal 24h session
+   * JWT. Backs the web `/connect#token=…` deep-link flow: the exchange token
+   * is the credential (no admin token needed), but each token may only be
+   * redeemed once — a second attempt is rejected with 401.
+   */
+  static async exchangeConnectToken(input: {
+    baseUrl: string;
+    token: string;
+    fetch?: FetchLike;
+  }): Promise<{
+    token: string;
+    expiresAt: number;
+    userId: string | undefined;
+    displayName?: string;
+  }> {
+    const fetchImpl = input.fetch ?? fetch;
+    const url = joinUrl(input.baseUrl, '/api/auth/exchange');
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: input.token }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `exchangeConnectToken failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+    return (await response.json()) as {
+      token: string;
+      expiresAt: number;
+      userId: string | undefined;
       displayName?: string;
     };
   }
