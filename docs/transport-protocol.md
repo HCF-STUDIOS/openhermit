@@ -8,7 +8,7 @@ The gateway exposes agent execution under `/api/agents/{agentId}`. All agent rou
 |------|------------------|-----|
 | Admin bearer | `Authorization: Bearer $GATEWAY_ADMIN_TOKEN` | agent lifecycle, admin APIs, full agent route access |
 | User JWT | `POST /api/auth/token` | browser/web user auth (identifies a person, not an agent) |
-| Admin-minted user JWT | `POST /api/admin/auth/issue-token` | admin-only mint of a user JWT for an external identity (`channel`, `channelUserId`). `purpose: 'session'` (default) returns a normal 24h credential; `purpose: 'exchange'` returns a single-use short-lived token (≤600s) for the `/connect` SSO deep link. |
+| Admin-minted user JWT | `POST /api/admin/auth/issue-token` | admin-only mint of a user JWT for an external identity (`channel`, `channelUserId`). `purpose: 'session'` (default) returns a normal 24h credential; `purpose: 'exchange'` returns a single-use short-lived token (≤600s, default 120s) for the `/connect` SSO deep link. |
 | Connect SSO exchange | `POST /api/auth/exchange` | anonymous: swap an `exchange`-purpose JWT for a normal session JWT. Each `jti` is recorded on success so a replay is rejected with 401. Backs the web `/connect#token=…` deep link. |
 | Channel bearer | generated or configured channel token | built-in/external channel adapters scoped to an agent/channel namespace |
 

@@ -574,6 +574,7 @@ export const main = async (): Promise<void> => {
     await mcpServerStore?.close();
     await sessionStore?.close();
     await attachmentStore?.close();
+    await consumedJtiStore?.close();
 
     server.close(() => {
       logStartup('server closed');
