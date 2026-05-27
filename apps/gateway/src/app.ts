@@ -1751,6 +1751,51 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json(identities);
   });
 
+  /**
+   * Attach a `(channel, channelUserId)` identity to an existing user.
+   *
+   * Mirrors the implicit linkIdentity that happens during device-key /
+   * admin-issued token exchange, but lets a back-office caller stitch
+   * identities together explicitly — e.g. when the same human has two
+   * channel logins (Telegram + the web SPA) and you want both pointing
+   * at one canonical user.
+   *
+   * Note: if the `(channel, channelUserId)` pair is already linked to a
+   * different user, `linkIdentity` reassigns it (and prunes the now-orphan
+   * source user). That's the desired merge behavior, but it IS destructive
+   * — only call this from a trusted back-office context.
+   */
+  app.post('/api/admin/users/:userId/identities', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    if (!userStore) {
+      throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+    }
+    const userId = c.req.param('userId');
+    const body = await c.req.json().catch(() => ({})) as {
+      channel?: unknown;
+      channelUserId?: unknown;
+    };
+    if (typeof body.channel !== 'string' || body.channel.length === 0) {
+      throw new ValidationError('channel is required.');
+    }
+    if (body.channel === 'admin') {
+      throw new ValidationError('channel "admin" is reserved.');
+    }
+    if (typeof body.channelUserId !== 'string' || body.channelUserId.length === 0) {
+      throw new ValidationError('channelUserId is required.');
+    }
+    if (!(await userStore.get(userId))) {
+      throw new NotFoundError(`User ${userId} not found.`);
+    }
+    await userStore.linkIdentity({
+      userId,
+      channel: body.channel,
+      channelUserId: body.channelUserId,
+      createdAt: new Date().toISOString(),
+    });
+    return c.json({ ok: true });
+  });
+
   app.get('/api/admin/users/:userId/agents', async (c) => {
     requireAdmin(c.req.header('authorization'));
     if (!userStore) return c.json([]);
