@@ -42,6 +42,7 @@ expects a user JWT.
   - `purpose: 'session'` (default) returns a normal 24h credential.
   - `purpose: 'exchange'` returns a single-use short-lived token (≤600s, default 120s) intended for the web `/connect#token=…` deep-link flow.
 - `GatewayClient.exchangeConnectToken({ baseUrl, token })` — swap an `exchange` token for a 24h session JWT. The token is the credential (no admin token needed) and is rejected on a second redemption. Backs the `/connect` SSO flow described below.
+- `GatewayClient.linkUserIdentity({ baseUrl, adminToken, userId, channel, channelUserId })` — admin-only: attach a `(channel, channelUserId)` pair to an existing user. Stitches identities together — e.g. when the same human has logged in via two channels and you want both pointing at one canonical user record. If the pair is already linked to a different user, the gateway reassigns it and prunes the orphan source user.
 
 #### SSO deep link: `/connect#token=…`
 

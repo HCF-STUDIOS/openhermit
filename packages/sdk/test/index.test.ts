@@ -138,6 +138,66 @@ test('GatewayClient.exchangeConnectToken posts the token anonymously and parses 
   assert.equal(result.displayName, 'Ada');
 });
 
+test('GatewayClient.linkUserIdentity posts to the admin route with the correct body', async () => {
+  const calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
+  const result = await GatewayClient.linkUserIdentity({
+    baseUrl: 'https://gateway.example',
+    adminToken: 'admin-secret',
+    userId: 'usr-abc',
+    channel: 'telegram',
+    channelUserId: '12345',
+    fetch: async (input: any, init: any) => {
+      calls.push({
+        url: String(input),
+        body: JSON.parse(init.body),
+        headers: init.headers,
+      });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.url, 'https://gateway.example/api/admin/users/usr-abc/identities');
+  assert.equal(calls[0]!.headers.authorization, 'Bearer admin-secret');
+  assert.deepEqual(calls[0]!.body, { channel: 'telegram', channelUserId: '12345' });
+  assert.deepEqual(result, { ok: true });
+});
+
+test('GatewayClient.linkUserIdentity URL-encodes the userId path segment', async () => {
+  const calls: Array<{ url: string }> = [];
+  await GatewayClient.linkUserIdentity({
+    baseUrl: 'https://gateway.example',
+    adminToken: 'admin-secret',
+    userId: 'usr/with spaces',
+    channel: 'telegram',
+    channelUserId: '12345',
+    fetch: async (input: any) => {
+      calls.push({ url: String(input) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  });
+  assert.equal(
+    calls[0]!.url,
+    'https://gateway.example/api/admin/users/usr%2Fwith%20spaces/identities',
+  );
+});
+
+test('GatewayClient.linkUserIdentity surfaces a 404 from the gateway', async () => {
+  await assert.rejects(
+    () => GatewayClient.linkUserIdentity({
+      baseUrl: 'https://gateway.example',
+      adminToken: 'admin-secret',
+      userId: 'usr-missing',
+      channel: 'telegram',
+      channelUserId: '12345',
+      fetch: async () => new Response('User usr-missing not found.', { status: 404 }),
+    }),
+    /linkUserIdentity failed \(404\): User usr-missing not found\./,
+  );
+});
+
 test('GatewayClient.exchangeConnectToken throws with the gateway error body on 401', async () => {
   await assert.rejects(
     () => GatewayClient.exchangeConnectToken({

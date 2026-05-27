@@ -793,6 +793,68 @@ export class GatewayClient {
     };
   }
 
+  /**
+   * Attach a `(channel, channelUserId)` identity to an existing gateway
+   * user. The canonical use is back-office stitching — e.g. when the same
+   * human has logged in via two channels (Telegram + the web SPA) and you
+   * want both rows pointing at one user record.
+   *
+   * Admin-only. If the `(channel, channelUserId)` pair is already linked
+   * to a different user, the gateway reassigns it to `userId` and prunes
+   * the orphan source user. Treat this as a merge operation.
+   */
+  static async linkUserIdentity(input: {
+    baseUrl: string;
+    adminToken: string;
+    userId: string;
+    channel: string;
+    channelUserId: string;
+    fetch?: FetchLike;
+  }): Promise<{ ok: true }> {
+    const fetchImpl = input.fetch ?? fetch;
+    const url = joinUrl(
+      input.baseUrl,
+      `/api/admin/users/${encodeURIComponent(input.userId)}/identities`,
+    );
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${input.adminToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          channel: input.channel,
+          channelUserId: input.channelUserId,
+        }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `linkUserIdentity failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+    return (await response.json()) as { ok: true };
+  }
+
   async listAgents(): Promise<AgentInfo[]> {
     return this.getJson(gatewayRoutes.agents);
   }
