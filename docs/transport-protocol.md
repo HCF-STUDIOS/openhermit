@@ -8,9 +8,21 @@ The gateway exposes agent execution under `/api/agents/{agentId}`. All agent rou
 |------|------------------|-----|
 | Admin bearer | `Authorization: Bearer $GATEWAY_ADMIN_TOKEN` | agent lifecycle, admin APIs, full agent route access |
 | User JWT | `POST /api/auth/token` | browser/web user auth (identifies a person, not an agent) |
+| Admin-minted user JWT | `POST /api/admin/auth/issue-token` | admin-only mint of a user JWT for an external identity (`channel`, `channelUserId`). `purpose: 'session'` (default) returns a normal 24h credential; `purpose: 'exchange'` returns a single-use short-lived token (≤600s) for the `/connect` SSO deep link. |
+| Connect SSO exchange | `POST /api/auth/exchange` | anonymous: swap an `exchange`-purpose JWT for a normal session JWT. Each `jti` is recorded on success so a replay is rejected with 401. Backs the web `/connect#token=…` deep link. |
 | Channel bearer | generated or configured channel token | built-in/external channel adapters scoped to an agent/channel namespace |
 
 `protected` agents require `agent_token` during device-token exchange (members self-join). `private` agents reject any sender without an explicit membership row at session-open time.
+
+**JWT claims.** Every signed user JWT carries:
+
+- `sub` — `${channel}:${channelUserId}` for the resolved identity
+- `channel`, `channelUserId` — the same fields split out for convenience
+- `purpose` — `'session'` (default, all API access) or `'exchange'` (only `POST /api/auth/exchange`)
+- `issuer` — audit-only: `'device-key'` (from `POST /api/auth/token`) or `'admin-issued'` (from `POST /api/admin/auth/issue-token`)
+- `jti` — unique token id; recorded by the exchange endpoint to enforce single-use
+
+Legacy tokens minted before this claim set was added are treated as `purpose: 'session'`.
 
 ## Agent Routes
 

@@ -38,7 +38,31 @@ expects a user JWT.
 ### `GatewayClient` — control plane
 
 **Auth / identity**
-- `GatewayClient.issueUserToken({ baseUrl, adminToken, channel, channelUserId, displayName? })` — admin-only mint of a user JWT for a `(channel, channelUserId)` identity. Use to bridge users authenticated by an external system into OpenHermit without device-key exchange.
+- `GatewayClient.issueUserToken({ baseUrl, adminToken, channel, channelUserId, displayName?, purpose?, ttlSeconds? })` — admin-only mint of a user JWT for a `(channel, channelUserId)` identity. Use to bridge users authenticated by an external system into OpenHermit without device-key exchange.
+  - `purpose: 'session'` (default) returns a normal 24h credential.
+  - `purpose: 'exchange'` returns a single-use short-lived token (≤600s, default 120s) intended for the web `/connect#token=…` deep-link flow.
+- `GatewayClient.exchangeConnectToken({ baseUrl, token })` — swap an `exchange` token for a 24h session JWT. The token is the credential (no admin token needed) and is rejected on a second redemption. Backs the `/connect` SSO flow described below.
+
+#### SSO deep link: `/connect#token=…`
+
+For platforms that already authenticate their own users, the simplest way to drop them into the OpenHermit web UI is a short-lived exchange JWT:
+
+1. Server-side (on the trusted platform), mint an exchange token:
+   ```ts
+   const { token } = await GatewayClient.issueUserToken({
+     baseUrl: 'https://hermit.example.com',
+     adminToken: process.env.OPENHERMIT_ADMIN_TOKEN!,
+     channel: 'my-platform',
+     channelUserId: user.id,
+     displayName: user.name,
+     purpose: 'exchange',
+   });
+   const url = `https://hermit.example.com/connect?agent_id=${agentId}#token=${token}`;
+   ```
+2. Redirect the user to `url`. The web app reads the token from the URL fragment (so it never hits the server log or `referer`), strips it, swaps it via `POST /api/auth/exchange`, and persists the resulting session JWT in `localStorage`.
+3. The exchange token is single-use — a replay (e.g. someone scraping the URL out of browser history) is rejected with 401.
+
+The browser's existing device-key identity, if any, is left untouched so the same browser can hold both an SSO-issued identity and a device-key identity.
 
 **Catalog**
 - `listProviders(): ProviderCatalogEntry[]` — provider/model snapshot from pi-ai.
