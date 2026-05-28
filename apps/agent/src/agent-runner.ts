@@ -1,5 +1,6 @@
 import { userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { posix as posixPath } from 'node:path';
 
 import {
   Agent,
@@ -95,6 +96,10 @@ import type { ScheduleRecord } from '@openhermit/store';
 import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
 import { createSkillManagementToolset } from './tools/skills.js';
+import {
+  DEFAULT_ATTACHMENT_MAX_BYTES,
+  persistAttachmentFromSandbox,
+} from './attachments/index.js';
 import {
   agentErrorsTotal,
   agentMessagesTotal,
@@ -217,9 +222,20 @@ export class AgentRunner implements SessionRuntime {
     if (shouldTearDown) {
       const session = this.sessions.get(sessionId);
       if (session) {
+        // postMessage returns as soon as the turn is queued; wait for the
+        // LLM call and any side effects to actually finish before tearing
+        // the session down. Without this the central scheduler treats a
+        // firing as "done" the moment it's queued, so a burst of missed
+        // cron slots all run in parallel.
+        await session.queue;
+        await session.sideEffects;
+        await session.backgroundTasks;
         session.status = 'inactive';
         this.clearIdleSummaryTimer(session);
-        this.persistSessionIndex(session);
+        // Await so the inactive row is committed before we drop the
+        // in-memory session. Otherwise a later-resolving 'idle' persist
+        // from the same turn can overwrite us in the DB.
+        await this.persistSessionIndex(session);
         this.sessions.delete(sessionId);
       } else {
         await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
@@ -388,6 +404,84 @@ export class AgentRunner implements SessionRuntime {
     const sandboxPath = `${backend.agentHome}/.openhermit/attachments/${input.sessionId}/${input.attachmentId}/${input.safeName}`;
     await backend.files.write(sandboxPath, input.bytes, 'overwrite');
     return { sandboxId: backend.id, sandboxPath };
+  }
+
+  /**
+   * Read a file out of the running session's sandbox. Used by the
+   * `attachment_upload` tool to bridge sandbox-generated files into the
+   * durable attachment store. Resolves relative paths against `agentHome`.
+   * `maxBytes` is checked against the on-disk stat before reading so we never
+   * pull a 1 GB blob into memory just to reject it.
+   */
+  async readSandboxFile(input: {
+    sessionId: string;
+    path: string;
+    maxBytes: number;
+  }): Promise<{ bytes: Buffer; resolvedPath: string }> {
+    const config = await this.options.security.readConfig();
+    const manager = await this.ensureExecBackendManager(config);
+    const backend = manager.getDefault();
+    await backend.ensure();
+    // Sandbox is POSIX; resolve relative paths against agentHome and refuse
+    // anything that escapes the root (absolute paths outside the home, `..`
+    // traversal, etc.). Without this an agent could read /etc/passwd via the
+    // upload tool.
+    const root = posixPath.resolve(backend.agentHome);
+    const candidate = input.path.startsWith('/')
+      ? posixPath.resolve(input.path)
+      : posixPath.resolve(root, input.path);
+    if (candidate !== root && !candidate.startsWith(root + '/')) {
+      throw new Error(
+        `path escapes sandbox root: ${input.path}`,
+      );
+    }
+    const resolvedPath = candidate;
+    const stat = await backend.files.stat(resolvedPath);
+    if (!stat) {
+      throw new Error(`file not found in sandbox: ${input.path}`);
+    }
+    if (stat.type !== 'file') {
+      throw new Error(`path is not a file: ${input.path}`);
+    }
+    if (stat.size > input.maxBytes) {
+      throw new Error(
+        `file size ${stat.size} exceeds limit ${input.maxBytes}`,
+      );
+    }
+    const { data } = await backend.files.read(resolvedPath);
+    return { bytes: data, resolvedPath };
+  }
+
+  /**
+   * Promote a sandbox-generated file into the durable attachment store. Used
+   * by the `attachment_upload` tool; mirrors the inbound POST /attachments
+   * pipeline so the resulting record is indistinguishable from a real user
+   * upload. Returns the id-shaped `SessionAttachment` with `id`, `sandboxPath`
+   * and metadata ready to feed into `attachment_send`.
+   */
+  async uploadSandboxAttachment(input: {
+    sessionId: string;
+    uploaderUserId: string | null;
+    path: string;
+    name?: string;
+  }): Promise<SessionAttachment> {
+    if (!this.options.attachmentStore || !this.options.attachmentStorage) {
+      throw new ValidationError(
+        'attachment_upload is unavailable: attachment storage is not configured.',
+      );
+    }
+    return persistAttachmentFromSandbox({
+      agentId: this.scope.agentId,
+      sessionId: input.sessionId,
+      uploaderUserId: input.uploaderUserId,
+      sandboxRelativePath: input.path,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      maxBytes: DEFAULT_ATTACHMENT_MAX_BYTES,
+      attachmentStore: this.options.attachmentStore,
+      attachmentStorage: this.options.attachmentStorage,
+      runtime: this,
+      logger: (msg) => this.logRuntime(msg),
+    });
   }
 
   async stopWorkspaceContainerIfSessionPolicy(): Promise<void> {
@@ -823,7 +917,7 @@ export class AgentRunner implements SessionRuntime {
     // so it no longer shows up in default session listings.
     if (reason === 'new_session') {
       session.status = 'inactive';
-      this.persistSessionIndex(session);
+      await this.persistSessionIndex(session);
     }
 
     return result;
@@ -1229,7 +1323,14 @@ export class AgentRunner implements SessionRuntime {
       return { appended: false, deduped: true };
     }
 
-    session.updatedAt = new Date().toISOString();
+    // Mirror postMessage: count the appended message toward the session's
+    // activity. Use the message's occurredAt (so real-time backfill from
+    // a channel adapter advances `lastActivityAt`) but never regress the
+    // timestamp when older messages are appended out of order.
+    session.messageCount += 1;
+    if (ts > session.updatedAt) {
+      session.updatedAt = ts;
+    }
     await this.persistSessionIndex(session);
 
     if (role === 'user') {
@@ -1919,6 +2020,17 @@ export class AgentRunner implements SessionRuntime {
         ...(this.options.attachmentStore ? { attachmentStore: this.options.attachmentStore } : {}),
         ...(this.options.attachmentStorage ? { attachmentStorage: this.options.attachmentStorage } : {}),
         materializeAttachment: (mat) => this.materializeAttachmentToSandbox(mat),
+        ...((this.options.attachmentStore && this.options.attachmentStorage)
+          ? {
+              uploadSandboxAttachment: (req: { path: string; name?: string }) =>
+                this.uploadSandboxAttachment({
+                  sessionId: input.contextSessionId,
+                  uploaderUserId: input.userId ?? null,
+                  path: req.path,
+                  ...(req.name !== undefined ? { name: req.name } : {}),
+                }),
+            }
+          : {}),
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),
@@ -1971,7 +2083,9 @@ export class AgentRunner implements SessionRuntime {
         const resyncSkills = async (): Promise<void> => {
           const enabled = await skillStore.listEnabled(agentId);
           await this.syncSkills(
-            enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+            // SyncSkillEntry.id is the folder basename — must be the slug,
+            // not the (possibly encoded) storage id.
+            enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
           );
         };
         toolsets.push(wrapToolset(createSkillManagementToolset(skillStore, agentId, resyncSkills)));
@@ -2806,7 +2920,7 @@ export class AgentRunner implements SessionRuntime {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
           const ts = new Date().toISOString();
           session.updatedAt = ts;
-          void this.persistSessionIndex(session);
+          void this.queueSideEffect(session, () => this.persistSessionIndex(session));
 
           agentErrorsTotal.inc({ agent_id: this.scope.agentId, source: 'model' });
 
@@ -2871,7 +2985,7 @@ export class AgentRunner implements SessionRuntime {
         session.lastMessagePreview = effectiveText;
         const ts = new Date().toISOString();
         session.updatedAt = ts;
-        void this.persistSessionIndex(session);
+        void this.queueSideEffect(session, () => this.persistSessionIndex(session));
 
         if (assistantMessage.usage) {
           const u = assistantMessage.usage;
@@ -2969,7 +3083,10 @@ export class AgentRunner implements SessionRuntime {
           );
           delete session.turnStartMs;
         }
-        void this.persistSessionIndex(session);
+        // Queue rather than fire-and-forget so teardown's
+        // `await session.sideEffects` waits for this row to be written
+        // before flipping status to 'inactive'.
+        void this.queueSideEffect(session, () => this.persistSessionIndex(session));
         this.scheduleIdleSummary(session);
         void this.queueBackgroundTask(session, async () => {
           const config = await this.options.security.readConfig();

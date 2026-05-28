@@ -15,6 +15,8 @@ export const syncSkillMounts = async (
 ): Promise<void> => {
   const enabled = await skillStore.listEnabled(agentId);
   await runner.syncSkills(
-    enabled.map((s) => ({ id: s.id, sourcePath: s.path, source: s.source })),
+    // SyncSkillEntry.id is the folder basename — use slug (not the encoded
+    // storage id) so user-skill folders are named like the user-visible id.
+    enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
   );
 };

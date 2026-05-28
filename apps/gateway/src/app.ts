@@ -63,7 +63,7 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
-import { resolveInboundAttachments } from './attachment-url-passthrough.js';
+import { resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -74,6 +74,7 @@ import {
   signJwt,
   tokensMatch,
   verifyAdminToken,
+  verifyJwt,
 } from './auth.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -238,6 +239,7 @@ export interface GatewayAppOptions {
   attachmentMaxBytes?: number | undefined;
   metaStore?: import('@openhermit/store').DbMetaStore | undefined;
   sessionStore?: import('@openhermit/store').DbSessionStore | undefined;
+  consumedJtiStore?: import('@openhermit/store').DbConsumedJtiStore | undefined;
   /** Named sandbox presets, keyed by preset name. */
   sandboxPresets?: Record<string, SandboxPreset> | undefined;
   /** Default preset to use when an agent is created without an explicit `sandbox` field. Null disables auto-provisioning. */
@@ -278,7 +280,7 @@ const resolveRunner = async (
 // ─── App factory ──────────────────────────────────────────────────────────────
 
 export const createGatewayApp = (options: GatewayAppOptions): Hono => {
-  const { instances, agentStore, adminToken, userStore, configStore } = options;
+  const { instances, agentStore, adminToken, userStore, configStore, consumedJtiStore } = options;
   const log = options.logger ?? ((msg: string) => console.log(msg));
   const app = new Hono();
 
@@ -411,6 +413,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const { token, expiresAt } = await signJwt(authOptions.jwt, {
         channel: authResult.channel,
         channelUserId: authResult.channelUserId,
+        issuer: 'device-key',
       });
 
       return c.json({
@@ -489,6 +492,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         channel?: string;
         channelUserId?: string;
         displayName?: string;
+        purpose?: string;
+        ttlSeconds?: number;
       };
       if (!body.channel || typeof body.channel !== 'string') {
         throw new ValidationError('channel is required.');
@@ -503,6 +508,28 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
       if (body.displayName !== undefined && typeof body.displayName !== 'string') {
         throw new ValidationError('displayName must be a string if provided.');
+      }
+      const purpose: 'session' | 'exchange' =
+        body.purpose === 'exchange' ? 'exchange' : 'session';
+      // `exchange` tokens are designed to be carried in URL fragments and
+      // immediately swapped via /api/auth/exchange. They must be short-lived
+      // so a leaked URL is only briefly dangerous; an hour-long exchange
+      // token would defeat the point. A `session` mint keeps the historical
+      // 24h default.
+      const maxTtl = purpose === 'exchange' ? 600 : 86400;
+      let ttlSeconds: number | undefined;
+      if (body.ttlSeconds !== undefined) {
+        if (
+          typeof body.ttlSeconds !== 'number'
+          || !Number.isInteger(body.ttlSeconds)
+          || body.ttlSeconds < 1
+          || body.ttlSeconds > maxTtl
+        ) {
+          throw new ValidationError(`ttlSeconds must be an integer between 1 and ${maxTtl}.`);
+        }
+        ttlSeconds = body.ttlSeconds;
+      } else if (purpose === 'exchange') {
+        ttlSeconds = 120;
       }
 
       let userId = await userStore.resolve(body.channel, body.channelUserId);
@@ -534,6 +561,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const { token, expiresAt } = await signJwt(authOptions.jwt, {
         channel: body.channel,
         channelUserId: body.channelUserId,
+        issuer: 'admin-issued',
+        purpose,
+        ...(ttlSeconds ? { expiry: `${ttlSeconds}s` } : {}),
       });
 
       return c.json({
@@ -542,6 +572,64 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         userId,
         isNewDevice: created,
         ...(body.displayName ? { displayName: body.displayName } : {}),
+        purpose,
+      });
+    });
+
+    /**
+     * Swap a single-use `purpose: 'exchange'` token for a normal session JWT.
+     *
+     * Designed for the web `/connect#token=…` deep-link flow: an external
+     * platform mints a short-lived exchange token via the admin-issued path,
+     * embeds it in the URL fragment, and the web app calls this endpoint
+     * (anonymous — the exchange token IS the credential) to swap it for a
+     * regular 24h session JWT. The exchange token's `jti` is recorded on
+     * success so a second attempt to redeem it is rejected (single-use).
+     *
+     * Body: { token: <exchange-jwt> }
+     * Returns: same shape as /api/admin/auth/issue-token's session response.
+     */
+    app.post('/api/auth/exchange', async (c) => {
+      if (!userStore) {
+        throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+      }
+      if (!consumedJtiStore) {
+        throw new OpenHermitError('Token exchange is not configured.', 'not_configured', 500);
+      }
+      const body = await c.req.json().catch(() => ({})) as { token?: string };
+      if (!body.token || typeof body.token !== 'string') {
+        throw new ValidationError('token is required.');
+      }
+      const payload = await verifyJwt(authOptions.jwt, body.token, {
+        allowPurpose: 'exchange',
+      });
+      if (!payload || !payload.jti || typeof payload.exp !== 'number') {
+        throw new UnauthorizedError('Exchange token is invalid or expired.');
+      }
+      const consumed = await consumedJtiStore.tryConsume(
+        payload.jti,
+        payload.exp,
+        new Date().toISOString(),
+      );
+      if (!consumed) {
+        throw new UnauthorizedError('Exchange token has already been used.');
+      }
+
+      const userId = await userStore.resolve(payload.channel, payload.channelUserId);
+      const user = userId ? await userStore.get(userId) : undefined;
+
+      const { token: sessionToken, expiresAt } = await signJwt(authOptions.jwt, {
+        channel: payload.channel,
+        channelUserId: payload.channelUserId,
+        issuer: 'admin-issued',
+        purpose: 'session',
+      });
+
+      return c.json({
+        token: sessionToken,
+        expiresAt,
+        userId,
+        ...(user?.name ? { displayName: user.name } : {}),
       });
     });
 
@@ -937,10 +1025,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // built-in token-based ones).
     if (options.agentChannelStore) {
       for (const key of options.manifestRegistry.keys()) {
+        // Seed config from the manifest so secret placeholders
+        // (`${{TOKEN}}`) are already in place when the owner first enables
+        // the channel — no need to know the field names by heart.
+        const defaults = options.manifestRegistry.get(key)?.defaultConfig;
         await options.agentChannelStore.createBuiltin({
           agentId: record.agentId,
           channelType: key,
           enabled: false,
+          ...(defaults ? { config: { ...defaults } } : {}),
         });
       }
     }
@@ -1658,6 +1751,51 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json(identities);
   });
 
+  /**
+   * Attach a `(channel, channelUserId)` identity to an existing user.
+   *
+   * Mirrors the implicit linkIdentity that happens during device-key /
+   * admin-issued token exchange, but lets a back-office caller stitch
+   * identities together explicitly — e.g. when the same human has two
+   * channel logins (Telegram + the web SPA) and you want both pointing
+   * at one canonical user.
+   *
+   * Note: if the `(channel, channelUserId)` pair is already linked to a
+   * different user, `linkIdentity` reassigns it (and prunes the now-orphan
+   * source user). That's the desired merge behavior, but it IS destructive
+   * — only call this from a trusted back-office context.
+   */
+  app.post('/api/admin/users/:userId/identities', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    if (!userStore) {
+      throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+    }
+    const userId = c.req.param('userId');
+    const body = await c.req.json().catch(() => ({})) as {
+      channel?: unknown;
+      channelUserId?: unknown;
+    };
+    if (typeof body.channel !== 'string' || body.channel.length === 0) {
+      throw new ValidationError('channel is required.');
+    }
+    if (body.channel === 'admin') {
+      throw new ValidationError('channel "admin" is reserved.');
+    }
+    if (typeof body.channelUserId !== 'string' || body.channelUserId.length === 0) {
+      throw new ValidationError('channelUserId is required.');
+    }
+    if (!(await userStore.get(userId))) {
+      throw new NotFoundError(`User ${userId} not found.`);
+    }
+    await userStore.linkIdentity({
+      userId,
+      channel: body.channel,
+      channelUserId: body.channelUserId,
+      createdAt: new Date().toISOString(),
+    });
+    return c.json({ ok: true });
+  });
+
   app.get('/api/admin/users/:userId/agents', async (c) => {
     requireAdmin(c.req.header('authorization'));
     if (!userStore) return c.json([]);
@@ -2053,6 +2191,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const now = new Date().toISOString();
     await store.upsert({
       id: body.id,
+      // System skills: slug equals id (storage id == user-visible id).
+      slug: body.id,
       name: body.name,
       description: body.description,
       path: body.path,
@@ -2129,8 +2269,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // No workspace info available — return DB-enabled skills only.
     const dbSkills = await store.listEnabled(agentId);
     return c.json(dbSkills.map((s) => ({
-      id: s.id, name: s.name, description: s.description,
-      path: `/skills/${s.id}`, source: 'system' as const,
+      id: s.slug, name: s.name, description: s.description,
+      path: `/skills/${s.slug}`, source: 'system' as const,
     })));
   });
 
@@ -2385,8 +2525,19 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     const result = rows.map((row) => {
       const def = row.kind === 'builtin' ? BUILTIN_CHANNEL_DEFS[row.channelType] : undefined;
-      const secretsSet = def
-        ? def.secretKeys.every((sk) => secretNames.includes(sk.key))
+      // Plugins declare their own form schema on the manifest; if the
+      // channel isn't a hardcoded gateway built-in, fall back to whatever
+      // the registered manifest exposes.
+      const manifest = !def ? options.manifestRegistry.get(row.channelType) : undefined;
+      const manifestSecretKeys = manifest?.secretKeys;
+      const manifestConfigFields = manifest?.configFields;
+      const manifestDefaultConfig = manifest?.defaultConfig;
+      const manifestLabel = manifest?.displayName;
+      const effectiveSecretKeys = def?.secretKeys ?? manifestSecretKeys;
+      const secretsSet = effectiveSecretKeys
+        ? effectiveSecretKeys
+            .filter((sk) => !('optional' in sk && sk.optional === true))
+            .every((sk) => secretNames.includes(sk.key))
         : true;
       const runtime = runtimeStatuses.find((s) => s.name === row.channelType);
       // Prefer the live in-memory status (always current within this
@@ -2401,7 +2552,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         : row.lastError ?? undefined;
       return {
         ...row,
-        ...(def ? { label: row.label ?? def.label, secretKeys: def.secretKeys } : {}),
+        ...(def
+          ? { label: row.label ?? def.label, secretKeys: def.secretKeys }
+          : manifest
+            ? {
+                label: row.label ?? manifestLabel ?? row.channelType,
+                ...(manifestSecretKeys ? { secretKeys: manifestSecretKeys } : {}),
+                ...(manifestConfigFields ? { configFields: manifestConfigFields } : {}),
+                ...(manifestDefaultConfig ? { defaultConfig: manifestDefaultConfig } : {}),
+              }
+            : {}),
         secretsSet,
         runtimeStatus: status,
         ...(error ? { error } : {}),
@@ -2437,13 +2597,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const out = options.manifestRegistry.all().map((m) => {
       const origin = options.manifestRegistry.originOf(m.key) ?? 'external';
       const def = BUILTIN_CHANNEL_DEFS[m.key];
+      const secretKeys = def?.secretKeys ?? m.secretKeys;
+      const defaultConfig = def?.defaultConfig ?? m.defaultConfig;
       return {
         key: m.key,
         namespace: m.namespace,
         displayName: m.displayName,
         origin,
         supportsSetup: !!m.setup,
-        ...(def ? { secretKeys: def.secretKeys, defaultConfig: def.defaultConfig } : {}),
+        ...(secretKeys ? { secretKeys } : {}),
+        ...(m.configFields ? { configFields: m.configFields } : {}),
+        ...(defaultConfig ? { defaultConfig } : {}),
       };
     });
     return c.json(out);
@@ -2493,11 +2657,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
           `A channel of type "${channelType}" already exists on this agent.`,
         );
       }
+      const defaults = manifest.defaultConfig;
       const created = await store.createBuiltin({
         agentId,
         channelType,
         ...(body.label ? { label: body.label } : {}),
-        ...(body.config ? { config: body.config } : {}),
+        ...(body.config
+          ? { config: body.config }
+          : defaults
+            ? { config: { ...defaults } }
+            : {}),
         ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       });
 
@@ -2570,6 +2739,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     // For builtin channels, when first enabling we apply the default
     // config skeleton so the user doesn't have to know the field names.
+    // Prefer the hardcoded gateway table (telegram/discord/slack) for
+    // continuity, then fall back to the manifest — covers any channel
+    // plugin (debox, wechat, future externals) that declares its own
+    // `defaultConfig` with `${{SECRET}}` placeholders.
     let effectiveConfig: Record<string, unknown> | undefined = body.config;
     if (
       existing.kind === 'builtin'
@@ -2578,7 +2751,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       && !body.config
     ) {
       const def = BUILTIN_CHANNEL_DEFS[existing.channelType];
-      if (def) effectiveConfig = { ...def.defaultConfig };
+      const manifestDefaults = options.manifestRegistry.get(existing.channelType)?.defaultConfig;
+      const fallback = def?.defaultConfig ?? manifestDefaults;
+      if (fallback) effectiveConfig = { ...fallback };
     }
 
     const updated = await store.update(channelId, {
@@ -3238,6 +3413,88 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!row) throw new NotFoundError(`Sandbox not found: ${alias}`);
     await store.delete(row.id);
     return c.json({ ok: true });
+  });
+
+  // --- voice: STT / TTS pass-through ---
+  //
+  // Channel adapters call these to transcribe inbound audio and
+  // synthesize outbound text. Auth is the same scope as session routes
+  // (channel token or user JWT), so a Telegram bridge can submit voice
+  // from a chat-scoped token without needing the agent's secrets.
+
+  app.post(gatewayRoutes.agentVoiceSttPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    requireAuth(c, agentId);
+    const body = await c.req.json().catch(() => null) as
+      | { bytes?: string; mimeType?: string; languageHint?: string }
+      | null;
+    if (!body || typeof body.mimeType !== 'string') {
+      throw new ValidationError('Body must be { bytes: base64, mimeType, languageHint? }.');
+    }
+    if (typeof body.bytes !== 'string' || body.bytes.length === 0) {
+      throw new ValidationError('bytes (base64) is required.');
+    }
+
+    const runner = await resolveRunner(instances, agentId);
+    const { buildVoiceForAgent } = await import('@openhermit/agent/voice');
+    const voice = await buildVoiceForAgent(runner.security);
+    if (!voice.stt) {
+      throw new ValidationError('voice.stt is not configured for this agent.');
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(Buffer.from(body.bytes, 'base64'));
+    } catch {
+      throw new ValidationError('bytes must be valid base64.');
+    }
+
+    const result = await voice.stt.transcribe({
+      bytes,
+      mimeType: body.mimeType,
+      ...(body.languageHint ? { languageHint: body.languageHint } : {}),
+    });
+    return c.json(result);
+  });
+
+  app.post(gatewayRoutes.agentVoiceTtsPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    requireAuth(c, agentId);
+    const body = await c.req.json().catch(() => null) as
+      | {
+          text?: string;
+          outputMimeType?: string;
+          voiceId?: string;
+          modelId?: string;
+          speed?: number;
+        }
+      | null;
+    if (!body || typeof body.text !== 'string' || body.text.length === 0) {
+      throw new ValidationError('text is required.');
+    }
+    if (typeof body.outputMimeType !== 'string' || body.outputMimeType.length === 0) {
+      throw new ValidationError('outputMimeType is required.');
+    }
+
+    const runner = await resolveRunner(instances, agentId);
+    const { buildVoiceForAgent } = await import('@openhermit/agent/voice');
+    const voice = await buildVoiceForAgent(runner.security);
+    if (!voice.tts) {
+      throw new ValidationError('voice.tts is not configured for this agent.');
+    }
+
+    const result = await voice.tts.synthesize({
+      text: body.text,
+      outputMimeType: body.outputMimeType,
+      ...(body.voiceId ? { voiceId: body.voiceId } : {}),
+      ...(body.modelId ? { modelId: body.modelId } : {}),
+      ...(typeof body.speed === 'number' ? { speed: body.speed } : {}),
+    });
+    return c.json({
+      bytes: Buffer.from(result.bytes).toString('base64'),
+      mimeType: result.mimeType,
+      provider: result.provider,
+    });
   });
 
   // --- admin UI: static files ---

@@ -1230,6 +1230,14 @@ h2 { font-size: 14px; font-weight: 600; }
 
 .manage__field-textarea { resize: vertical; font-family: var(--mono); font-size: 0.8rem; }
 
+.manage__field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
 .manage__radio-group {
   display: flex;
   gap: 16px;
@@ -1467,30 +1475,8 @@ h2 { font-size: 14px; font-weight: 600; }
 .secrets-row__delete { color: var(--danger); }
 .secrets-row__delete:hover { background: rgba(220, 38, 38, 0.08); }
 
-.secrets-panel__add {
-  display: grid;
-  grid-template-columns: minmax(160px, 220px) 1fr auto auto;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 8px;
-  border: 1px dashed var(--line);
-  border-radius: 6px;
-}
-
-.secrets-panel__add input {
-  font: inherit;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
-}
-.secrets-panel__add input:focus { outline: none; border-color: var(--accent); }
-
 @media (max-width: 720px) {
-  .secrets-row, .secrets-panel__add {
+  .secrets-row {
     grid-template-columns: 1fr;
   }
   .secrets-row__actions { justify-content: flex-end; flex-wrap: wrap; }

@@ -22,6 +22,7 @@ Not bundled in the CLI. Operators install them with `hermit channel install <pkg
 |----------|---------|------------|
 | Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard |
 | WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text-only v0 |
+| WhatsApp | `@openhermit/channel-whatsapp` | WhatsApp Web via Baileys; QR setup wizard — text-only v1 |
 
 External plugins follow the same manifest contract as bundled ones — there is no special-case loading path. Adding a new external plugin requires no gateway code change, only a config edit and a restart.
 
@@ -35,6 +36,7 @@ Adapters keep a current session per external conversation and recover it by list
 | Discord | `discord:` | `discord_channel_id` |
 | Slack | `slack:` | `slack_channel_id`, optional `slack_thread_ts` |
 | Signal | `signal:` (DMs by uuid or E.164) / `signal:group:` | `signal_source`, optional `signal_group_id` |
+| WhatsApp | `whatsapp:` / `whatsapp:group:` | `whatsapp_chat_jid`, optional `whatsapp_group_jid` |
 
 `/new` creates a new generated session ID after checkpointing the previous session with reason `new_session`.
 
@@ -177,3 +179,12 @@ WeChat (external plugin):
 - QR-link setup wizard exchanges scan+confirmation for `bot_token` + IDC-pinned `base_url`; both persist on the channel row
 - text-only v0 (no media, no group filtering)
 - `errcode === -14` from `getUpdates` is treated as long-poll cursor reset, **not** auth failure
+
+WhatsApp (external plugin):
+
+- WhatsApp Web / Linked Devices through Baileys; no Twilio or WhatsApp Cloud API path
+- QR setup wizard persists `auth_dir` on the channel row
+- text-only v1; captions are treated as text, media-only messages are ignored
+- DMs are open by default unless `allowed_senders` is configured
+- groups are default-deny unless `allowed_group_jids` is configured; allowed group turns trigger only on mention
+- status, broadcast, and own linked-account messages are ignored

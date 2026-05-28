@@ -264,6 +264,26 @@ export type OutboundEventBody =
       mode: 'realtime' | 'async';
     }
   | { type: 'user_message'; sessionId: string; text: string; name?: string }
+  | {
+      /**
+       * Outbound attachment emitted by the agent (e.g. `attachment_send`
+       * tool). Channels subscribe to this event to deliver the bytes to the
+       * end user — Telegram streams via Bot API, the web UI inlines via
+       * `<img>` / `<audio>` / `<video>` etc. Bytes are fetched lazily by
+       * the channel against `GET /api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId/bytes`.
+       */
+      type: 'attachment';
+      sessionId: string;
+      attachmentId: string;
+      mimeType: string;
+      /** Coarse rendering hint: image, audio, video, document (other/binary). */
+      kind: 'image' | 'audio' | 'video' | 'document';
+      name?: string;
+      size?: number;
+      sha256?: string;
+      caption?: string;
+      correlationId?: string;
+    }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
   | { type: 'error'; sessionId: string; message: string };
@@ -390,6 +410,77 @@ export interface ChannelHandle {
 /** Highest manifest version supported by this build of the protocol. */
 export const CHANNEL_MANIFEST_VERSION = 1 as const;
 
+/**
+ * A secret the channel needs at runtime. Surfaces in the admin UI as a
+ * masked input; the value is written to the agent's secret store under
+ * `key` and the persisted config references it via the `${{KEY}}`
+ * placeholder.
+ */
+export interface ChannelSecretKeySpec {
+  /** Env-var-style key, e.g. `DEBOX_API_KEY`. */
+  key: string;
+  /** Label rendered next to the input. */
+  label: string;
+  /** Placeholder shown in the empty input. */
+  placeholder?: string;
+  /**
+   * When `true`, the channel can start without this secret set — the
+   * gateway won't include it in the "secrets missing" check, and the
+   * plugin's `start()` is expected to treat the unresolved placeholder
+   * as unset (see Debox API Secret for the canonical example).
+   */
+  optional?: boolean;
+}
+
+/**
+ * A non-secret config field rendered by the admin UI. Plugins declare a
+ * `configFields` array; the UI renders a typed control per entry and
+ * merges the captured values into the persisted config (on top of
+ * `defaultConfig`).
+ *
+ * The `showWhen` predicate lets a field appear conditionally based on
+ * another field's value — e.g. a webhook-URL panel that only shows when
+ * `mode === 'webhook'`.
+ */
+export type ChannelConfigField =
+  | {
+      kind: 'select';
+      key: string;
+      label: string;
+      options: ReadonlyArray<{ value: string; label: string }>;
+      defaultValue?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'text';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'string_list';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      /**
+       * Read-only display of the webhook URL the gateway will dispatch
+       * to. The UI computes the URL from `window.location.origin` plus
+       * the channel's namespace; no `key` is needed because nothing is
+       * persisted.
+       */
+      kind: 'webhook_url';
+      label: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    };
+
 export interface ChannelManifest {
   /**
    * Manifest contract version. Always `1` in this revision. Plugins built
@@ -408,6 +499,24 @@ export interface ChannelManifest {
   namespace: string;
   /** Human-readable label for the admin UI. */
   displayName: string;
+  /**
+   * Secrets the admin UI should prompt for. Each entry yields a masked
+   * input; on save the value is written to the agent's secret store and
+   * referenced from `defaultConfig` via `${{KEY}}`.
+   */
+  secretKeys?: ReadonlyArray<ChannelSecretKeySpec>;
+  /**
+   * Non-secret structured fields to render in the admin edit form. When
+   * unset (or empty), the UI falls back to a raw JSON textarea for this
+   * channel.
+   */
+  configFields?: ReadonlyArray<ChannelConfigField>;
+  /**
+   * Skeleton config persisted when the user saves the structured form.
+   * The UI merges captured `configFields` values on top of this object,
+   * so put `${{SECRET}}` placeholders for secret references here.
+   */
+  defaultConfig?: Record<string, unknown>;
   /**
    * Optional config parser. When set, the loader calls this before
    * `start()` to validate the persisted config. The shape is left
@@ -702,8 +811,13 @@ export const agentLocalRoutes = {
   sessionAttachmentByIdPattern: '/sessions/:sessionId/attachments/:attachmentId',
   sessionAttachmentById: (sessionId: string, attachmentId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  sessionAttachmentBytesPattern: '/sessions/:sessionId/attachments/:attachmentId/bytes',
+  sessionAttachmentBytes: (sessionId: string, attachmentId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
+  voiceStt: '/voice/stt',
+  voiceTts: '/voice/tts',
   ws: '/ws',
 } as const;
 
@@ -783,6 +897,14 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
   agentSessionAttachmentByIdPattern:
     '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId',
+  agentSessionAttachmentBytes: (
+    agentId: string,
+    sessionId: string,
+    attachmentId: string,
+  ): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
+  agentSessionAttachmentBytesPattern:
+    '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId/bytes',
   agentManage: (agentId: string, action: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/manage/${encodeURIComponent(action)}`,
   agentManagePattern: '/api/agents/:agentId/manage/:action',
@@ -794,6 +916,14 @@ export const gatewayRoutes = {
   agentSandboxByAlias: (agentId: string, alias: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/sandboxes/${encodeURIComponent(alias)}`,
   agentSandboxByAliasPattern: '/api/agents/:agentId/sandboxes/:alias',
+
+  /** Voice STT/TTS pass-through endpoints; consumed by channel adapters. */
+  agentVoiceStt: (agentId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/voice/stt`,
+  agentVoiceSttPattern: '/api/agents/:agentId/voice/stt',
+  agentVoiceTts: (agentId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/voice/tts`,
+  agentVoiceTtsPattern: '/api/agents/:agentId/voice/tts',
 
   /** Gateway-level token exchange (device key → user JWT). */
   authToken: '/api/auth/token',

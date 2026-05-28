@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchAgentSecrets,
   setAgentSecret,
@@ -22,12 +22,9 @@ export function SecretsPanel() {
   const [rows, setRows] = useState<RowState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [newKey, setNewKey] = useState('');
-  const [newValue, setNewValue] = useState('');
-  const [newPassThrough, setNewPassThrough] = useState(false);
-  const [adding, setAdding] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
 
-  const loadFromServer = async () => {
+  const loadFromServer = useCallback(async () => {
     const map = await fetchAgentSecrets();
     setRows(
       Object.keys(map).sort().map((k) => ({
@@ -38,13 +35,13 @@ export function SecretsPanel() {
         busy: false,
       })),
     );
-  };
+  }, []);
 
   useEffect(() => {
     loadFromServer()
       .catch((err) => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadFromServer]);
 
   const updateRow = (key: string, patch: Partial<RowState>) => {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -88,28 +85,6 @@ export function SecretsPanel() {
     }
   };
 
-  const addNew = async () => {
-    const k = newKey.trim();
-    if (!k) return;
-    if (rows.some((r) => r.key === k)) {
-      setError(`Secret "${k}" already exists`);
-      return;
-    }
-    setError('');
-    setAdding(true);
-    try {
-      await setAgentSecret(k, newValue, { passThrough: newPassThrough });
-      setNewKey('');
-      setNewValue('');
-      setNewPassThrough(false);
-      await loadFromServer();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setAdding(false);
-    }
-  };
-
   if (loading) return <p className="manage__empty">Loading…</p>;
   if (error && rows.length === 0) return <p className="manage__empty">{error}</p>;
 
@@ -127,6 +102,16 @@ export function SecretsPanel() {
           environment variable into this agent's sandboxes at startup
           (takes effect on the next sandbox start).
         </p>
+      </div>
+
+      <div className="manage__toolbar">
+        <button
+          type="button"
+          className="btn btn--sm btn--primary"
+          onClick={() => setShowAdd(true)}
+        >
+          Add Secret
+        </button>
       </div>
 
       <div className="secrets-panel__list">
@@ -179,41 +164,116 @@ export function SecretsPanel() {
         )}
       </div>
 
-      <div className="secrets-panel__add">
-        <input
-          type="text"
-          placeholder="Key (e.g. ANTHROPIC_API_KEY)"
-          value={newKey}
-          onChange={(e) => setNewKey(e.target.value)}
-          disabled={adding}
+      {error && <p className="basic-panel__error">{error}</p>}
+
+      {showAdd && (
+        <AddSecretDialog
+          existingKeys={rows.map((r) => r.key)}
+          onClose={() => setShowAdd(false)}
+          onCreated={loadFromServer}
         />
-        <input
-          type="password"
-          placeholder="Value"
-          value={newValue}
-          onChange={(e) => setNewValue(e.target.value)}
-          disabled={adding}
-        />
-        <label className="secrets-panel__passthrough" title="Inject as env var into sandboxes">
+      )}
+    </div>
+  );
+}
+
+function AddSecretDialog({
+  existingKeys,
+  onClose,
+  onCreated,
+}: {
+  existingKeys: string[];
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [key, setKey] = useState('');
+  const [value, setValue] = useState('');
+  const [passThrough, setPassThrough] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    dialogRef.current?.showModal();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const k = key.trim();
+    if (!k) return;
+    if (existingKeys.includes(k)) {
+      setError(`Secret "${k}" already exists`);
+      return;
+    }
+    setError('');
+    setSubmitting(true);
+    try {
+      await setAgentSecret(k, value, { passThrough });
+      await onCreated();
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <dialog ref={dialogRef} className="manage__dialog" onClose={onClose}>
+      <form className="manage__dialog-form" onSubmit={handleSubmit}>
+        <h3>Add Secret</h3>
+
+        <label className="manage__field">
+          <span className="manage__field-label">Key</span>
+          <input
+            className="manage__field-input"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="ANTHROPIC_API_KEY"
+            autoComplete="off"
+            autoFocus
+            required
+            disabled={submitting}
+          />
+        </label>
+
+        <label className="manage__field">
+          <span className="manage__field-label">Value</span>
+          <input
+            type="password"
+            className="manage__field-input"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            autoComplete="off"
+            disabled={submitting}
+          />
+        </label>
+
+        <label className="manage__field manage__field--inline">
           <input
             type="checkbox"
-            checked={newPassThrough}
-            disabled={adding}
-            onChange={(e) => setNewPassThrough(e.target.checked)}
+            checked={passThrough}
+            disabled={submitting}
+            onChange={(e) => setPassThrough(e.target.checked)}
           />
-          <span>Pass to sandbox</span>
+          <span>Pass to sandbox (inject as env var)</span>
         </label>
-        <button
-          type="button"
-          className="btn btn--primary"
-          disabled={adding || !newKey.trim()}
-          onClick={() => void addNew()}
-        >
-          {adding ? '…' : 'Add'}
-        </button>
-      </div>
 
-      {error && <p className="basic-panel__error">{error}</p>}
-    </div>
+        {error && <p className="manage__error">{error}</p>}
+
+        <div className="manage__dialog-actions">
+          <button className="btn btn--ghost" type="button" onClick={onClose} disabled={submitting}>
+            Cancel
+          </button>
+          <button
+            className="btn btn--primary"
+            type="submit"
+            disabled={submitting || !key.trim()}
+          >
+            {submitting ? '…' : 'Add'}
+          </button>
+        </div>
+      </form>
+    </dialog>
   );
 }

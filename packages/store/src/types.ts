@@ -273,7 +273,15 @@ export interface UserIdentity {
 export type SkillSource = 'system' | 'user';
 
 export interface SkillRecord {
+  /**
+   * Opaque storage id. For system skills this equals `slug`. For user skills
+   * it is encoded as `user:<ownerAgentId>:<slug>` so the same slug can
+   * coexist across owners. Consumers should not parse this; use `slug` for
+   * the user-visible identifier (folder name, prompt index).
+   */
   id: string;
+  /** User-visible identifier — folder name and prompt-index id. */
+  slug: string;
   name: string;
   description: string;
   path: string;
@@ -284,6 +292,25 @@ export interface SkillRecord {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Compute the storage id for a skill. System skills use the slug as-is so
+ * existing rows and the operator-facing CLI continue to work. User skills
+ * embed the owner so multiple agents can install a skill with the same slug.
+ */
+export const skillStorageId = (
+  source: SkillSource,
+  slug: string,
+  ownerAgentId: string | undefined,
+): string => {
+  if (source === 'user') {
+    if (!ownerAgentId) {
+      throw new Error('User skills require ownerAgentId to derive a storage id.');
+    }
+    return `user:${ownerAgentId}:${slug}`;
+  }
+  return slug;
+};
 
 export interface AgentSkillRecord {
   agentId: string;

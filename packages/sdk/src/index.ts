@@ -31,6 +31,29 @@ import {
 
 type FetchLike = typeof fetch;
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  // Browser fallback: chunked to avoid call-stack blow-up on large inputs.
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+};
+
+const base64ToBytes = (b64: string): Uint8Array => {
+  if (typeof Buffer !== 'undefined') {
+    return Uint8Array.from(Buffer.from(b64, 'base64'));
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+};
+
 export interface AgentLocalClientOptions {
   baseUrl: string;
   token: string;
@@ -231,6 +254,77 @@ export class AgentLocalClient {
     return body.attachment;
   }
 
+  /**
+   * Build the absolute URL for the attachment-bytes endpoint. Channels use
+   * this to stream the bytes back to the end user (Telegram multipart upload,
+   * web `<img src=...>`). The endpoint requires the same bearer token as the
+   * rest of the agent-local API.
+   */
+  buildAttachmentBytesUrl(sessionId: string, attachmentId: string): string {
+    return joinUrl(
+      this.options.baseUrl,
+      agentLocalRoutes.sessionAttachmentBytes(sessionId, attachmentId),
+    );
+  }
+
+  /**
+   * Fetch the raw bytes for an attachment. Returned alongside the resolved
+   * MIME type and (best-effort) filename so callers can hand them straight to
+   * a channel-native multipart upload.
+   */
+  async downloadAttachmentBytes(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<{
+    bytes: Uint8Array;
+    mimeType: string;
+    filename: string | undefined;
+    kind: 'image' | 'audio' | 'video' | 'document' | undefined;
+  }> {
+    const path = agentLocalRoutes.sessionAttachmentBytes(sessionId, attachmentId);
+    const url = joinUrl(this.options.baseUrl, path);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${this.options.token}` },
+      });
+    } catch (error) {
+      throw this.buildFetchFailedError(path, error);
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `Attachment bytes download failed (${response.status}) for ${attachmentId}: ${responseText || response.statusText}`,
+        'agent_api_error',
+        statusCode,
+      );
+    }
+    const buf = new Uint8Array(await response.arrayBuffer());
+    const mimeType =
+      response.headers.get('content-type')?.split(';')[0]?.trim() ||
+      'application/octet-stream';
+    const dispo = response.headers.get('content-disposition') ?? '';
+    const m = /filename="([^"]+)"/i.exec(dispo);
+    const filename = m?.[1];
+    const kindHeader = response.headers.get('x-attachment-kind') ?? '';
+    const kind =
+      kindHeader === 'image' ||
+      kindHeader === 'audio' ||
+      kindHeader === 'video' ||
+      kindHeader === 'document'
+        ? kindHeader
+        : undefined;
+    return { bytes: buf, mimeType, filename, kind };
+  }
+
   async reviewApprovalRequest(
     requestId: string,
     input: { decision: 'approved' | 'rejected'; resolution?: 'once' | 'persistent'; reason?: string; channelUserId?: string },
@@ -324,6 +418,54 @@ export class AgentLocalClient {
 
   buildEventsUrl(sessionId: string): string {
     return joinUrl(this.options.baseUrl, agentLocalRoutes.eventsUrl(sessionId));
+  }
+
+  /**
+   * Transcribe inbound audio via the agent's configured STT provider.
+   * The agent resolves provider + secrets server-side; the caller only
+   * sees text in / text out.
+   */
+  async transcribeAudio(input: {
+    bytes: Uint8Array;
+    mimeType: string;
+    languageHint?: string;
+  }): Promise<{ text: string; durationMs?: number; provider: string }> {
+    const body = {
+      bytes: bytesToBase64(input.bytes),
+      mimeType: input.mimeType,
+      ...(input.languageHint ? { languageHint: input.languageHint } : {}),
+    };
+    return this.postJson(agentLocalRoutes.voiceStt, body);
+  }
+
+  /**
+   * Synthesize a reply via the agent's configured TTS provider. Returns
+   * raw bytes ready to hand off to the channel's native voice-send API.
+   */
+  async synthesizeAudio(input: {
+    text: string;
+    outputMimeType: string;
+    voiceId?: string;
+    modelId?: string;
+    speed?: number;
+  }): Promise<{ bytes: Uint8Array; mimeType: string; provider: string }> {
+    const body = {
+      text: input.text,
+      outputMimeType: input.outputMimeType,
+      ...(input.voiceId ? { voiceId: input.voiceId } : {}),
+      ...(input.modelId ? { modelId: input.modelId } : {}),
+      ...(typeof input.speed === 'number' ? { speed: input.speed } : {}),
+    };
+    const response = await this.postJson<{
+      bytes: string;
+      mimeType: string;
+      provider: string;
+    }>(agentLocalRoutes.voiceTts, body);
+    return {
+      bytes: base64ToBytes(response.bytes),
+      mimeType: response.mimeType,
+      provider: response.provider,
+    };
   }
 
   buildWsUrl(): string {
@@ -518,6 +660,19 @@ export class GatewayClient {
     channel: string;
     channelUserId: string;
     displayName?: string;
+    /**
+     * `'session'` (default) returns a normal 24h JWT the caller can hand to
+     * the user as a long-lived credential. `'exchange'` returns a short-lived
+     * single-use JWT intended to be embedded in a `/connect#token=…` URL and
+     * immediately swapped for a session JWT via {@link exchangeConnectToken}.
+     */
+    purpose?: 'session' | 'exchange';
+    /**
+     * Override the token TTL. Capped at 600s for `'exchange'` and 86400s for
+     * `'session'` by the gateway. Defaults to 120s for `'exchange'` and the
+     * gateway's normal default for `'session'`.
+     */
+    ttlSeconds?: number;
     fetch?: FetchLike;
   }): Promise<{
     token: string;
@@ -525,6 +680,7 @@ export class GatewayClient {
     userId: string;
     isNewDevice: boolean;
     displayName?: string;
+    purpose: 'session' | 'exchange';
   }> {
     const fetchImpl = input.fetch ?? fetch;
     const url = joinUrl(input.baseUrl, '/api/admin/auth/issue-token');
@@ -533,6 +689,8 @@ export class GatewayClient {
       channelUserId: input.channelUserId,
     };
     if (input.displayName !== undefined) body.displayName = input.displayName;
+    if (input.purpose !== undefined) body.purpose = input.purpose;
+    if (input.ttlSeconds !== undefined) body.ttlSeconds = input.ttlSeconds;
 
     let response: Response;
     try {
@@ -575,7 +733,126 @@ export class GatewayClient {
       userId: string;
       isNewDevice: boolean;
       displayName?: string;
+      purpose: 'session' | 'exchange';
     };
+  }
+
+  /**
+   * Swap a single-use `purpose: 'exchange'` token for a normal 24h session
+   * JWT. Backs the web `/connect#token=…` deep-link flow: the exchange token
+   * is the credential (no admin token needed), but each token may only be
+   * redeemed once — a second attempt is rejected with 401.
+   */
+  static async exchangeConnectToken(input: {
+    baseUrl: string;
+    token: string;
+    fetch?: FetchLike;
+  }): Promise<{
+    token: string;
+    expiresAt: number;
+    userId: string | undefined;
+    displayName?: string;
+  }> {
+    const fetchImpl = input.fetch ?? fetch;
+    const url = joinUrl(input.baseUrl, '/api/auth/exchange');
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: input.token }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `exchangeConnectToken failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+    return (await response.json()) as {
+      token: string;
+      expiresAt: number;
+      userId: string | undefined;
+      displayName?: string;
+    };
+  }
+
+  /**
+   * Attach a `(channel, channelUserId)` identity to an existing gateway
+   * user. The canonical use is back-office stitching — e.g. when the same
+   * human has logged in via two channels (Telegram + the web SPA) and you
+   * want both rows pointing at one user record.
+   *
+   * Admin-only. If the `(channel, channelUserId)` pair is already linked
+   * to a different user, the gateway reassigns it to `userId` and prunes
+   * the orphan source user. Treat this as a merge operation.
+   */
+  static async linkUserIdentity(input: {
+    baseUrl: string;
+    adminToken: string;
+    userId: string;
+    channel: string;
+    channelUserId: string;
+    fetch?: FetchLike;
+  }): Promise<{ ok: true }> {
+    const fetchImpl = input.fetch ?? fetch;
+    const url = joinUrl(
+      input.baseUrl,
+      `/api/admin/users/${encodeURIComponent(input.userId)}/identities`,
+    );
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${input.adminToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          channel: input.channel,
+          channelUserId: input.channelUserId,
+        }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OpenHermitError(
+        `Gateway API is unavailable at ${url}: ${message}`,
+        'gateway_api_error',
+        500,
+      );
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode: OpenHermitStatusCode =
+        response.status === 400 ||
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status === 500
+          ? response.status
+          : 500;
+      throw new OpenHermitError(
+        `linkUserIdentity failed (${response.status}): ${responseText || response.statusText}`,
+        'gateway_api_error',
+        statusCode,
+      );
+    }
+    return (await response.json()) as { ok: true };
   }
 
   async listAgents(): Promise<AgentInfo[]> {

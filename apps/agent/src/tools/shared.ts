@@ -67,6 +67,14 @@ export interface ToolContext {
     safeName: string;
     bytes: Buffer;
   }) => Promise<{ sandboxId: string; sandboxPath: string }>;
+  /** Read a file out of the running session's sandbox and persist it through
+   *  the same pipeline as inbound uploads. Used by `attachment_upload` so an
+   *  agent can promote a sandbox-generated artifact into the durable
+   *  attachment store and get back an id-shaped wire record. */
+  uploadSandboxAttachment?: (input: {
+    path: string;
+    name?: string;
+  }) => Promise<import('@openhermit/protocol').SessionAttachment>;
   /** Channel outbound adapters keyed by channel name (e.g. 'telegram'). */
   channelOutbound?: Map<string, ChannelOutbound>;
   onExec?: () => void;

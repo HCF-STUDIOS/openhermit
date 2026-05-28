@@ -16,6 +16,23 @@ import {
   streamingMarkdownToTelegramHtml,
 } from './formatting.js';
 
+/** Hard cap on TTS input length. Above this, fall back to text. */
+const VOICE_MAX_TEXT_LENGTH = 1500;
+
+/**
+ * Decide whether a reply is fit for voice delivery. We refuse anything
+ * containing code blocks, command-style markup, or huge volumes of
+ * text — those are awkward to listen to and consume API quota for no
+ * reader benefit.
+ */
+const shouldSpeak = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.length > VOICE_MAX_TEXT_LENGTH) return false;
+  if (trimmed.includes('```')) return false;
+  return true;
+};
+
 /** Collected result of an agent turn. */
 interface TurnResult {
   text: string | undefined;
@@ -191,13 +208,32 @@ export class TelegramBridge implements ChannelOutbound {
 
   private async handleMessageInner(message: TelegramMessage): Promise<void> {
     const chatId = message.chat.id;
-    const text = message.text?.trim();
+    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
+
+    let text = message.text?.trim();
+
+    // Inbound voice / audio → transcribe via the agent's STT before
+    // passing as a normal text message. We mark the request so the
+    // outbound path can prefer voice replies when appropriate.
+    let inboundWasVoice = false;
+    if (!text && (message.voice || message.audio)) {
+      try {
+        text = await this.transcribeAttachment(message);
+        inboundWasVoice = Boolean(text);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log(`stt failed for chat ${chatId}: ${msg}`);
+        await this.telegram.sendMessage(
+          chatId,
+          `Voice transcription failed: ${msg}`,
+        );
+        return;
+      }
+    }
 
     if (!text) {
       return;
     }
-
-    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
 
     if (text === '/start') {
       await this.handleStart(chatId, message, isGroup);
@@ -209,8 +245,29 @@ export class TelegramBridge implements ChannelOutbound {
       return;
     }
 
+    // Tell the agent that this turn was spoken, not typed. Without this
+    // marker the LLM has no way to know the text came from STT and the
+    // reply will be spoken — it may answer with code blocks, long lists,
+    // or even try to call a TTS tool itself.
+    const agentText = inboundWasVoice
+      ? `[Voice message, transcribed. Your reply will be converted to speech, so respond in plain prose without code blocks, markdown formatting, or long lists.]\n\n${text}`
+      : text;
+
     const sessionId = await this.getSessionId(chatId);
-    await this.sendToAgent(chatId, sessionId, text, message, isGroup);
+    await this.sendToAgent(chatId, sessionId, agentText, message, isGroup, inboundWasVoice);
+  }
+
+  private async transcribeAttachment(message: TelegramMessage): Promise<string> {
+    const fileId = message.voice?.file_id ?? message.audio?.file_id;
+    const mimeType = message.voice?.mime_type ?? message.audio?.mime_type ?? 'audio/ogg';
+    if (!fileId) return '';
+    const file = await this.telegram.getFile(fileId);
+    if (!file.file_path) {
+      throw new Error('Telegram returned no file_path for voice attachment');
+    }
+    const bytes = await this.telegram.downloadFile(file.file_path);
+    const result = await this.client.transcribeAudio({ bytes, mimeType });
+    return result.text.trim();
   }
 
   private async handleStart(
@@ -255,6 +312,7 @@ export class TelegramBridge implements ChannelOutbound {
     text: string,
     message: TelegramMessage,
     isGroup: boolean,
+    inboundWasVoice = false,
   ): Promise<void> {
     const mentioned = isGroup ? await this.isMentioned(message) : true;
 
@@ -277,13 +335,99 @@ export class TelegramBridge implements ChannelOutbound {
 
     void this.telegram.sendChatAction(chatId).catch(() => undefined);
 
-    const result = await this.waitForAgentResponse(sessionId, chatId);
+    const result = await this.waitForAgentResponse(sessionId, chatId, inboundWasVoice);
 
     if (result.error && !result.text) {
       await this.telegram.sendMessage(chatId, `Error: ${result.error}`);
     } else if (result.text) {
-      await this.send({ sessionId, to: String(chatId), text: result.text });
+      if (inboundWasVoice) {
+        const sent = await this.trySendVoiceReply(chatId, result.text);
+        if (!sent) {
+          await this.send({ sessionId, to: String(chatId), text: result.text });
+        }
+      } else {
+        await this.send({ sessionId, to: String(chatId), text: result.text });
+      }
     }
+  }
+
+  /**
+   * Attempt to deliver `text` as a Telegram voice message via the
+   * agent's configured TTS. Returns `true` on success, `false` when TTS
+   * is unavailable or the text fails the speakable-content gate; callers
+   * fall back to plain text on `false`.
+   */
+  private async trySendVoiceReply(chatId: number, text: string): Promise<boolean> {
+    if (!shouldSpeak(text)) return false;
+    try {
+      const result = await this.client.synthesizeAudio({
+        text,
+        outputMimeType: 'audio/ogg',
+      });
+      await this.telegram.sendVoice(chatId, result.bytes);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`tts failed for chat ${chatId}: ${msg}`);
+      return false;
+    }
+  }
+
+  /**
+   * Translate an `attachment` SSE event into the right Telegram Bot API
+   * upload. We let the rendering hint pick the endpoint (image → sendPhoto,
+   * audio → sendAudio, video → sendVideo, document → sendDocument); the bytes
+   * are pulled lazily from the agent-local API so we never inline them on the
+   * SSE channel.
+   */
+  private async deliverAttachmentToTelegram(
+    chatId: number,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0
+        ? payload.caption
+        : undefined;
+    const hintedKind = String(payload.kind ?? '');
+    const filename =
+      typeof payload.name === 'string' && payload.name.length > 0
+        ? payload.name
+        : 'attachment';
+
+    const { bytes, mimeType, kind: resolvedKind } =
+      await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    const kind = (hintedKind || resolvedKind || 'document') as
+      | 'image'
+      | 'audio'
+      | 'video'
+      | 'document';
+    const opts = caption ? { caption } : undefined;
+
+    if (kind === 'image') {
+      await this.telegram.sendPhoto(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    if (kind === 'audio') {
+      // ogg/opus → use sendVoice for the native voice-message bubble; other
+      // audio formats stay as a regular audio attachment.
+      if (mimeType === 'audio/ogg' || mimeType === 'audio/opus') {
+        await this.telegram.sendVoice(chatId, bytes, opts);
+        return;
+      }
+      await this.telegram.sendAudio(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    if (kind === 'video') {
+      await this.telegram.sendVideo(chatId, bytes, filename, mimeType, opts);
+      return;
+    }
+    await this.telegram.sendDocument(chatId, bytes, filename, mimeType, opts);
   }
 
   private async ensureSession(
@@ -335,6 +479,7 @@ export class TelegramBridge implements ChannelOutbound {
   private async waitForAgentResponse(
     sessionId: string,
     chatId: number,
+    suppressStreamingDisplay = false,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -421,6 +566,12 @@ export class TelegramBridge implements ChannelOutbound {
             // final edit removed it.
             const displayText = stripSilenceTokens(accumulatedText).text;
 
+            // For voice replies we collect text silently — sending
+            // streamed text would race against the voice message we're
+            // about to upload, leaving two assistant messages in the
+            // chat.
+            if (suppressStreamingDisplay) continue;
+
             // Streaming edit: send initial message or throttled edits.
             const now = Date.now();
             if (!sentMessageId && displayText.length > 0) {
@@ -464,6 +615,17 @@ export class TelegramBridge implements ChannelOutbound {
             const toolCallId = String(payload.toolCallId ?? '');
             const args = payload.args as Record<string, unknown> | undefined;
             void this.sendApprovalPrompt(chatId, sessionId, toolName, toolCallId, args).catch(() => undefined);
+            continue;
+          }
+
+          if (frame.event === 'attachment') {
+            try {
+              await this.deliverAttachmentToTelegram(chatId, payload);
+            } catch (err) {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
             continue;
           }
 

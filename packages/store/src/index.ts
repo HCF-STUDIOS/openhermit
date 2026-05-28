@@ -65,7 +65,7 @@ export type {
   AttachmentStorageProvider,
 } from './types.js';
 
-export { STANDALONE_AGENT_ID, standaloneScope } from './types.js';
+export { STANDALONE_AGENT_ID, standaloneScope, skillStorageId } from './types.js';
 
 /**
  * Reserved session id for the per-agent owner inbox feed (read-only).
@@ -114,6 +114,7 @@ export {
   SupabaseAttachmentStorage,
   type SupabaseAttachmentStorageOptions,
   DbMetaStore,
+  DbConsumedJtiStore,
   generateSecretsKey,
   runMigrations,
 } from './impl/index.js';

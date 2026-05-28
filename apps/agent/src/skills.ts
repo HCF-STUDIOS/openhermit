@@ -148,11 +148,14 @@ export const loadSkillIndex = async (
     const dbSkills = await skillStore.listEnabled(agentId);
     for (const skill of dbSkills) {
       const sub = skill.source === 'user' ? 'user' : 'system';
-      entries.set(skill.id, {
-        id: skill.id,
+      // skill.slug is the user-visible identifier (folder name and prompt
+      // index id). For user skills skill.id is the encoded storage key —
+      // never use it as a folder name.
+      entries.set(skill.slug, {
+        id: skill.slug,
         name: skill.name,
         description: skill.description,
-        path: `${home}/.openhermit/skills/${sub}/${skill.id}`,
+        path: `${home}/.openhermit/skills/${sub}/${skill.slug}`,
         source: 'system',
       });
     }

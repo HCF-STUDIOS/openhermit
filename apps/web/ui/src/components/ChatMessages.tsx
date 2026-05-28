@@ -1,10 +1,10 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
 import { marked, type TokenizerExtension, type RendererExtension } from 'marked';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import remend from 'remend';
 import DOMPurify from 'dompurify';
-import { apiFetch, type SessionAttachment } from '../api';
+import { apiFetch, fetchAttachmentBlobUrl, type SessionAttachment } from '../api';
 
 // ─── KaTeX extension for marked ────────────────────────────────────────────
 
@@ -73,7 +73,17 @@ export type MessageAction = { type: string; [key: string]: unknown };
 
 export type ChatItem =
   | { type: 'user'; text: string; streaming: false; name?: string; attachments?: SessionAttachment[] }
-  | { type: 'assistant'; text: string; streaming: boolean; name?: string; actions?: MessageAction[]; actionsResolved?: boolean; actionsApproved?: boolean }
+  | { type: 'assistant'; text: string; streaming: boolean; name?: string; actions?: MessageAction[]; actionsResolved?: boolean; actionsApproved?: boolean; attachments?: SessionAttachment[] }
+  | {
+      type: 'attachment';
+      sessionId: string;
+      attachmentId: string;
+      mimeType: string;
+      kind: 'image' | 'audio' | 'video' | 'document';
+      name?: string;
+      size?: number;
+      caption?: string;
+    }
   | { type: 'event'; text: string; isError: boolean }
   | { type: 'tool'; tool: string; toolCallId?: string; args?: unknown; phase: 'running' | 'done'; isError?: boolean; result?: string }
   | { type: 'approval'; toolName: string; toolCallId: string; args?: unknown; resolved: boolean; approved?: boolean }
@@ -208,6 +218,97 @@ function AttachmentChip({ attachment }: { attachment: SessionAttachment }) {
   );
 }
 
+function AttachmentMedia({ item }: { item: Extract<ChatItem, { type: 'attachment' }> }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBlobUrl(null);
+    setError(null);
+    let cancelled = false;
+    let url: string | null = null;
+    fetchAttachmentBlobUrl(item.sessionId, item.attachmentId)
+      .then((res) => {
+        if (cancelled) {
+          URL.revokeObjectURL(res.url);
+          return;
+        }
+        url = res.url;
+        setBlobUrl(res.url);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [item.sessionId, item.attachmentId]);
+
+  if (error) {
+    return (
+      <div className="event event--error">
+        [attachment] failed to load {item.name || item.attachmentId}: {error}
+      </div>
+    );
+  }
+
+  if (!blobUrl) {
+    return (
+      <div className="message__body">
+        Loading attachment {item.name || item.attachmentId}<span className="thinking-dots" />
+      </div>
+    );
+  }
+
+  const downloadName = item.name || item.attachmentId;
+
+  return (
+    <div className="message__attachment">
+      {item.kind === 'image' && (
+        <a href={blobUrl} target="_blank" rel="noreferrer" download={downloadName}>
+          <img
+            src={blobUrl}
+            alt={item.name || 'attachment'}
+            style={{ maxWidth: '100%', maxHeight: 480, borderRadius: 8 }}
+          />
+        </a>
+      )}
+      {item.kind === 'audio' && (
+        <audio controls src={blobUrl} style={{ width: '100%' }} />
+      )}
+      {item.kind === 'video' && (
+        <video
+          controls
+          src={blobUrl}
+          style={{ maxWidth: '100%', maxHeight: 480, borderRadius: 8 }}
+        />
+      )}
+      {item.kind === 'document' && (
+        <a
+          className="attachment-chip"
+          href={blobUrl}
+          target="_blank"
+          rel="noreferrer"
+          download={downloadName}
+          title={item.mimeType}
+        >
+          <span className="attachment-chip__icon" aria-hidden="true">📎</span>
+          <span className="attachment-chip__name">{downloadName}</span>
+        </a>
+      )}
+      {item.caption && (
+        <div
+          className="message__body"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(item.caption, false) }}
+        />
+      )}
+    </div>
+  );
+}
+
 function ApprovalCard({ item, onApproval }: { item: Extract<ChatItem, { type: 'approval' }>; onApproval: Props['onApproval'] }) {
   if (item.resolved) {
     return (
@@ -240,7 +341,11 @@ type Turn =
   | { kind: 'introspection'; item: Extract<ChatItem, { type: 'introspection' }> };
 
 const isAssistantItem = (item: ChatItem) =>
-  item.type === 'assistant' || item.type === 'tool' || item.type === 'approval' || item.type === 'thinking';
+  item.type === 'assistant' ||
+  item.type === 'tool' ||
+  item.type === 'approval' ||
+  item.type === 'thinking' ||
+  item.type === 'attachment';
 
 function groupIntoTurns(items: ChatItem[]): Turn[] {
   const turns: Turn[] = [];
@@ -377,6 +482,8 @@ export function ChatMessages({ items, agentName, loading, emptyMessage, onApprov
                   return <ToolCard key={ii} item={item} />;
                 case 'approval':
                   return <ApprovalCard key={ii} item={item} onApproval={onApproval} />;
+                case 'attachment':
+                  return <AttachmentMedia key={ii} item={item} />;
                 case 'thinking':
                   return item.text ? (
                     <details key={ii} className="thinking-block" open={item.streaming}>

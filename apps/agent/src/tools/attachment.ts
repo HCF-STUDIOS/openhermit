@@ -282,16 +282,217 @@ export const createAttachmentFetchTool = (
   },
 });
 
+const AttachmentUploadParams = Type.Object({
+  path: Type.String({
+    description:
+      'Path inside the sandbox to upload. Absolute (`/root/foo.png`) or relative to the agent home (`out/audio.mp3`). The file must already exist when this tool is called.',
+  }),
+  name: Type.Optional(
+    Type.String({
+      description:
+        'Optional display name override. Defaults to the basename of `path`. Sanitized server-side.',
+    }),
+  ),
+});
+
+type AttachmentUploadArgs = Static<typeof AttachmentUploadParams>;
+
+export const createAttachmentUploadTool = (
+  context: ToolContext,
+): PolicyAwareTool<typeof AttachmentUploadParams> => ({
+  policy: { defaultGrants: [{ type: 'any' }] },
+  name: 'attachment_upload',
+  label: 'Upload Attachment',
+  description:
+    'Promote a sandbox-generated file (image, audio, video, document) into the durable attachment store. Returns an id-shaped attachment record. Pair with `attachment_send` to deliver it to the user.',
+  parameters: AttachmentUploadParams,
+  execute: async (_toolCallId, args: AttachmentUploadArgs) => {
+    if (!context.uploadSandboxAttachment) {
+      throw new ValidationError(
+        'attachment_upload is unavailable: attachment storage is not configured.',
+      );
+    }
+    const path = args.path.trim();
+    if (!path) {
+      throw new ValidationError('attachment_upload requires a non-empty path.');
+    }
+    const result = await context.uploadSandboxAttachment({
+      path,
+      ...(args.name !== undefined ? { name: args.name } : {}),
+    });
+    return {
+      content: asTextContent(formatJson(result)),
+      details: {
+        id: result.id,
+        mimeType: result.mimeType,
+        size: result.size,
+        sandboxPath: result.sandboxPath,
+      },
+    };
+  },
+});
+
+const AttachmentSendParams = Type.Object({
+  id: Type.String({
+    description:
+      'Existing attachment id (e.g. `att_xxx`) returned by `attachment_upload`, `attachment_list`, or a previous user upload.',
+  }),
+  caption: Type.Optional(
+    Type.String({
+      description:
+        'Optional caption to render alongside the attachment in channels that support it (Telegram photo caption, web inline text).',
+    }),
+  ),
+  kind: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal('image'),
+        Type.Literal('audio'),
+        Type.Literal('video'),
+        Type.Literal('document'),
+      ],
+      {
+        description:
+          "Override the rendering hint for channels. By default it is inferred from the MIME type (image/* → image, audio/* → audio, video/* → video, anything else → document).",
+      },
+    ),
+  ),
+});
+
+type AttachmentSendArgs = Static<typeof AttachmentSendParams>;
+
+export const createAttachmentSendTool = (
+  context: ToolContext,
+): PolicyAwareTool<typeof AttachmentSendParams> => ({
+  policy: { defaultGrants: [{ type: 'any' }] },
+  name: 'attachment_send',
+  label: 'Send Attachment',
+  description:
+    'Deliver an already-stored attachment to the current session — the bytes will be streamed back to the user through their channel (Telegram photo/voice/video/document, web inline media). Provide `id` from `attachment_upload` or `attachment_list`.',
+  parameters: AttachmentSendParams,
+  execute: async (_toolCallId, args: AttachmentSendArgs) => {
+    if (!context.attachmentStore || !context.storeScope || !context.sessionId) {
+      throw new ValidationError(
+        'attachment_send is unavailable: attachment storage is not configured.',
+      );
+    }
+    if (!context.publishEvent) {
+      throw new ValidationError(
+        'attachment_send is unavailable: the runtime has no event channel wired up.',
+      );
+    }
+
+    const sessionId = context.sessionId;
+    const agentId = context.storeScope.agentId;
+
+    const id = args.id.trim();
+    if (!id) {
+      throw new ValidationError('attachment_send requires `id`.');
+    }
+
+    const row = await context.attachmentStore.get(id);
+    if (!row || row.agentId !== agentId) {
+      throw new ValidationError(`attachment_send: no such attachment ${id}.`);
+    }
+    // Visibility: same-session always allowed; cross-session allowed only
+    // when the agent uploaded it (channel/agent mode → no userId).
+    const sameSession = row.sessionId === sessionId;
+    const isOwner = context.currentUserRole === 'owner';
+    const isUploader =
+      !!row.uploaderUserId && row.uploaderUserId === context.currentUserId;
+    if (!sameSession && !isOwner && !isUploader) {
+      throw new ValidationError(
+        `attachment_send: attachment ${id} is not visible in this session.`,
+      );
+    }
+
+    const kind: 'image' | 'audio' | 'video' | 'document' =
+      args.kind ??
+      (row.mimeType.startsWith('image/')
+        ? 'image'
+        : row.mimeType.startsWith('audio/')
+          ? 'audio'
+          : row.mimeType.startsWith('video/')
+            ? 'video'
+            : 'document');
+
+    const event: Record<string, unknown> = {
+      type: 'attachment',
+      sessionId,
+      attachmentId: row.id,
+      mimeType: row.mimeType,
+      kind,
+      name: row.originalName,
+      size: row.sizeBytes,
+      sha256: row.sha256,
+    };
+    if (args.caption !== undefined) {
+      event['caption'] = args.caption;
+    }
+
+    context.publishEvent(event);
+
+    // Persist an assistant log entry so the attachment shows up in history
+    // and conversation replay. Channels stream the bytes via the bytes
+    // endpoint using `attachmentId`; the entry body holds the caption (or
+    // empty string) and the canonical attachment metadata.
+    if (context.messageStore) {
+      const sessionAttachment: import('@openhermit/protocol').SessionAttachment = {
+        id: row.id,
+        type: 'file',
+        name: (event['name'] as string) ?? row.originalName,
+        mimeType: row.mimeType,
+        size: row.sizeBytes,
+        sha256: row.sha256,
+        ...(row.sandboxPath ? { sandboxPath: row.sandboxPath } : {}),
+      };
+      await context.messageStore.appendLogEntry(context.storeScope, sessionId, {
+        ts: new Date().toISOString(),
+        role: 'assistant',
+        content: args.caption ?? '',
+        attachments: [sessionAttachment],
+        metadata: {
+          source: 'attachment_send',
+          kind,
+        },
+      });
+    }
+
+    return {
+      content: asTextContent(
+        formatJson({
+          delivered: true,
+          attachmentId: row.id,
+          kind,
+          mimeType: row.mimeType,
+          name: event['name'],
+          ...(args.caption !== undefined ? { caption: args.caption } : {}),
+        }),
+      ),
+      details: { id: row.id, kind, mimeType: row.mimeType },
+    };
+  },
+});
+
 const ATTACHMENT_DESCRIPTION = `\
 ### Attachments
 
-The user can upload files (images, PDFs, text, code). Each upload becomes an attachment with a stable id and a mirror copy inside the sandbox at \`~/.openhermit/attachments/<sessionId>/<id>/<name>\` when small enough.
+The user can upload files (images, PDFs, text, code) and the agent can send media back. Each attachment has a stable id; user uploads are also mirrored into the sandbox at \`~/.openhermit/attachments/<sessionId>/<id>/<name>\` when small enough.
 
 - \`attachment_list\` — see what files exist (scope=session by default).
-- \`attachment_fetch\` — pull a file into the model context. Use mode=auto for image/* and text/*; for large or binary files prefer the sandbox path with Read/Bash.`;
+- \`attachment_fetch\` — pull a file into the model context. Use mode=auto for image/* and text/*; for large or binary files prefer the sandbox path with Read/Bash.
+- \`attachment_upload\` — promote a sandbox file (e.g. an image you just generated, a .mp3 you produced) into the attachment store and get back an id.
+- \`attachment_send\` — deliver an attachment by id back to the user through their channel (image inline, audio as a voice/audio message, etc.).
+
+Typical flow when producing media: write the file in the sandbox → \`attachment_upload\` → \`attachment_send\` with the returned id and an optional caption.`;
 
 export const createAttachmentToolset = (context: ToolContext): Toolset => ({
   id: 'attachment',
   description: ATTACHMENT_DESCRIPTION,
-  tools: [createAttachmentListTool(context), createAttachmentFetchTool(context)],
+  tools: [
+    createAttachmentListTool(context),
+    createAttachmentFetchTool(context),
+    createAttachmentUploadTool(context),
+    createAttachmentSendTool(context),
+  ],
 });

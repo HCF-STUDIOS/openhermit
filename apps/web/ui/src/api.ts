@@ -361,6 +361,43 @@ export const joinAgent = async (agentId: string, accessToken?: string): Promise<
   return res.json() as Promise<AgentMembership>;
 };
 
+/**
+ * Redeem a single-use `purpose: 'exchange'` token (carried in the URL
+ * fragment of a `/connect#token=…` deep link) for a normal session JWT.
+ *
+ * The exchange token IS the credential — no device key is involved, and
+ * a successful redemption seeds `openhermit_jwt` with the resulting JWT
+ * so the rest of the app behaves identically to a device-key-derived
+ * session. The token is single-use; a second attempt is rejected.
+ */
+export const redeemExchangeToken = async (
+  gatewayUrl: string,
+  exchangeJwt: string,
+): Promise<{ token: string; expiresAt: number; userId?: string; displayName?: string }> => {
+  const base = gatewayUrl.replace(/\/+$/, '');
+  const response = await fetch(`${base}/api/auth/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: exchangeJwt }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      (err as { error?: { message?: string } }).error?.message
+      || `Exchange failed (${response.status})`,
+    );
+  }
+  const result = await response.json() as {
+    token: string;
+    expiresAt: number;
+    userId?: string;
+    displayName?: string;
+  };
+  saveJwt(result.token, result.expiresAt);
+  if (result.userId) userId = result.userId;
+  return result;
+};
+
 export const initJwt = (): void => { loadJwt(); };
 
 // ─── WebSocket RPC client ─────────────────────────────────────────────────
@@ -607,6 +644,35 @@ export async function apiFetchGlobal<T>(path: string, options?: { method?: strin
  * (id, name, mimeType, size, sandboxPath, …). Caller passes the returned
  * record on the next `session.message` so the agent runner can reference it.
  */
+/**
+ * Fetch an attachment's bytes as a blob URL for inline rendering. The web UI
+ * uses this for `<img src=...>` / `<audio src=...>` / `<video src=...>` so the
+ * bearer token never has to leak into a public URL. Caller is responsible for
+ * `URL.revokeObjectURL` once the element unmounts.
+ */
+export async function fetchAttachmentBlobUrl(
+  sessionId: string,
+  attachmentId: string,
+): Promise<{ url: string; mimeType: string }> {
+  const token = await getJwt();
+  const url =
+    `${gatewayBase}/api/agents/${encodeURIComponent(currentAgentId)}` +
+    `/sessions/${encodeURIComponent(sessionId)}` +
+    `/attachments/${encodeURIComponent(attachmentId)}/bytes`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Attachment bytes fetch failed (${res.status})`);
+  }
+  const mimeType =
+    res.headers.get('content-type')?.split(';')[0]?.trim() ||
+    'application/octet-stream';
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), mimeType };
+}
+
 export async function uploadAttachment(
   sessionId: string,
   file: File,
@@ -669,7 +735,39 @@ export const fetchScheduleRuns = (id: string) => apiFetch<ScheduleRunInfo[]>(`/s
 // (owner-issued) tokens. The server returns a single list with `kind` and
 // runtime status enriched on top of the DB row.
 export type ChannelKind = 'builtin' | 'external';
-export interface ChannelSecretKey { key: string; label: string; placeholder: string }
+export interface ChannelSecretKey { key: string; label: string; placeholder?: string; optional?: boolean }
+export type ChannelConfigField =
+  | {
+      kind: 'select';
+      key: string;
+      label: string;
+      options: ReadonlyArray<{ value: string; label: string }>;
+      defaultValue?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'text';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'string_list';
+      key: string;
+      label: string;
+      placeholder?: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    }
+  | {
+      kind: 'webhook_url';
+      label: string;
+      help?: string;
+      showWhen?: { field: string; equals: string };
+    };
 export interface ChannelInfo {
   id: string;
   agentId: string;
@@ -682,8 +780,12 @@ export interface ChannelInfo {
   tokenPrefix: string;
   createdAt: string;
   updatedAt: string;
-  /** Only for builtin rows: which env-var keys feed this channel. */
+  /** Secret env-var keys the channel needs (built-ins + plugins that declare them). */
   secretKeys?: ChannelSecretKey[];
+  /** Structured (non-secret) form fields, declared by the manifest. */
+  configFields?: ChannelConfigField[];
+  /** Skeleton config the UI should layer extras on top of (with ${{SECRET}} placeholders). */
+  defaultConfig?: Record<string, unknown>;
   /** Server-side check that those env vars are populated. */
   secretsSet: boolean;
   /** 'connected' | 'disabled' | 'error' | 'unknown' — derived from runtime. */
@@ -712,6 +814,7 @@ export interface ChannelManifestSummary {
   origin: 'built-in' | 'external';
   supportsSetup: boolean;
   secretKeys?: ChannelSecretKey[];
+  configFields?: ChannelConfigField[];
   defaultConfig?: Record<string, unknown>;
 }
 export const fetchChannelManifests = () =>

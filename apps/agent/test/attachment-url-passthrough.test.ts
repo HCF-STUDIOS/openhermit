@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import {
   resolveAttachmentByUrl,
   resolveInboundAttachments,
-} from '../../../apps/gateway/src/attachment-url-passthrough.js';
+} from '../src/attachments/index.js';
 import {
   DbAttachmentStore,
   LocalAttachmentStorage,

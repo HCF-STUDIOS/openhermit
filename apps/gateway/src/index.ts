@@ -24,6 +24,7 @@ import {
   DbSecretStore,
   DbAgentChannelStore,
   DbMetaStore,
+  DbConsumedJtiStore,
   LocalAttachmentStorage,
   S3AttachmentStorage,
   SupabaseAttachmentStorage,
@@ -186,6 +187,7 @@ export const main = async (): Promise<void> => {
   let attachmentStore: DbAttachmentStore | undefined;
   let metaStore: DbMetaStore | undefined;
   let sessionStore: DbSessionStore | undefined;
+  let consumedJtiStore: DbConsumedJtiStore | undefined;
   if (process.env.DATABASE_URL) {
     try {
       await runMigrations();
@@ -203,6 +205,7 @@ export const main = async (): Promise<void> => {
       attachmentStore = await DbAttachmentStore.open();
       metaStore = await DbMetaStore.open();
       sessionStore = await DbSessionStore.open();
+      consumedJtiStore = await DbConsumedJtiStore.open();
       if (process.env.OPENHERMIT_SECRETS_KEY) {
         agentChannelStore = await DbAgentChannelStore.open();
       }
@@ -253,7 +256,14 @@ export const main = async (): Promise<void> => {
             if (existing) continue;
             const legacy = legacyChannels[key];
             const enabled = !!legacy?.enabled;
-            const cfg = legacy ? { ...legacy } : {};
+            // Seed config from manifest.defaultConfig (carries `${{SECRET}}`
+            // placeholders) so the interpolation step has something to
+            // expand at start time. Legacy values from the pre-DB
+            // `channels` blob, if any, override the defaults.
+            const defaults = manifestRegistry.get(key)?.defaultConfig ?? {};
+            const cfg: Record<string, unknown> = legacy
+              ? { ...defaults, ...legacy }
+              : { ...defaults };
             delete (cfg as { enabled?: unknown }).enabled;
             await agentChannelStore.createBuiltin({
               agentId: agent.agentId,
@@ -396,6 +406,7 @@ export const main = async (): Promise<void> => {
       const now = new Date().toISOString();
       await skillStore.upsert({
         id: skill.id,
+        slug: skill.id,
         name: skill.name,
         description: skill.description,
         path: skill.path,
@@ -429,6 +440,7 @@ export const main = async (): Promise<void> => {
       : {}),
     ...(metaStore ? { metaStore } : {}),
     ...(sessionStore ? { sessionStore } : {}),
+    ...(consumedJtiStore ? { consumedJtiStore } : {}),
     sandboxPresets: config.sandboxPresets,
     autoProvisionSandbox: config.autoProvisionSandbox,
     channelRegistry: channels,
@@ -562,6 +574,7 @@ export const main = async (): Promise<void> => {
     await mcpServerStore?.close();
     await sessionStore?.close();
     await attachmentStore?.close();
+    await consumedJtiStore?.close();
 
     server.close(() => {
       logStartup('server closed');
