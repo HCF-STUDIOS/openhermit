@@ -249,9 +249,7 @@ export class DiscordBridge implements ChannelOutbound {
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
-            // Strip silence tokens from partial text too — otherwise a token
-            // emitted mid-stream would flash visibly in Discord before the
-            // final edit removed it.
+            // Strip mid-stream too so a token can't flash before the final edit.
             const displayText = stripSilenceTokens(accumulatedText).text;
 
             const now = Date.now();

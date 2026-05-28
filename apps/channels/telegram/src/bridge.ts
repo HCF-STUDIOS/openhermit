@@ -561,9 +561,7 @@ export class TelegramBridge implements ChannelOutbound {
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
-            // Strip silence tokens from partial text too — otherwise a token
-            // emitted mid-stream would flash visibly in Telegram before the
-            // final edit removed it.
+            // Strip mid-stream too so a token can't flash before the final edit.
             const displayText = stripSilenceTokens(accumulatedText).text;
 
             // For voice replies we collect text silently — sending
