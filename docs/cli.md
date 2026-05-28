@@ -278,6 +278,7 @@ query time (per the `agent_skills` wildcard pattern).
 | `skills list` | List every skill in the registry. |
 | `skills assignments` | Print which skills are enabled for which agents. |
 | `skills scan` | Scan the gateway's skills directory for new skill manifests. |
+| `skills sync [skillId]` | Re-read `SKILL.md` from disk and refresh the DB row + running agents. Pass a skill id to sync one; omit it to sync every registered system skill. |
 | `skills register <skillId>` | Register a skill (requires `--name`, `--description`, `--path`). |
 | `skills delete <skillId>` | Remove a skill from the registry. |
 | `skills enable <skillId>` | Enable a skill (`--agent <id>` or `--all`). |
@@ -288,6 +289,8 @@ hermit skills scan
 hermit skills enable code-review --all
 hermit skills disable code-review --agent agent_oncall
 hermit skills assignments
+hermit skills sync code-review        # after editing its SKILL.md on disk
+hermit skills sync                    # rescan every registered system skill
 ```
 
 ---

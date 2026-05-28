@@ -76,6 +76,11 @@ hermit skills scan
 # Register a new skill (reads SKILL.md frontmatter).
 hermit skills register my-skill --path ./skills/my-skill
 
+# Re-read SKILL.md after editing it on disk. Refreshes the description
+# stored in the DB and the copy each running agent sees in its sandbox.
+hermit skills sync my-skill            # one skill
+hermit skills sync                     # every registered system skill
+
 # Enable a skill for one agent.
 hermit skills enable standup-digest --agent main
 
@@ -196,6 +201,24 @@ hermit skills disable old-skill --all
 ```
 
 This does not delete the skill from the registry; it just stops it from being available on the selected agents. To delete entirely: `hermit skills delete old-skill`.
+
+---
+
+### 8.7.5 Edit an already-registered skill
+
+You edited `SKILL.md` (or a helper script) under the gateway's skills directory and want the change to take effect without re-registering:
+
+```bash
+hermit skills sync weekly-retro
+```
+
+`sync` re-reads the frontmatter, updates the description stored in the DB, and re-copies the skill folder into every running agent that has the skill enabled. To rescan every system skill at once, drop the argument:
+
+```bash
+hermit skills sync
+```
+
+The output lists each skill's outcome — `updated` (DB row changed), `unchanged` (DB already matched), `missing_on_disk` (folder gone), or `not_registered` (id not in the registry).
 
 ---
 
