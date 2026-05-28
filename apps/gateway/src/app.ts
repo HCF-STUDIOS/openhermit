@@ -2253,7 +2253,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const { parseFrontmatter } = await import('@openhermit/agent/skills');
     const { readFile } = await import('node:fs/promises');
 
-    const skillsDir = path.join(resolveGatewayDir(), 'registry', 'skills');
     const all = await store.list();
     const systemSkills = all.filter((s) => s.source === 'system');
 
@@ -2284,8 +2283,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const results: SyncResultEntry[] = [];
 
     for (const existing of targets) {
-      const skillPath = path.join(skillsDir, existing.id);
-      const skillMdPath = path.join(skillPath, 'SKILL.md');
+      // Read from the path recorded on the row — that's where the skill
+      // actually lives. Built-in skills point at a bundled location (e.g.
+      // inside @openhermit/agent); operator-registered system skills
+      // point at `<gatewayDir>/registry/skills/<id>/` (or wherever
+      // `register --path` was given). Either way, frontmatter that's
+      // visible to the runner is the frontmatter at this path.
+      const skillMdPath = path.join(existing.path, 'SKILL.md');
       let content: string;
       try {
         content = await readFile(skillMdPath, 'utf8');
@@ -2296,7 +2300,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const fm = parseFrontmatter(content);
       const newName = fm.name || existing.name;
       const newDescription = fm.description || existing.description;
-      const newPath = skillPath;
 
       const changes: Record<string, { from: string; to: string }> = {};
       if (newName !== existing.name) {
@@ -2304,9 +2307,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
       if (newDescription !== existing.description) {
         changes.description = { from: existing.description, to: newDescription };
-      }
-      if (newPath !== existing.path) {
-        changes.path = { from: existing.path, to: newPath };
       }
 
       if (Object.keys(changes).length === 0) {
@@ -2319,7 +2319,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         ...existing,
         name: newName,
         description: newDescription,
-        path: newPath,
         updatedAt: now,
       });
       results.push({ id: existing.id, action: 'updated', changes });
