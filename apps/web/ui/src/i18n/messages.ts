@@ -234,6 +234,47 @@ export const messages = {
   'composer.send': { en: 'Send', zh: '发送' },
   'composer.removeAria': { en: 'Remove {name}', zh: '移除 {name}' },
 
+  // ── Chat messages ─────────────────────────────────────────────
+  'chatMessages.loadingHistory': { en: 'Loading session history', zh: '加载会话历史' },
+  'chatMessages.empty': {
+    en: 'Start a conversation or select a session from the sidebar.',
+    zh: '开始对话，或在侧边栏中选择一个会话。',
+  },
+  'chatMessages.loadingAttachment': {
+    en: 'Loading attachment {name}',
+    zh: '加载附件 {name}',
+  },
+  'chatMessages.attachmentFailed': {
+    en: '[attachment] failed to load {name}: {error}',
+    zh: '[附件] 加载 {name} 失败：{error}',
+  },
+  'chatMessages.attachmentAlt': { en: 'attachment', zh: '附件' },
+  'chatMessages.errorPrefix': { en: '[error] {text}', zh: '[错误] {text}' },
+  'chatMessages.approvalRequired': {
+    en: 'Approval required · {tool}',
+    zh: '需要审批 · {tool}',
+  },
+  'chatMessages.noArguments': { en: 'No arguments', zh: '无参数' },
+  'chatMessages.approve': { en: 'Approve', zh: '批准' },
+  'chatMessages.deny': { en: 'Deny', zh: '拒绝' },
+  'chatMessages.reject': { en: 'Reject', zh: '拒绝' },
+  'chatMessages.approvedStatus': { en: '✅ Approved', zh: '✅ 已批准' },
+  'chatMessages.rejectedStatus': { en: '✗ Rejected', zh: '✗ 已拒绝' },
+  'chatMessages.approvedEvent': { en: '[approved] {tool}', zh: '[已批准] {tool}' },
+  'chatMessages.deniedEvent': { en: '[denied] {tool}', zh: '[已拒绝] {tool}' },
+  'chatMessages.you': { en: 'You', zh: '你' },
+  'chatMessages.assistant': { en: 'Assistant', zh: '助手' },
+  'chatMessages.thinking': { en: 'Thinking', zh: '思考中' },
+  'chatMessages.introspection': { en: 'Introspection', zh: '内省' },
+  'chatMessages.introspectionWithSummary': {
+    en: 'Introspection — {summary}',
+    zh: '内省 — {summary}',
+  },
+  'chatMessages.toolLabel': { en: 'Tool:', zh: '工具：' },
+  'chatMessages.toolStatusDone': { en: 'done', zh: '完成' },
+  'chatMessages.toolStatusError': { en: 'error', zh: '错误' },
+  'chatMessages.toolStatusRunning': { en: 'running', zh: '运行中' },
+
   // ── Language switcher ─────────────────────────────────────────
   'lang.aria': { en: 'Switch language', zh: '切换语言' },
 } as const satisfies Record<string, Messages>;

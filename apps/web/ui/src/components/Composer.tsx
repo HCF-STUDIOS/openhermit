@@ -158,7 +158,7 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
             disabled={!canPickFiles}
             onClick={() => fileInputRef.current?.click()}
             title={canPickFiles ? t('composer.attachAvailable') : t('composer.attachUnavailable')}
-            aria-label={t('composer.attachAvailable')}
+            aria-label={canPickFiles ? t('composer.attachAvailable') : t('composer.attachUnavailable')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />

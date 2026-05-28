@@ -1,4 +1,4 @@
-import { LOCALES, useTranslation, type Locale } from '../i18n';
+import { LOCALES, useTranslation } from '../i18n';
 
 interface Props {
   className?: string;
@@ -10,7 +10,10 @@ export function LanguageSwitcher({ className }: Props) {
     <select
       className={className ?? 'lang-switch'}
       value={locale}
-      onChange={(e) => setLocale(e.target.value as Locale)}
+      onChange={(e) => {
+        const next = LOCALES.find((l) => l.code === e.target.value)?.code;
+        if (next) setLocale(next);
+      }}
       aria-label={t('lang.aria')}
     >
       {LOCALES.map((l) => (
