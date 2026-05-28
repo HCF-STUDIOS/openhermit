@@ -198,16 +198,15 @@ export const registerSkillsCommand = (program: Command): void => {
     });
 
   skills
-    .command('sync <target>')
+    .command('sync [skillId]')
     .description(
       'Re-read SKILL.md from disk and refresh DB + running agents. ' +
-        'Target is a skill ID or "all" for every registered system skill.',
+        'Pass a skill ID to sync one; omit it to sync every registered system skill.',
     )
-    .action(async (target: string) => {
+    .action(async (skillId: string | undefined) => {
       try {
         const gateway = createGateway();
-        const id = target === 'all' ? undefined : target;
-        const { results, agentsRefreshed } = await gateway.syncSkills(id);
+        const { results, agentsRefreshed } = await gateway.syncSkills(skillId);
 
         if (results.length === 0) {
           console.log('No skills to sync.');
