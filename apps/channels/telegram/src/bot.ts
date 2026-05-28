@@ -153,6 +153,12 @@ export class TelegramBot {
       return { status: 400, body: 'invalid json' };
     }
 
+    // A delivered webhook is the same recovery signal as a successful poll:
+    // it proves the bot token is good and Telegram is actually routing to
+    // us. Clear any stale `last_error` so the UI stops showing an error
+    // that's already been resolved.
+    this.options.reportRuntimeError?.(null);
+
     // Dispatch asynchronously so we ack Telegram immediately.
     void this.handleUpdate(update);
     return { status: 200, body: '{"ok":true}', headers: { 'content-type': 'application/json' } };

@@ -91,7 +91,7 @@ export class ChannelPool {
       }
     }
 
-    await this.persistError(rowId, error);
+    await this.persistRuntime(rowId, error);
   }
 
   /**
@@ -176,7 +176,7 @@ export class ChannelPool {
         const errMsg = `no manifest registered for channel "${row.channelType}"`;
         this.opts.log(`[${agentId}] [${row.channelType}] ${errMsg} — skipping`);
         startedStatuses.push({ name: row.channelType, status: 'error', error: errMsg });
-        await this.persistError(row.id, errMsg);
+        await this.persistRuntime(row.id, errMsg);
         continue;
       }
       const resolved = await security.expandSecrets({ ...row.config, enabled: true });
@@ -192,7 +192,7 @@ export class ChannelPool {
       startedStatuses.push(status);
       const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
       this.lastReportedError.set(row.id, startErr);
-      await this.persistError(row.id, startErr);
+      await this.persistRuntime(row.id, startErr);
     }
 
     if (startedHandles.length > 0) this.handles.set(agentId, startedHandles);
@@ -204,12 +204,24 @@ export class ChannelPool {
     }
   }
 
-  private async persistError(channelId: string, error: string | null): Promise<void> {
+  /**
+   * Persist a runtime report (success or failure) from a bot. `null` is a
+   * success signal that clears `last_error` and bumps `last_success_at`;
+   * a non-null string records a failure and increments the counters.
+   *
+   * `disableChannel` uses `clearError` directly instead of routing through
+   * here — disabling is not a success.
+   */
+  private async persistRuntime(channelId: string, error: string | null): Promise<void> {
     try {
-      await this.opts.channelStore.recordError(channelId, error);
+      if (error === null) {
+        await this.opts.channelStore.recordSuccess(channelId);
+      } else {
+        await this.opts.channelStore.recordError(channelId, error);
+      }
     } catch (err) {
       this.opts.log(
-        `failed to persist channel error for ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
+        `failed to persist channel state for ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -301,7 +313,7 @@ export class ChannelPool {
       if (existingIdx !== -1) statuses[existingIdx] = errorStatus;
       else statuses.push(errorStatus);
       this.statuses.set(agentId, statuses);
-      await this.persistError(row.id, errorStatus.error ?? 'no manifest');
+      await this.persistRuntime(row.id, errorStatus.error ?? 'no manifest');
       return errorStatus;
     }
 
@@ -335,7 +347,7 @@ export class ChannelPool {
 
     const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
     this.lastReportedError.set(row.id, startErr);
-    await this.persistError(row.id, startErr);
+    await this.persistRuntime(row.id, startErr);
 
     return status;
   }
@@ -372,10 +384,18 @@ export class ChannelPool {
 
     // Disabling is a deliberate user action — clear the stale error so
     // the UI doesn't keep showing it after the user has acknowledged it.
+    // Use clearError (not recordSuccess): we have no proof the channel
+    // actually worked, just that the operator no longer cares.
     const row = await this.opts.channelStore.findBuiltin(agentId, channelName);
     if (row) {
       this.lastReportedError.delete(row.id);
-      await this.persistError(row.id, null);
+      try {
+        await this.opts.channelStore.clearError(row.id);
+      } catch (err) {
+        this.opts.log(
+          `failed to clear channel error for ${row.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     this.opts.log(`[${agentId}] pool stopped channel: ${channelName}`);

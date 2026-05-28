@@ -589,6 +589,15 @@ export interface AgentChannel {
   updatedAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  /** Last persisted runtime error from the bridge (null when healthy). */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  /** ISO timestamp of the most recent successful upstream interaction. */
+  lastSuccessAt?: string | null;
+  /** Failures since the last success — resets to 0 on recovery. */
+  consecutiveFailureCount?: number;
+  /** Monotonic lifetime failure count — never reset. */
+  totalFailureCount?: number;
 }
 
 /** Provider/model catalog entry returned by GET /api/providers. */

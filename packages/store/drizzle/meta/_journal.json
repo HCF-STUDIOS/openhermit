@@ -225,6 +225,13 @@
       "when": 1779900000000,
       "tag": "0031_consumed_jtis",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1780000000000,
+      "tag": "0032_agent_channels_success_counters",
+      "breakpoints": true
     }
   ]
 }

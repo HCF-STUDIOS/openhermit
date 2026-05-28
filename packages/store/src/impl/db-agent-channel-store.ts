@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import pg from 'pg';
 
 import * as schema from '../schema.js';
@@ -41,6 +41,12 @@ export interface AgentChannelRow {
   revokedAt: string | null;
   lastError: string | null;
   lastErrorAt: string | null;
+  /** ISO timestamp of the most recent successful upstream interaction. */
+  lastSuccessAt: string | null;
+  /** Consecutive failures since the last recorded success. */
+  consecutiveFailureCount: number;
+  /** Monotonic total failures — never reset. */
+  totalFailureCount: number;
 }
 
 export interface CreatedAgentChannel extends AgentChannelRow {
@@ -184,6 +190,9 @@ export class DbAgentChannelStore {
       revokedAt: null,
       lastError: null,
       lastErrorAt: null,
+      lastSuccessAt: null,
+      consecutiveFailureCount: 0,
+      totalFailureCount: 0,
       token,
     };
   }
@@ -234,16 +243,50 @@ export class DbAgentChannelStore {
   }
 
   /**
-   * Record the last bridge-start error so it persists across gateway
-   * restarts and is visible in the channels list. Pass `null` to clear
-   * after a successful start.
+   * Record a runtime error for the channel. Sets `last_error` /
+   * `last_error_at` and bumps the failure counters. The channel keeps any
+   * existing `last_success_at` — counters and success timestamps live
+   * independently so postmortems can answer "how many failures preceded
+   * the last recovery?".
    */
-  async recordError(id: string, error: string | null): Promise<void> {
+  async recordError(id: string, error: string): Promise<void> {
     await this.db.update(agentChannels)
       .set({
         lastError: error,
-        lastErrorAt: error ? new Date().toISOString() : null,
+        lastErrorAt: new Date().toISOString(),
+        consecutiveFailureCount: sql`${agentChannels.consecutiveFailureCount} + 1`,
+        totalFailureCount: sql`${agentChannels.totalFailureCount} + 1`,
       })
+      .where(eq(agentChannels.id, id));
+  }
+
+  /**
+   * Record a successful upstream interaction (poll-success, webhook
+   * delivery accepted, connection re-opened, …). Clears `last_error` /
+   * `last_error_at`, resets `consecutive_failure_count`, and stamps
+   * `last_success_at`. Cheap to call on every iteration — the gateway's
+   * channel pool already dedupes consecutive identical reports before
+   * reaching this layer.
+   */
+  async recordSuccess(id: string): Promise<void> {
+    await this.db.update(agentChannels)
+      .set({
+        lastError: null,
+        lastErrorAt: null,
+        lastSuccessAt: new Date().toISOString(),
+        consecutiveFailureCount: 0,
+      })
+      .where(eq(agentChannels.id, id));
+  }
+
+  /**
+   * Clear `last_error` without claiming a success. Used when the
+   * operator/user disables or removes the channel — the stored error is no
+   * longer actionable, but we have no reason to advance `last_success_at`.
+   */
+  async clearError(id: string): Promise<void> {
+    await this.db.update(agentChannels)
+      .set({ lastError: null, lastErrorAt: null })
       .where(eq(agentChannels.id, id));
   }
 
@@ -306,4 +349,7 @@ const rowToPublic = (row: typeof agentChannels.$inferSelect): AgentChannelRow =>
   revokedAt: row.revokedAt,
   lastError: row.lastError,
   lastErrorAt: row.lastErrorAt,
+  lastSuccessAt: row.lastSuccessAt,
+  consecutiveFailureCount: row.consecutiveFailureCount,
+  totalFailureCount: row.totalFailureCount,
 });

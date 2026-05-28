@@ -120,6 +120,17 @@ export const agentChannels = pgTable('agent_channels', {
   /** Last bridge-start error, surfaced in the channels list UI. */
   lastError: text('last_error'),
   lastErrorAt: text('last_error_at'),
+  /**
+   * Timestamp of the most recent successful upstream interaction
+   * (poll-200, webhook delivery, connection-open, …). Cleared independently
+   * of `last_error` so the UI can distinguish "errored and never recovered"
+   * from "errored briefly, working again".
+   */
+  lastSuccessAt: text('last_success_at'),
+  /** Consecutive failures since the last success; resets to 0 on success. */
+  consecutiveFailureCount: integer('consecutive_failure_count').default(0).notNull(),
+  /** Monotonic total — never reset; powers postmortem queries. */
+  totalFailureCount: integer('total_failure_count').default(0).notNull(),
 }, (table) => [
   index('idx_agent_channels_agent').on(table.agentId),
 ]);
