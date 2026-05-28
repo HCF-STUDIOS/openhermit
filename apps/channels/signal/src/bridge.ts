@@ -6,6 +6,7 @@ import type {
   ChannelOutbound,
   ChannelOutboundResult,
 } from '@openhermit/protocol';
+import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
@@ -47,8 +48,6 @@ export function shouldAcceptSender(
   if (msg.sourceNumber && allowedSenders.includes(msg.sourceNumber)) return true;
   return false;
 }
-
-const NO_REPLY_TAG = '<NO_REPLY>';
 
 interface TurnResult {
   text: string | undefined;
@@ -318,9 +317,13 @@ export class SignalBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
     const responseText = finalText ?? (accumulatedText.trim() || undefined);
-    if (responseText?.trim() === NO_REPLY_TAG) {
+    if (responseText === undefined) {
       return { text: undefined, error };
     }
-    return { text: responseText, error };
+    const stripped = stripSilenceTokens(responseText);
+    if (stripped.isSilent) {
+      return { text: undefined, error };
+    }
+    return { text: stripped.hadToken ? stripped.text : responseText, error };
   }
 }

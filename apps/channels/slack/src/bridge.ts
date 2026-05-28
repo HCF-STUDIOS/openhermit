@@ -2,11 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
 import { formatAgentResponse, markdownToSlackMrkdwn } from './formatting.js';
-
-const NO_REPLY_TAG = '<NO_REPLY>';
 
 interface TurnResult {
   text: string | undefined;
@@ -293,14 +292,18 @@ export class SlackBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
 
-    const responseText = finalText ?? (accumulatedText.trim() || undefined);
+    const rawResponseText = finalText ?? (accumulatedText.trim() || undefined);
+    const stripped =
+      rawResponseText !== undefined ? stripSilenceTokens(rawResponseText) : undefined;
 
-    if (responseText?.trim() === NO_REPLY_TAG) {
+    if (stripped?.isSilent) {
       if (sentTs) {
         void this.slack.web.chat.delete({ channel: channelId, ts: sentTs }).catch(() => undefined);
       }
       return { text: undefined, error: undefined };
     }
+
+    const responseText = stripped?.hadToken ? stripped.text : rawResponseText;
 
     if (sentTs && responseText) {
       try {

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramUser } from './telegram-api.js';
 import {
@@ -14,9 +15,6 @@ import {
   markdownToTelegramHtml,
   streamingMarkdownToTelegramHtml,
 } from './formatting.js';
-
-/** Sentinel value the agent can return to suppress a reply in group chats. */
-const NO_REPLY_TAG = '<NO_REPLY>';
 
 /** Collected result of an agent turn. */
 interface TurnResult {
@@ -482,16 +480,20 @@ export class TelegramBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
 
-    const responseText = finalText ?? (accumulatedText.trim() || undefined);
+    const rawResponseText = finalText ?? (accumulatedText.trim() || undefined);
+    const stripped =
+      rawResponseText !== undefined ? stripSilenceTokens(rawResponseText) : undefined;
 
     // Agent chose not to reply (group chat, not mentioned).
-    if (responseText && responseText.trim() === NO_REPLY_TAG) {
+    if (stripped?.isSilent) {
       if (sentMessageId) {
         // Delete the partially-streamed message.
         void this.telegram.deleteMessage(chatId, sentMessageId).catch(() => undefined);
       }
       return { text: undefined, error: undefined };
     }
+
+    const responseText = stripped?.hadToken ? stripped.text : rawResponseText;
 
     // Final edit to show complete text with HTML formatting (remove trailing " ...").
     if (sentMessageId && responseText) {

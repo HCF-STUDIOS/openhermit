@@ -13,6 +13,12 @@ export {
   formatScalar,
 } from './json-path.js';
 
+export {
+  SILENCE_TOKENS,
+  stripSilenceTokens,
+} from './silence-tokens.js';
+export type { StripSilenceResult } from './silence-tokens.js';
+
 export interface JsonErrorBody {
   error: {
     code: string;

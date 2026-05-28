@@ -14,11 +14,10 @@ import type {
   ChannelOutbound,
   ChannelOutboundResult,
 } from '@openhermit/protocol';
+import { stripSilenceTokens } from '@openhermit/shared';
 
 import { sendMessage } from './ilink/api.js';
 import { MessageItemType, MessageType, type WeixinMessage } from './ilink/types.js';
-
-const NO_REPLY_TAG = '<NO_REPLY>';
 
 interface TurnResult {
   text: string | undefined;
@@ -163,8 +162,11 @@ export class WechatBridge implements ChannelOutbound {
       await this.sendText(peer, `Error: ${result.error}`);
       return;
     }
-    if (replyText && replyText.trim() !== NO_REPLY_TAG) {
-      await this.sendText(peer, replyText);
+    if (replyText) {
+      const stripped = stripSilenceTokens(replyText);
+      if (!stripped.isSilent) {
+        await this.sendText(peer, stripped.hadToken ? stripped.text : replyText);
+      }
     }
   }
 

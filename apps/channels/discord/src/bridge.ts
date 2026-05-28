@@ -2,11 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
 import { formatAgentResponse, markdownToDiscord } from './formatting.js';
-
-const NO_REPLY_TAG = '<NO_REPLY>';
 
 interface TurnResult {
   text: string | undefined;
@@ -297,14 +296,18 @@ export class DiscordBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
 
-    const responseText = finalText ?? (accumulatedText.trim() || undefined);
+    const rawResponseText = finalText ?? (accumulatedText.trim() || undefined);
+    const stripped =
+      rawResponseText !== undefined ? stripSilenceTokens(rawResponseText) : undefined;
 
-    if (responseText?.trim() === NO_REPLY_TAG) {
+    if (stripped?.isSilent) {
       if (sentMessageId) {
         void this.discord.deleteMessage(channelId, sentMessageId).catch(() => undefined);
       }
       return { text: undefined, error: undefined };
     }
+
+    const responseText = stripped?.hadToken ? stripped.text : rawResponseText;
 
     if (sentMessageId && responseText) {
       try {
