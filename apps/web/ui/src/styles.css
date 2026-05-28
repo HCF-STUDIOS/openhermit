@@ -485,6 +485,12 @@ h2 { font-size: 14px; font-weight: 600; }
   color: var(--text-secondary);
 }
 
+.chat__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* ─── Chat messages ────────────────────────────────────────────── */
 
 .chat__messages {
