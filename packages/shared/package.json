@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit"
+    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   }
 }

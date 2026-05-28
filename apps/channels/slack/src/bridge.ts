@@ -245,13 +245,17 @@ export class SlackBridge implements ChannelOutbound {
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
+            // Strip silence tokens from partial text too — otherwise a token
+            // emitted mid-stream would flash visibly in Slack before the
+            // final edit removed it.
+            const displayText = stripSilenceTokens(accumulatedText).text;
 
             const now = Date.now();
-            if (!sentTs && accumulatedText.length > 0) {
+            if (!sentTs && displayText.length > 0) {
               try {
                 const sent = await this.slack.sendMessage(
                   channelId,
-                  markdownToSlackMrkdwn(accumulatedText) + ' ...',
+                  markdownToSlackMrkdwn(displayText) + ' ...',
                   ...(threadTs ? [{ threadTs }] : []),
                 );
                 sentTs = sent.ts;
@@ -261,7 +265,7 @@ export class SlackBridge implements ChannelOutbound {
               void this.slack.updateMessage(
                 channelId,
                 sentTs,
-                markdownToSlackMrkdwn(accumulatedText) + ' ...',
+                markdownToSlackMrkdwn(displayText) + ' ...',
               ).catch(() => undefined);
               lastEditTime = now;
             }

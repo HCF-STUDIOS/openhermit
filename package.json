@@ -16,7 +16,7 @@
     "clean:build": "node scripts/clean-build.mjs",
     "build": "npm run clean:build && tsc -b && npm run build:ui -w @openhermit/gateway && npm run build:ui -w @openhermit/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run build && export $(cat .env | xargs) && DATABASE_URL=$DATABASE_URL_TEST node --import tsx --test apps/agent/test/*.test.ts apps/cli/test/*.test.ts apps/web/test/*.test.ts",
+    "test": "npm run build && export $(cat .env | xargs) && DATABASE_URL=$DATABASE_URL_TEST node --import tsx --test apps/agent/test/*.test.ts apps/cli/test/*.test.ts apps/web/test/*.test.ts packages/shared/test/*.test.ts",
     "dev:gateway": "node -C development --import tsx apps/gateway/src/index.ts",
     "dev:web": "node -C development --import tsx apps/web/src/index.ts",
     "dev:cli": "node -C development --import tsx apps/cli/src/cli.ts",

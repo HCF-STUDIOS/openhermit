@@ -56,7 +56,7 @@ The runtime applies channel-agnostic group behavior:
 - owners always trigger the agent
 - non-owner mentioned messages trigger the agent
 - non-owner unmentioned messages are logged but do not trigger a model turn
-- exact `<NO_REPLY>` final responses are suppressed by adapters
+- `<NO_REPLY>` markers are stripped from final responses by adapters (the legacy `<EMPTY_RESPONSE>` token is also accepted); if the stripped remainder is empty the reply is suppressed entirely, otherwise the remainder is sent without the marker. Streaming edits apply the same stripping so a token appearing mid-stream never flashes in the channel.
 
 ## Outbound Messages
 

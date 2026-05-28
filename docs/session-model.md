@@ -83,7 +83,7 @@ Group sessions use the same runtime rules for Telegram, Discord, and Slack:
 - non-owner mentioned messages trigger the agent
 - non-owner unmentioned messages are logged but do not trigger
 - owner messages that are not directed at the agent are prefixed for context so the model can choose whether to reply
-- exact `<NO_REPLY>` responses are suppressed by channel adapters
+- `<NO_REPLY>` markers are stripped from agent responses by channel adapters; if the stripped remainder is empty the reply is suppressed entirely (whether the model emitted the token alone or alongside real text)
 
 ## Checkpoints
 

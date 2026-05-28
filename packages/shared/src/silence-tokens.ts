@@ -9,7 +9,13 @@ export interface StripSilenceResult {
   text: string;
   /** At least one silence token was present in the input. */
   hadToken: boolean;
-  /** After stripping, nothing meaningful remains — caller should not send. */
+  /**
+   * The agent explicitly chose to stay silent: a silence token was present
+   * AND nothing meaningful remains after stripping it. An empty/whitespace
+   * input with no token is NOT considered silent here — that's a separate
+   * "agent produced nothing" condition the caller should treat as it sees
+   * fit (e.g., an upstream error or empty stream).
+   */
   isSilent: boolean;
 }
 

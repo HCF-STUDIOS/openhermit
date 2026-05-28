@@ -249,13 +249,17 @@ export class DiscordBridge implements ChannelOutbound {
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
+            // Strip silence tokens from partial text too — otherwise a token
+            // emitted mid-stream would flash visibly in Discord before the
+            // final edit removed it.
+            const displayText = stripSilenceTokens(accumulatedText).text;
 
             const now = Date.now();
-            if (!sentMessageId && accumulatedText.length > 0) {
+            if (!sentMessageId && displayText.length > 0) {
               try {
                 const sent = await this.discord.sendMessage(
                   channelId,
-                  markdownToDiscord(accumulatedText) + ' ...',
+                  markdownToDiscord(displayText) + ' ...',
                 );
                 sentMessageId = sent.id;
                 lastEditTime = now;
@@ -264,7 +268,7 @@ export class DiscordBridge implements ChannelOutbound {
               void this.discord.editMessage(
                 channelId,
                 sentMessageId,
-                markdownToDiscord(accumulatedText) + ' ...',
+                markdownToDiscord(displayText) + ' ...',
               ).catch(() => undefined);
               lastEditTime = now;
             }

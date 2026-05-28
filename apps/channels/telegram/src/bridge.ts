@@ -416,12 +416,16 @@ export class TelegramBridge implements ChannelOutbound {
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
+            // Strip silence tokens from partial text too — otherwise a token
+            // emitted mid-stream would flash visibly in Telegram before the
+            // final edit removed it.
+            const displayText = stripSilenceTokens(accumulatedText).text;
 
             // Streaming edit: send initial message or throttled edits.
             const now = Date.now();
-            if (!sentMessageId && accumulatedText.length > 0) {
+            if (!sentMessageId && displayText.length > 0) {
               try {
-                const html = streamingMarkdownToTelegramHtml(accumulatedText);
+                const html = streamingMarkdownToTelegramHtml(displayText);
                 const sent = await this.telegram.sendMessage(
                   chatId,
                   html + ' ...',
@@ -436,7 +440,7 @@ export class TelegramBridge implements ChannelOutbound {
               sentMessageId &&
               now - lastEditTime >= EDIT_THROTTLE_MS
             ) {
-              const html = streamingMarkdownToTelegramHtml(accumulatedText);
+              const html = streamingMarkdownToTelegramHtml(displayText);
               void this.telegram
                 .editMessageText(chatId, sentMessageId, html + ' ...', { parseMode: 'HTML' })
                 .catch(() => undefined);
