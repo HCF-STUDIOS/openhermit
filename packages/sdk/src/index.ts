@@ -1175,6 +1175,29 @@ export class GatewayClient {
     await this.postJson(`/api/admin/skills/${encodeURIComponent(skillId)}/disable`, { agentId });
   }
 
+  /**
+   * Re-read SKILL.md frontmatter from disk and refresh the sandbox of every
+   * running agent that has the skill enabled.
+   *
+   * - Pass a skill id to sync that one skill.
+   * - Pass `'*'` or omit `id` to sync every registered system skill.
+   *
+   * Only system skills are touched; user-installed skills are managed via
+   * the skill-install tool and are not safe to mutate from the operator
+   * side.
+   */
+  async syncSkills(id?: string): Promise<{
+    results: Array<{
+      id: string;
+      action: 'updated' | 'unchanged' | 'missing_on_disk' | 'not_registered';
+      changes?: Record<string, { from: string; to: string }>;
+    }>;
+    agentsRefreshed: number;
+  }> {
+    const body = id && id !== '*' ? { id } : {};
+    return this.postJson(`/api/admin/skills/sync`, body);
+  }
+
   // --- instructions ---
 
   async listInstructions(agentId: string): Promise<Array<{ key: string; content: string; updatedAt: string }>> {

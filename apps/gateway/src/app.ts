@@ -2231,6 +2231,111 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.json({ ok: true });
   });
 
+  // Re-read SKILL.md frontmatter from `registry/skills/<id>/`, upsert name /
+  // description / path back into the `skills` row, and refresh sandbox file
+  // contents for every running agent that has the skill enabled. Body
+  // shape: `{ id?: string }` — pass an id to sync one skill, omit (or pass
+  // '*') to sync every registered system skill.
+  //
+  // Bridges the gap between "operator edits SKILL.md on disk" and "agents
+  // see the new content + DB description". Only touches `source === 'system'`
+  // rows; user-installed skills are owned by their installers and managed
+  // through the skill-install tool, not by this endpoint.
+  app.post('/api/admin/skills/sync', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    const store = requireSkillStore();
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const requestedId =
+      typeof body.id === 'string' && body.id !== '' && body.id !== '*'
+        ? body.id
+        : undefined;
+
+    const { parseFrontmatter } = await import('@openhermit/agent/skills');
+    const { readFile } = await import('node:fs/promises');
+
+    const skillsDir = path.join(resolveGatewayDir(), 'registry', 'skills');
+    const all = await store.list();
+    const systemSkills = all.filter((s) => s.source === 'system');
+
+    let targets;
+    if (requestedId) {
+      const match = all.find((s) => s.id === requestedId);
+      if (!match) {
+        return c.json({
+          results: [{ id: requestedId, action: 'not_registered' }],
+          agentsRefreshed: 0,
+        });
+      }
+      if (match.source !== 'system') {
+        throw new ValidationError(
+          `Skill ${requestedId} is a user skill — sync only applies to system skills.`,
+        );
+      }
+      targets = [match];
+    } else {
+      targets = systemSkills;
+    }
+
+    interface SyncResultEntry {
+      id: string;
+      action: 'updated' | 'unchanged' | 'missing_on_disk' | 'not_registered';
+      changes?: Record<string, { from: string; to: string }>;
+    }
+    const results: SyncResultEntry[] = [];
+
+    for (const existing of targets) {
+      const skillPath = path.join(skillsDir, existing.id);
+      const skillMdPath = path.join(skillPath, 'SKILL.md');
+      let content: string;
+      try {
+        content = await readFile(skillMdPath, 'utf8');
+      } catch {
+        results.push({ id: existing.id, action: 'missing_on_disk' });
+        continue;
+      }
+      const fm = parseFrontmatter(content);
+      const newName = fm.name || existing.name;
+      const newDescription = fm.description || existing.description;
+      const newPath = skillPath;
+
+      const changes: Record<string, { from: string; to: string }> = {};
+      if (newName !== existing.name) {
+        changes.name = { from: existing.name, to: newName };
+      }
+      if (newDescription !== existing.description) {
+        changes.description = { from: existing.description, to: newDescription };
+      }
+      if (newPath !== existing.path) {
+        changes.path = { from: existing.path, to: newPath };
+      }
+
+      if (Object.keys(changes).length === 0) {
+        results.push({ id: existing.id, action: 'unchanged' });
+        continue;
+      }
+
+      const now = new Date().toISOString();
+      await store.upsert({
+        ...existing,
+        name: newName,
+        description: newDescription,
+        path: newPath,
+        updatedAt: now,
+      });
+      results.push({ id: existing.id, action: 'updated', changes });
+    }
+
+    // Always re-copy sandbox skill dirs: SKILL.md body and helper scripts
+    // can change without any frontmatter diff, so DB "unchanged" does not
+    // imply "agents already see the latest bytes".
+    await syncAffectedAgentSkillMounts('*', store);
+
+    return c.json({
+      results,
+      agentsRefreshed: instances.getRunningAgentIds().length,
+    });
+  });
+
   app.post('/api/admin/skills/:id/disable', async (c) => {
     requireAdmin(c.req.header('authorization'));
     const store = requireSkillStore();
