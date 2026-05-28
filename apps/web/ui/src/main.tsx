@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { InsecureContextNotice } from './components/InsecureContextNotice';
+import { LocaleProvider } from './i18n';
 import './styles.css';
 
 // The web UI uses Web Crypto (window.crypto.subtle) to manage device keys
@@ -13,13 +14,17 @@ const root = createRoot(document.getElementById('root')!);
 if (typeof window !== 'undefined' && !window.isSecureContext) {
   root.render(
     <StrictMode>
-      <InsecureContextNotice />
+      <LocaleProvider>
+        <InsecureContextNotice />
+      </LocaleProvider>
     </StrictMode>,
   );
 } else {
   root.render(
     <StrictMode>
-      <App />
+      <LocaleProvider>
+        <App />
+      </LocaleProvider>
     </StrictMode>,
   );
 }

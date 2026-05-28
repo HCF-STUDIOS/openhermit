@@ -1,5 +1,6 @@
 import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { uploadAttachment, type SessionAttachment } from '../api';
+import { useTranslation } from '../i18n';
 
 interface Props {
   onSend: (text: string, attachments?: SessionAttachment[]) => void;
@@ -27,6 +28,7 @@ const formatBytes = (n: number): string => {
 };
 
 export function Composer({ onSend, disabled, running = false, onInterrupt, sessionId }: Props) {
+  const { t } = useTranslation();
   const [text, setText] = useState('');
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -125,7 +127,7 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
                 type="button"
                 className="composer__chip-remove"
                 onClick={() => removeUpload(u.key)}
-                aria-label={`Remove ${u.file.name}`}
+                aria-label={t('composer.removeAria', { name: u.file.name })}
               >
                 ×
               </button>
@@ -136,7 +138,7 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
       <textarea
         ref={textareaRef}
         rows={3}
-        placeholder="Ask OpenHermit to inspect files, run code, search memory, or continue a previous thread..."
+        placeholder={t('composer.placeholder')}
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={handleKeyDown}
@@ -155,8 +157,8 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
             className="composer__attach-btn"
             disabled={!canPickFiles}
             onClick={() => fileInputRef.current?.click()}
-            title={canPickFiles ? 'Attach files' : 'Attach files (unavailable)'}
-            aria-label="Attach files"
+            title={canPickFiles ? t('composer.attachAvailable') : t('composer.attachUnavailable')}
+            aria-label={t('composer.attachAvailable')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -164,19 +166,19 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
           </button>
           <p className="composer__hint">
             {running
-              ? 'Click Stop to interrupt the current turn.'
+              ? t('composer.hintRunning')
               : anyUploading
-                ? 'Uploading attachments…'
-                : 'Press Enter to send, Shift+Enter for newline.'}
+                ? t('composer.hintUploading')
+                : t('composer.hintIdle')}
           </p>
         </div>
         {running ? (
           <button className="btn btn--danger" type="submit" disabled={!onInterrupt}>
-            Stop
+            {t('composer.stop')}
           </button>
         ) : (
           <button className="btn btn--primary" type="submit" disabled={sendDisabled}>
-            Send
+            {t('composer.send')}
           </button>
         )}
       </div>

@@ -10,6 +10,8 @@ import {
   type AgentMembership,
   type Connection,
 } from '../api';
+import { useTranslation } from '../i18n';
+import { LanguageSwitcher } from './LanguageSwitcher';
 
 interface Props {
   gatewayUrl: string;
@@ -35,6 +37,7 @@ export function PickAgentScreen({
   initialJoinToken,
   initialError,
 }: Props) {
+  const { t } = useTranslation();
   const [memberships, setMemberships] = useState<AgentMembership[] | null>(null);
   const [error, setError] = useState(initialError ?? '');
   const [joinAgentId, setJoinAgentId] = useState(initialJoinAgentId ?? '');
@@ -75,10 +78,10 @@ export function PickAgentScreen({
   const copy = async (value: string, label: string): Promise<void> => {
     try {
       await navigator.clipboard.writeText(value);
-      setCopyMsg(`${label} copied`);
+      setCopyMsg(t('pickAgent.copySuccess', { label }));
       setTimeout(() => setCopyMsg(''), 1800);
     } catch {
-      setCopyMsg('Copy failed — select and copy manually');
+      setCopyMsg(t('pickAgent.copyFailed'));
     }
   };
 
@@ -115,27 +118,28 @@ export function PickAgentScreen({
 
   return (
     <div className="center-screen">
+      <div className="welcome-corner"><LanguageSwitcher /></div>
       <div className="card card--form" style={{ maxWidth: 520 }}>
         <p className="eyebrow">OpenHermit</p>
-        <h1>Pick an agent</h1>
+        <h1>{t('pickAgent.title')}</h1>
         <p className="hint">
           <span>
-            Signed in as <strong>{getDisplayName() || 'Unknown'}</strong>
+            {t('pickAgent.signedInAs')} <strong>{getDisplayName() || t('common.unknown')}</strong>
             {getUserId() && <span className="hint__uid"> · {getUserId()}</span>}
           </span>
           <br />
-          <span style={{ color: 'var(--muted)' }}>gateway: </span>
+          <span style={{ color: 'var(--muted)' }}>{t('pickAgent.gateway')} </span>
           <code style={{ fontSize: 12 }}>{gatewayUrl}</code>
         </p>
 
         {error && <p className="form-error">{error}</p>}
 
         <h3 style={{ fontSize: 13, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 16, marginBottom: 8 }}>
-          Your agents
+          {t('pickAgent.yourAgents')}
         </h3>
-        {memberships === null && <p className="hint">Loading…</p>}
+        {memberships === null && <p className="hint">{t('common.loading')}</p>}
         {memberships !== null && memberships.length === 0 && (
-          <p className="hint">No agent memberships yet — join one below.</p>
+          <p className="hint">{t('pickAgent.empty')}</p>
         )}
         {memberships !== null && memberships.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
@@ -147,7 +151,7 @@ export function PickAgentScreen({
                   type="button"
                   className="btn btn--ghost"
                   disabled={busy || isDisabled}
-                  title={isDisabled ? 'This agent is disabled and cannot accept traffic.' : undefined}
+                  title={isDisabled ? t('pickAgent.disabledTitle') : undefined}
                   onClick={() => void enter(m)}
                   style={{
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -182,20 +186,20 @@ export function PickAgentScreen({
             onClick={() => setJoinOpen(true)}
             style={{ marginTop: 16 }}
           >
-            + Join another agent
+            {t('pickAgent.joinAnother')}
           </button>
         ) : (
           <>
             <h3 style={{ fontSize: 13, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 24, marginBottom: 8 }}>
-              Join another agent
+              {t('pickAgent.joinAnotherHeading')}
             </h3>
             <form onSubmit={handleJoin}>
               <label className="field">
-                <span className="field__label">Agent ID</span>
+                <span className="field__label">{t('pickAgent.agentId')}</span>
                 <input
                   className="field__input"
                   type="text"
-                  placeholder="e.g. one"
+                  placeholder={t('pickAgent.agentIdPlaceholder')}
                   required
                   autoFocus
                   value={joinAgentId}
@@ -203,19 +207,15 @@ export function PickAgentScreen({
                 />
               </label>
               <label className="field">
-                <span className="field__label">Agent invite token</span>
+                <span className="field__label">{t('pickAgent.inviteToken')}</span>
                 <input
                   className="field__input"
                   type="password"
-                  placeholder="Only if the agent is protected"
+                  placeholder={t('pickAgent.inviteTokenPlaceholder')}
                   value={joinToken}
                   onChange={(e) => setJoinToken(e.target.value)}
                 />
-                <span className="field__help">
-                  Per-agent shared secret from the agent's owner (set with
-                  <code> hermit agents create --access-token …</code>). This is
-                  <strong> not</strong> your bearer token.
-                </span>
+                <span className="field__help">{t('pickAgent.inviteTokenHelp')}</span>
               </label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
@@ -228,7 +228,7 @@ export function PickAgentScreen({
                   }}
                   disabled={busy}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button
                   className="btn btn--primary"
@@ -236,7 +236,7 @@ export function PickAgentScreen({
                   disabled={!joinAgentId.trim() || busy}
                   style={{ flex: 1 }}
                 >
-                  {busy ? 'Joining...' : 'Join'}
+                  {busy ? t('pickAgent.joining') : t('pickAgent.join')}
                 </button>
               </div>
             </form>
@@ -249,7 +249,7 @@ export function PickAgentScreen({
           onClick={() => void openTokens()}
           style={{ marginTop: 16 }}
         >
-          {tokensOpen ? 'Hide access tokens' : 'Show access tokens'}
+          {tokensOpen ? t('pickAgent.hideTokens') : t('pickAgent.showTokens')}
         </button>
         {tokensOpen && (
           <div
@@ -266,21 +266,17 @@ export function PickAgentScreen({
           >
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <strong>API bearer token (your JWT)</strong>
+                <strong>{t('pickAgent.bearerTitle')}</strong>
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm"
-                  onClick={() => void copy(accessToken, 'Bearer token')}
+                  onClick={() => void copy(accessToken, t('pickAgent.bearerLabel'))}
                   disabled={!accessToken}
                 >
-                  Copy
+                  {t('common.copy')}
                 </button>
               </div>
-              <p className="hint" style={{ margin: '0 0 6px' }}>
-                Short-lived (~24h). Use as <code>Authorization: Bearer &lt;token&gt;</code> for the
-                CLI, curl, or any HTTP integration. Auto-refreshes from your device key when it
-                expires. <strong>Don't paste this into the "Agent invite token" field</strong> when joining an agent — that field is a separate per-agent secret.
-              </p>
+              <p className="hint" style={{ margin: '0 0 6px' }}>{t('pickAgent.bearerHelp')}</p>
               <code
                 style={{
                   display: 'block',
@@ -293,13 +289,13 @@ export function PickAgentScreen({
                   overflow: 'auto',
                 }}
               >
-                {accessToken || 'Loading…'}
+                {accessToken || t('common.loading')}
               </code>
             </div>
 
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <strong>Device key</strong>
+                <strong>{t('pickAgent.deviceKey')}</strong>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button
                     type="button"
@@ -307,25 +303,22 @@ export function PickAgentScreen({
                     onClick={() => setShowDeviceKey((v) => !v)}
                     disabled={!deviceKeyJson}
                   >
-                    {showDeviceKey ? 'Hide' : 'Reveal'}
+                    {showDeviceKey ? t('pickAgent.hide') : t('pickAgent.reveal')}
                   </button>
                   <button
                     type="button"
                     className="btn btn--ghost btn--sm"
-                    onClick={() => void copy(deviceKeyJson, 'Device key')}
+                    onClick={() => void copy(deviceKeyJson, t('pickAgent.deviceKeyLabel'))}
                     disabled={!deviceKeyJson}
                   >
-                    Copy
+                    {t('common.copy')}
                   </button>
                 </div>
               </div>
               <p className="hint" style={{ margin: '0 0 6px' }}>
-                Fingerprint: <code style={{ fontSize: 11 }}>{fingerprint ? `${fingerprint.slice(0, 8)}…${fingerprint.slice(-8)}` : '—'}</code>
+                {t('pickAgent.fingerprintLabel')} <code style={{ fontSize: 11 }}>{fingerprint ? `${fingerprint.slice(0, 8)}…${fingerprint.slice(-8)}` : '—'}</code>
                 <br />
-                <span style={{ color: 'var(--danger, #b91c1c)' }}>
-                  ⚠ This is your private key. Anyone with it can sign in as you. Save it to a
-                  password manager to add another device — never paste it into chat or email.
-                </span>
+                <span style={{ color: 'var(--danger, #b91c1c)' }}>{t('pickAgent.deviceKeyWarning')}</span>
               </p>
               {showDeviceKey && (
                 <code
@@ -340,7 +333,7 @@ export function PickAgentScreen({
                     overflow: 'auto',
                   }}
                 >
-                  {deviceKeyJson || 'Loading…'}
+                  {deviceKeyJson || t('common.loading')}
                 </code>
               )}
             </div>
@@ -355,7 +348,7 @@ export function PickAgentScreen({
           onClick={onSignOut}
           style={{ marginTop: 16, marginLeft: 8 }}
         >
-          Sign out
+          {t('pickAgent.signOut')}
         </button>
       </div>
     </div>

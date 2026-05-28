@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { getDisplayName, getUserId, type Connection } from '../api';
+import { useTranslation } from '../i18n';
+import { LanguageSwitcher } from './LanguageSwitcher';
 
 interface Props {
   defaultGatewayUrl: string;
@@ -10,6 +12,7 @@ interface Props {
 }
 
 export function ConnectScreen({ defaultGatewayUrl, defaultAgentId, defaultToken, error, onConnect }: Props) {
+  const { t } = useTranslation();
   const [gatewayUrl, setGatewayUrl] = useState(defaultGatewayUrl);
   const [agentId, setAgentId] = useState(defaultAgentId);
   const [token, setToken] = useState(defaultToken);
@@ -31,25 +34,26 @@ export function ConnectScreen({ defaultGatewayUrl, defaultAgentId, defaultToken,
 
   return (
     <div className="center-screen">
+      <div className="welcome-corner"><LanguageSwitcher /></div>
       <form className="card card--form" onSubmit={handleSubmit}>
         <p className="eyebrow">OpenHermit</p>
-        <h1>Connect to Agent</h1>
+        <h1>{t('connect.title')}</h1>
         <p className="hint">
           <span>
-            Signed in as <strong>{getDisplayName() || 'Unknown'}</strong>
+            {t('pickAgent.signedInAs')} <strong>{getDisplayName() || t('common.unknown')}</strong>
             {getUserId() && <span className="hint__uid"> · {getUserId()}</span>}
           </span>
           <br />
-          <span style={{ color: 'var(--muted)' }}>at </span>
+          <span style={{ color: 'var(--muted)' }}>{t('connect.at')} </span>
           <code style={{ fontSize: 12 }}>{typeof window !== 'undefined' ? window.location.origin : ''}</code>
         </p>
 
         <label className="field">
-          <span className="field__label">Gateway URL</span>
+          <span className="field__label">{t('setup.gatewayUrl')}</span>
           <input
             className="field__input"
             type="url"
-            placeholder="http://localhost:4000"
+            placeholder={t('connect.gatewayPlaceholder')}
             required
             value={gatewayUrl}
             onChange={e => setGatewayUrl(e.target.value)}
@@ -57,11 +61,11 @@ export function ConnectScreen({ defaultGatewayUrl, defaultAgentId, defaultToken,
         </label>
 
         <label className="field">
-          <span className="field__label">Agent ID</span>
+          <span className="field__label">{t('pickAgent.agentId')}</span>
           <input
             className="field__input"
             type="text"
-            placeholder="one"
+            placeholder={t('connect.agentIdPlaceholder')}
             required
             value={agentId}
             onChange={e => setAgentId(e.target.value)}
@@ -69,11 +73,11 @@ export function ConnectScreen({ defaultGatewayUrl, defaultAgentId, defaultToken,
         </label>
 
         <label className="field">
-          <span className="field__label">Agent Access Token</span>
+          <span className="field__label">{t('connect.accessToken')}</span>
           <input
             className="field__input"
             type="password"
-            placeholder="Only for protected agents"
+            placeholder={t('connect.accessTokenPlaceholder')}
             value={token}
             onChange={e => setToken(e.target.value)}
           />
@@ -82,7 +86,7 @@ export function ConnectScreen({ defaultGatewayUrl, defaultAgentId, defaultToken,
         {error && <p className="form-error">{error}</p>}
 
         <button className="btn btn--primary btn--full" type="submit" disabled={loading}>
-          {loading ? 'Connecting...' : 'Connect'}
+          {loading ? t('connect.submitting') : t('connect.submit')}
         </button>
       </form>
     </div>

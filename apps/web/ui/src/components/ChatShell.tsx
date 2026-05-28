@@ -1,5 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AgentWsClient, apiFetch, fetchAgentInfo, getDisplayName, getUserId, type Connection, type SessionSummary, type HistoryMessage, type OutboundEvent, type SessionAttachment } from '../api';
+import { useTranslation } from '../i18n';
+import { LanguageSwitcher } from './LanguageSwitcher';
 import { SessionList } from './SessionList';
 import { ChatMessages, type ChatItem } from './ChatMessages';
 import { Composer } from './Composer';
@@ -56,6 +58,7 @@ interface Props {
 }
 
 export function ChatShell({ connection, role, onDisconnect }: Props) {
+  const { t } = useTranslation();
   const initialRoute = parseRoute(window.location.pathname);
   const [view, setView] = useState<View>(initialRoute.view);
   const [manageTab, setManageTab] = useState<ManageTab>(initialRoute.view === 'manage' ? initialRoute.tab : 'basic');
@@ -72,7 +75,13 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(initialSessionId);
   const [items, setItems] = useState<ChatItem[]>([]);
   const [agentName, setAgentName] = useState<string | null>(null);
-  const [status, setStatus] = useState('Connecting');
+  const [status, setStatus] = useState<'Connecting' | 'Connected' | 'Disconnected' | 'Running'>('Connecting');
+  const statusLabelKey = {
+    Connecting: 'chatShell.statusConnecting',
+    Connected: 'chatShell.statusConnected',
+    Disconnected: 'chatShell.statusDisconnected',
+    Running: 'chatShell.statusRunning',
+  } as const;
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -657,7 +666,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   const deleteSession = useCallback(async (sessionId: string) => {
     const ws = wsRef.current;
     if (!ws) return;
-    if (!confirm('Delete this session? This cannot be undone.')) return;
+    if (!confirm(t('chatShell.deleteConfirm'))) return;
     try {
       await ws.deleteSession(sessionId);
       if (currentSessionRef.current === sessionId) {
@@ -790,8 +799,8 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     sessions.find(s => s.sessionId === currentSessionId) ??
     observeSessions.find(s => s.sessionId === currentSessionId);
   const sessionTitle = isInbox
-    ? 'Inbox'
-    : (currentSession?.description || currentSession?.lastMessagePreview || currentSessionId || 'No session');
+    ? t('chatShell.inbox')
+    : (currentSession?.description || currentSession?.lastMessagePreview || currentSessionId || t('chatShell.noSession'));
   const isWebSession = !currentSession || currentSession.source?.kind === 'api' && currentSession.source?.platform === 'web';
   // Observation sessions are always read-only — owners are peeking at
   // someone else's conversation, not participating.
@@ -819,7 +828,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             <a
               className="sidebar__brand"
               href="/"
-              aria-label="OpenHermit home"
+              aria-label={t('chatShell.brandHome')}
               onClick={(e) => {
                 e.preventDefault();
                 setView('chat');
@@ -832,15 +841,15 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
               <img src="/logo.png" alt="" className="sidebar__logo" />
               <div>
                 <h1 className="sidebar__brand-name">OpenHermit</h1>
-                <p className="sidebar__meta">Agent: {agentName || connection.agentId}</p>
+                <p className="sidebar__meta">{t('chatShell.agentLabel')} {agentName || connection.agentId}</p>
               </div>
             </a>
             {isOwner && (
               <button
                 type="button"
                 className={`sidebar__icon-btn${currentSessionId === 'inbox' && view === 'chat' ? ' is-active' : ''}`}
-                aria-label="Inbox"
-                title="Inbox"
+                aria-label={t('chatShell.inbox')}
+                title={t('chatShell.inbox')}
                 onClick={() => {
                   if (view === 'manage') setView('chat');
                   void selectSessionById('inbox');
@@ -851,7 +860,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                   <path d="m3 7 9 6 9-6" />
                 </svg>
                 {inboxUnread > 0 && (
-                  <span className="sidebar__icon-badge" aria-label={`${inboxUnread} unread`}>
+                  <span className="sidebar__icon-badge" aria-label={t('chatShell.unreadAria', { count: inboxUnread })}>
                     {inboxUnread > 99 ? '99+' : inboxUnread}
                   </span>
                 )}
@@ -866,7 +875,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                 void createNewSession();
               }}
             >
-              New Session
+              {t('chatShell.newSession')}
             </button>
             {isOwner && (
               <button
@@ -880,7 +889,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                   }
                 }}
               >
-                Manage
+                {t('chatShell.manage')}
               </button>
             )}
           </div>
@@ -896,7 +905,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                   setCurrentSessionId(null);
                   setItems([]);
                 }}
-                title="Back to my sessions"
+                title={t('chatShell.backToMy')}
               >
                 <span className="sidebar__observe-icon" aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -904,14 +913,14 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                     <path d="m12 19-7-7 7-7" />
                   </svg>
                 </span>
-                <span className="sidebar__observe-label">Back to my sessions</span>
+                <span className="sidebar__observe-label">{t('chatShell.backToMy')}</span>
               </button>
             ) : (
               <button
                 type="button"
                 className="sidebar__observe-btn"
                 onClick={() => void enterObserveMode()}
-                title="View other users' sessions on this agent"
+                title={t('chatShell.observationTitle')}
               >
                 <span className="sidebar__observe-icon" aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -919,7 +928,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                     <circle cx="12" cy="12" r="3" />
                   </svg>
                 </span>
-                <span className="sidebar__observe-label">Observation Mode</span>
+                <span className="sidebar__observe-label">{t('chatShell.observation')}</span>
               </button>
             )}
           </div>
@@ -929,18 +938,19 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
           currentSessionId={currentSessionId}
           onSelect={sessionId => void selectSession(sessionId)}
           onDelete={inObserveView ? undefined : (sessionId => void deleteSession(sessionId))}
-          emptyMessage={inObserveView ? 'No other-user sessions on this agent yet.' : undefined}
+          emptyMessage={inObserveView ? t('chatShell.observeEmpty') : undefined}
         />
         <div className="sidebar__footer">
           <div>
             <div className="sidebar__footer-name">
               <span className="sidebar__footer-dot" />
-              {getDisplayName() || 'Anonymous'}
+              {getDisplayName() || t('chatShell.footerAnonymous')}
               {getUserId() && <span className="sidebar__footer-uid"> · {getUserId()}</span>}
             </div>
-            <div className="sidebar__footer-auth">Auth: device key · WS</div>
+            <div className="sidebar__footer-auth">{t('chatShell.footerAuth')}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={onDisconnect}>Disconnect</button>
+          <LanguageSwitcher />
+          <button className="btn btn--ghost btn--sm" onClick={onDisconnect}>{t('chatShell.disconnect')}</button>
         </div>
       </aside>
 
@@ -950,13 +960,13 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             <header className="chat__header">
               <button
                 className="chat__back"
-                aria-label="Back to sessions"
+                aria-label={t('chatShell.backAria')}
                 onClick={handleMobileBack}
               >
                 ←
               </button>
               <div>
-                <p className="eyebrow">Agent Management</p>
+                <p className="eyebrow">{t('chatShell.eyebrowManage')}</p>
                 <h2>{connection.agentId}</h2>
               </div>
             </header>
@@ -971,23 +981,23 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
             <header className="chat__header">
               <button
                 className="chat__back"
-                aria-label="Back to sessions"
+                aria-label={t('chatShell.backAria')}
                 onClick={handleMobileBack}
               >
                 ←
               </button>
               <div>
-                <p className="eyebrow">Current Session</p>
+                <p className="eyebrow">{t('chatShell.eyebrowSession')}</p>
                 <h2>{sessionTitle}</h2>
               </div>
-              <p className="chat__status">{status}</p>
+              <p className="chat__status">{t(statusLabelKey[status])}</p>
             </header>
 
             <ChatMessages
               items={items}
               agentName={agentName ?? undefined}
               loading={loadingHistory}
-              emptyMessage={isInbox ? 'No notifications yet.' : undefined}
+              emptyMessage={isInbox ? t('chatShell.inboxEmpty') : undefined}
               onApproval={handleApproval}
               onMessageAction={handleMessageAction}
             />
@@ -996,10 +1006,10 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
               <div className="composer composer--readonly">
                 <span>
                   {isInbox
-                    ? 'Read-only — inbox is the owner notification feed'
+                    ? t('chatShell.readOnlyInbox')
                     : inObserveView
-                      ? `Read-only — observing a session from ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`
-                      : `Read-only — this session was created via ${currentSession?.source?.platform || currentSession?.source?.kind || 'another channel'}`}
+                      ? t('chatShell.readOnlyObserve', { source: currentSession?.source?.platform || currentSession?.source?.kind || t('chatShell.sourceUnknown') })
+                      : t('chatShell.readOnlyExternal', { source: currentSession?.source?.platform || currentSession?.source?.kind || t('chatShell.sourceUnknown') })}
                 </span>
               </div>
             ) : (

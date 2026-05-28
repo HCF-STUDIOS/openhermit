@@ -1,14 +1,15 @@
 import type { SessionSummary } from '../api';
+import { useTranslation, type Translator } from '../i18n';
 
-const relativeTime = (iso: string): string => {
+const relativeTime = (iso: string, t: Translator): string => {
   const diff = Date.now() - new Date(iso).getTime();
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (diff < minute) return 'just now';
-  if (diff < hour) return `${Math.round(diff / minute)}m ago`;
-  if (diff < day) return `${Math.round(diff / hour)}h ago`;
-  return `${Math.round(diff / day)}d ago`;
+  if (diff < minute) return t('sessionList.justNow');
+  if (diff < hour) return t('sessionList.minutesAgo', { n: Math.round(diff / minute) });
+  if (diff < day) return t('sessionList.hoursAgo', { n: Math.round(diff / hour) });
+  return t('sessionList.daysAgo', { n: Math.round(diff / day) });
 };
 
 interface Props {
@@ -20,10 +21,11 @@ interface Props {
 }
 
 export function SessionList({ sessions, currentSessionId, onSelect, onDelete, emptyMessage }: Props) {
+  const { t } = useTranslation();
   if (sessions.length === 0) {
     return (
       <div className="sidebar__list">
-        <div className="empty-state">{emptyMessage ?? 'No sessions yet. Start one to begin chatting.'}</div>
+        <div className="empty-state">{emptyMessage ?? t('sessionList.empty')}</div>
       </div>
     );
   }
@@ -54,23 +56,25 @@ export function SessionList({ sessions, currentSessionId, onSelect, onDelete, em
                   </span>
                   {(session.status === 'running' || session.status === 'awaiting_approval') && (
                     <span className={`session-badge session-badge--${session.status}`}>
-                      {session.status === 'awaiting_approval' ? 'approval' : session.status}
+                      {session.status === 'awaiting_approval'
+                        ? t('sessionList.badgeApproval')
+                        : t('sessionList.badgeRunning')}
                     </span>
                   )}
                 </div>
               </div>
               <div className="session-card__meta">
-                {relativeTime(session.lastActivityAt)} · {session.messageCount} msgs
+                {relativeTime(session.lastActivityAt, t)} · {t('sessionList.msgs', { n: session.messageCount })}
               </div>
               <p className="session-card__preview">
-                {session.lastMessagePreview || 'No preview yet'}
+                {session.lastMessagePreview || t('sessionList.noPreview')}
               </p>
             </button>
             {canDelete && (
               <button
                 type="button"
                 className="session-card__delete"
-                title="Delete session"
+                title={t('sessionList.deleteTitle')}
                 onClick={(e) => { e.stopPropagation(); onDelete(session.sessionId); }}
               >
                 ×

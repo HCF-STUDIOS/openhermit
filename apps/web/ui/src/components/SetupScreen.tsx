@@ -10,6 +10,8 @@ import {
   setDisplayName,
   setGateway,
 } from '../api';
+import { useTranslation } from '../i18n';
+import { LanguageSwitcher } from './LanguageSwitcher';
 
 interface Props {
   onComplete: () => void;
@@ -24,6 +26,7 @@ interface Props {
  * step 2 (PickAgentScreen).
  */
 export function SetupScreen({ onComplete }: Props) {
+  const { t } = useTranslation();
   const [fingerprint, setFingerprint] = useState('');
   const [gatewayUrl, setGatewayUrl] = useState(loadGatewayUrl() ?? window.location.origin);
   const [name, setName] = useState(getDisplayName() ?? '');
@@ -58,17 +61,17 @@ export function SetupScreen({ onComplete }: Props) {
       setGateway(url);
       if (mode === 'restore') {
         const ok = importDeviceKey(restoreKey.trim());
-        if (!ok) throw new Error('That doesn\'t look like a valid device key. Paste the full JSON you exported.');
+        if (!ok) throw new Error(t('setup.errInvalidKey'));
         // Use the imported display name if present, otherwise fall back to
         // whatever the user typed (or the existing one).
         const importedName = getDisplayName();
         const dn = importedName || name.trim();
-        if (!dn) throw new Error('Display name is required.');
+        if (!dn) throw new Error(t('setup.errNameRequired'));
         if (!importedName) setDisplayName(dn);
         await exchangeToken(dn);
       } else {
         const dn = name.trim();
-        if (!dn) throw new Error('Display name is required.');
+        if (!dn) throw new Error(t('setup.errNameRequired'));
         setDisplayName(dn);
         await exchangeToken(dn);
       }
@@ -84,19 +87,20 @@ export function SetupScreen({ onComplete }: Props) {
 
   return (
     <div className="center-screen">
+      <div className="welcome-corner"><LanguageSwitcher /></div>
       <form className="card card--form" onSubmit={handleSubmit}>
         <p className="eyebrow">OpenHermit</p>
-        <h1>{isNew ? 'Welcome' : 'Connect to Gateway'}</h1>
+        <h1>{isNew ? t('setup.welcome') : t('setup.connectTitle')}</h1>
         <p className="hint">
           {mode === 'restore'
-            ? 'Paste a device key you previously exported to restore access on this browser.'
+            ? t('setup.hintRestore')
             : isNew
-            ? 'A new device key has been generated for this browser. Tell us where the gateway is and what to call you.'
-            : 'Sign in to your gateway with this device key.'}
+            ? t('setup.hintNew')
+            : t('setup.hintExisting')}
         </p>
 
         <div className="device-key-display">
-          <span className="field__label">Device Key Fingerprint</span>
+          <span className="field__label">{t('setup.deviceKeyFingerprint')}</span>
           <code className="device-key-value">{shortFp}</code>
         </div>
 
@@ -108,7 +112,7 @@ export function SetupScreen({ onComplete }: Props) {
             className={`welcome-tab${mode === 'new' ? ' welcome-tab--active' : ''}`}
             onClick={() => { setMode('new'); setError(''); }}
           >
-            New device
+            {t('setup.tabNew')}
           </button>
           <button
             type="button"
@@ -117,13 +121,13 @@ export function SetupScreen({ onComplete }: Props) {
             className={`welcome-tab${mode === 'restore' ? ' welcome-tab--active' : ''}`}
             onClick={() => { setMode('restore'); setError(''); }}
           >
-            Restore from key
+            {t('setup.tabRestore')}
           </button>
         </div>
 
         {mode === 'restore' && (
           <label className="field">
-            <span className="field__label">Device key (JSON)</span>
+            <span className="field__label">{t('setup.deviceKeyJsonLabel')}</span>
             <textarea
               className="field__input"
               rows={6}
@@ -133,15 +137,12 @@ export function SetupScreen({ onComplete }: Props) {
               onChange={(e) => setRestoreKey(e.target.value)}
               style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
             />
-            <span className="field__help">
-              Paste the full JSON you copied from <strong>Show access tokens → Device key</strong> on
-              another browser. Display name will be restored from the file.
-            </span>
+            <span className="field__help">{t('setup.deviceKeyJsonHelp')}</span>
           </label>
         )}
 
         <label className="field">
-          <span className="field__label">Gateway URL</span>
+          <span className="field__label">{t('setup.gatewayUrl')}</span>
           <input
             className="field__input"
             type="url"
@@ -154,11 +155,11 @@ export function SetupScreen({ onComplete }: Props) {
 
         {mode === 'new' && (
           <label className="field">
-            <span className="field__label">Display Name</span>
+            <span className="field__label">{t('setup.displayName')}</span>
             <input
               className="field__input"
               type="text"
-              placeholder="Your name"
+              placeholder={t('setup.displayNamePlaceholder')}
               required
               autoFocus={isNew}
               value={name}
@@ -180,12 +181,12 @@ export function SetupScreen({ onComplete }: Props) {
           }
         >
           {submitting
-            ? 'Connecting...'
+            ? t('setup.submitConnecting')
             : mode === 'restore'
-            ? 'Restore device'
+            ? t('setup.submitRestore')
             : isNew
-            ? 'Get started'
-            : 'Continue'}
+            ? t('setup.submitNew')
+            : t('setup.submitContinue')}
         </button>
       </form>
     </div>
