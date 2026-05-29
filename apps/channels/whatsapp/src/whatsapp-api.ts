@@ -1,5 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
 } from 'baileys';
 import type { ChannelCredentialStore } from '@openhermit/protocol';
 import pino from 'pino';
@@ -9,6 +10,15 @@ import { useDbAuthState } from './db-auth-state.js';
 
 export type RawWhatsAppMessage = Record<string, any>;
 export type RawWhatsAppMessageHandler = (message: RawWhatsAppMessage) => void | Promise<void>;
+
+/** Outbound media payload routed to the right Baileys message content. */
+export interface WhatsAppOutboundMedia {
+  bytes: Uint8Array;
+  mimeType: string;
+  kind: 'image' | 'audio' | 'video' | 'document';
+  filename: string;
+  caption?: string;
+}
 
 export interface WhatsAppApiOptions {
   authProfile: string;
@@ -65,6 +75,59 @@ export class WhatsAppApi {
     const sent = await this.sock.sendMessage(jid, { text });
     const messageId = sent?.key?.id;
     return typeof messageId === 'string' ? { messageId } : {};
+  }
+
+  /**
+   * Send a media attachment. The `kind` picks the Baileys content shape
+   * (image/video/document/audio). ogg/opus audio is sent as a push-to-talk
+   * voice note; WhatsApp audio messages do not carry captions.
+   */
+  async sendMedia(target: string, media: WhatsAppOutboundMedia): Promise<{ messageId?: string }> {
+    if (!this.sock) throw new Error('WhatsApp socket is not connected');
+    const jid = targetToJid(target);
+    const buffer = Buffer.from(media.bytes);
+    const caption = media.caption && media.caption.length > 0 ? media.caption : undefined;
+
+    let content: Record<string, unknown>;
+    if (media.kind === 'image') {
+      content = { image: buffer, mimetype: media.mimeType, ...(caption ? { caption } : {}) };
+    } else if (media.kind === 'video') {
+      content = { video: buffer, mimetype: media.mimeType, ...(caption ? { caption } : {}) };
+    } else if (media.kind === 'audio') {
+      // Strip MIME parameters (e.g. `audio/ogg; codecs=opus`) before matching.
+      const baseMime = media.mimeType.split(';', 1)[0]!.trim().toLowerCase();
+      const ptt = baseMime === 'audio/ogg' || baseMime === 'audio/opus';
+      content = { audio: buffer, mimetype: media.mimeType, ...(ptt ? { ptt: true } : {}) };
+    } else {
+      content = {
+        document: buffer,
+        mimetype: media.mimeType,
+        fileName: media.filename,
+        ...(caption ? { caption } : {}),
+      };
+    }
+
+    const sent = await this.sock.sendMessage(jid, content);
+    const messageId = sent?.key?.id;
+    return typeof messageId === 'string' ? { messageId } : {};
+  }
+
+  /**
+   * Download the media bytes for an inbound message via Baileys. `rawMessage`
+   * must be the full `WAMessage` (key + message) delivered by `messages.upsert`.
+   */
+  async downloadMedia(rawMessage: RawWhatsAppMessage): Promise<Buffer> {
+    if (!this.sock) throw new Error('WhatsApp socket is not connected');
+    const buffer = await downloadMediaMessage(
+      rawMessage as never,
+      'buffer',
+      {},
+      {
+        logger: pino({ level: 'silent' }) as never,
+        reuploadRequest: this.sock.updateMediaMessage,
+      },
+    );
+    return buffer;
   }
 
   private async connect(): Promise<void> {

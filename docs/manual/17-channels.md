@@ -25,7 +25,7 @@ A **channel** is a transport for messages: the CLI, the web UI, a Telegram bot, 
 **Installable as npm packages** (add via `hermit channel install`):
 
 - **WeChat (personal)** — `@openhermit/channel-wechat`. Pair an existing personal WeChat account with the agent using a QR-scan wizard. Text-only v0.
-- **WhatsApp** — `@openhermit/channel-whatsapp`. Link a WhatsApp account through WhatsApp Web / Linked Devices using a QR-scan wizard. Text-only v1.
+- **WhatsApp** — `@openhermit/channel-whatsapp`. Link a WhatsApp account through WhatsApp Web / Linked Devices using a QR-scan wizard. Supports text plus media (images/video/documents as attachments; voice notes transcribed).
 
 Each non-CLI channel needs a credential (a bot token, app secret, or linked-device auth state). Operator-entered tokens are stored as secrets — see [Chapter 18](18-secrets.md). Channel-owned auth state, such as WhatsApp Web credentials, is stored in encrypted channel credential rows.
 
@@ -80,7 +80,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 - Install with `hermit channel install @openhermit/channel-whatsapp`, then restart the gateway.
 - Pair through *Manage → Channels → Add channel → WhatsApp*: scan the QR code from WhatsApp → Linked devices.
 - Baileys auth state is stored in encrypted DB channel credentials; the channel row keeps only `auth_profile` plus allow-list settings. Legacy `auth_dir` folders are no longer used.
-- Text-only in v1 — captions are treated as text, media-only messages are ignored.
+- Media: inbound images/video/documents are uploaded as attachments (images become vision input) with captions kept as text; voice notes are transcribed via STT and replies spoken via TTS when voice is configured. The agent can send media back via `attachment_send`. Attachments over 25 MiB are skipped.
 
 ### Web / CLI
 
