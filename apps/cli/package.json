@@ -1,6 +1,6 @@
 {
   "name": "openhermit",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "OpenHermit — multi-agent platform CLI & server",
   "type": "module",
   "license": "MIT",
