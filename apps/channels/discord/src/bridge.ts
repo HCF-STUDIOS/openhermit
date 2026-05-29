@@ -10,6 +10,9 @@ import { formatAgentResponse, markdownToDiscord } from './formatting.js';
 /** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 
+/** Bound CDN attachment fetches so a stalled connection can't block the queue. */
+const MEDIA_FETCH_TIMEOUT_MS = 15_000;
+
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
@@ -115,7 +118,8 @@ export class DiscordBridge implements ChannelOutbound {
       }
       let bytes: Uint8Array;
       try {
-        const res = await fetch(att.url);
+        // Bound the CDN fetch so a stalled connection can't block the queue.
+        const res = await fetch(att.url, { signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS) });
         if (!res.ok) throw new Error(`status ${res.status}`);
         bytes = new Uint8Array(await res.arrayBuffer());
       } catch (err) {
