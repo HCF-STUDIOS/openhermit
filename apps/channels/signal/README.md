@@ -5,9 +5,14 @@ account via [`bbernhard/signal-cli-rest-api`](https://github.com/bbernhard/signa
 The plugin is **not bundled** in the CLI — operators install it
 explicitly when they want Signal support.
 
-## v1 scope
+## Scope
 
-- Text inbound and outbound (no media)
+- Text inbound and outbound
+- **Media**: inbound attachments are downloaded via `GET /v1/attachments/{id}`
+  and uploaded to the agent (images become vision input); audio attachments
+  are transcribed via the agent's STT. Outbound `attachment_send` deliveries
+  go out as `base64_attachments` on `/v2/send`. Attachments over the 25 MiB
+  cap are skipped.
 - DMs and group messages
 - QR-link wizard via `ChannelSetup`
 - Optional allow-lists (`allowed_senders`, `allowed_group_ids`)

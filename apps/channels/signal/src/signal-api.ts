@@ -1,10 +1,21 @@
 import { WebSocket } from 'ws';
 
+/** Bound attachment downloads so a stalled connection can't block the queue. */
+const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 15_000;
+
 export interface SignalApiOptions {
   httpUrl: string;
   account: string;
   selfUuid?: string;
   fetch?: typeof fetch;
+}
+
+/** An inbound attachment referenced in a Signal dataMessage. */
+export interface SignalAttachment {
+  id: string;
+  contentType?: string;
+  filename?: string;
+  size?: number;
 }
 
 export interface SignalIncomingMessage {
@@ -15,10 +26,17 @@ export interface SignalIncomingMessage {
   groupId?: string;
   timestamp: number;
   isSelf: boolean;
+  attachments?: SignalAttachment[];
 }
 
 export interface SendResult {
   timestamp: number;
+}
+
+/** Optional outbound extras for a send. */
+export interface SendOptions {
+  /** signal-cli-rest-api base64 strings, e.g. `data:<mime>;filename=<n>;base64,<data>`. */
+  base64Attachments?: string[];
 }
 
 export class SignalApi {
@@ -34,15 +52,15 @@ export class SignalApi {
     this.selfUuid = opts.selfUuid;
   }
 
-  async sendDirectMessage(recipient: string, message: string): Promise<SendResult> {
-    return this.send([recipient], message);
+  async sendDirectMessage(recipient: string, message: string, opts?: SendOptions): Promise<SendResult> {
+    return this.send([recipient], message, opts);
   }
 
-  async sendGroupMessage(groupId: string, message: string): Promise<SendResult> {
-    return this.send([groupId], message);
+  async sendGroupMessage(groupId: string, message: string, opts?: SendOptions): Promise<SendResult> {
+    return this.send([groupId], message, opts);
   }
 
-  private async send(recipients: string[], message: string): Promise<SendResult> {
+  private async send(recipients: string[], message: string, opts?: SendOptions): Promise<SendResult> {
     const res = await this.fetchImpl(`${this.httpUrl}/v2/send`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -51,6 +69,9 @@ export class SignalApi {
         recipients,
         message,
         text_mode: 'styled',
+        ...(opts?.base64Attachments && opts.base64Attachments.length > 0
+          ? { base64_attachments: opts.base64Attachments }
+          : {}),
       }),
     });
     if (!res.ok) {
@@ -59,6 +80,65 @@ export class SignalApi {
     }
     const json = (await res.json()) as { timestamp?: number };
     return { timestamp: json.timestamp ?? Date.now() };
+  }
+
+  /**
+   * Download an inbound attachment's bytes by id via `GET /v1/attachments/{id}`.
+   * When `maxBytes` is given the cap is enforced here: an oversized declared
+   * content-length is rejected up front, and the body is streamed and aborted
+   * the moment it crosses the limit.
+   */
+  async downloadAttachment(
+    id: string,
+    maxBytes?: number,
+  ): Promise<{ bytes: Uint8Array; contentType: string | undefined }> {
+    const res = await this.fetchImpl(`${this.httpUrl}/v1/attachments/${encodeURIComponent(id)}`, {
+      signal: AbortSignal.timeout(ATTACHMENT_DOWNLOAD_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`signal-cli-rest-api attachment download failed (${res.status})`);
+    }
+    const contentType = res.headers.get('content-type') ?? undefined;
+
+    if (maxBytes !== undefined) {
+      const declared = Number(res.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        throw new Error(`Signal attachment exceeds the ${maxBytes}-byte limit (content-length ${declared})`);
+      }
+    }
+
+    if (maxBytes === undefined || !res.body) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+        throw new Error(`Signal attachment exceeds the ${maxBytes}-byte limit (${bytes.byteLength} bytes)`);
+      }
+      return { bytes, contentType };
+    }
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          throw new Error(`Signal attachment exceeds the ${maxBytes}-byte limit`);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { bytes: out, contentType };
   }
 
   async sendTyping(recipient: string): Promise<void> {
@@ -159,7 +239,9 @@ export class SignalApi {
     const data = env.dataMessage as Record<string, unknown> | undefined;
     if (!data) return null;
     const text = typeof data.message === 'string' ? data.message : '';
-    if (!text) return null;
+    const attachments = parseAttachments(data.attachments);
+    // Forward only if there's text or at least one attachment to download.
+    if (!text && attachments.length === 0) return null;
 
     const sourceUuid = typeof env.sourceUuid === 'string' ? env.sourceUuid : undefined;
     const sourceNumber = typeof env.sourceNumber === 'string' ? env.sourceNumber : undefined;
@@ -178,6 +260,24 @@ export class SignalApi {
     if (sourceNumber) out.sourceNumber = sourceNumber;
     if (sourceName) out.sourceName = sourceName;
     if (groupId) out.groupId = groupId;
+    if (attachments.length > 0) out.attachments = attachments;
     return out;
   }
+}
+
+/** Parse the `dataMessage.attachments` array into typed descriptors. */
+function parseAttachments(raw: unknown): SignalAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SignalAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const a = item as Record<string, unknown>;
+    if (typeof a.id !== 'string') continue;
+    const att: SignalAttachment = { id: a.id };
+    if (typeof a.contentType === 'string') att.contentType = a.contentType;
+    if (typeof a.filename === 'string') att.filename = a.filename;
+    if (typeof a.size === 'number') att.size = a.size;
+    out.push(att);
+  }
+  return out;
 }

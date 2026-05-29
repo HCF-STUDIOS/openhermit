@@ -62,6 +62,42 @@ test('SignalApi.sendGroupMessage POSTs with recipients = [groupId]', async () =>
   });
 });
 
+test('SignalApi.sendDirectMessage includes base64_attachments when provided', async () => {
+  const { fetch: spy, calls } = makeFetchSpy({ body: { timestamp: 1 } });
+  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });
+
+  await api.sendDirectMessage('+15559999999', 'see this', {
+    base64Attachments: ['data:image/png;filename=pic.png;base64,AAAA'],
+  });
+
+  assert.deepEqual(calls[0]!.body, {
+    number: '+15551234567',
+    recipients: ['+15559999999'],
+    message: 'see this',
+    text_mode: 'styled',
+    base64_attachments: ['data:image/png;filename=pic.png;base64,AAAA'],
+  });
+});
+
+test('SignalApi.downloadAttachment returns bytes under the cap', async () => {
+  const data = Uint8Array.from([1, 2, 3, 4]);
+  const spy: typeof fetch = async () =>
+    new Response(data, { status: 200, headers: { 'content-type': 'image/png' } });
+  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+1', fetch: spy });
+
+  const out = await api.downloadAttachment('att-1', 1024);
+  assert.deepEqual(Array.from(out.bytes), [1, 2, 3, 4]);
+  assert.equal(out.contentType, 'image/png');
+});
+
+test('SignalApi.downloadAttachment rejects an oversized content-length up front', async () => {
+  const spy: typeof fetch = async () =>
+    new Response(new Uint8Array(10), { status: 200, headers: { 'content-length': '999999' } });
+  const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+1', fetch: spy });
+
+  await assert.rejects(() => api.downloadAttachment('att-1', 100), /exceeds the 100-byte limit/);
+});
+
 test('SignalApi.sendTyping PUTs /v1/typing-indicator/{account}', async () => {
   const { fetch: spy, calls } = makeFetchSpy({ status: 204 });
   const api = new SignalApi({ httpUrl: 'http://signal:8080', account: '+15551234567', fetch: spy });

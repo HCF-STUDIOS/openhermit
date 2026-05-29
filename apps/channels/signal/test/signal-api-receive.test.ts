@@ -55,6 +55,36 @@ test('streamMessages yields normalized DM envelopes', async () => {
   );
 });
 
+test('streamMessages yields an attachment-only message (no text)', async () => {
+  await withMockWsServer(
+    (ws) => {
+      ws.send(JSON.stringify({
+        envelope: {
+          sourceNumber: '+15559999999',
+          sourceUuid: 'uuid-alice',
+          timestamp: 1709,
+          dataMessage: {
+            message: null,
+            attachments: [
+              { id: 'att-1', contentType: 'image/jpeg', filename: 'pic.jpg', size: 1234 },
+            ],
+          },
+        },
+      }));
+    },
+    async (port) => {
+      const api = new SignalApi({ httpUrl: `http://localhost:${port}`, account: '+15551234567' });
+      const iter = api.streamMessages({ signal: AbortSignal.timeout(1000) });
+      const { value } = await iter.next();
+      assert.equal(value!.text, '');
+      assert.deepEqual(value!.attachments, [
+        { id: 'att-1', contentType: 'image/jpeg', filename: 'pic.jpg', size: 1234 },
+      ]);
+      await iter.return?.();
+    },
+  );
+});
+
 test('streamMessages yields groupId when envelope is from a group', async () => {
   await withMockWsServer(
     (ws) => {

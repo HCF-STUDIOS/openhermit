@@ -20,7 +20,7 @@ Not bundled in the CLI. Operators install them with `hermit channel install <pkg
 
 | Platform | Package | Connection |
 |----------|---------|------------|
-| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard |
+| Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard; text + media (files/images, audio transcribed) |
 | WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text-only v0 |
 | WhatsApp | `@openhermit/channel-whatsapp` | WhatsApp Web via Baileys; QR setup wizard — text + media (image/video/document/voice) |
 
@@ -176,6 +176,12 @@ Slack:
 - deduplicates paired message/app-mention events
 - media inbound (`file_share` uploads fetched with bot-token auth and uploaded as session attachments; images become vision input; audio transcribed via STT) and outbound (`attachment_send` → `files.uploadV2`, into the thread when applicable); files over the 25 MiB cap are skipped. Needs `files:read` + `files:write` scopes.
 - optional `allowed_channel_ids`
+
+Signal (external plugin):
+
+- signal-cli-rest-api WebSocket receive (`MODE=json-rpc`); QR-link setup wizard
+- media inbound (attachments fetched via `GET /v1/attachments/{id}` and uploaded as session attachments — images become vision input — audio transcribed via STT) and outbound (`attachment_send` → `base64_attachments` on `/v2/send`); attachments over the 25 MiB cap are skipped
+- DMs open by default unless `allowed_senders` is set; groups default-deny unless `allowed_group_ids` is set
 
 WeChat (external plugin):
 

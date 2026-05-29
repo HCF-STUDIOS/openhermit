@@ -8,11 +8,14 @@ import type {
 } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
-import type { SignalApi, SignalIncomingMessage } from './signal-api.js';
+import type { SendOptions, SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
 import { redactId, redactTarget } from './redact.js';
 
 const AGENT_RESPONSE_TIMEOUT_MS = 60_000;
+
+/** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 
 export interface ConversationKeyInput {
   sourceUuid?: string;
@@ -52,6 +55,12 @@ export function shouldAcceptSender(
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
+}
+
+/** Outcome of resolving an inbound message's attachments. */
+interface ResolvedInbound {
+  text: string;
+  attachments?: { type: 'file'; id: string }[];
 }
 
 export interface SignalBridgeOptions {
@@ -108,17 +117,21 @@ export class SignalBridge implements ChannelOutbound {
     }
   }
 
-  private async sendChunkToTarget(target: string, text: string): Promise<{ timestamp: number }> {
+  private async sendChunkToTarget(
+    target: string,
+    text: string,
+    opts?: SendOptions,
+  ): Promise<{ timestamp: number }> {
     if (target.startsWith('signal:group:')) {
-      return this.signal.sendGroupMessage(target.slice('signal:group:'.length), text);
+      return this.signal.sendGroupMessage(target.slice('signal:group:'.length), text, opts);
     }
     if (target.startsWith('signal:uuid:')) {
-      return this.signal.sendDirectMessage(target.slice('signal:uuid:'.length), text);
+      return this.signal.sendDirectMessage(target.slice('signal:uuid:'.length), text, opts);
     }
     if (target.startsWith('signal:')) {
-      return this.signal.sendDirectMessage(target.slice('signal:'.length), text);
+      return this.signal.sendDirectMessage(target.slice('signal:'.length), text, opts);
     }
-    return this.signal.sendDirectMessage(target, text);
+    return this.signal.sendDirectMessage(target, text, opts);
   }
 
   async handleIncoming(msg: SignalIncomingMessage): Promise<void> {
@@ -133,6 +146,11 @@ export class SignalBridge implements ChannelOutbound {
     const senderChannelUserId = msg.sourceUuid ?? msg.sourceNumber ?? 'unknown';
     await this.ensureSession(sessionId, msg, senderChannelUserId);
 
+    // Resolve attachments: audio is transcribed via STT; other media is
+    // uploaded as a durable session attachment (images become vision input).
+    const resolved = await this.resolveInbound(sessionId, msg);
+    if (!resolved.text && !resolved.attachments) return;
+
     const senderName = msg.sourceName;
     // For DMs the sender IS the session user — surface that identity to the
     // gateway via `x-channel-user-id` so tools like identity_link_request
@@ -141,8 +159,9 @@ export class SignalBridge implements ChannelOutbound {
     // body field on each turn), so we don't claim a session-level user.
     const postOpts = msg.groupId ? undefined : { channelUserId: senderChannelUserId };
     const postResult = await this.client.postMessage(sessionId, {
-      text: msg.text,
+      text: resolved.text,
       mentioned: true,
+      ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       sender: {
         channel: 'signal',
         channelUserId: senderChannelUserId,
@@ -152,12 +171,93 @@ export class SignalBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId);
+    const result = await this.waitForAgentResponse(sessionId, key);
     if (result.error && !result.text) {
       await this.send({ sessionId, to: key, text: `Error: ${result.error}` });
     } else if (result.text) {
       await this.send({ sessionId, to: key, text: result.text });
     }
+  }
+
+  /**
+   * Download each inbound Signal attachment and either transcribe it (audio)
+   * or upload it as a durable session attachment (everything else).
+   */
+  private async resolveInbound(
+    sessionId: string,
+    msg: SignalIncomingMessage,
+  ): Promise<ResolvedInbound> {
+    let text = msg.text;
+    const ids: { type: 'file'; id: string }[] = [];
+    const transcripts: string[] = [];
+
+    for (const att of msg.attachments ?? []) {
+      if (att.size && att.size > MAX_MEDIA_BYTES) {
+        this.log(`skipping oversized attachment ${redactId(att.id)} (${att.size} bytes)`);
+        continue;
+      }
+      let bytes: Uint8Array;
+      let contentType: string | undefined;
+      try {
+        const dl = await this.signal.downloadAttachment(att.id, MAX_MEDIA_BYTES);
+        bytes = dl.bytes;
+        contentType = dl.contentType;
+      } catch (err) {
+        this.log(`failed to download attachment ${redactId(att.id)}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const mime = att.contentType ?? contentType ?? 'application/octet-stream';
+      const filename = att.filename ?? `${att.id}.${mime.split(';', 1)[0]!.split('/')[1] ?? 'bin'}`;
+      if (mime.startsWith('audio/')) {
+        try {
+          const { text: transcript } = await this.client.transcribeAudio({ bytes, mimeType: mime });
+          if (transcript.trim()) transcripts.push(transcript.trim());
+        } catch (err) {
+          this.log(`stt failed for ${redactId(att.id)}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        try {
+          const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+          const uploaded = await this.client.uploadAttachment(sessionId, blob, filename);
+          ids.push({ type: 'file', id: uploaded.id! });
+        } catch (err) {
+          this.log(`upload failed for ${redactId(att.id)}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    if (transcripts.length > 0) {
+      const joined = transcripts.join('\n\n');
+      text = text ? `${text}\n\n[Transcribed voice message]\n${joined}` : `[Transcribed voice message]\n${joined}`;
+    }
+
+    return { text, ...(ids.length > 0 ? { attachments: ids } : {}) };
+  }
+
+  /**
+   * Deliver an outbound `attachment` SSE event via signal-cli base64 send.
+   * Bytes are pulled lazily from the agent-local API and base64-encoded.
+   */
+  private async deliverAttachment(
+    target: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0 ? payload.caption : '';
+    const hintedName =
+      typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : undefined;
+
+    const { bytes, mimeType, filename } = await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    const name = hintedName ?? filename ?? 'attachment';
+    const b64 = Buffer.from(bytes).toString('base64');
+    const dataUri = `data:${mimeType};filename=${name};base64,${b64}`;
+    await this.sendChunkToTarget(target, caption, { base64Attachments: [dataUri] });
   }
 
   private async getSessionId(
@@ -218,7 +318,7 @@ export class SignalBridge implements ChannelOutbound {
     }, openOpts);
   }
 
-  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string, target: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
     const controller = new AbortController();
@@ -294,6 +394,16 @@ export class SignalBridge implements ChannelOutbound {
           }
           if (frame.event === 'error') {
             error = String(payload.message ?? 'Unknown error');
+            continue;
+          }
+          if (frame.event === 'attachment') {
+            try {
+              await this.deliverAttachment(target, payload);
+            } catch (err) {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
             continue;
           }
           if (frame.event === 'agent_end') {
