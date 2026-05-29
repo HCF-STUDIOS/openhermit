@@ -39,6 +39,6 @@
   "optionalDependencies": {
     "@openhermit/channel-telegram": "0.2.0",
     "@openhermit/channel-slack": "0.2.0",
-    "@openhermit/channel-discord": "0.2.0"
+    "@openhermit/channel-discord": "0.3.0"
   }
 }
