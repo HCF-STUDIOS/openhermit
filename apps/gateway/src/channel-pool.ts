@@ -79,7 +79,6 @@ export class ChannelPool {
     error: string | null,
   ): Promise<void> {
     if (this.lastReportedError.get(rowId) === error) return;
-    this.lastReportedError.set(rowId, error);
 
     const statuses = this.statuses.get(agentId);
     if (statuses) {
@@ -91,7 +90,9 @@ export class ChannelPool {
       }
     }
 
-    await this.persistRuntime(rowId, error);
+    if (await this.persistRuntime(rowId, error)) {
+      this.lastReportedError.set(rowId, error);
+    }
   }
 
   /**
@@ -191,8 +192,9 @@ export class ChannelPool {
       if (handle) startedHandles.push(handle);
       startedStatuses.push(status);
       const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
-      this.lastReportedError.set(row.id, startErr);
-      await this.persistRuntime(row.id, startErr);
+      if (await this.persistRuntime(row.id, startErr)) {
+        this.lastReportedError.set(row.id, startErr);
+      }
     }
 
     if (startedHandles.length > 0) this.handles.set(agentId, startedHandles);
@@ -212,17 +214,19 @@ export class ChannelPool {
    * `disableChannel` uses `clearError` directly instead of routing through
    * here — disabling is not a success.
    */
-  private async persistRuntime(channelId: string, error: string | null): Promise<void> {
+  private async persistRuntime(channelId: string, error: string | null): Promise<boolean> {
     try {
       if (error === null) {
         await this.opts.channelStore.recordSuccess(channelId);
       } else {
         await this.opts.channelStore.recordError(channelId, error);
       }
+      return true;
     } catch (err) {
       this.opts.log(
         `failed to persist channel state for ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return false;
     }
   }
 
@@ -346,8 +350,9 @@ export class ChannelPool {
     this.statuses.set(agentId, statuses);
 
     const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
-    this.lastReportedError.set(row.id, startErr);
-    await this.persistRuntime(row.id, startErr);
+    if (await this.persistRuntime(row.id, startErr)) {
+      this.lastReportedError.set(row.id, startErr);
+    }
 
     return status;
   }
