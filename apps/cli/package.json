@@ -13,10 +13,22 @@
   },
   "keywords": [
     "ai",
+    "ai-agents",
     "agent",
+    "agent-framework",
+    "agent-platform",
+    "agent-infrastructure",
+    "autonomous-agents",
+    "multi-agent",
+    "multi-agent-systems",
     "llm",
-    "cli",
-    "multi-agent"
+    "mcp",
+    "model-context-protocol",
+    "self-hosted",
+    "sandbox",
+    "postgres",
+    "typescript",
+    "cli"
   ],
   "bin": {
     "openhermit": "dist/cli.js",
