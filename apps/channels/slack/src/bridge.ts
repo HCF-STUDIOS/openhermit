@@ -7,9 +7,18 @@ import { stripSilenceTokens } from '@openhermit/shared';
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
 import { formatAgentResponse, markdownToSlackMrkdwn } from './formatting.js';
 
+/** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
+}
+
+/** Outcome of resolving an inbound message's Slack files. */
+interface ResolvedInbound {
+  text: string;
+  attachments?: { type: 'file'; id: string }[];
 }
 
 export class SlackBridge implements ChannelOutbound {
@@ -86,9 +95,10 @@ export class SlackBridge implements ChannelOutbound {
 
   async handleMessage(event: SlackMessageEvent & { mentioned?: boolean }): Promise<void> {
     const channelId = event.channel;
-    const text = event.text?.trim();
+    const text = event.text?.trim() ?? '';
+    const hasFiles = Array.isArray(event.files) && event.files.length > 0;
 
-    if (!text || !event.user) return;
+    if ((!text && !hasFiles) || !event.user) return;
 
     const threadTs = event.thread_ts;
     const isDm = event.channel_type === 'im';
@@ -96,6 +106,61 @@ export class SlackBridge implements ChannelOutbound {
     const sessionId = await this.getSessionId(channelId, threadTs);
 
     await this.sendToAgent(channelId, sessionId, text, event, isDm, mentioned, threadTs);
+  }
+
+  /**
+   * Download each inbound Slack file (url_private needs bot-token auth) and
+   * either transcribe it (audio) or upload it as a durable session attachment.
+   */
+  private async resolveInbound(
+    sessionId: string,
+    event: SlackMessageEvent,
+    baseText: string,
+  ): Promise<ResolvedInbound> {
+    let text = baseText;
+    const ids: { type: 'file'; id: string }[] = [];
+    const transcripts: string[] = [];
+
+    for (const file of event.files ?? []) {
+      const url = file.url_private_download ?? file.url_private;
+      if (!url) continue;
+      if (file.size && file.size > MAX_MEDIA_BYTES) {
+        this.log(`skipping oversized file ${file.name ?? file.id} (${file.size} bytes)`);
+        continue;
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = await this.slack.downloadFile(url, MAX_MEDIA_BYTES);
+      } catch (err) {
+        this.log(`failed to download file ${file.name ?? file.id}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const mime = file.mimetype ?? 'application/octet-stream';
+      const filename = file.name ?? `${file.id}.${file.filetype ?? 'bin'}`;
+      if (mime.startsWith('audio/')) {
+        try {
+          const { text: transcript } = await this.client.transcribeAudio({ bytes, mimeType: mime });
+          if (transcript.trim()) transcripts.push(transcript.trim());
+        } catch (err) {
+          this.log(`stt failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        try {
+          const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+          const uploaded = await this.client.uploadAttachment(sessionId, blob, filename);
+          ids.push({ type: 'file', id: uploaded.id! });
+        } catch (err) {
+          this.log(`upload failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    if (transcripts.length > 0) {
+      const joined = transcripts.join('\n\n');
+      text = text ? `${text}\n\n[Transcribed voice message]\n${joined}` : `[Transcribed voice message]\n${joined}`;
+    }
+
+    return { text, ...(ids.length > 0 ? { attachments: ids } : {}) };
   }
 
   async handleNewSession(channelId: string, threadTs?: string): Promise<void> {
@@ -133,9 +198,14 @@ export class SlackBridge implements ChannelOutbound {
       } catch { /* ignore */ }
     }
 
+    const resolved = await this.resolveInbound(sessionId, event, text);
+    // Nothing usable (e.g. all files failed to download and no text).
+    if (!resolved.text && !resolved.attachments) return;
+
     const postResult = await this.client.postMessage(sessionId, {
-      text,
+      text: resolved.text,
       mentioned,
+      ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       ...(event.user ? {
         sender: {
           channel: 'slack',
@@ -154,6 +224,37 @@ export class SlackBridge implements ChannelOutbound {
     } else if (result.text) {
       await this.send({ sessionId, to: channelId, text: result.text });
     }
+  }
+
+  /**
+   * Deliver an outbound `attachment` SSE event as a Slack file upload.
+   * Bytes are pulled lazily from the agent-local API.
+   */
+  private async deliverAttachment(
+    channelId: string,
+    payload: Record<string, unknown>,
+    threadTs?: string,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0
+        ? payload.caption
+        : undefined;
+    const hintedName =
+      typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : undefined;
+
+    const { bytes, filename } = await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    await this.slack.uploadFile(channelId, {
+      bytes,
+      filename: hintedName ?? filename ?? 'attachment',
+      ...(caption ? { caption } : {}),
+      ...(threadTs ? { threadTs } : {}),
+    });
   }
 
   private async ensureSession(
@@ -277,6 +378,17 @@ export class SlackBridge implements ChannelOutbound {
 
           if (frame.event === 'error') {
             error = String(payload.message ?? 'Unknown error');
+            continue;
+          }
+
+          if (frame.event === 'attachment') {
+            try {
+              await this.deliverAttachment(channelId, payload, threadTs);
+            } catch (err) {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
             continue;
           }
 

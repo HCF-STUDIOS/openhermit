@@ -12,6 +12,9 @@
 - event deduplication for paired `message` and `app_mention` events
 - optional `allowed_channel_ids` allow-list
 - outbound delivery for `session_send`
+- **media**: inbound `file_share` uploads are fetched (with bot-token auth) and uploaded to the agent (images become vision input); audio files are transcribed via STT. The agent's `attachment_send` deliveries are uploaded back via `files.uploadV2` (into the thread when applicable). Files over the 25 MiB cap are skipped.
+
+The bot token needs the `files:read` scope to download inbound files and `files:write` to upload outbound ones.
 
 ## Configuration
 

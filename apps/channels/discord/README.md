@@ -11,6 +11,7 @@
 - sender identity extraction from Discord user IDs and display names
 - optional `allowed_channel_ids` allow-list
 - outbound delivery for `session_send`
+- **media**: inbound file/image attachments are uploaded to the agent (images become vision input) and audio attachments are transcribed via STT; the agent's `attachment_send` deliveries are sent back as Discord file uploads. Attachments over the 25 MiB cap are skipped.
 
 ## Configuration
 

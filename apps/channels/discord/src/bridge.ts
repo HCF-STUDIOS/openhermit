@@ -7,9 +7,21 @@ import { stripSilenceTokens } from '@openhermit/shared';
 import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
 import { formatAgentResponse, markdownToDiscord } from './formatting.js';
 
+/** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+
+/** Bound CDN attachment fetches so a stalled connection can't block the queue. */
+const MEDIA_FETCH_TIMEOUT_MS = 15_000;
+
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
+}
+
+/** Outcome of resolving an inbound message's attachments. */
+interface ResolvedInbound {
+  text: string;
+  attachments?: { type: 'file'; id: string }[];
 }
 
 export class DiscordBridge implements ChannelOutbound {
@@ -80,10 +92,65 @@ export class DiscordBridge implements ChannelOutbound {
 
   async handleMessage(event: DiscordMessageEvent): Promise<void> {
     const text = event.text.trim();
-    if (!text) return;
+    if (!text && !(event.attachments && event.attachments.length > 0)) return;
 
     const sessionId = await this.getSessionId(event.channelId);
     await this.runInChannelQueue(event.channelId, () => this.sendToAgent(event, sessionId, text));
+  }
+
+  /**
+   * Fetch each inbound attachment from the Discord CDN and either transcribe
+   * it (audio) or upload it as a durable session attachment (everything else).
+   */
+  private async resolveInbound(
+    sessionId: string,
+    event: DiscordMessageEvent,
+    baseText: string,
+  ): Promise<ResolvedInbound> {
+    let text = baseText;
+    const ids: { type: 'file'; id: string }[] = [];
+    const transcripts: string[] = [];
+
+    for (const att of event.attachments ?? []) {
+      if (att.size && att.size > MAX_MEDIA_BYTES) {
+        this.log(`skipping oversized attachment ${att.name} (${att.size} bytes)`);
+        continue;
+      }
+      let bytes: Uint8Array;
+      try {
+        // Bound the CDN fetch so a stalled connection can't block the queue.
+        const res = await fetch(att.url, { signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        bytes = new Uint8Array(await res.arrayBuffer());
+      } catch (err) {
+        this.log(`failed to fetch attachment ${att.name}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const mime = att.contentType ?? 'application/octet-stream';
+      if (mime.startsWith('audio/')) {
+        try {
+          const { text: transcript } = await this.client.transcribeAudio({ bytes, mimeType: mime });
+          if (transcript.trim()) transcripts.push(transcript.trim());
+        } catch (err) {
+          this.log(`stt failed for ${att.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        try {
+          const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+          const uploaded = await this.client.uploadAttachment(sessionId, blob, att.name);
+          ids.push({ type: 'file', id: uploaded.id! });
+        } catch (err) {
+          this.log(`upload failed for ${att.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    if (transcripts.length > 0) {
+      const joined = transcripts.join('\n\n');
+      text = text ? `${text}\n\n[Transcribed voice message]\n${joined}` : `[Transcribed voice message]\n${joined}`;
+    }
+
+    return { text, ...(ids.length > 0 ? { attachments: ids } : {}) };
   }
 
   private async runInChannelQueue(channelId: string, task: () => Promise<void>): Promise<void> {
@@ -135,9 +202,14 @@ export class DiscordBridge implements ChannelOutbound {
   ): Promise<void> {
     await this.ensureSession(sessionId, event);
 
+    const resolved = await this.resolveInbound(sessionId, event, text);
+    // Nothing usable (e.g. all attachments failed to fetch and no text).
+    if (!resolved.text && !resolved.attachments) return;
+
     const postResult = await this.client.postMessage(sessionId, {
-      text,
+      text: resolved.text,
       mentioned: event.mentioned,
+      ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       sender: {
         channel: 'discord',
         channelUserId: event.userId,
@@ -156,6 +228,35 @@ export class DiscordBridge implements ChannelOutbound {
     } else if (result.text) {
       await this.send({ sessionId, to: event.channelId, text: result.text });
     }
+  }
+
+  /**
+   * Deliver an outbound `attachment` SSE event as a Discord file upload.
+   * Bytes are pulled lazily from the agent-local API.
+   */
+  private async deliverAttachment(
+    channelId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0
+        ? payload.caption
+        : undefined;
+    const hintedName =
+      typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : undefined;
+
+    const { bytes, filename } = await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    await this.discord.sendFile(channelId, {
+      bytes,
+      filename: hintedName ?? filename ?? 'attachment',
+      ...(caption ? { caption } : {}),
+    });
   }
 
   private async ensureSession(
@@ -280,6 +381,17 @@ export class DiscordBridge implements ChannelOutbound {
 
           if (frame.event === 'error') {
             error = String(payload.message ?? 'Unknown error');
+            continue;
+          }
+
+          if (frame.event === 'attachment') {
+            try {
+              await this.deliverAttachment(channelId, payload);
+            } catch (err) {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
             continue;
           }
 

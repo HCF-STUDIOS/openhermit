@@ -10,6 +10,19 @@ export interface BotOptions {
   logger?: (message: string) => void;
 }
 
+/**
+ * Whether an inbound Slack event should be forwarded to the agent. Accepts
+ * plain messages and `file_share` (attachments); drops other subtypes, bot
+ * echoes, userless events, and empty messages with no files.
+ */
+export function isProcessableMessage(event: SlackMessageEvent): boolean {
+  if (event.subtype && event.subtype !== 'file_share') return false;
+  if (event.bot_id) return false;
+  if (!event.user) return false;
+  const hasFiles = Array.isArray(event.files) && event.files.length > 0;
+  return Boolean(event.text?.trim()) || hasFiles;
+}
+
 export class SlackBot {
   private readonly socketMode: SocketModeClient;
   private readonly slack: SlackApi;
@@ -53,9 +66,7 @@ export class SlackBot {
   }
 
   private async handleMessageEvent(event: SlackMessageEvent): Promise<void> {
-    if (event.subtype) return;
-    if (event.bot_id) return;
-    if (!event.text || !event.user) return;
+    if (!isProcessableMessage(event)) return;
 
     // Deduplicate: Slack sends both `message` and `app_mention` for @mentions.
     const eventKey = event.ts;
@@ -64,8 +75,8 @@ export class SlackBot {
     setTimeout(() => this.recentlyHandled.delete(eventKey), 10_000);
 
     const isDm = event.channel_type === 'im';
-    const isMentioned = isDm || this.isMentioned(event.text);
-    const text = this.stripMention(event.text);
+    const isMentioned = isDm || this.isMentioned(event.text ?? '');
+    const text = this.stripMention(event.text ?? '');
 
     if (isMentioned && (text === 'new' || text === '/new')) {
       try {

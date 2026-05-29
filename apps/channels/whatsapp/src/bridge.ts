@@ -22,6 +22,30 @@ import type { WhatsAppApi } from './whatsapp-api.js';
 
 const AGENT_RESPONSE_TIMEOUT_MS = 60_000;
 
+/** Hard cap on TTS input length. Above this, fall back to text. */
+const VOICE_MAX_TEXT_LENGTH = 1500;
+
+/**
+ * Decide whether a reply is fit for voice delivery — short, prose-like
+ * text only. Code blocks and huge volumes are awkward to listen to.
+ */
+const shouldSpeak = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.length > VOICE_MAX_TEXT_LENGTH) return false;
+  if (trimmed.includes('```')) return false;
+  return true;
+};
+
+/** Inbound media attached to a WhatsApp message; bytes filled in by the bot. */
+export interface WhatsAppIncomingMedia {
+  kind: 'image' | 'audio' | 'video' | 'document';
+  mimeType: string;
+  filename: string;
+  isVoice: boolean;
+  bytes?: Uint8Array;
+}
+
 export interface WhatsAppIncomingMessage {
   chatJid: string;
   senderJid: string;
@@ -32,6 +56,7 @@ export interface WhatsAppIncomingMessage {
   isGroup: boolean;
   mentioned: boolean;
   commandText?: string;
+  media?: WhatsAppIncomingMedia;
 }
 
 export interface WhatsAppBridgeOptions {
@@ -128,11 +153,56 @@ export class WhatsAppBridge implements ChannelOutbound {
     const sessionId = await this.getSessionId(event.chatJid);
     await this.ensureSession(sessionId, event);
 
+    // Resolve media: inbound voice/audio is transcribed via STT; other media
+    // is uploaded as a durable attachment so the agent can read/see it.
+    let postText = event.text;
+    let attachments: { type: 'file'; id: string }[] | undefined;
+    let inboundWasVoice = false;
+    if (event.media?.bytes) {
+      if (event.media.kind === 'audio') {
+        try {
+          const { text } = await this.client.transcribeAudio({
+            bytes: event.media.bytes,
+            mimeType: event.media.mimeType,
+          });
+          const transcript = text.trim();
+          if (transcript) {
+            inboundWasVoice = true;
+            postText = `[Voice message, transcribed. Your reply will be converted to speech, so respond in plain prose without code blocks, markdown formatting, or long lists.]\n\n${transcript}`;
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log(`stt failed for chat ${event.chatJid}: ${msg}`);
+          await this.send({
+            sessionId,
+            to: event.chatJid,
+            text: "Sorry, I couldn't transcribe that voice message. Please try again or send text.",
+          });
+          return;
+        }
+      } else {
+        try {
+          const blob = new Blob([event.media.bytes as unknown as BlobPart], {
+            type: event.media.mimeType,
+          });
+          const att = await this.client.uploadAttachment(sessionId, blob, event.media.filename);
+          attachments = [{ type: 'file', id: att.id! }];
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log(`attachment upload failed for chat ${event.chatJid}: ${msg}`);
+        }
+      }
+    }
+
+    // Nothing usable extracted (e.g. media-only message whose upload failed).
+    if (!postText && !attachments) return;
+
     const senderChannelUserId = event.senderNumber ?? event.senderJid;
     const postOpts = event.isGroup ? undefined : { channelUserId: senderChannelUserId };
     const postResult = await this.client.postMessage(sessionId, {
-      text: event.text,
+      text: postText,
       mentioned: event.mentioned,
+      ...(attachments ? { attachments } : {}),
       sender: {
         channel: 'whatsapp',
         channelUserId: senderChannelUserId,
@@ -147,12 +217,77 @@ export class WhatsAppBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId);
+    const result = await this.waitForAgentResponse(sessionId, event.chatJid);
     if (result.error && !result.text) {
       await this.send({ sessionId, to: event.chatJid, text: `Error: ${result.error}` });
     } else if (result.text) {
+      if (inboundWasVoice && (await this.trySendVoiceReply(event.chatJid, result.text))) {
+        return;
+      }
       await this.send({ sessionId, to: event.chatJid, text: result.text });
     }
+  }
+
+  /**
+   * Attempt to deliver `text` as a WhatsApp voice note via the agent's TTS.
+   * Returns `true` on success; callers fall back to text on `false`.
+   */
+  private async trySendVoiceReply(chatJid: string, text: string): Promise<boolean> {
+    if (!shouldSpeak(text)) return false;
+    try {
+      const result = await this.client.synthesizeAudio({ text, outputMimeType: 'audio/ogg' });
+      await this.whatsapp.sendMedia(chatJid, {
+        bytes: result.bytes,
+        mimeType: 'audio/ogg',
+        kind: 'audio',
+        filename: 'reply.ogg',
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`tts failed for chat ${chatJid}: ${msg}`);
+      return false;
+    }
+  }
+
+  /**
+   * Translate an outbound `attachment` SSE event into a WhatsApp media send.
+   * Bytes are pulled lazily from the agent-local API so they never ride the
+   * SSE channel inline.
+   */
+  private async deliverAttachment(
+    target: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sessionId = String(payload.sessionId ?? '');
+    const attachmentId = String(payload.attachmentId ?? '');
+    if (!sessionId || !attachmentId) {
+      this.log('attachment event missing sessionId/attachmentId');
+      return;
+    }
+    const caption =
+      typeof payload.caption === 'string' && payload.caption.length > 0
+        ? payload.caption
+        : undefined;
+    const hintedKind = String(payload.kind ?? '');
+    const hintedName =
+      typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : undefined;
+
+    const { bytes, mimeType, filename, kind: resolvedKind } =
+      await this.client.downloadAttachmentBytes(sessionId, attachmentId);
+    const kind = (hintedKind || resolvedKind || 'document') as
+      | 'image'
+      | 'audio'
+      | 'video'
+      | 'document';
+
+    await this.whatsapp.sendMedia(target, {
+      bytes,
+      mimeType,
+      kind,
+      filename: hintedName ?? filename ?? 'attachment',
+      ...(caption ? { caption } : {}),
+    });
   }
 
   async handleNewSession(chatJid: string): Promise<void> {
@@ -220,7 +355,7 @@ export class WhatsAppBridge implements ChannelOutbound {
     }, openOpts);
   }
 
-  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string, target: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
     const controller = new AbortController();
@@ -298,6 +433,16 @@ export class WhatsAppBridge implements ChannelOutbound {
           }
           if (frame.event === 'error') {
             error = String(payload.message ?? 'Unknown error');
+            continue;
+          }
+          if (frame.event === 'attachment') {
+            try {
+              await this.deliverAttachment(target, payload);
+            } catch (err) {
+              this.log(
+                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
             continue;
           }
           if (frame.event === 'agent_end') {
