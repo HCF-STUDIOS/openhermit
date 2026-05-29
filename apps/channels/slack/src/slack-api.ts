@@ -1,5 +1,16 @@
 import { WebClient } from '@slack/web-api';
 
+/** An inbound file shared in a Slack message (bytes behind url_private auth). */
+export interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private?: string;
+  url_private_download?: string;
+}
+
 export interface SlackMessageEvent {
   type: string;
   subtype?: string;
@@ -10,6 +21,7 @@ export interface SlackMessageEvent {
   thread_ts?: string;
   bot_id?: string;
   channel_type?: string;
+  files?: SlackFile[];
 }
 
 export interface SlackBotInfo {
@@ -20,10 +32,45 @@ export interface SlackBotInfo {
 
 export class SlackApi {
   readonly web: WebClient;
+  private readonly botToken: string;
   private botInfo: SlackBotInfo | undefined;
 
   constructor(botToken: string) {
+    this.botToken = botToken;
     this.web = new WebClient(botToken);
+  }
+
+  /**
+   * Download the bytes of an inbound Slack file. `url_private` endpoints
+   * require the bot token as a bearer header.
+   */
+  async downloadFile(urlPrivate: string): Promise<Uint8Array> {
+    const res = await fetch(urlPrivate, {
+      headers: { authorization: `Bearer ${this.botToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Slack file download failed (${res.status})`);
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /**
+   * Upload a file to a channel (and optional thread) via files.uploadV2.
+   * `caption` becomes the message's initial comment.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Uint8Array; filename: string; caption?: string; threadTs?: string },
+  ): Promise<void> {
+    const args: Record<string, unknown> = {
+      channel_id: channel,
+      file: Buffer.from(file.bytes),
+      filename: file.filename,
+    };
+    if (file.caption) args.initial_comment = file.caption;
+    if (file.threadTs) args.thread_ts = file.threadTs;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await this.web.files.uploadV2(args as any);
   }
 
   async getBotInfo(): Promise<SlackBotInfo> {

@@ -12,7 +12,7 @@ These ship inside the CLI binary and are registered automatically:
 |----------|---------|------------|
 | Telegram | `@openhermit/channel-telegram` | polling or webhook |
 | Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
-| Slack | `@openhermit/channel-slack` | Slack Socket Mode |
+| Slack | `@openhermit/channel-slack` | Slack Socket Mode; text + media (files/images, audio transcribed) |
 
 ## External Plugin Adapters
 
@@ -172,6 +172,7 @@ Slack:
 - Socket Mode with bot token plus app token
 - channel, DM, and thread metadata
 - deduplicates paired message/app-mention events
+- media inbound (`file_share` uploads fetched with bot-token auth and uploaded as session attachments; images become vision input; audio transcribed via STT) and outbound (`attachment_send` → `files.uploadV2`, into the thread when applicable); files over the 25 MiB cap are skipped. Needs `files:read` + `files:write` scopes.
 - optional `allowed_channel_ids`
 
 WeChat (external plugin):

@@ -66,7 +66,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 
 - Slack apps are workspace-scoped. Install per workspace, register per agent.
 - Threading: the adapter creates a thread for each session by default. Quote-reply to continue an existing one.
-- File attachments supported.
+- Media: shared files/images are uploaded to the agent (images become vision input) and audio files are transcribed; the agent can upload files back into the thread. Needs `files:read` + `files:write` scopes. Files over 25 MiB are skipped.
 
 ### WeChat (external plugin)
 
