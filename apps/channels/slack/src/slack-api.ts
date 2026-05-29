@@ -1,5 +1,8 @@
 import { WebClient } from '@slack/web-api';
 
+/** Bound inbound file downloads so a stalled connection can't block the queue. */
+const FILE_DOWNLOAD_TIMEOUT_MS = 15_000;
+
 /** An inbound file shared in a Slack message (bytes behind url_private auth). */
 export interface SlackFile {
   id: string;
@@ -52,6 +55,8 @@ export class SlackApi {
   async downloadFile(urlPrivate: string, maxBytes?: number): Promise<Uint8Array> {
     const res = await fetch(urlPrivate, {
       headers: { authorization: `Bearer ${this.botToken}` },
+      // Bound the download so a stalled connection can't block the channel queue.
+      signal: AbortSignal.timeout(FILE_DOWNLOAD_TIMEOUT_MS),
     });
     if (!res.ok) {
       throw new Error(`Slack file download failed (${res.status})`);
