@@ -5,6 +5,7 @@ import {
   fetchAgentSecrets,
   type AgentConfig,
 } from '../api';
+import { useTranslation } from '../i18n';
 
 const ELEVENLABS_KEY = 'ELEVENLABS_API_KEY';
 
@@ -29,6 +30,7 @@ const readVoice = (config: AgentConfig | null): VoiceConfig =>
   (config?.voice as VoiceConfig | undefined) ?? {};
 
 export function VoicePanel() {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -99,7 +101,7 @@ export function VoicePanel() {
     if (ttsSpeed.trim()) {
       const n = Number(ttsSpeed.trim());
       if (!Number.isFinite(n) || n <= 0) {
-        setError('Speed must be a positive number.');
+        setError(t('voice.speedInvalid'));
         return;
       }
     }
@@ -136,29 +138,24 @@ export function VoicePanel() {
       || ttsSpeed !== (currentTts?.speed !== undefined ? String(currentTts.speed) : '')
     );
 
-  if (loading) return <p className="manage__empty">Loading…</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error && !config) return <p className="manage__empty">{error}</p>;
   if (!config) return null;
 
   return (
     <div className="basic-panel">
       <div className="basic-panel__intro">
-        <p className="eyebrow">Voice</p>
-        <p className="basic-panel__hint">
-          Speech-to-text (inbound voice messages) and text-to-speech (outbound
-          replies). Each direction is independent — enable only what you need.
-          Only ElevenLabs is supported in this build.
-        </p>
+        <p className="eyebrow">{t('voice.eyebrow')}</p>
+        <p className="basic-panel__hint">{t('voice.hint')}</p>
       </div>
 
       {hasKey ? (
         <p className="basic-panel__hint basic-panel__hint--ok">
-          ✓ API key set: <code>{ELEVENLABS_KEY}</code>
+          {t('voice.apiKeySet')}<code>{ELEVENLABS_KEY}</code>
         </p>
       ) : (
         <p className="basic-panel__hint basic-panel__hint--warn">
-          ✗ No API key. Add <code>{ELEVENLABS_KEY}</code> in the Secrets tab
-          before enabling voice.
+          {t('voice.apiKeyMissingPrefix')}<code>{ELEVENLABS_KEY}</code>{t('voice.apiKeyMissingSuffix')}
         </p>
       )}
 
@@ -170,28 +167,24 @@ export function VoicePanel() {
             checked={sttEnabled}
             onChange={(e) => setSttEnabled(e.target.checked)}
           />
-          {' '}Enable speech-to-text (STT)
+          {' '}{t('voice.enableStt')}
         </label>
-        <p className="basic-panel__hint">
-          Inbound voice messages from channels are transcribed before the agent
-          sees them.
-        </p>
+        <p className="basic-panel__hint">{t('voice.sttHint')}</p>
       </div>
 
       {sttEnabled && (
         <div className="basic-panel__field">
-          <label htmlFor="voice-stt-model">STT model id</label>
+          <label htmlFor="voice-stt-model">{t('voice.sttModelLabel')}</label>
           <input
             id="voice-stt-model"
             type="text"
             value={sttModelId}
             onChange={(e) => setSttModelId(e.target.value)}
-            placeholder="scribe_v1 (default)"
+            placeholder={t('voice.sttModelPlaceholder')}
             autoComplete="off"
           />
           <p className="basic-panel__hint">
-            Optional. ElevenLabs Scribe model id. Leave blank for the default
-            (<code>scribe_v1</code>).
+            {t('voice.sttModelHintPrefix')}<code>scribe_v1</code>{t('voice.sttModelHintSuffix')}
           </p>
         </div>
       )}
@@ -204,63 +197,53 @@ export function VoicePanel() {
             checked={ttsEnabled}
             onChange={(e) => setTtsEnabled(e.target.checked)}
           />
-          {' '}Enable text-to-speech (TTS)
+          {' '}{t('voice.enableTts')}
         </label>
-        <p className="basic-panel__hint">
-          Final replies are synthesized and sent back as audio on channels that
-          support voice.
-        </p>
+        <p className="basic-panel__hint">{t('voice.ttsHint')}</p>
       </div>
 
       {ttsEnabled && (
         <>
           <div className="basic-panel__field">
-            <label htmlFor="voice-tts-voice">TTS voice id</label>
+            <label htmlFor="voice-tts-voice">{t('voice.ttsVoiceLabel')}</label>
             <input
               id="voice-tts-voice"
               type="text"
               value={ttsVoiceId}
               onChange={(e) => setTtsVoiceId(e.target.value)}
-              placeholder="21m00Tcm4TlvDq8ikWAM (Rachel, default)"
+              placeholder={t('voice.ttsVoicePlaceholder')}
               autoComplete="off"
             />
             <p className="basic-panel__hint">
-              Optional. The ElevenLabs voice id (from{' '}
-              <code>/v1/voices</code>). Leave blank to use the built-in default
-              voice.
+              {t('voice.ttsVoiceHintPrefix')}<code>/v1/voices</code>{t('voice.ttsVoiceHintSuffix')}
             </p>
           </div>
 
           <div className="basic-panel__field">
-            <label htmlFor="voice-tts-model">TTS model id</label>
+            <label htmlFor="voice-tts-model">{t('voice.ttsModelLabel')}</label>
             <input
               id="voice-tts-model"
               type="text"
               value={ttsModelId}
               onChange={(e) => setTtsModelId(e.target.value)}
-              placeholder="eleven_multilingual_v2 (default)"
+              placeholder={t('voice.ttsModelPlaceholder')}
               autoComplete="off"
             />
-            <p className="basic-panel__hint">
-              Optional. ElevenLabs TTS model id. Leave blank for the default.
-            </p>
+            <p className="basic-panel__hint">{t('voice.ttsModelHint')}</p>
           </div>
 
           <div className="basic-panel__field">
-            <label htmlFor="voice-tts-speed">Speed</label>
+            <label htmlFor="voice-tts-speed">{t('voice.ttsSpeedLabel')}</label>
             <input
               id="voice-tts-speed"
               type="text"
               inputMode="decimal"
               value={ttsSpeed}
               onChange={(e) => setTtsSpeed(e.target.value)}
-              placeholder="1.0 (default)"
+              placeholder={t('voice.ttsSpeedPlaceholder')}
               autoComplete="off"
             />
-            <p className="basic-panel__hint">
-              Optional playback rate multiplier; ~0.7–1.2 is typical. Leave
-              blank for the provider default.
-            </p>
+            <p className="basic-panel__hint">{t('voice.ttsSpeedHint')}</p>
           </div>
         </>
       )}
@@ -274,10 +257,10 @@ export function VoicePanel() {
           disabled={saving || !dirty}
           onClick={() => void handleSave()}
         >
-          {saving ? 'Saving…' : 'Save'}
+          {t(saving ? 'common.saving' : 'common.save')}
         </button>
         {savedAt && !dirty && (
-          <span className="basic-panel__saved">Saved at {savedAt}</span>
+          <span className="basic-panel__saved">{t('basic.savedAt', { time: savedAt })}</span>
         )}
       </div>
     </div>

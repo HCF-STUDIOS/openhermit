@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchApprovalRequests, reviewApprovalRequest, type ApprovalRequestInfo } from '../api';
+import { useTranslation } from '../i18n';
 
 const STATUS_BADGE: Record<string, string> = {
   pending: 'approvals-row__status--pending',
@@ -9,6 +10,7 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export function ApprovalsPanel() {
+  const { t } = useTranslation();
   const [requests, setRequests] = useState<ApprovalRequestInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -36,16 +38,23 @@ export function ApprovalsPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading...</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
+
+  const statusLabel = (status: string): string => {
+    switch (status) {
+      case 'pending': return t('approvals.statusPending');
+      case 'approved': return t('approvals.statusApproved');
+      case 'rejected': return t('approvals.statusRejected');
+      case 'expired': return t('approvals.statusExpired');
+      default: return status;
+    }
+  };
 
   return (
     <div className="approvals-panel">
       <div className="approvals-panel__intro">
-        <p className="eyebrow">Approval Requests</p>
-        <p className="approvals-panel__hint">
-          When a tool has <code>require_approval</code> effect, users must request
-          access. Approve or reject pending requests below.
-        </p>
+        <p className="eyebrow">{t('approvals.eyebrow')}</p>
+        <p className="approvals-panel__hint">{t('approvals.hint')}</p>
       </div>
 
       <div className="manage__toolbar">
@@ -54,16 +63,20 @@ export function ApprovalsPanel() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         >
-          <option value="">All statuses</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
-          <option value="expired">Expired</option>
+          <option value="">{t('approvals.filterAll')}</option>
+          <option value="pending">{t('approvals.statusPending')}</option>
+          <option value="approved">{t('approvals.statusApproved')}</option>
+          <option value="rejected">{t('approvals.statusRejected')}</option>
+          <option value="expired">{t('approvals.statusExpired')}</option>
         </select>
       </div>
 
       {requests.length === 0 ? (
-        <p className="manage__empty">No approval requests{filter ? ` with status "${filter}"` : ''}.</p>
+        <p className="manage__empty">
+          {filter
+            ? t('approvals.emptyFiltered', { status: statusLabel(filter) })
+            : t('approvals.emptyAll')}
+        </p>
       ) : (
         <div className="approvals-panel__list">
           {requests.map((r) => (
@@ -73,10 +86,10 @@ export function ApprovalsPanel() {
                   {r.resourceType}/{r.resourceKey}
                 </span>
                 <span className={`approvals-row__status ${STATUS_BADGE[r.status] ?? ''}`}>
-                  {r.status}
+                  {statusLabel(r.status)}
                 </span>
                 <span className="approvals-row__requester">
-                  by {r.requesterId}
+                  {t('approvals.by', { requester: r.requesterId })}
                 </span>
               </div>
               <div className="approvals-row__meta">
@@ -85,7 +98,7 @@ export function ApprovalsPanel() {
                 </span>
                 {r.resolvedBy && (
                   <span className="approvals-row__resolver">
-                    resolved by {r.resolvedBy}
+                    {t('approvals.resolvedBy', { resolver: r.resolvedBy })}
                     {r.resolution ? ` (${r.resolution})` : ''}
                   </span>
                 )}
@@ -99,20 +112,20 @@ export function ApprovalsPanel() {
                     className="btn btn--sm btn--primary"
                     onClick={() => void handleReview(r.id, 'approved', 'once')}
                   >
-                    Approve (once)
+                    {t('approvals.approveOnce')}
                   </button>
                   <button
                     className="btn btn--sm btn--primary"
                     onClick={() => void handleReview(r.id, 'approved', 'persistent')}
-                    title="Approve and create a permanent allow policy"
+                    title={t('approvals.approvePersistentTitle')}
                   >
-                    Approve (persistent)
+                    {t('approvals.approvePersistent')}
                   </button>
                   <button
                     className="btn btn--ghost btn--sm"
                     onClick={() => void handleReview(r.id, 'rejected')}
                   >
-                    Reject
+                    {t('approvals.reject')}
                   </button>
                 </div>
               )}

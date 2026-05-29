@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchSkills, disableSkill, enableSkill, type SkillInfo } from '../api';
+import { useTranslation } from '../i18n';
 
 export function SkillsPanel() {
+  const { t } = useTranslation();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -32,9 +34,9 @@ export function SkillsPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading...</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error) return <p className="manage__error">{error}</p>;
-  if (skills.length === 0) return <p className="manage__empty">No skills configured.</p>;
+  if (skills.length === 0) return <p className="manage__empty">{t('skills.empty')}</p>;
 
   return (
     <div className="manage__list">
@@ -49,7 +51,7 @@ export function SkillsPanel() {
           </div>
           <div className="manage__card-actions">
             <button className="btn btn--sm btn--ghost" onClick={() => void handleToggle(s)}>
-              {s.source === 'system' ? 'Disable' : 'Enable'}
+              {t(s.source === 'system' ? 'common.disable' : 'common.enable')}
             </button>
           </div>
         </div>

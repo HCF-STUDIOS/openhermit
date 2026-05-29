@@ -1,3 +1,4 @@
+import { useTranslation, type MessageKey } from '../i18n';
 import { BasicPanel } from './BasicPanel';
 import { SecretsPanel } from './SecretsPanel';
 import { SkillsPanel } from './SkillsPanel';
@@ -19,16 +20,16 @@ export type ManageTab =
   | 'policies'
   | 'approvals';
 
-const tabs: { id: ManageTab; label: string }[] = [
-  { id: 'basic', label: 'Basic' },
-  { id: 'secrets', label: 'Secrets' },
-  { id: 'channels', label: 'Channels' },
-  { id: 'voice', label: 'Voice' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'mcp', label: 'MCP Servers' },
-  { id: 'schedules', label: 'Schedules' },
-  { id: 'policies', label: 'Policies' },
-  { id: 'approvals', label: 'Approvals' },
+const tabs: { id: ManageTab; labelKey: MessageKey }[] = [
+  { id: 'basic', labelKey: 'manage.tab.basic' },
+  { id: 'secrets', labelKey: 'manage.tab.secrets' },
+  { id: 'channels', labelKey: 'manage.tab.channels' },
+  { id: 'voice', labelKey: 'manage.tab.voice' },
+  { id: 'skills', labelKey: 'manage.tab.skills' },
+  { id: 'mcp', labelKey: 'manage.tab.mcp' },
+  { id: 'schedules', labelKey: 'manage.tab.schedules' },
+  { id: 'policies', labelKey: 'manage.tab.policies' },
+  { id: 'approvals', labelKey: 'manage.tab.approvals' },
 ];
 
 interface Props {
@@ -37,16 +38,17 @@ interface Props {
 }
 
 export function ManagePanel({ tab, onTabChange }: Props) {
+  const { t } = useTranslation();
   return (
     <div className="manage">
       <div className="manage__tabs">
-        {tabs.map((t) => (
+        {tabs.map((entry) => (
           <button
-            key={t.id}
-            className={`manage__tab${tab === t.id ? ' active' : ''}`}
-            onClick={() => onTabChange(t.id)}
+            key={entry.id}
+            className={`manage__tab${tab === entry.id ? ' active' : ''}`}
+            onClick={() => onTabChange(entry.id)}
           >
-            {t.label}
+            {t(entry.labelKey)}
           </button>
         ))}
       </div>

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchMcpServers, disableMcpServer, type McpServerInfo } from '../api';
+import { useTranslation } from '../i18n';
 
 export function McpPanel() {
+  const { t } = useTranslation();
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -28,9 +30,9 @@ export function McpPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading...</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error) return <p className="manage__error">{error}</p>;
-  if (servers.length === 0) return <p className="manage__empty">No MCP servers enabled.</p>;
+  if (servers.length === 0) return <p className="manage__empty">{t('mcp.empty')}</p>;
 
   return (
     <div className="manage__list">
@@ -46,7 +48,7 @@ export function McpPanel() {
           </div>
           <div className="manage__card-actions">
             <button className="btn btn--sm btn--ghost" onClick={() => void handleDisable(s.id)}>
-              Disable
+              {t('common.disable')}
             </button>
           </div>
         </div>

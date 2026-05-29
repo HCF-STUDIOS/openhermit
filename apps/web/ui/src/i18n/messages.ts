@@ -25,6 +25,13 @@ export const messages = {
   'common.cancel': { en: 'Cancel', zh: '取消' },
   'common.copy': { en: 'Copy', zh: '复制' },
   'common.unknown': { en: 'Unknown', zh: '未知' },
+  'common.save': { en: 'Save', zh: '保存' },
+  'common.saving': { en: 'Saving…', zh: '保存中…' },
+  'common.delete': { en: 'Delete', zh: '删除' },
+  'common.close': { en: 'Close', zh: '关闭' },
+  'common.enable': { en: 'Enable', zh: '启用' },
+  'common.disable': { en: 'Disable', zh: '停用' },
+  'common.add': { en: 'Add', zh: '添加' },
 
   // ── Insecure context notice ───────────────────────────────────
   'insecure.title': { en: 'HTTPS required', zh: '需要 HTTPS' },
@@ -277,6 +284,279 @@ export const messages = {
 
   // ── Language switcher ─────────────────────────────────────────
   'lang.aria': { en: 'Switch language', zh: '切换语言' },
+
+  // ── Manage panel tabs ─────────────────────────────────────────
+  'manage.tab.basic': { en: 'Basic', zh: '基础' },
+  'manage.tab.secrets': { en: 'Secrets', zh: '密钥' },
+  'manage.tab.channels': { en: 'Channels', zh: '通道' },
+  'manage.tab.voice': { en: 'Voice', zh: '语音' },
+  'manage.tab.skills': { en: 'Skills', zh: '技能' },
+  'manage.tab.mcp': { en: 'MCP Servers', zh: 'MCP 服务器' },
+  'manage.tab.schedules': { en: 'Schedules', zh: '定时任务' },
+  'manage.tab.policies': { en: 'Policies', zh: '策略' },
+  'manage.tab.approvals': { en: 'Approvals', zh: '审批' },
+
+  // ── Skills panel ──────────────────────────────────────────────
+  'skills.empty': { en: 'No skills configured.', zh: '尚未配置技能。' },
+
+  // ── MCP panel ─────────────────────────────────────────────────
+  'mcp.empty': { en: 'No MCP servers enabled.', zh: '尚未启用 MCP 服务器。' },
+
+  // ── Approvals panel ───────────────────────────────────────────
+  'approvals.eyebrow': { en: 'Approval Requests', zh: '审批请求' },
+  'approvals.hint': {
+    en: 'When a tool has require_approval effect, users must request access. Approve or reject pending requests below.',
+    zh: '当工具的效果为 require_approval 时，用户必须先申请访问。请在下方批准或拒绝待处理的请求。',
+  },
+  'approvals.filterAll': { en: 'All statuses', zh: '全部状态' },
+  'approvals.statusPending': { en: 'Pending', zh: '待处理' },
+  'approvals.statusApproved': { en: 'Approved', zh: '已批准' },
+  'approvals.statusRejected': { en: 'Rejected', zh: '已拒绝' },
+  'approvals.statusExpired': { en: 'Expired', zh: '已过期' },
+  'approvals.emptyAll': { en: 'No approval requests.', zh: '暂无审批请求。' },
+  'approvals.emptyFiltered': {
+    en: 'No approval requests with status "{status}".',
+    zh: '暂无状态为「{status}」的审批请求。',
+  },
+  'approvals.by': { en: 'by {requester}', zh: '请求者：{requester}' },
+  'approvals.resolvedBy': { en: 'resolved by {resolver}', zh: '处理人：{resolver}' },
+  'approvals.approveOnce': { en: 'Approve (once)', zh: '批准（仅本次）' },
+  'approvals.approvePersistent': { en: 'Approve (persistent)', zh: '批准（永久）' },
+  'approvals.approvePersistentTitle': {
+    en: 'Approve and create a permanent allow policy',
+    zh: '批准并创建永久允许的策略',
+  },
+  'approvals.reject': { en: 'Reject', zh: '拒绝' },
+
+  // ── Schedules panel ───────────────────────────────────────────
+  'schedules.empty': { en: 'No schedules.', zh: '暂无定时任务。' },
+  'schedules.create': { en: 'Create Schedule', zh: '新建定时任务' },
+  'schedules.runs': { en: 'Runs', zh: '运行记录' },
+  'schedules.trigger': { en: 'Trigger', zh: '立即触发' },
+  'schedules.pause': { en: 'Pause', zh: '暂停' },
+  'schedules.resume': { en: 'Resume', zh: '恢复' },
+  'schedules.deleteConfirm': { en: 'Delete schedule "{id}"?', zh: '删除定时任务「{id}」？' },
+  'schedules.cron': { en: 'Cron: {expr}', zh: 'Cron：{expr}' },
+  'schedules.runAt': { en: 'Run at: {time}', zh: '运行时间：{time}' },
+  'schedules.next': { en: ' · Next: {time}', zh: ' · 下次：{time}' },
+  'schedules.runCount': { en: ' · Runs: {n}', zh: ' · 已运行：{n} 次' },
+  'schedules.errors': { en: ' · Errors: {n}', zh: ' · 错误：{n} 次' },
+  'schedules.dialogTitle': { en: 'Create Schedule', zh: '新建定时任务' },
+  'schedules.fieldIdOptional': { en: 'ID (optional)', zh: 'ID（可选）' },
+  'schedules.idPlaceholder': { en: 'auto-generated if empty', zh: '留空自动生成' },
+  'schedules.fieldType': { en: 'Type', zh: '类型' },
+  'schedules.typeCron': { en: 'Cron', zh: '定时（Cron）' },
+  'schedules.typeOnce': { en: 'Once', zh: '一次性' },
+  'schedules.fieldPrompt': { en: 'Prompt', zh: '提示内容' },
+  'schedules.fieldCron': { en: 'Cron Expression', zh: 'Cron 表达式' },
+  'schedules.fieldRunAt': { en: 'Run At', zh: '运行时间' },
+  'schedules.dialogCreate': { en: 'Create', zh: '创建' },
+  'schedules.runsTitle': { en: 'Runs — {id}', zh: '运行记录 — {id}' },
+  'schedules.runsEmpty': { en: 'No runs yet.', zh: '尚无运行记录。' },
+
+  // ── Basic panel ───────────────────────────────────────────────
+  'basic.eyebrow': { en: 'Model', zh: '模型' },
+  'basic.hint': {
+    en: 'Provider, model id, and thinking level. Other config (exec backend, memory, channels) remains unchanged.',
+    zh: '配置 Provider、模型 ID 和思考级别。其他配置（执行后端、记忆、通道）保持不变。',
+  },
+  'basic.provider': { en: 'Provider', zh: 'Provider' },
+  'basic.pickProvider': { en: '— pick a provider —', zh: '— 选择 Provider —' },
+  'basic.providerOptionCounts': {
+    en: '{flag} {provider} ({count})',
+    zh: '{flag} {provider}（{count}）',
+  },
+  'basic.providerCustom': { en: 'Custom…', zh: '自定义…' },
+  'basic.pickFromList': { en: 'Pick from list', zh: '从列表中选择' },
+  'basic.providerCustomPlaceholder': {
+    en: 'e.g. my-self-hosted-provider',
+    zh: '例如：my-self-hosted-provider',
+  },
+  'basic.apiKeySet': { en: '✓ API key set: {name}', zh: '✓ 已设置 API Key：{name}' },
+  'basic.apiKeyMissingPrefix': { en: '✗ No API key. Add ', zh: '✗ 未设置 API Key。请在 ' },
+  'basic.apiKeyMissingSuffix': { en: ' in the Secrets tab.', zh: '「密钥」标签页中添加。' },
+  'basic.baseUrl': { en: 'Base URL', zh: 'Base URL' },
+  'basic.baseUrlHint': {
+    en: 'Required for custom providers. The base URL of the API endpoint.',
+    zh: '自定义 Provider 必填。API 端点的基础 URL。',
+  },
+  'basic.apiProtocol': { en: 'API protocol', zh: 'API 协议' },
+  'basic.pickProtocol': { en: '— pick a protocol —', zh: '— 选择协议 —' },
+  'basic.apiProtocolHint': {
+    en: 'Required for custom providers not in the built-in registry.',
+    zh: '内置注册表之外的自定义 Provider 必填。',
+  },
+  'basic.model': { en: 'Model', zh: '模型' },
+  'basic.pickModel': { en: '— pick a model —', zh: '— 选择模型 —' },
+  'basic.thinking': { en: 'Thinking', zh: '思考' },
+  'basic.thinkingDefault': { en: '— default —', zh: '— 默认 —' },
+  'basic.thinkingOffWarning': {
+    en: '⚠️ {model} is a thinking model. Setting thinking to off on a thinking-only endpoint usually triggers 400 reasoning_content must be passed back once the session has any tool-call history. Pick a level (low / medium / high) instead, or leave as default — the server will apply medium automatically.',
+    zh: '⚠️ {model} 是思考模型。在仅支持思考的端点上把 thinking 设为 off，会在会话出现任何工具调用历史后触发 400 reasoning_content must be passed back 错误。请选择 low / medium / high，或保留默认 — 服务器会自动应用 medium。',
+  },
+  'basic.thinkingDefaultNote': {
+    en: '{model} is a thinking model — leaving the level at default will apply medium on the server.',
+    zh: '{model} 是思考模型 — 级别保留默认时，服务器会应用 medium。',
+  },
+  'basic.savedAt': { en: 'Saved at {time}', zh: '已于 {time} 保存' },
+
+  // ── Secrets panel ─────────────────────────────────────────────
+  'secrets.eyebrow': { en: 'Secrets', zh: '密钥' },
+  'secrets.hintPrefix': {
+    en: 'Provider API keys, channel tokens, and other credentials. Existing values are never returned to the browser; the placeholder shows how the server has masked the current value. Each row saves independently — type a new value and click ',
+    zh: 'Provider API Key、通道令牌等凭据。现有的值不会返回到浏览器；占位符显示的是服务器掩码后的当前值。每行独立保存 — 输入新值后点击该行上的「',
+  },
+  'secrets.hintMiddle1': { en: ' on that row, or ', zh: '」，或点击「' },
+  'secrets.hintMiddle2': {
+    en: ' to remove the secret. Toggle ',
+    zh: '」删除该密钥。开启「',
+  },
+  'secrets.hintSuffix': {
+    en: " to inject the secret as an environment variable into this agent's sandboxes at startup (takes effect on the next sandbox start).",
+    zh: '」即可在该 agent 沙箱启动时将该密钥作为环境变量注入（下次沙箱启动后生效）。',
+  },
+  'secrets.add': { en: 'Add Secret', zh: '添加密钥' },
+  'secrets.empty': { en: 'No secrets configured yet.', zh: '尚未配置密钥。' },
+  'secrets.valueUnchanged': { en: 'unchanged', zh: '保持不变' },
+  'secrets.passToSandbox': { en: 'Pass to sandbox', zh: '注入到沙箱' },
+  'secrets.passToSandboxTitle': {
+    en: 'Inject as env var into sandboxes',
+    zh: '作为环境变量注入沙箱',
+  },
+  'secrets.passToSandboxAdd': {
+    en: 'Pass to sandbox (inject as env var)',
+    zh: '注入到沙箱（作为环境变量）',
+  },
+  'secrets.deleteConfirm': { en: 'Delete secret "{key}"?', zh: '删除密钥「{key}」？' },
+  'secrets.dialogAddTitle': { en: 'Add Secret', zh: '添加密钥' },
+  'secrets.fieldKey': { en: 'Key', zh: '名称' },
+  'secrets.fieldValue': { en: 'Value', zh: '值' },
+  'secrets.duplicateError': {
+    en: 'Secret "{key}" already exists',
+    zh: '密钥「{key}」已存在',
+  },
+
+  // ── Voice panel ───────────────────────────────────────────────
+  'voice.eyebrow': { en: 'Voice', zh: '语音' },
+  'voice.hint': {
+    en: 'Speech-to-text (inbound voice messages) and text-to-speech (outbound replies). Each direction is independent — enable only what you need. Only ElevenLabs is supported in this build.',
+    zh: '语音转文字（处理收到的语音消息）与文字转语音（合成回复）。两个方向相互独立，按需启用。当前版本仅支持 ElevenLabs。',
+  },
+  'voice.apiKeySet': { en: '✓ API key set: ', zh: '✓ 已设置 API Key：' },
+  'voice.apiKeyMissingPrefix': { en: '✗ No API key. Add ', zh: '✗ 未设置 API Key。请在「密钥」标签页中添加 ' },
+  'voice.apiKeyMissingSuffix': {
+    en: ' in the Secrets tab before enabling voice.',
+    zh: '，然后再启用语音。',
+  },
+  'voice.enableStt': { en: 'Enable speech-to-text (STT)', zh: '启用语音转文字（STT）' },
+  'voice.sttHint': {
+    en: 'Inbound voice messages from channels are transcribed before the agent sees them.',
+    zh: '来自通道的语音消息会先被转写，再交给 agent 处理。',
+  },
+  'voice.sttModelLabel': { en: 'STT model id', zh: 'STT 模型 ID' },
+  'voice.sttModelPlaceholder': { en: 'scribe_v1 (default)', zh: 'scribe_v1（默认）' },
+  'voice.sttModelHintPrefix': {
+    en: 'Optional. ElevenLabs Scribe model id. Leave blank for the default (',
+    zh: '可选。ElevenLabs Scribe 模型 ID。留空使用默认值（',
+  },
+  'voice.sttModelHintSuffix': { en: ').', zh: '）。' },
+  'voice.enableTts': { en: 'Enable text-to-speech (TTS)', zh: '启用文字转语音（TTS）' },
+  'voice.ttsHint': {
+    en: 'Final replies are synthesized and sent back as audio on channels that support voice.',
+    zh: '最终回复会被合成为语音，发送到支持语音的通道。',
+  },
+  'voice.ttsVoiceLabel': { en: 'TTS voice id', zh: 'TTS 语音 ID' },
+  'voice.ttsVoicePlaceholder': {
+    en: '21m00Tcm4TlvDq8ikWAM (Rachel, default)',
+    zh: '21m00Tcm4TlvDq8ikWAM（Rachel，默认）',
+  },
+  'voice.ttsVoiceHintPrefix': {
+    en: 'Optional. The ElevenLabs voice id (from ',
+    zh: '可选。ElevenLabs 的语音 ID（来源：',
+  },
+  'voice.ttsVoiceHintSuffix': {
+    en: '). Leave blank to use the built-in default voice.',
+    zh: '）。留空使用内置默认语音。',
+  },
+  'voice.ttsModelLabel': { en: 'TTS model id', zh: 'TTS 模型 ID' },
+  'voice.ttsModelPlaceholder': {
+    en: 'eleven_multilingual_v2 (default)',
+    zh: 'eleven_multilingual_v2（默认）',
+  },
+  'voice.ttsModelHint': {
+    en: 'Optional. ElevenLabs TTS model id. Leave blank for the default.',
+    zh: '可选。ElevenLabs TTS 模型 ID。留空使用默认值。',
+  },
+  'voice.ttsSpeedLabel': { en: 'Speed', zh: '语速' },
+  'voice.ttsSpeedPlaceholder': { en: '1.0 (default)', zh: '1.0（默认）' },
+  'voice.ttsSpeedHint': {
+    en: 'Optional playback rate multiplier; ~0.7–1.2 is typical. Leave blank for the provider default.',
+    zh: '可选的播放速率倍数；常用范围 0.7–1.2。留空使用 Provider 默认。',
+  },
+  'voice.speedInvalid': {
+    en: 'Speed must be a positive number.',
+    zh: '语速必须是正数。',
+  },
+
+  // ── Policies panel ────────────────────────────────────────────
+  'policies.eyebrow': { en: 'Access Policies', zh: '访问策略' },
+  'policies.hint': {
+    en: 'Control access to tools, MCP servers, and file paths. Each policy maps a resource to grants (who it applies to) and an effect (allow, deny, or require approval). Use * suffix for prefix matching.',
+    zh: '控制对工具、MCP 服务器和文件路径的访问。每条策略将资源映射到授权（谁可使用）和效果（允许、拒绝或需审批）。前缀匹配请使用 * 后缀。',
+  },
+  'policies.add': { en: 'Add Policy', zh: '添加策略' },
+  'policies.empty': {
+    en: 'No custom policies. All tools use built-in defaults.',
+    zh: '尚未配置自定义策略。所有工具使用内置默认值。',
+  },
+  'policies.deleteConfirm': {
+    en: 'Delete policy for {type}/{key} [{effect}]?',
+    zh: '删除策略 {type}/{key} [{effect}]？',
+  },
+  'policies.grantsNone': { en: 'None (blocked)', zh: '无（已阻止）' },
+  'policies.grantsEveryone': { en: 'Everyone', zh: '所有人' },
+  'policies.grantsUserPrefix': { en: 'user:', zh: '用户：' },
+  'policies.resourceTool': { en: 'Tool', zh: '工具' },
+  'policies.resourceMcp': { en: 'MCP Server', zh: 'MCP 服务器' },
+  'policies.resourceFile': { en: 'File', zh: '文件' },
+  'policies.dialogTitle': { en: 'Add Policy', zh: '添加策略' },
+  'policies.fieldResourceType': { en: 'Resource type', zh: '资源类型' },
+  'policies.fieldFilePath': { en: 'File path (prefix)', zh: '文件路径（前缀）' },
+  'policies.filePathPlaceholder': {
+    en: 'e.g. /root/notes.md, /home/user/',
+    zh: '例如：/root/notes.md、/home/user/',
+  },
+  'policies.fieldMode': { en: 'Mode', zh: '模式' },
+  'policies.modeAny': { en: 'Any (read + write)', zh: '任意（读 + 写）' },
+  'policies.modeRead': { en: 'Read only', zh: '只读' },
+  'policies.modeWrite': { en: 'Write only', zh: '只写' },
+  'policies.fieldResourceKey': { en: 'Resource key', zh: '资源标识' },
+  'policies.fieldEffect': { en: 'Effect', zh: '效果' },
+  'policies.effectAllow': { en: 'Allow', zh: '允许' },
+  'policies.effectDeny': { en: 'Deny', zh: '拒绝' },
+  'policies.effectRequireApproval': { en: 'Require Approval', zh: '需要审批' },
+  'policies.fieldGrants': { en: 'Grants (who this rule targets)', zh: '授权（规则适用对象）' },
+  'policies.grantsEveryonePreset': { en: 'Everyone', zh: '所有人' },
+  'policies.grantsOwnerOnly': { en: 'Owner only', zh: '仅 Owner' },
+  'policies.grantsOwnerUser': { en: 'Owner + User', zh: 'Owner + User' },
+  'policies.grantsCustomJson': { en: 'Custom JSON', zh: '自定义 JSON' },
+  'policies.fieldCustomGrants': { en: 'Custom grants JSON', zh: '自定义授权 JSON' },
+  'policies.grantsJsonError': {
+    en: 'Grants must be a valid JSON array',
+    zh: '授权必须是合法的 JSON 数组',
+  },
+  'policies.toolPlaceholder': {
+    en: 'e.g. exec, file_write, memory_add',
+    zh: '例如：exec、file_write、memory_add',
+  },
+  'policies.mcpPlaceholder': {
+    en: 'e.g. weather, github, *',
+    zh: '例如：weather、github、*',
+  },
+  'policies.filePlaceholder': {
+    en: 'e.g. /etc/*, /home/user/.env',
+    zh: '例如：/etc/*、/home/user/.env',
+  },
 } as const satisfies Record<string, Messages>;
 
 export type MessageKey = keyof typeof messages;

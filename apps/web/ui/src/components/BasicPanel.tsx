@@ -7,6 +7,7 @@ import {
   type AgentConfig,
   type ProviderCatalogEntry,
 } from '../api';
+import { useTranslation } from '../i18n';
 
 /**
  * Convention pi-ai uses to look up an API key for a provider:
@@ -32,6 +33,7 @@ const THINKING_LEVELS: Thinking[] = ['off', 'minimal', 'low', 'medium', 'high'];
 const CUSTOM = '__custom__';
 
 export function BasicPanel() {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [catalog, setCatalog] = useState<ProviderCatalogEntry[]>([]);
   const [secrets, setSecrets] = useState<Record<string, string>>({});
@@ -130,22 +132,19 @@ export function BasicPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading…</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error && !config) return <p className="manage__empty">{error}</p>;
   if (!config) return null;
 
   return (
     <div className="basic-panel">
       <div className="basic-panel__intro">
-        <p className="eyebrow">Model</p>
-        <p className="basic-panel__hint">
-          Provider, model id, and thinking level. Other config (exec backend,
-          memory, channels) remains unchanged.
-        </p>
+        <p className="eyebrow">{t('basic.eyebrow')}</p>
+        <p className="basic-panel__hint">{t('basic.hint')}</p>
       </div>
 
       <div className="basic-panel__field">
-        <label htmlFor="basic-provider">Provider</label>
+        <label htmlFor="basic-provider">{t('basic.provider')}</label>
         {providerMode === 'preset' ? (
           <select
             id="basic-provider"
@@ -167,13 +166,17 @@ export function BasicPanel() {
               }
             }}
           >
-            <option value="">— pick a provider —</option>
+            <option value="">{t('basic.pickProvider')}</option>
             {catalog.map((e) => (
               <option key={e.provider} value={e.provider}>
-                {providerHasKey(e.provider, secrets) ? '✓' : '✗'} {e.provider} ({e.models.length})
+                {t('basic.providerOptionCounts', {
+                  flag: providerHasKey(e.provider, secrets) ? '✓' : '✗',
+                  provider: e.provider,
+                  count: String(e.models.length),
+                })}
               </option>
             ))}
-            <option value={CUSTOM}>Custom…</option>
+            <option value={CUSTOM}>{t('basic.providerCustom')}</option>
           </select>
         ) : (
           <div className="basic-panel__custom-row">
@@ -182,7 +185,7 @@ export function BasicPanel() {
               type="text"
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
-              placeholder="e.g. my-self-hosted-provider"
+              placeholder={t('basic.providerCustomPlaceholder')}
               autoComplete="off"
             />
             <button
@@ -196,18 +199,18 @@ export function BasicPanel() {
                 }
               }}
             >
-              Pick from list
+              {t('basic.pickFromList')}
             </button>
           </div>
         )}
         {provider && (
           providerHasKey(provider, secrets) ? (
             <p className="basic-panel__hint basic-panel__hint--ok">
-              ✓ API key set: {candidateSecretNames(provider).find((n) => secrets[n]) ?? ''}
+              {t('basic.apiKeySet', { name: candidateSecretNames(provider).find((n) => secrets[n]) ?? '' })}
             </p>
           ) : (
             <p className="basic-panel__hint basic-panel__hint--warn">
-              ✗ No API key. Add <code>{candidateSecretNames(provider)[0]}</code> in the Secrets tab.
+              {t('basic.apiKeyMissingPrefix')}<code>{candidateSecretNames(provider)[0]}</code>{t('basic.apiKeyMissingSuffix')}
             </p>
           )
         )}
@@ -216,7 +219,7 @@ export function BasicPanel() {
       {providerMode === 'custom' && (
         <>
           <div className="basic-panel__field">
-            <label htmlFor="basic-base-url">Base URL</label>
+            <label htmlFor="basic-base-url">{t('basic.baseUrl')}</label>
             <input
               id="basic-base-url"
               type="text"
@@ -225,30 +228,26 @@ export function BasicPanel() {
               placeholder="https://api.example.com/v1"
               autoComplete="off"
             />
-            <p className="basic-panel__hint">
-              Required for custom providers. The base URL of the API endpoint.
-            </p>
+            <p className="basic-panel__hint">{t('basic.baseUrlHint')}</p>
           </div>
           <div className="basic-panel__field">
-            <label htmlFor="basic-api">API protocol</label>
+            <label htmlFor="basic-api">{t('basic.apiProtocol')}</label>
             <select
               id="basic-api"
               value={api}
               onChange={(e) => setApi(e.target.value)}
             >
-              <option value="">— pick a protocol —</option>
+              <option value="">{t('basic.pickProtocol')}</option>
               <option value="openai-completions">openai-completions</option>
               <option value="anthropic-messages">anthropic-messages</option>
             </select>
-            <p className="basic-panel__hint">
-              Required for custom providers not in the built-in registry.
-            </p>
+            <p className="basic-panel__hint">{t('basic.apiProtocolHint')}</p>
           </div>
         </>
       )}
 
       <div className="basic-panel__field">
-        <label htmlFor="basic-model">Model</label>
+        <label htmlFor="basic-model">{t('basic.model')}</label>
         {modelMode === 'preset' && modelsForProvider.length > 0 ? (
           <select
             id="basic-model"
@@ -262,11 +261,11 @@ export function BasicPanel() {
               setModel(value);
             }}
           >
-            <option value="">— pick a model —</option>
+            <option value="">{t('basic.pickModel')}</option>
             {modelsForProvider.map((m) => (
               <option key={m.id} value={m.id}>{m.id}</option>
             ))}
-            <option value={CUSTOM}>Custom…</option>
+            <option value={CUSTOM}>{t('basic.providerCustom')}</option>
           </select>
         ) : (
           <div className="basic-panel__custom-row">
@@ -287,7 +286,7 @@ export function BasicPanel() {
                   if (!modelsForProvider.some((m) => m.id === model)) setModel('');
                 }}
               >
-                Pick from list
+                {t('basic.pickFromList')}
               </button>
             )}
           </div>
@@ -295,31 +294,25 @@ export function BasicPanel() {
       </div>
 
       <div className="basic-panel__field">
-        <label htmlFor="basic-thinking">Thinking</label>
+        <label htmlFor="basic-thinking">{t('basic.thinking')}</label>
         <select
           id="basic-thinking"
           value={thinking}
           onChange={(e) => setThinking(e.target.value as Thinking | '')}
         >
-          <option value="">— default —</option>
+          <option value="">{t('basic.thinkingDefault')}</option>
           {THINKING_LEVELS.map((lvl) => (
             <option key={lvl} value={lvl}>{lvl}</option>
           ))}
         </select>
         {selectedModelEntry?.reasoning && thinking === 'off' && (
           <p className="basic-panel__hint basic-panel__hint--warn">
-            ⚠️ <strong>{model}</strong> is a thinking model. Setting thinking
-            to <code>off</code> on a thinking-only endpoint usually triggers
-            <code> 400 reasoning_content must be passed back</code> once the
-            session has any tool-call history. Pick a level (low / medium /
-            high) instead, or leave as <em>default</em> — the server will
-            apply <code>medium</code> automatically.
+            {t('basic.thinkingOffWarning', { model })}
           </p>
         )}
         {selectedModelEntry?.reasoning && thinking === '' && (
           <p className="basic-panel__hint">
-            <em>{model}</em> is a thinking model — leaving the level at
-            default will apply <code>medium</code> on the server.
+            {t('basic.thinkingDefaultNote', { model })}
           </p>
         )}
       </div>
@@ -333,10 +326,10 @@ export function BasicPanel() {
           disabled={saving || !dirty || !provider.trim() || !model.trim()}
           onClick={() => void handleSave()}
         >
-          {saving ? 'Saving…' : 'Save'}
+          {t(saving ? 'common.saving' : 'common.save')}
         </button>
         {savedAt && !dirty && (
-          <span className="basic-panel__saved">Saved at {savedAt}</span>
+          <span className="basic-panel__saved">{t('basic.savedAt', { time: savedAt })}</span>
         )}
       </div>
     </div>

@@ -4,8 +4,10 @@ import {
   triggerSchedule, fetchScheduleRuns,
   type ScheduleInfo, type ScheduleRunInfo,
 } from '../api';
+import { useTranslation } from '../i18n';
 
 export function SchedulesPanel() {
+  const { t } = useTranslation();
   const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -35,7 +37,7 @@ export function SchedulesPanel() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm(`Delete schedule "${id}"?`)) return;
+    if (!confirm(t('schedules.deleteConfirm', { id }))) return;
     try {
       await deleteSchedule(id);
       await load();
@@ -53,16 +55,16 @@ export function SchedulesPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading...</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error) return <p className="manage__error">{error}</p>;
 
   return (
     <div>
       <div className="manage__toolbar">
-        <button className="btn btn--sm btn--primary" onClick={() => setShowCreate(true)}>Create Schedule</button>
+        <button className="btn btn--sm btn--primary" onClick={() => setShowCreate(true)}>{t('schedules.create')}</button>
       </div>
 
-      {schedules.length === 0 && <p className="manage__empty">No schedules.</p>}
+      {schedules.length === 0 && <p className="manage__empty">{t('schedules.empty')}</p>}
 
       <div className="manage__list">
         {schedules.map((s) => (
@@ -75,20 +77,20 @@ export function SchedulesPanel() {
               </div>
               <div className="manage__card-desc">{s.prompt.length > 100 ? s.prompt.slice(0, 100) + '...' : s.prompt}</div>
               <div className="manage__card-meta">
-                {s.cronExpression && <>Cron: {s.cronExpression}</>}
-                {s.runAt && <>Run at: {new Date(s.runAt).toLocaleString()}</>}
-                {s.nextRunAt && <> · Next: {new Date(s.nextRunAt).toLocaleString()}</>}
-                {s.runCount > 0 && <> · Runs: {s.runCount}</>}
-                {s.consecutiveErrors > 0 && <> · Errors: {s.consecutiveErrors}</>}
+                {s.cronExpression && <>{t('schedules.cron', { expr: s.cronExpression })}</>}
+                {s.runAt && <>{t('schedules.runAt', { time: new Date(s.runAt).toLocaleString() })}</>}
+                {s.nextRunAt && <>{t('schedules.next', { time: new Date(s.nextRunAt).toLocaleString() })}</>}
+                {s.runCount > 0 && <>{t('schedules.runCount', { n: String(s.runCount) })}</>}
+                {s.consecutiveErrors > 0 && <>{t('schedules.errors', { n: String(s.consecutiveErrors) })}</>}
               </div>
             </div>
             <div className="manage__card-actions">
-              <button className="btn btn--sm btn--ghost" onClick={() => setRunsScheduleId(s.scheduleId)}>Runs</button>
-              <button className="btn btn--sm btn--ghost" onClick={() => void handleTrigger(s.scheduleId)}>Trigger</button>
+              <button className="btn btn--sm btn--ghost" onClick={() => setRunsScheduleId(s.scheduleId)}>{t('schedules.runs')}</button>
+              <button className="btn btn--sm btn--ghost" onClick={() => void handleTrigger(s.scheduleId)}>{t('schedules.trigger')}</button>
               <button className="btn btn--sm btn--ghost" onClick={() => void handlePauseResume(s)}>
-                {s.status === 'paused' ? 'Resume' : 'Pause'}
+                {t(s.status === 'paused' ? 'schedules.resume' : 'schedules.pause')}
               </button>
-              <button className="btn btn--sm btn--danger" onClick={() => void handleDelete(s.scheduleId)}>Delete</button>
+              <button className="btn btn--sm btn--danger" onClick={() => void handleDelete(s.scheduleId)}>{t('common.delete')}</button>
             </div>
           </div>
         ))}
@@ -101,6 +103,7 @@ export function SchedulesPanel() {
 }
 
 function CreateScheduleDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const { t } = useTranslation();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [type, setType] = useState<'cron' | 'once'>('cron');
   const [prompt, setPrompt] = useState('');
@@ -130,43 +133,43 @@ function CreateScheduleDialog({ onClose, onCreated }: { onClose: () => void; onC
   return (
     <dialog ref={dialogRef} className="manage__dialog" onClose={onClose}>
       <form className="manage__dialog-form" onSubmit={handleSubmit}>
-        <h3>Create Schedule</h3>
+        <h3>{t('schedules.dialogTitle')}</h3>
 
         <label className="manage__field">
-          <span className="manage__field-label">ID (optional)</span>
-          <input className="manage__field-input" value={scheduleId} onChange={(e) => setScheduleId(e.target.value)} placeholder="auto-generated if empty" />
+          <span className="manage__field-label">{t('schedules.fieldIdOptional')}</span>
+          <input className="manage__field-input" value={scheduleId} onChange={(e) => setScheduleId(e.target.value)} placeholder={t('schedules.idPlaceholder')} />
         </label>
 
         <div className="manage__field">
-          <span className="manage__field-label">Type</span>
+          <span className="manage__field-label">{t('schedules.fieldType')}</span>
           <div className="manage__radio-group">
-            <label><input type="radio" checked={type === 'cron'} onChange={() => setType('cron')} /> Cron</label>
-            <label><input type="radio" checked={type === 'once'} onChange={() => setType('once')} /> Once</label>
+            <label><input type="radio" checked={type === 'cron'} onChange={() => setType('cron')} /> {t('schedules.typeCron')}</label>
+            <label><input type="radio" checked={type === 'once'} onChange={() => setType('once')} /> {t('schedules.typeOnce')}</label>
           </div>
         </div>
 
         <label className="manage__field">
-          <span className="manage__field-label">Prompt</span>
+          <span className="manage__field-label">{t('schedules.fieldPrompt')}</span>
           <textarea className="manage__field-input manage__field-textarea" required value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} />
         </label>
 
         {type === 'cron' && (
           <label className="manage__field">
-            <span className="manage__field-label">Cron Expression</span>
+            <span className="manage__field-label">{t('schedules.fieldCron')}</span>
             <input className="manage__field-input" required value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="*/30 * * * *" />
           </label>
         )}
 
         {type === 'once' && (
           <label className="manage__field">
-            <span className="manage__field-label">Run At</span>
+            <span className="manage__field-label">{t('schedules.fieldRunAt')}</span>
             <input className="manage__field-input" type="datetime-local" required value={runAt} onChange={(e) => setRunAt(e.target.value)} />
           </label>
         )}
 
         <div className="manage__dialog-actions">
-          <button className="btn btn--ghost" type="button" onClick={onClose}>Cancel</button>
-          <button className="btn btn--primary" type="submit">Create</button>
+          <button className="btn btn--ghost" type="button" onClick={onClose}>{t('common.cancel')}</button>
+          <button className="btn btn--primary" type="submit">{t('schedules.dialogCreate')}</button>
         </div>
       </form>
     </dialog>
@@ -174,6 +177,7 @@ function CreateScheduleDialog({ onClose, onCreated }: { onClose: () => void; onC
 }
 
 function RunsDialog({ scheduleId, onClose }: { scheduleId: string; onClose: () => void }) {
+  const { t } = useTranslation();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [runs, setRuns] = useState<ScheduleRunInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,12 +195,12 @@ function RunsDialog({ scheduleId, onClose }: { scheduleId: string; onClose: () =
   return (
     <dialog ref={dialogRef} className="manage__dialog manage__dialog--wide" onClose={onClose}>
       <div className="manage__dialog-form">
-        <h3>Runs — {scheduleId}</h3>
+        <h3>{t('schedules.runsTitle', { id: scheduleId })}</h3>
 
-        {loading && <p className="manage__empty">Loading...</p>}
+        {loading && <p className="manage__empty">{t('common.loading')}</p>}
         {error && <p className="manage__error">{error}</p>}
 
-        {!loading && !error && runs.length === 0 && <p className="manage__empty">No runs yet.</p>}
+        {!loading && !error && runs.length === 0 && <p className="manage__empty">{t('schedules.runsEmpty')}</p>}
 
         {runs.length > 0 && (
           <div className="manage__runs">
@@ -212,7 +216,7 @@ function RunsDialog({ scheduleId, onClose }: { scheduleId: string; onClose: () =
         )}
 
         <div className="manage__dialog-actions">
-          <button className="btn btn--ghost" type="button" onClick={onClose}>Close</button>
+          <button className="btn btn--ghost" type="button" onClick={onClose}>{t('common.close')}</button>
         </div>
       </div>
     </dialog>

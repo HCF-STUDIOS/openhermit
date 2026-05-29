@@ -5,6 +5,7 @@ import {
   setAgentSecretPassThrough,
   deleteAgentSecret,
 } from '../api';
+import { useTranslation } from '../i18n';
 
 interface RowState {
   key: string;
@@ -19,6 +20,7 @@ interface RowState {
 }
 
 export function SecretsPanel() {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<RowState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -85,22 +87,18 @@ export function SecretsPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading…</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
   if (error && rows.length === 0) return <p className="manage__empty">{error}</p>;
 
   return (
     <div className="secrets-panel">
       <div className="secrets-panel__intro">
-        <p className="eyebrow">Secrets</p>
+        <p className="eyebrow">{t('secrets.eyebrow')}</p>
         <p className="secrets-panel__hint">
-          Provider API keys, channel tokens, and other credentials. Existing
-          values are never returned to the browser; the placeholder shows how
-          the server has masked the current value. Each row saves
-          independently — type a new value and click <strong>Save</strong> on
-          that row, or <strong>Delete</strong> to remove the secret. Toggle
-          <strong> Pass to sandbox</strong> to inject the secret as an
-          environment variable into this agent's sandboxes at startup
-          (takes effect on the next sandbox start).
+          {t('secrets.hintPrefix')}<strong>{t('common.save')}</strong>
+          {t('secrets.hintMiddle1')}<strong>{t('common.delete')}</strong>
+          {t('secrets.hintMiddle2')}<strong>{t('secrets.passToSandbox')}</strong>
+          {t('secrets.hintSuffix')}
         </p>
       </div>
 
@@ -110,13 +108,13 @@ export function SecretsPanel() {
           className="btn btn--sm btn--primary"
           onClick={() => setShowAdd(true)}
         >
-          Add Secret
+          {t('secrets.add')}
         </button>
       </div>
 
       <div className="secrets-panel__list">
         {rows.length === 0 ? (
-          <p className="manage__empty">No secrets configured yet.</p>
+          <p className="manage__empty">{t('secrets.empty')}</p>
         ) : (
           rows.map((r) => (
             <div className="secrets-row" key={r.key}>
@@ -126,18 +124,18 @@ export function SecretsPanel() {
                 className="secrets-row__value"
                 value={r.draft}
                 onChange={(e) => updateRow(r.key, { draft: e.target.value })}
-                placeholder={r.masked || 'unchanged'}
+                placeholder={r.masked || t('secrets.valueUnchanged')}
                 disabled={r.busy}
                 autoComplete="off"
               />
-              <label className="secrets-row__passthrough" title="Inject as env var into sandboxes">
+              <label className="secrets-row__passthrough" title={t('secrets.passToSandboxTitle')}>
                 <input
                   type="checkbox"
                   checked={r.passThrough}
                   disabled={r.busy}
                   onChange={(e) => void togglePassThrough(r.key, e.target.checked)}
                 />
-                <span>Pass to sandbox</span>
+                <span>{t('secrets.passToSandbox')}</span>
               </label>
               <div className="secrets-row__actions">
                 <button
@@ -146,17 +144,17 @@ export function SecretsPanel() {
                   disabled={r.busy || r.draft === ''}
                   onClick={() => void saveRow(r.key)}
                 >
-                  {r.busy ? '…' : 'Save'}
+                  {r.busy ? '…' : t('common.save')}
                 </button>
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm secrets-row__delete"
                   disabled={r.busy}
                   onClick={() => {
-                    if (window.confirm(`Delete secret "${r.key}"?`)) void deleteRow(r.key);
+                    if (window.confirm(t('secrets.deleteConfirm', { key: r.key }))) void deleteRow(r.key);
                   }}
                 >
-                  Delete
+                  {t('common.delete')}
                 </button>
               </div>
             </div>
@@ -186,6 +184,7 @@ function AddSecretDialog({
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
@@ -202,7 +201,7 @@ function AddSecretDialog({
     const k = key.trim();
     if (!k) return;
     if (existingKeys.includes(k)) {
-      setError(`Secret "${k}" already exists`);
+      setError(t('secrets.duplicateError', { key: k }));
       return;
     }
     setError('');
@@ -221,10 +220,10 @@ function AddSecretDialog({
   return (
     <dialog ref={dialogRef} className="manage__dialog" onClose={onClose}>
       <form className="manage__dialog-form" onSubmit={handleSubmit}>
-        <h3>Add Secret</h3>
+        <h3>{t('secrets.dialogAddTitle')}</h3>
 
         <label className="manage__field">
-          <span className="manage__field-label">Key</span>
+          <span className="manage__field-label">{t('secrets.fieldKey')}</span>
           <input
             className="manage__field-input"
             value={key}
@@ -238,7 +237,7 @@ function AddSecretDialog({
         </label>
 
         <label className="manage__field">
-          <span className="manage__field-label">Value</span>
+          <span className="manage__field-label">{t('secrets.fieldValue')}</span>
           <input
             type="password"
             className="manage__field-input"
@@ -256,21 +255,21 @@ function AddSecretDialog({
             disabled={submitting}
             onChange={(e) => setPassThrough(e.target.checked)}
           />
-          <span>Pass to sandbox (inject as env var)</span>
+          <span>{t('secrets.passToSandboxAdd')}</span>
         </label>
 
         {error && <p className="manage__error">{error}</p>}
 
         <div className="manage__dialog-actions">
           <button className="btn btn--ghost" type="button" onClick={onClose} disabled={submitting}>
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             className="btn btn--primary"
             type="submit"
             disabled={submitting || !key.trim()}
           >
-            {submitting ? '…' : 'Add'}
+            {submitting ? '…' : t('common.add')}
           </button>
         </div>
       </form>

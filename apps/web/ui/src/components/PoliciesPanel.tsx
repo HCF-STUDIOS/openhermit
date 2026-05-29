@@ -1,30 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchPolicies, upsertPolicy, deletePolicy, type PolicyInfo } from '../api';
+import { useTranslation, type Translator } from '../i18n';
 
 const RESOURCE_TYPES = [
-  { value: 'tool', label: 'Tool', placeholder: 'e.g. exec, file_write, memory_add' },
-  { value: 'mcp', label: 'MCP Server', placeholder: 'e.g. weather, github, *' },
-  { value: 'file', label: 'File', placeholder: 'e.g. /etc/*, /home/user/.env' },
+  { value: 'tool', labelKey: 'policies.resourceTool', placeholderKey: 'policies.toolPlaceholder' },
+  { value: 'mcp', labelKey: 'policies.resourceMcp', placeholderKey: 'policies.mcpPlaceholder' },
+  { value: 'file', labelKey: 'policies.resourceFile', placeholderKey: 'policies.filePlaceholder' },
 ] as const;
 
-const GRANT_PRESETS: { label: string; grants: Array<{ type: 'any' | 'role'; value?: string }> }[] = [
-  { label: 'Everyone', grants: [{ type: 'any' }] },
-  { label: 'Owner only', grants: [{ type: 'role', value: 'owner' }] },
-  { label: 'Owner + User', grants: [{ type: 'role', value: 'owner' }, { type: 'role', value: 'user' }] },
+const GRANT_PRESETS: { labelKey: 'policies.grantsEveryonePreset' | 'policies.grantsOwnerOnly' | 'policies.grantsOwnerUser'; grants: Array<{ type: 'any' | 'role'; value?: string }> }[] = [
+  { labelKey: 'policies.grantsEveryonePreset', grants: [{ type: 'any' }] },
+  { labelKey: 'policies.grantsOwnerOnly', grants: [{ type: 'role', value: 'owner' }] },
+  { labelKey: 'policies.grantsOwnerUser', grants: [{ type: 'role', value: 'owner' }, { type: 'role', value: 'user' }] },
 ];
 
-function grantsLabel(grants: PolicyInfo['grants']): string {
-  if (grants.length === 0) return 'None (blocked)';
-  if (grants.some((g) => g.type === 'any')) return 'Everyone';
+function grantsLabel(grants: PolicyInfo['grants'], t: Translator): string {
+  if (grants.length === 0) return t('policies.grantsNone');
+  if (grants.some((g) => g.type === 'any')) return t('policies.grantsEveryone');
   const roles = grants.filter((g) => g.type === 'role').map((g) => g.value);
   const users = grants.filter((g) => g.type === 'user').map((g) => g.value);
   const parts: string[] = [];
   if (roles.length) parts.push(roles.join(', '));
-  if (users.length) parts.push(`user:${users.join(',')}`);
+  if (users.length) parts.push(`${t('policies.grantsUserPrefix')}${users.join(',')}`);
   return parts.join(' + ');
 }
 
 export function PoliciesPanel() {
+  const { t } = useTranslation();
   const [policies, setPolicies] = useState<PolicyInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -44,7 +46,7 @@ export function PoliciesPanel() {
   useEffect(() => { void load(); }, [load]);
 
   const handleDelete = async (p: PolicyInfo) => {
-    if (!window.confirm(`Delete policy for ${p.resourceType}/${p.resourceKey} [${p.effect}]?`)) return;
+    if (!window.confirm(t('policies.deleteConfirm', { type: p.resourceType, key: p.resourceKey, effect: p.effect }))) return;
     try {
       await deletePolicy(p.resourceType, p.resourceKey, p.effect);
       await load();
@@ -53,27 +55,23 @@ export function PoliciesPanel() {
     }
   };
 
-  if (loading) return <p className="manage__empty">Loading...</p>;
+  if (loading) return <p className="manage__empty">{t('common.loading')}</p>;
 
   return (
     <div className="policies-panel">
       <div className="policies-panel__intro">
-        <p className="eyebrow">Access Policies</p>
-        <p className="policies-panel__hint">
-          Control access to tools, MCP servers, and file paths. Each policy maps a
-          resource to grants (who it applies to) and an effect (allow, deny, or require
-          approval). Use <code>*</code> suffix for prefix matching.
-        </p>
+        <p className="eyebrow">{t('policies.eyebrow')}</p>
+        <p className="policies-panel__hint">{t('policies.hint')}</p>
       </div>
 
       <div className="manage__toolbar">
         <button className="btn btn--sm btn--primary" onClick={() => setShowCreate(true)}>
-          Add Policy
+          {t('policies.add')}
         </button>
       </div>
 
       {policies.length === 0 ? (
-        <p className="manage__empty">No custom policies. All tools use built-in defaults.</p>
+        <p className="manage__empty">{t('policies.empty')}</p>
       ) : (
         <div className="policies-panel__list">
           {policies.map((p) => (
@@ -86,13 +84,13 @@ export function PoliciesPanel() {
                   <span className="policies-row__scope">{JSON.stringify(p.scope)}</span>
                 )}
               </div>
-              <div className="policies-row__grants">{grantsLabel(p.grants)}</div>
+              <div className="policies-row__grants">{grantsLabel(p.grants, t)}</div>
               <div className="policies-row__actions">
                 <button
                   className="btn btn--ghost btn--sm policies-row__delete"
                   onClick={() => void handleDelete(p)}
                 >
-                  Delete
+                  {t('common.delete')}
                 </button>
               </div>
             </div>
@@ -110,6 +108,7 @@ export function PoliciesPanel() {
 }
 
 function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const { t } = useTranslation();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [resourceType, setResourceType] = useState('tool');
   const [resourceKey, setResourceKey] = useState('');
@@ -124,7 +123,7 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
 
   useEffect(() => { dialogRef.current?.showModal(); }, []);
 
-  const currentType = RESOURCE_TYPES.find((t) => t.value === resourceType) ?? RESOURCE_TYPES[0];
+  const currentType = RESOURCE_TYPES.find((rt) => rt.value === resourceType) ?? RESOURCE_TYPES[0];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,7 +138,7 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
         grants = JSON.parse(customGrants);
         if (!Array.isArray(grants)) throw new Error();
       } catch {
-        setErr('Grants must be a valid JSON array');
+        setErr(t('policies.grantsJsonError'));
         return;
       }
     } else {
@@ -165,77 +164,77 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
   return (
     <dialog ref={dialogRef} className="manage__dialog" onClose={onClose}>
       <form className="manage__dialog-form" onSubmit={handleSubmit}>
-        <h3>Add Policy</h3>
+        <h3>{t('policies.dialogTitle')}</h3>
         <label className="manage__field">
-          <span className="manage__field-label">Resource type</span>
+          <span className="manage__field-label">{t('policies.fieldResourceType')}</span>
           <select
             className="manage__field-input"
             value={resourceType}
             onChange={(e) => setResourceType(e.target.value)}
             disabled={busy}
           >
-            {RESOURCE_TYPES.map((t) => (
-              <option key={t.value} value={t.value}>{t.label}</option>
+            {RESOURCE_TYPES.map((rt) => (
+              <option key={rt.value} value={rt.value}>{t(rt.labelKey)}</option>
             ))}
           </select>
         </label>
         {resourceType === 'file' ? (
           <>
             <label className="manage__field">
-              <span className="manage__field-label">File path (prefix)</span>
+              <span className="manage__field-label">{t('policies.fieldFilePath')}</span>
               <input
                 className="manage__field-input"
                 required
                 value={filePath}
                 onChange={(e) => setFilePath(e.target.value)}
-                placeholder="e.g. /root/notes.md, /home/user/"
+                placeholder={t('policies.filePathPlaceholder')}
                 disabled={busy}
               />
             </label>
             <label className="manage__field">
-              <span className="manage__field-label">Mode</span>
+              <span className="manage__field-label">{t('policies.fieldMode')}</span>
               <select
                 className="manage__field-input"
                 value={fileMode}
                 onChange={(e) => setFileMode(e.target.value as '*' | 'read' | 'write')}
                 disabled={busy}
               >
-                <option value="*">Any (read + write)</option>
-                <option value="read">Read only</option>
-                <option value="write">Write only</option>
+                <option value="*">{t('policies.modeAny')}</option>
+                <option value="read">{t('policies.modeRead')}</option>
+                <option value="write">{t('policies.modeWrite')}</option>
               </select>
             </label>
           </>
         ) : (
           <label className="manage__field">
-            <span className="manage__field-label">Resource key</span>
+            <span className="manage__field-label">{t('policies.fieldResourceKey')}</span>
             <input
               className="manage__field-input"
               required
               value={resourceKey}
               onChange={(e) => setResourceKey(e.target.value)}
-              placeholder={currentType.placeholder}
+              placeholder={t(currentType.placeholderKey)}
               disabled={busy}
             />
           </label>
         )}
 
         <label className="manage__field">
-          <span className="manage__field-label">Effect</span>
+          <span className="manage__field-label">{t('policies.fieldEffect')}</span>
           <select
             className="manage__field-input"
             value={effect}
             onChange={(e) => setEffect(e.target.value as 'allow' | 'deny' | 'require_approval')}
             disabled={busy}
           >
-            <option value="allow">Allow</option>
-            <option value="deny">Deny</option>
-            <option value="require_approval">Require Approval</option>
+            <option value="allow">{t('policies.effectAllow')}</option>
+            <option value="deny">{t('policies.effectDeny')}</option>
+            <option value="require_approval">{t('policies.effectRequireApproval')}</option>
           </select>
         </label>
 
         <fieldset className="manage__field" style={{ border: 'none', padding: 0, margin: 0 }}>
-          <span className="manage__field-label">Grants (who this rule targets)</span>
+          <span className="manage__field-label">{t('policies.fieldGrants')}</span>
           <div className="manage__radio-group">
             {GRANT_PRESETS.map((p, i) => (
               <label key={i}>
@@ -246,7 +245,7 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
                   onChange={() => { setPreset(i); setUseCustom(false); }}
                   disabled={busy}
                 />
-                {p.label}
+                {t(p.labelKey)}
               </label>
             ))}
             <label>
@@ -257,14 +256,14 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
                 onChange={() => setUseCustom(true)}
                 disabled={busy}
               />
-              Custom JSON
+              {t('policies.grantsCustomJson')}
             </label>
           </div>
         </fieldset>
 
         {useCustom && (
           <label className="manage__field">
-            <span className="manage__field-label">Custom grants JSON</span>
+            <span className="manage__field-label">{t('policies.fieldCustomGrants')}</span>
             <textarea
               className="manage__field-input manage__field-textarea"
               rows={3}
@@ -279,9 +278,9 @@ function CreatePolicyDialog({ onClose, onCreated }: { onClose: () => void; onCre
         {err && <p className="basic-panel__error">{err}</p>}
 
         <div className="manage__dialog-actions">
-          <button className="btn btn--ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn--ghost" type="button" onClick={onClose} disabled={busy}>{t('common.cancel')}</button>
           <button className="btn btn--primary" type="submit" disabled={busy}>
-            {busy ? 'Saving...' : 'Save'}
+            {t(busy ? 'common.saving' : 'common.save')}
           </button>
         </div>
       </form>
