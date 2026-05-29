@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  buildSignalBase64AttachmentDataUri,
   conversationKey,
   generateSessionId,
   shouldAcceptSender,
@@ -31,6 +32,17 @@ test('conversationKey uses group prefix for group messages', () => {
 test('generateSessionId produces a date-stamped signal: prefix', () => {
   const id = generateSessionId();
   assert.match(id, /^signal:\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$/);
+});
+
+test('buildSignalBase64AttachmentDataUri escapes filename delimiters', () => {
+  assert.equal(
+    buildSignalBase64AttachmentDataUri(
+      'image/png',
+      'report final;v2, approved.png',
+      Uint8Array.from([1, 2, 3]),
+    ),
+    'data:image/png;filename=report%20final%3Bv2%2C%20approved.png;base64,AQID',
+  );
 });
 
 test('shouldAcceptSender accepts everyone when no allow-list is configured', () => {

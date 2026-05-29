@@ -17,6 +17,16 @@ const AGENT_RESPONSE_TIMEOUT_MS = 60_000;
 /** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 
+export function buildSignalBase64AttachmentDataUri(
+  mimeType: string,
+  filename: string,
+  bytes: Uint8Array,
+): string {
+  const safeFilename = encodeURIComponent(filename);
+  const b64 = Buffer.from(bytes).toString('base64');
+  return `data:${mimeType};filename=${safeFilename};base64,${b64}`;
+}
+
 export interface ConversationKeyInput {
   sourceUuid?: string;
   sourceNumber?: string;
@@ -255,8 +265,7 @@ export class SignalBridge implements ChannelOutbound {
 
     const { bytes, mimeType, filename } = await this.client.downloadAttachmentBytes(sessionId, attachmentId);
     const name = hintedName ?? filename ?? 'attachment';
-    const b64 = Buffer.from(bytes).toString('base64');
-    const dataUri = `data:${mimeType};filename=${name};base64,${b64}`;
+    const dataUri = buildSignalBase64AttachmentDataUri(mimeType, name, bytes);
     await this.sendChunkToTarget(target, caption, { base64Attachments: [dataUri] });
   }
 
