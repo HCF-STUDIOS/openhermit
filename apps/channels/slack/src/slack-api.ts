@@ -43,15 +43,60 @@ export class SlackApi {
   /**
    * Download the bytes of an inbound Slack file. `url_private` endpoints
    * require the bot token as a bearer header.
+   *
+   * When `maxBytes` is given the cap is enforced here, not by the caller:
+   * the declared `content-length` is rejected up front, and the body is
+   * streamed and aborted the moment it crosses the limit — so an oversized
+   * or mislabeled file never fully lands in memory.
    */
-  async downloadFile(urlPrivate: string): Promise<Uint8Array> {
+  async downloadFile(urlPrivate: string, maxBytes?: number): Promise<Uint8Array> {
     const res = await fetch(urlPrivate, {
       headers: { authorization: `Bearer ${this.botToken}` },
     });
     if (!res.ok) {
       throw new Error(`Slack file download failed (${res.status})`);
     }
-    return new Uint8Array(await res.arrayBuffer());
+
+    if (maxBytes !== undefined) {
+      const declared = Number(res.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        throw new Error(`Slack file exceeds the ${maxBytes}-byte limit (content-length ${declared})`);
+      }
+    }
+
+    if (maxBytes === undefined || !res.body) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+        throw new Error(`Slack file exceeds the ${maxBytes}-byte limit (${bytes.byteLength} bytes)`);
+      }
+      return bytes;
+    }
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          throw new Error(`Slack file exceeds the ${maxBytes}-byte limit`);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
   }
 
   /**

@@ -130,7 +130,7 @@ export class SlackBridge implements ChannelOutbound {
       }
       let bytes: Uint8Array;
       try {
-        bytes = await this.slack.downloadFile(url);
+        bytes = await this.slack.downloadFile(url, MAX_MEDIA_BYTES);
       } catch (err) {
         this.log(`failed to download file ${file.name ?? file.id}: ${err instanceof Error ? err.message : String(err)}`);
         continue;

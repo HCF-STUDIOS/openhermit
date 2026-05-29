@@ -38,3 +38,12 @@ test('isProcessableMessage drops empty messages with no files', () => {
   assert.equal(isProcessableMessage({ ...base, text: undefined }), false);
   assert.equal(isProcessableMessage({ ...base, text: '', files: [] }), false);
 });
+
+test('isProcessableMessage drops whitespace-only text with no files', () => {
+  assert.equal(isProcessableMessage({ ...base, text: '   \n\t ' }), false);
+  // …but whitespace text alongside a file is still processable.
+  assert.equal(
+    isProcessableMessage({ ...base, text: '   ', files: [{ id: 'F1', url_private: 'https://x/y' }] }),
+    true,
+  );
+});

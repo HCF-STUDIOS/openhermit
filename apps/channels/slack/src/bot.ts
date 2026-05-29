@@ -20,7 +20,7 @@ export function isProcessableMessage(event: SlackMessageEvent): boolean {
   if (event.bot_id) return false;
   if (!event.user) return false;
   const hasFiles = Array.isArray(event.files) && event.files.length > 0;
-  return Boolean(event.text) || hasFiles;
+  return Boolean(event.text?.trim()) || hasFiles;
 }
 
 export class SlackBot {
