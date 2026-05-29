@@ -4,15 +4,22 @@
 through WhatsApp Web using [Baileys](https://baileys.wiki/). The plugin
 is **not bundled** in the CLI; operators install and load it explicitly.
 
-## v1 scope
+## Scope
 
 - WhatsApp Web / Linked Devices auth through a QR setup wizard.
 - Text inbound and outbound for direct chats and groups.
-- Captions on image / video / document messages are treated as text.
+- **Media inbound**: image / video / document attachments are downloaded and
+  uploaded to the agent as attachments (images are available as vision input);
+  captions ride along as text. Voice / audio notes are transcribed via the
+  agent's STT, and replies to a voice note are spoken back as a voice note when
+  the agent's TTS is configured.
+- **Media outbound**: the agent's `attachment_send` deliveries are routed to the
+  matching WhatsApp send (image / video / document / voice note).
 - Optional allow-lists (`allowed_senders`, `allowed_group_jids`).
 - `/new` starts a fresh OpenHermit session for the current chat.
-- No media delivery, reactions, read receipts, pairing approvals,
-  multi-account routing, or history injection yet.
+- Media larger than the 25 MiB attachment cap is skipped.
+- No reactions, read receipts, pairing approvals, multi-account routing, or
+  history injection yet.
 
 ## Loading the plugin
 

@@ -22,7 +22,7 @@ Not bundled in the CLI. Operators install them with `hermit channel install <pkg
 |----------|---------|------------|
 | Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard |
 | WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text-only v0 |
-| WhatsApp | `@openhermit/channel-whatsapp` | WhatsApp Web via Baileys; QR setup wizard — text-only v1 |
+| WhatsApp | `@openhermit/channel-whatsapp` | WhatsApp Web via Baileys; QR setup wizard — text + media (image/video/document/voice) |
 
 External plugins follow the same manifest contract as bundled ones — there is no special-case loading path. Adding a new external plugin requires no gateway code change, only a config edit and a restart.
 
@@ -185,7 +185,7 @@ WhatsApp (external plugin):
 
 - WhatsApp Web / Linked Devices through Baileys; no Twilio or WhatsApp Cloud API path
 - QR setup wizard stores Baileys credentials in encrypted DB channel credentials and persists `auth_profile` on the channel row
-- text-only v1; captions are treated as text, media-only messages are ignored
+- media inbound (image/video/document uploaded as attachments, captions kept as text) and outbound (`attachment_send` → image/video/document/voice note); voice notes are transcribed via STT and replies spoken via TTS when configured; media over the 25 MiB cap is skipped
 - DMs are open by default unless `allowed_senders` is configured
 - groups are default-deny unless `allowed_group_jids` is configured; allowed group turns trigger only on mention
 - status, broadcast, and own linked-account messages are ignored
