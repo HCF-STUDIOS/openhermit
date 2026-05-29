@@ -94,7 +94,9 @@ export class WhatsAppApi {
     } else if (media.kind === 'video') {
       content = { video: buffer, mimetype: media.mimeType, ...(caption ? { caption } : {}) };
     } else if (media.kind === 'audio') {
-      const ptt = media.mimeType === 'audio/ogg' || media.mimeType === 'audio/opus';
+      // Strip MIME parameters (e.g. `audio/ogg; codecs=opus`) before matching.
+      const baseMime = media.mimeType.split(';', 1)[0]!.trim().toLowerCase();
+      const ptt = baseMime === 'audio/ogg' || baseMime === 'audio/opus';
       content = { audio: buffer, mimetype: media.mimeType, ...(ptt ? { ptt: true } : {}) };
     } else {
       content = {

@@ -173,7 +173,11 @@ export class WhatsAppBridge implements ChannelOutbound {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.log(`stt failed for chat ${event.chatJid}: ${msg}`);
-          await this.send({ sessionId, to: event.chatJid, text: `Voice transcription failed: ${msg}` });
+          await this.send({
+            sessionId,
+            to: event.chatJid,
+            text: "Sorry, I couldn't transcribe that voice message. Please try again or send text.",
+          });
           return;
         }
       } else {

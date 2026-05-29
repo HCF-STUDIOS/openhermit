@@ -61,6 +61,17 @@ test('sendMedia sends ogg audio as a push-to-talk voice note without caption', a
   assert.equal(sends[0]!.content.caption, undefined);
 });
 
+test('sendMedia treats ogg/opus with MIME params as a voice note', async () => {
+  const { api, sends } = apiWithFakeSock();
+  await api.sendMedia('15551234567@s.whatsapp.net', {
+    bytes,
+    mimeType: 'audio/ogg; codecs=opus',
+    kind: 'audio',
+    filename: 'note.ogg',
+  });
+  assert.equal(sends[0]!.content.ptt, true);
+});
+
 test('sendMedia sends document with fileName', async () => {
   const { api, sends } = apiWithFakeSock();
   await api.sendMedia('15551234567@s.whatsapp.net', {
