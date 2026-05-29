@@ -10,7 +10,7 @@ These ship inside the CLI binary and are registered automatically:
 
 | Platform | Package | Connection |
 |----------|---------|------------|
-| Telegram | `@openhermit/channel-telegram` | polling or webhook |
+| Telegram | `@openhermit/channel-telegram` | polling or webhook; text + media (photos/docs/video, voice transcribed) |
 | Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
 | Slack | `@openhermit/channel-slack` | Slack Socket Mode |
 
@@ -159,6 +159,7 @@ Telegram:
 - polling and webhook modes
 - throttled message edits for streaming output
 - optional `allowed_chat_ids`
+- media inbound (photos/documents/video uploaded as session attachments — images become vision input — with captions kept as text; voice/audio transcribed via STT) and outbound (`attachment_send` → sendPhoto/sendDocument/sendVideo/sendVoice); inbound files over Telegram's ~20 MB Bot API download limit are skipped
 
 Discord:
 

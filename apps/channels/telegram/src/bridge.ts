@@ -19,6 +19,53 @@ import {
 /** Hard cap on TTS input length. Above this, fall back to text. */
 const VOICE_MAX_TEXT_LENGTH = 1500;
 
+/** Telegram Bot API can't download files larger than ~20 MB; skip those. */
+const MAX_TELEGRAM_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+
+/** A downloadable inbound media file resolved from a Telegram message. */
+export interface TelegramMediaFile {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  fileSize?: number;
+}
+
+/**
+ * Pick the single downloadable media file off an inbound message (Telegram
+ * sends at most one of photo/document/video per message). Photos arrive as an
+ * array of sizes ascending; the last entry is the largest.
+ */
+export function pickMediaFile(message: TelegramMessage): TelegramMediaFile | undefined {
+  if (message.photo && message.photo.length > 0) {
+    const largest = message.photo[message.photo.length - 1]!;
+    return {
+      fileId: largest.file_id,
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      ...(largest.file_size ? { fileSize: largest.file_size } : {}),
+    };
+  }
+  if (message.document) {
+    const d = message.document;
+    return {
+      fileId: d.file_id,
+      filename: d.file_name ?? 'document',
+      mimeType: d.mime_type ?? 'application/octet-stream',
+      ...(d.file_size ? { fileSize: d.file_size } : {}),
+    };
+  }
+  if (message.video) {
+    const v = message.video;
+    return {
+      fileId: v.file_id,
+      filename: v.file_name ?? 'video.mp4',
+      mimeType: v.mime_type ?? 'video/mp4',
+      ...(v.file_size ? { fileSize: v.file_size } : {}),
+    };
+  }
+  return undefined;
+}
+
 /**
  * Decide whether a reply is fit for voice delivery. We refuse anything
  * containing code blocks, command-style markup, or huge volumes of
@@ -210,7 +257,8 @@ export class TelegramBridge implements ChannelOutbound {
     const chatId = message.chat.id;
     const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
 
-    let text = message.text?.trim();
+    // Photos/documents/videos carry their text in `caption`, not `text`.
+    let text = message.text?.trim() || message.caption?.trim();
 
     // Inbound voice / audio → transcribe via the agent's STT before
     // passing as a normal text message. We mark the request so the
@@ -231,7 +279,9 @@ export class TelegramBridge implements ChannelOutbound {
       }
     }
 
-    if (!text) {
+    const hasMedia = Boolean(message.photo?.length || message.document || message.video);
+
+    if (!text && !hasMedia) {
       return;
     }
 
@@ -251,10 +301,37 @@ export class TelegramBridge implements ChannelOutbound {
     // or even try to call a TTS tool itself.
     const agentText = inboundWasVoice
       ? `[Voice message, transcribed. Your reply will be converted to speech, so respond in plain prose without code blocks, markdown formatting, or long lists.]\n\n${text}`
-      : text;
+      : (text ?? '');
 
     const sessionId = await this.getSessionId(chatId);
     await this.sendToAgent(chatId, sessionId, agentText, message, isGroup, inboundWasVoice);
+  }
+
+  /**
+   * Download an inbound media file and upload it as a session attachment.
+   * Returns the attachment id-shape array (empty on skip/failure).
+   */
+  private async resolveMediaAttachment(
+    message: TelegramMessage,
+    sessionId: string,
+  ): Promise<{ type: 'file'; id: string }[]> {
+    const media = pickMediaFile(message);
+    if (!media) return [];
+    if (media.fileSize && media.fileSize > MAX_TELEGRAM_DOWNLOAD_BYTES) {
+      this.log(`skipping oversized media ${media.filename} (${media.fileSize} bytes)`);
+      return [];
+    }
+    try {
+      const file = await this.telegram.getFile(media.fileId);
+      if (!file.file_path) throw new Error('Telegram returned no file_path');
+      const bytes = await this.telegram.downloadFile(file.file_path);
+      const blob = new Blob([bytes as unknown as BlobPart], { type: media.mimeType });
+      const uploaded = await this.client.uploadAttachment(sessionId, blob, media.filename);
+      return [{ type: 'file', id: uploaded.id! }];
+    } catch (err) {
+      this.log(`media upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   private async transcribeAttachment(message: TelegramMessage): Promise<string> {
@@ -329,7 +406,19 @@ export class TelegramBridge implements ChannelOutbound {
         }
       : {};
 
-    const postResult = await this.client.postMessage(sessionId, { text, mentioned, ...senderPayload });
+    // Upload any inbound photo/document/video as a session attachment
+    // (images become vision input automatically).
+    const attachments = await this.resolveMediaAttachment(message, sessionId);
+
+    // Media-only message whose upload failed: nothing usable to forward.
+    if (!text && attachments.length === 0) return;
+
+    const postResult = await this.client.postMessage(sessionId, {
+      text,
+      mentioned,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...senderPayload,
+    });
 
     if (!(postResult as any).triggered) return;
 

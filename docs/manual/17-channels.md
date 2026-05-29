@@ -55,7 +55,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 
 - One bot can serve one agent. If you want a second agent on Telegram, register a second bot.
 - DMs work by default. Group chat support depends on the bot's privacy setting — see *Manage → Channels* for the toggle.
-- Attachments (files, images) flow into the workspace under the uploads path.
+- Media: inbound photos/documents/video are uploaded to the agent (images become vision input) with captions kept as text, and voice notes are transcribed (replies are spoken back when TTS is configured); the agent can send media back. Inbound files over Telegram's ~20 MB Bot API download limit are skipped.
 
 ### Discord
 

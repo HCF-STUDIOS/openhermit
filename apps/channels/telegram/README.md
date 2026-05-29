@@ -13,6 +13,7 @@
 - mention-aware group routing
 - streamed response edits with Telegram rate-limit throttling
 - outbound agent-to-Telegram delivery for `session_send`
+- **media**: inbound photos / documents / video are uploaded to the agent (images become vision input) with captions kept as text, and voice / audio notes are transcribed via STT (replies spoken back via TTS when configured); the agent's `attachment_send` deliveries go out as the matching Telegram send (photo / document / video / voice). Inbound files over Telegram's ~20 MB Bot API download limit are skipped.
 
 ## Configuration
 
