@@ -11,7 +11,7 @@ These ship inside the CLI binary and are registered automatically:
 | Platform | Package | Connection |
 |----------|---------|------------|
 | Telegram | `@openhermit/channel-telegram` | polling or webhook |
-| Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js` |
+| Discord | `@openhermit/channel-discord` | Discord gateway via `discord.js`; text + media (files/images, audio transcribed) |
 | Slack | `@openhermit/channel-slack` | Slack Socket Mode |
 
 ## External Plugin Adapters
@@ -166,6 +166,7 @@ Discord:
 - guild messages and DMs
 - mention detection before routing
 - optional `allowed_channel_ids`
+- media inbound (CDN attachments uploaded as session attachments; images become vision input; audio transcribed via STT) and outbound (`attachment_send` → Discord file upload); media over the 25 MiB cap is skipped
 
 Slack:
 

@@ -61,6 +61,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 
 - Bot applications are per agent.
 - Slash commands optional; the agent works in plain channel chat once invited.
+- Media: file/image attachments are uploaded to the agent (images become vision input) and audio attachments are transcribed; the agent can send files back. Attachments over 25 MiB are skipped.
 
 ### Slack
 

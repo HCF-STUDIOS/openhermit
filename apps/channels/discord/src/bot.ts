@@ -1,6 +1,6 @@
 import { ChannelType, Events, type Message } from 'discord.js';
 
-import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
+import type { DiscordApi, DiscordIncomingAttachment, DiscordMessageEvent } from './discord-api.js';
 import type { DiscordBridge } from './bridge.js';
 
 export interface BotOptions {
@@ -32,18 +32,22 @@ export class DiscordBot {
     // Partials.Channel — handle them via the raw gateway dispatch instead.
     this.discord.client.on('raw' as any, (packet: any) => {
       if (packet.t !== 'MESSAGE_CREATE') return;
-      const { guild_id: guildId, author, content, channel_id: channelId, id: messageId } = packet.d ?? {};
-      if (guildId || !author || author.bot || !content) return;
+      const { guild_id: guildId, author, content, channel_id: channelId, id: messageId, attachments } = packet.d ?? {};
+      if (guildId || !author || author.bot) return;
+      const mapped = mapRawAttachments(attachments);
+      // Allow media-only DMs (no text) through when files are attached.
+      if (!content && mapped.length === 0) return;
 
       const event: DiscordMessageEvent = {
         channelId,
         userId: author.id,
         username: author.username,
         displayName: author.global_name ?? author.username,
-        text: content,
+        text: content ?? '',
         messageId,
         isDm: true,
         mentioned: true,
+        ...(mapped.length > 0 ? { attachments: mapped } : {}),
       };
       void this.bridge.handleMessage(event).catch((err: Error) => {
         this.log(`error handling DM: ${err.message}`);
@@ -68,10 +72,13 @@ export class DiscordBot {
       }
     }
     if (message.author.bot) return;
-    if (!message.content) return;
 
     // DMs are handled via the raw gateway dispatch above.
     if (message.channel.type === ChannelType.DM) return;
+
+    const mapped = mapMessageAttachments(message);
+    // Allow media-only messages (no text) through when files are attached.
+    if (!message.content && mapped.length === 0) return;
 
     const mentioned = this.isMentioned(message);
     const text = this.stripMention(message.content);
@@ -96,6 +103,7 @@ export class DiscordBot {
       isDm: false,
       mentioned,
       ...(message.guildId ? { guildId: message.guildId } : {}),
+      ...(mapped.length > 0 ? { attachments: mapped } : {}),
     };
 
     try {
@@ -111,6 +119,8 @@ export class DiscordBot {
     }
   }
 
+  // (helpers below the class)
+
   private isMentioned(message: Message): boolean {
     const botId = this.discord.botUserId;
     if (!botId) return false;
@@ -122,4 +132,34 @@ export class DiscordBot {
     if (!botId) return text;
     return text.replace(new RegExp(`<@!?${botId}>\\s*`, 'g'), '').trim();
   }
+}
+
+/** Map discord.js Message attachments to the channel-neutral shape. */
+export function mapMessageAttachments(message: Message): DiscordIncomingAttachment[] {
+  const out: DiscordIncomingAttachment[] = [];
+  for (const att of message.attachments.values()) {
+    out.push({
+      url: att.url,
+      name: att.name ?? 'attachment',
+      ...(att.contentType ? { contentType: att.contentType } : {}),
+      ...(typeof att.size === 'number' ? { size: att.size } : {}),
+    });
+  }
+  return out;
+}
+
+/** Map raw gateway dispatch attachments (snake_case) to the neutral shape. */
+export function mapRawAttachments(attachments: unknown): DiscordIncomingAttachment[] {
+  if (!Array.isArray(attachments)) return [];
+  const out: DiscordIncomingAttachment[] = [];
+  for (const att of attachments) {
+    if (!att || typeof att.url !== 'string') continue;
+    out.push({
+      url: att.url,
+      name: typeof att.filename === 'string' ? att.filename : 'attachment',
+      ...(typeof att.content_type === 'string' ? { contentType: att.content_type } : {}),
+      ...(typeof att.size === 'number' ? { size: att.size } : {}),
+    });
+  }
+  return out;
 }
