@@ -9,7 +9,7 @@ import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
-import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramUser } from './telegram-api.js';
+import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramMessageEntity, TelegramUser } from './telegram-api.js';
 import {
   formatAgentResponse,
   markdownToTelegramHtml,
@@ -131,15 +131,19 @@ export class TelegramBridge implements ChannelOutbound {
       return true;
     }
 
-    // @mention in text entities
-    if (message.entities && bot.username) {
-      const botUsername = bot.username.toLowerCase();
-      for (const entity of message.entities) {
-        if (
-          entity.type === 'mention' &&
-          message.text
-        ) {
-          const mentionText = message.text
+    // @mention in text or caption entities. Telegram puts caption mentions
+    // (on photo/document/video messages) in `caption_entities`, with offsets
+    // into `caption` rather than `text`.
+    const botUsername = bot.username?.toLowerCase();
+    const entitySets: Array<{ entities: TelegramMessageEntity[] | undefined; source: string | undefined }> = [
+      { entities: message.entities, source: message.text },
+      { entities: message.caption_entities, source: message.caption },
+    ];
+    for (const { entities, source } of entitySets) {
+      if (!entities) continue;
+      for (const entity of entities) {
+        if (entity.type === 'mention' && source && botUsername) {
+          const mentionText = source
             .slice(entity.offset, entity.offset + entity.length)
             .toLowerCase();
           if (mentionText === `@${botUsername}`) {

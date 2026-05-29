@@ -90,6 +90,7 @@ export interface TelegramMessage {
   text?: string;
   caption?: string;
   entities?: TelegramMessageEntity[];
+  caption_entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
   voice?: TelegramVoice;
   audio?: TelegramAudio;
