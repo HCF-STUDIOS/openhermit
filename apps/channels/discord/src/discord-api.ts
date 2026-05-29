@@ -1,9 +1,18 @@
 import {
+  AttachmentBuilder,
   Client,
   GatewayIntentBits,
   Partials,
   type Message,
 } from 'discord.js';
+
+/** An inbound file attached to a Discord message (CDN-hosted). */
+export interface DiscordIncomingAttachment {
+  url: string;
+  name: string;
+  contentType?: string;
+  size?: number;
+}
 
 export interface DiscordMessageEvent {
   channelId: string;
@@ -15,6 +24,7 @@ export interface DiscordMessageEvent {
   isDm: boolean;
   mentioned: boolean;
   guildId?: string;
+  attachments?: DiscordIncomingAttachment[];
 }
 
 export class DiscordApi {
@@ -60,6 +70,22 @@ export class DiscordApi {
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (channel as any).send(text) as Promise<Message>;
+  }
+
+  /** Send a file attachment, optionally with caption text in the same message. */
+  async sendFile(
+    channelId: string,
+    file: { bytes: Uint8Array; filename: string; caption?: string },
+  ): Promise<Message> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel || !('send' in channel)) {
+      throw new Error(`Channel ${channelId} not found or not text-based`);
+    }
+    const attachment = new AttachmentBuilder(Buffer.from(file.bytes), { name: file.filename });
+    const payload: { files: AttachmentBuilder[]; content?: string } = { files: [attachment] };
+    if (file.caption && file.caption.length > 0) payload.content = file.caption;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (channel as any).send(payload) as Promise<Message>;
   }
 
   async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
