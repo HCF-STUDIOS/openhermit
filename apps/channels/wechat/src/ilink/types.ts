@@ -30,9 +30,35 @@ export const MessageType = {
   BOT: 2,
 } as const;
 
-/** `MessageItem.text_item` — the only item shape we read/write in v0. */
+/** `MessageItem.text_item`. */
 export interface TextItem {
   text?: string;
+}
+
+/**
+ * CDN media reference. `aes_key` is base64 in JSON; `full_url` (when present)
+ * is a complete download URL, otherwise the client builds one from a CDN base.
+ * Shape ported from Tencent's MIT-licensed `openclaw-weixin` (`api/types.ts`).
+ */
+export interface CDNMedia {
+  encrypt_query_param?: string;
+  aes_key?: string;
+  /** 0 = fileid only, 1 = packed thumbnail/preview info. */
+  encrypt_type?: number;
+  /** Complete download URL returned by the server (no client assembly needed). */
+  full_url?: string;
+}
+
+/** `MessageItem.image_item` — inbound photo. */
+export interface ImageItem {
+  /** Full-resolution CDN reference. */
+  media?: CDNMedia;
+  /** Thumbnail CDN reference. */
+  thumb_media?: CDNMedia;
+  /** Raw AES-128 key as a hex string (16 bytes); preferred over `media.aes_key`. */
+  aeskey?: string;
+  url?: string;
+  hd_size?: number;
 }
 
 export interface MessageItem {
@@ -42,7 +68,8 @@ export interface MessageItem {
   is_completed?: boolean;
   msg_id?: string;
   text_item?: TextItem;
-  /** Other item shapes (image_item/voice_item/file_item/video_item) intentionally untyped here. */
+  image_item?: ImageItem;
+  /** voice_item/file_item/video_item remain untyped until later media phases. */
   [key: string]: unknown;
 }
 

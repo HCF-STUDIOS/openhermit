@@ -74,7 +74,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 - Install with `hermit channel install @openhermit/channel-wechat`, then restart the gateway.
 - Pair the bot through *Manage → Channels → Add channel → WeChat*: the UI renders a QR code that you scan with the WeChat mobile app and confirm. The setup wizard exchanges the scan + confirmation for a long-lived `bot_token` and IDC-pinned `base_url`, which the gateway stores on the channel row.
 - Restarts preserve the login: the gateway reloads `bot_token` from the channel row and resumes the iLink long-poll without re-scanning. You only need to re-pair if you unlink the bot from inside the WeChat client.
-- Text-only in v0 — no attachments, no group filtering.
+- Media: inbound images are decrypted from the WeChat CDN and uploaded to the agent as vision input (over 25 MiB skipped). Inbound voice/file/video and all outbound media aren't handled yet. No group filtering.
 
 ### WhatsApp (external plugin)
 

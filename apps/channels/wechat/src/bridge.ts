@@ -18,10 +18,20 @@ import { stripSilenceTokens } from '@openhermit/shared';
 
 import { sendMessage } from './ilink/api.js';
 import { MessageItemType, MessageType, type WeixinMessage } from './ilink/types.js';
+import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.js';
+
+/** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
 
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
+}
+
+/** Outcome of resolving an inbound message's media. */
+interface ResolvedInbound {
+  text: string;
+  attachments?: { type: 'file'; id: string }[];
 }
 
 export interface WechatBridgeRuntime {
@@ -130,13 +140,58 @@ export class WechatBridge implements ChannelOutbound {
     return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
+  /**
+   * Resolve inbound media: download + decrypt each image item from the CDN
+   * and upload it as a durable session attachment (images become vision
+   * input). Text/captions are kept. Oversized or failed downloads are skipped.
+   */
+  private async resolveInbound(sessionId: string, msg: WeixinMessage): Promise<ResolvedInbound> {
+    const text = this.extractText(msg) ?? '';
+    const ids: { type: 'file'; id: string }[] = [];
+
+    for (const item of msg.item_list ?? []) {
+      if (item.type !== MessageItemType.IMAGE || !item.image_item) continue;
+      const img = item.image_item;
+      const media = img.media;
+      if (!media || (!media.full_url && !media.encrypt_query_param)) continue;
+
+      // Prefer the hex `aeskey` (raw 16-byte key) over the base64 `media.aes_key`.
+      const aesKeyBase64 = img.aeskey
+        ? Buffer.from(img.aeskey, 'hex').toString('base64')
+        : media.aes_key;
+      if (!aesKeyBase64) {
+        this.log('image item missing aes key; skipping');
+        continue;
+      }
+
+      try {
+        const url = resolveCdnUrl(media.encrypt_query_param, media.full_url, CDN_BASE_URL);
+        const bytes = await downloadAndDecrypt({ url, aesKeyBase64, maxBytes: MAX_MEDIA_BYTES });
+        const blob = new Blob([bytes as unknown as BlobPart], { type: 'image/jpeg' });
+        const uploaded = await this.client.uploadAttachment(sessionId, blob, 'image.jpg');
+        ids.push({ type: 'file', id: uploaded.id! });
+      } catch (err) {
+        this.log(`image download/decrypt failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return { text, ...(ids.length > 0 ? { attachments: ids } : {}) };
+  }
+
   private async handleMessageInner(msg: WeixinMessage, peer: string): Promise<void> {
-    const text = this.extractText(msg);
-    if (!text) return;
+    const hasImage = (msg.item_list ?? []).some(
+      (item) => item.type === MessageItemType.IMAGE && item.image_item,
+    );
+    if (!this.extractText(msg) && !hasImage) return;
 
     const isGroup = Boolean(msg.group_id?.trim());
     const sessionId = await this.getSessionId(peer, isGroup);
     await this.ensureSession(sessionId, msg, isGroup);
+
+    // Download + decrypt inbound images and upload them as session
+    // attachments (images become vision input). Text/captions are kept.
+    const resolved = await this.resolveInbound(sessionId, msg);
+    if (!resolved.text && !resolved.attachments) return;
 
     const senderUserId = msg.from_user_id?.trim();
     const senderPayload = senderUserId
@@ -155,8 +210,9 @@ export class WechatBridge implements ChannelOutbound {
     const postOpts = !isGroup && senderUserId ? { channelUserId: senderUserId } : undefined;
 
     const postResult = await this.client.postMessage(sessionId, {
-      text,
+      text: resolved.text,
       mentioned: !isGroup,
+      ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       ...senderPayload,
     }, postOpts);
 

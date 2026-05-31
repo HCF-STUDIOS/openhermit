@@ -1,7 +1,7 @@
 {
   "name": "@openhermit/channel-wechat",
-  "version": "0.1.2",
-  "description": "OpenHermit channel plugin for personal WeChat (Weixin) via Tencent iLink. Text-only v0.",
+  "version": "0.2.0",
+  "description": "OpenHermit channel plugin for personal WeChat (Weixin) via Tencent iLink. Text plus inbound images.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,6 +45,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.typecheck.json --pretty false",
+    "test": "node --import tsx --test test/*.test.ts",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
     "prepack": "node scripts/strip-dev-condition.mjs",

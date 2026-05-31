@@ -3,13 +3,23 @@
 `@openhermit/channel-wechat` connects a personal WeChat (Weixin) bot to a
 gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
 
-## v0 scope
+## Scope
 
-- Text inbound and outbound only — image / voice / file / video items
-  are ignored.
+- Text inbound and outbound.
+- **Inbound images**: photos are downloaded from the WeChat C2C CDN and
+  AES-128-ECB decrypted, then uploaded to the agent as attachments (images
+  become vision input). Attachments over the 25 MiB cap are skipped. The CDN
+  base defaults to `https://novac2c.cdn.weixin.qq.com/c2c`, overridable via
+  `OPENHERMIT_WECHAT_CDN_BASE_URL`; a server-provided `full_url` is preferred.
+- Inbound voice / file / video and all **outbound** media are not handled yet
+  (voice needs SILK transcoding; outbound needs the CDN upload flow).
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;
   the admin UI renders it with its own QR-code library.
-- No typing indicators, no media upload, no multi-account juggling.
+- No typing indicators, no multi-account juggling.
+
+The CDN download + AES decryption is ported from Tencent's MIT-licensed
+[`openclaw-weixin`](https://github.com/Tencent/openclaw-weixin) (see the
+header in `src/ilink/media.ts`).
 
 ## Loading the plugin
 
