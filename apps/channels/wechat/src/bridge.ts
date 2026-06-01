@@ -54,6 +54,13 @@ export class WechatBridge implements ChannelOutbound {
   private readonly peerSessions = new Map<string, string>();
   /** Per-peer message queue to serialize handling. */
   private readonly peerLocks = new Map<string, Promise<void>>();
+  /**
+   * Latest iLink `context_token` per peer. Issued per-message on inbound and
+   * echoed verbatim on outbound sends so replies stay tied to the upstream
+   * conversation context. In-memory only — after a restart the first
+   * proactive send to a peer goes without a token until they message again.
+   */
+  private readonly peerContextTokens = new Map<string, string>();
 
   constructor(
     private runtime: WechatBridgeRuntime,
@@ -87,6 +94,7 @@ export class WechatBridge implements ChannelOutbound {
     const trimmed = text.trim();
     if (!trimmed) return { success: true };
 
+    const contextToken = this.peerContextTokens.get(toUserId);
     const msg: WeixinMessage = {
       to_user_id: toUserId,
       message_type: MessageType.BOT,
@@ -95,6 +103,7 @@ export class WechatBridge implements ChannelOutbound {
       item_list: [
         { type: MessageItemType.TEXT, text_item: { text: trimmed } },
       ],
+      ...(contextToken ? { context_token: contextToken } : {}),
     };
 
     try {
@@ -120,6 +129,10 @@ export class WechatBridge implements ChannelOutbound {
 
     const peer = msg.group_id?.trim() || msg.from_user_id?.trim();
     if (!peer) return;
+
+    // Capture the per-message context token so our reply can echo it.
+    const contextToken = msg.context_token?.trim();
+    if (contextToken) this.peerContextTokens.set(peer, contextToken);
 
     const prev = this.peerLocks.get(peer) ?? Promise.resolve();
     const current = prev.then(
