@@ -11,6 +11,11 @@ import type {
 import type { AgentRunner } from '../agent-runner.js';
 
 import { resolveMimeType, sanitizeName } from './helpers.js';
+import {
+  createSsrfSafeAgent,
+  isBlockedLiteralHost,
+  type HostResolver,
+} from './ssrf.js';
 
 /**
  * URL-passthrough resolver for inbound `postMessage` attachments shaped as
@@ -21,8 +26,12 @@ import { resolveMimeType, sanitizeName } from './helpers.js';
  *
  * Errors throw `OpenHermitError('attachment_fetch_failed', 400)` so the whole
  * `postMessage` fails fast — silently dropping the upload is worse than a 4xx
- * the caller can retry. SSRF guards reject non-https and private / loopback
- * / link-local hosts (incl. 169.254.169.254 cloud-metadata).
+ * the caller can retry. SSRF guards reject non-https URLs, IP-literal hosts in
+ * private / loopback / link-local / metadata ranges, and — crucially — any
+ * hostname that *resolves* to such an address. Resolution, validation, and
+ * connection are pinned to the same address (see `./ssrf.ts`), so a domain
+ * that aliases to 127.0.0.1 / 169.254.169.254 or rebinds mid-request cannot
+ * smuggle a request to an internal target. Per-hop checks cover redirects.
  */
 const ATTACHMENT_FETCH_TIMEOUT_MS = 30_000;
 
@@ -32,32 +41,6 @@ const MAX_REDIRECT_HOPS = 5;
 
 const fail = (message: string, code = 'attachment_fetch_failed'): never => {
   throw new OpenHermitError(message, code, 400);
-};
-
-const isBlockedHost = (hostname: string): boolean => {
-  const h = hostname.toLowerCase();
-  if (h === 'localhost' || h.endsWith('.localhost')) return true;
-
-  // IPv4 literal — block private / loopback / link-local / unspecified.
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) {
-    const [a, b] = h.split('.').map(Number) as [number, number];
-    if (a === 127 || a === 10 || a === 0) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true; // includes EC2/GCP metadata
-    return false;
-  }
-
-  // IPv6 — match common literal forms. Brackets are stripped by URL.hostname.
-  if (h.includes(':')) {
-    if (h === '::1' || h === '::') return true;
-    if (h.startsWith('fc') || h.startsWith('fd')) return true; // ULA fc00::/7
-    if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb'))
-      return true; // link-local fe80::/10
-    return false;
-  }
-
-  return false;
 };
 
 const deriveNameFromUrl = (url: URL): string | undefined => {
@@ -82,6 +65,12 @@ export interface ResolveAttachmentByUrlInput {
   attachmentStorage: AttachmentStorage;
   runtime: AgentRunner;
   logger?: ((message: string) => void) | undefined;
+  /**
+   * Hostname → resolved IPs. Injectable for tests; defaults to a real DNS
+   * lookup. The same resolver drives the connection-pinning dispatcher, so a
+   * stub here exercises the full SSRF path deterministically.
+   */
+  resolveHost?: HostResolver | undefined;
 }
 
 export const resolveAttachmentByUrl = async (
@@ -96,14 +85,17 @@ export const resolveAttachmentByUrl = async (
   }
   // Manual redirect follow so the SSRF protocol+host guards run on *every*
   // hop. `redirect: 'follow'` would only validate the initial URL — a 302 to
-  // http://169.254.169.254/ would otherwise sneak past.
+  // http://169.254.169.254/ would otherwise sneak past. The literal-host check
+  // is a cheap pre-filter; the authoritative resolve-validate-pin happens in
+  // the dispatcher's lookup (see ./ssrf.ts), which also covers hostnames that
+  // only reveal a blocked address once resolved.
   const validateHop = (u: URL): void => {
     if (!ALLOWED_PROTOCOLS.has(u.protocol)) {
       fail(
         `attachment_fetch_failed: protocol "${u.protocol}" not allowed (https only)`,
       );
     }
-    if (isBlockedHost(u.hostname)) {
+    if (isBlockedLiteralHost(u.hostname)) {
       fail(
         `attachment_fetch_failed: host "${u.hostname}" is not allowed (SSRF guard)`,
       );
@@ -111,42 +103,56 @@ export const resolveAttachmentByUrl = async (
   };
   validateHop(parsed);
 
+  // Dispatcher resolves every connection (initial + redirect hops) through the
+  // SSRF lookup and pins the validated address — no second, unvalidated DNS
+  // resolution at connect time, so DNS rebinding can't smuggle past.
+  const dispatcher = createSsrfSafeAgent(input.resolveHost);
   const signal = AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS);
   let res: Response;
   let current = parsed;
   let hops = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      res = await fetch(current.toString(), {
-        method: 'GET',
-        redirect: 'manual',
-        signal,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      fail(`attachment_fetch_failed: ${msg} (url=${current.toString()})`);
-      throw new Error('unreachable');
-    }
-    if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
-      if (hops >= MAX_REDIRECT_HOPS) {
-        fail(
-          `attachment_fetch_failed: too many redirects (>${MAX_REDIRECT_HOPS})`,
-        );
-      }
-      let next: URL;
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       try {
-        next = new URL(res.headers.get('location')!, current);
-      } catch {
-        fail(`attachment_fetch_failed: malformed redirect target`);
+        res = await fetch(current.toString(), {
+          method: 'GET',
+          redirect: 'manual',
+          signal,
+          // `dispatcher` is an undici extension to RequestInit, not in lib.dom.
+          dispatcher,
+        } as RequestInit & { dispatcher: unknown });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        fail(`attachment_fetch_failed: ${msg} (url=${current.toString()})`);
         throw new Error('unreachable');
       }
-      validateHop(next);
-      current = next;
-      hops += 1;
-      continue;
+      if (
+        res.status >= 300 &&
+        res.status < 400 &&
+        res.headers.has('location')
+      ) {
+        if (hops >= MAX_REDIRECT_HOPS) {
+          fail(
+            `attachment_fetch_failed: too many redirects (>${MAX_REDIRECT_HOPS})`,
+          );
+        }
+        let next: URL;
+        try {
+          next = new URL(res.headers.get('location')!, current);
+        } catch {
+          fail(`attachment_fetch_failed: malformed redirect target`);
+          throw new Error('unreachable');
+        }
+        validateHop(next);
+        current = next;
+        hops += 1;
+        continue;
+      }
+      break;
     }
-    break;
+  } finally {
+    void dispatcher.close().catch(() => {});
   }
   if (!res.ok) {
     fail(
