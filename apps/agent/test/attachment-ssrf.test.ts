@@ -1,15 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { test } from 'node:test';
 
 import { OpenHermitError } from '@openhermit/shared';
-import {
-  DbAttachmentStore,
-  LocalAttachmentStorage,
-} from '@openhermit/store';
 
 import { resolveAttachmentByUrl } from '../src/attachments/index.js';
 import {
@@ -103,7 +96,14 @@ const runLookup = (
 ): Promise<{ err: Error | null; address?: unknown; family?: number }> =>
   new Promise((resolve) => {
     makeSsrfLookup(resolver)(hostname, options, (err, address, family) => {
-      resolve({ err: err ?? null, address, family });
+      // Build conditionally: under exactOptionalPropertyTypes an explicit
+      // `address: undefined` is not assignable to an optional `address?`.
+      const out: { err: Error | null; address?: unknown; family?: number } = {
+        err: err ?? null,
+      };
+      if (address !== undefined) out.address = address;
+      if (family !== undefined) out.family = family;
+      resolve(out);
     });
   });
 
@@ -150,23 +150,22 @@ test('makeSsrfLookup: returns all validated addresses when options.all', async (
 
 // ─── End-to-end through resolveAttachmentByUrl (injected resolver) ─────────
 
-async function buildCtx(t: import('node:test').TestContext) {
-  const attachmentStore = await DbAttachmentStore.open();
-  t.after(() => attachmentStore.close());
-  const storageRoot = await mkdtemp(path.join(tmpdir(), 'openhermit-ssrf-'));
-  t.after(() => rm(storageRoot, { recursive: true, force: true }));
-  const attachmentStorage = new LocalAttachmentStorage({ root: storageRoot });
-  const runner = {
-    materializeAttachmentToSandbox: async () => ({
-      sandboxId: 'sb',
-      sandboxPath: '/x',
-    }),
-  };
-  return { attachmentStore, attachmentStorage, runner };
-}
+// The fetch is refused at connect, so persistence is never reached. These
+// stubs throw if touched — proving no bytes are ever stored — and let the test
+// run without a database.
+const unreachable = (label: string) =>
+  new Proxy(
+    {},
+    {
+      get() {
+        return () => {
+          throw new Error(`${label} must not be reached when connect is blocked`);
+        };
+      },
+    },
+  );
 
-test('resolveAttachmentByUrl: DNS-alias host (public name → private IP) is blocked at connect', async (t) => {
-  const ctx = await buildCtx(t);
+test('resolveAttachmentByUrl: DNS-alias host (public name → private IP) is blocked at connect', async () => {
   // A perfectly ordinary-looking hostname that we make resolve to loopback.
   // It clears the literal-host pre-filter, then the pinned dispatcher lookup
   // refuses to connect — no socket to an internal target is ever opened.
@@ -180,10 +179,12 @@ test('resolveAttachmentByUrl: DNS-alias host (public name → private IP) is blo
         uploaderUserId: null,
         url: 'https://images.totally-legit-cdn.test/cat.png',
         maxBytes: 1024 * 1024,
-        attachmentStore: ctx.attachmentStore,
-        attachmentStorage: ctx.attachmentStorage,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        runtime: ctx.runner as any,
+        attachmentStore: unreachable('attachmentStore') as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        attachmentStorage: unreachable('attachmentStorage') as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        runtime: unreachable('runtime') as any,
         resolveHost,
       }),
     (err: unknown) =>
