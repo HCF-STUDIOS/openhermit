@@ -12,6 +12,43 @@ export const isAssistantMessage = (
   'role' in message &&
   message.role === 'assistant';
 
+/**
+ * A failed/aborted assistant turn that carries no usable content. When a
+ * provider stream throws mid-turn (e.g. credit depletion, a transient 5xx),
+ * pi-agent-core records the failure as an assistant message with empty content
+ * and `stopReason: 'error' | 'aborted'` (see its `handleRunFailure`). That
+ * placeholder is never a valid thing to send back to a provider — an empty
+ * content block makes Anthropic (and most providers) reject the *next* request
+ * with a 400, so a session that hit a failure keeps failing even after the
+ * underlying cause is resolved. Detect those so we can drop them.
+ *
+ * The check is deliberately narrow: only assistant turns with no meaningful
+ * content (no non-empty text, no tool call, no thinking) qualify, so we never
+ * orphan tool results or discard a partial reply that actually said something.
+ */
+export const isEmptyAssistantTurn = (message: AgentMessage): boolean => {
+  if (!isAssistantMessage(message)) return false;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const hasUsableContent = content.some((block) => {
+    if (!block || typeof block !== 'object' || !('type' in block)) return false;
+    if (block.type === 'text') {
+      return typeof (block as TextContent).text === 'string'
+        && (block as TextContent).text.trim().length > 0;
+    }
+    // Any non-text block (toolCall, thinking, etc.) counts as usable content.
+    return true;
+  });
+  return !hasUsableContent;
+};
+
+/**
+ * Remove failed/aborted placeholder assistant turns (see `isEmptyAssistantTurn`)
+ * from a message history. Used both to clean the live in-memory transcript after
+ * a run failure and as a defensive guard right before LLM conversion.
+ */
+export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage[] =>
+  messages.filter((message) => !isEmptyAssistantTurn(message));
+
 export const extractAssistantText = (message: AssistantMessage): string => {
   const textParts = message.content
     .filter((content): content is Extract<typeof content, { type: 'text' }> => content.type === 'text')

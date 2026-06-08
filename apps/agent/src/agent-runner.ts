@@ -57,6 +57,8 @@ import {
   extractToolResultDetails,
   extractToolResultText,
   isAssistantMessage,
+  isEmptyAssistantTurn,
+  stripEmptyAssistantTurns,
   serializeDetails,
 } from './agent-runner/message-utils.js';
 import {
@@ -2707,10 +2709,16 @@ export class AgentRunner implements SessionRuntime {
       ? restoredMessages
       : messages;
 
+    // Defensive guard: never send a failed/aborted empty assistant placeholder
+    // back to the provider. handleRunError already pops it from the live
+    // transcript, but strip here too so resumed sessions and any other path
+    // can't re-send one (providers 400 on empty content, stranding the session).
+    const cleanedMessages = stripEmptyAssistantTurns(allMessages);
+
     // Truncate oversized tool results before compaction so that a single
     // huge tool response cannot blow past the entire context window.
     const model = resolveModel(config);
-    const truncatedMessages = truncateToolResults(allMessages, model.contextWindow);
+    const truncatedMessages = truncateToolResults(cleanedMessages, model.contextWindow);
 
     // Only offer LLM compaction when we have a dedicated API key.
     // When streamFn is provided (tests, proxied setups), the shared stream
@@ -3169,6 +3177,21 @@ export class AgentRunner implements SessionRuntime {
     this.clearIdleSummaryTimer(session);
     session.updatedAt = ts;
     session.status = 'idle';
+
+    // A mid-stream failure (credit depletion, transient 5xx, …) leaves
+    // pi-agent-core's empty "error" assistant placeholder at the tail of the
+    // live transcript. Drop it so the next turn retries from clean history —
+    // otherwise the cached session keeps re-sending an empty assistant turn,
+    // which providers reject, and the session stays stuck even after the
+    // underlying cause is resolved (new sessions work, this one never does).
+    const stateMessages = session.agent.state.messages;
+    while (
+      stateMessages.length > 0 &&
+      isEmptyAssistantTurn(stateMessages[stateMessages.length - 1]!)
+    ) {
+      stateMessages.pop();
+    }
+
     agentErrorsTotal.inc({ agent_id: this.scope.agentId, source: 'runtime' });
     if (session.turnStartMs) {
       agentTurnDuration.observe(
