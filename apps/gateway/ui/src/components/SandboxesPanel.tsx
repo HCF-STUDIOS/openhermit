@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import { Pagination, usePagination } from './Pagination';
 
 type RuntimeStatus = 'running' | 'exited' | 'created' | 'removed' | 'unknown';
 
@@ -70,6 +71,8 @@ export function SandboxesPanel() {
     total: sandboxes.length,
   };
 
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(sandboxes);
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -111,7 +114,7 @@ export function SandboxesPanel() {
                 </tr>
               </thead>
               <tbody>
-                {sandboxes.map((s) => (
+                {pageItems.map((s) => (
                   <tr key={s.id}>
                     <td>
                       <div className="fleet-cell-agent">
@@ -150,7 +153,7 @@ export function SandboxesPanel() {
           </div>
 
           <div className="fleet-cards">
-            {sandboxes.map((s) => (
+            {pageItems.map((s) => (
               <div key={s.id} className="fleet-card">
                 <div className="fleet-card__top">
                   <div className="fleet-card__heading">
@@ -182,6 +185,8 @@ export function SandboxesPanel() {
               </div>
             ))}
           </div>
+
+          <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
         </>
       )}
     </div>

@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import { Pagination, usePagination } from './Pagination';
 
 interface UserSummary {
   userId: string;
@@ -59,6 +60,8 @@ export function UsersPanel() {
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
+
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(users);
 
   const toggleExpand = async (userId: string) => {
     if (expanded === userId) {
@@ -122,7 +125,7 @@ export function UsersPanel() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {pageItems.map((u) => (
                   <Fragment key={u.userId}>
                     <tr>
                       <td>
@@ -167,7 +170,7 @@ export function UsersPanel() {
           </div>
 
           <div className="fleet-cards">
-            {users.map((u) => (
+            {pageItems.map((u) => (
               <div key={u.userId} className="fleet-card">
                 <div className="fleet-card__top">
                   <div className="fleet-card__heading">
@@ -208,6 +211,8 @@ export function UsersPanel() {
               </div>
             ))}
           </div>
+
+          <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
         </>
       )}
     </div>

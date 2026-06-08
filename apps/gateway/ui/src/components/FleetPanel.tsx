@@ -5,6 +5,7 @@ import { SecretsDialog } from './SecretsDialog';
 import { SecurityDialog } from './SecurityDialog';
 import { ConfigDialog } from './ConfigDialog';
 import { UsageDialog } from './UsageDialog';
+import { Pagination, usePagination } from './Pagination';
 
 export interface UsageWindow {
   inputTokens: number;
@@ -176,6 +177,8 @@ export function FleetPanel() {
     errors: fleet.reduce((acc, a) => acc + a.errors24h, 0),
   }), [fleet]);
 
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(fleet);
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -241,7 +244,7 @@ export function FleetPanel() {
             </tr>
           </thead>
           <tbody>
-            {fleet.map((a) => (
+            {pageItems.map((a) => (
               <tr key={a.agentId} className={selected.has(a.agentId) ? 'fleet-row--selected' : ''}>
                 <td>
                   <input
@@ -300,7 +303,7 @@ export function FleetPanel() {
         </div>
 
         <div className="fleet-cards">
-          {fleet.map((a) => (
+          {pageItems.map((a) => (
             <div
               key={a.agentId}
               className={`fleet-card${selected.has(a.agentId) ? ' fleet-card--selected' : ''}`}
@@ -363,6 +366,8 @@ export function FleetPanel() {
             </div>
           ))}
         </div>
+
+        <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
         </>
       )}
 

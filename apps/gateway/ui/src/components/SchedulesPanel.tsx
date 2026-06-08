@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { Pagination, usePagination } from './Pagination';
 
 interface AgentInfo {
   agentId: string;
@@ -111,6 +112,8 @@ export function SchedulesPanel() {
 
   const fmtTime = (t?: string) => t ? new Date(t).toLocaleString() : '—';
 
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(schedules);
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -144,7 +147,7 @@ export function SchedulesPanel() {
       )}
 
       <div className="schedule-list">
-        {schedules.map((s) => (
+        {pageItems.map((s) => (
           <div className="schedule-card" key={s.scheduleId}>
             <div className="schedule-card__info">
               <div>
@@ -176,6 +179,8 @@ export function SchedulesPanel() {
           </div>
         ))}
       </div>
+
+      <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
 
       {showCreate && agentId && (
         <CreateScheduleDialog

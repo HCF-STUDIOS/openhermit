@@ -1193,3 +1193,32 @@ dialog::backdrop { background: rgba(9, 9, 11, 0.4); }
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Pagination ─────────────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.pagination__info {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.pagination__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pagination__page {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: center;
+}

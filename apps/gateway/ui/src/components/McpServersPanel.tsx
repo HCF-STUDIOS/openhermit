@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { Pagination, usePagination } from './Pagination';
 
 interface McpServerInfo {
   id: string;
@@ -40,6 +41,8 @@ export function McpServersPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(servers);
+
   const handleDelete = async (id: string) => {
     if (!confirm(`Delete MCP server "${id}"? This will also remove all agent assignments.`)) return;
     try {
@@ -70,7 +73,7 @@ export function McpServersPanel() {
       )}
 
       <div className="skill-list">
-        {servers.map((s) => (
+        {pageItems.map((s) => (
           <div className="skill-card" key={s.id}>
             <div className="skill-card__info">
               <span className="skill-card__name">{s.name}</span>
@@ -92,6 +95,8 @@ export function McpServersPanel() {
           </div>
         ))}
       </div>
+
+      <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
 
       {showCreate && (
         <McpServerFormDialog

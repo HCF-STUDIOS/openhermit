@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { Pagination, usePagination } from './Pagination';
 
 interface SkillInfo {
   id: string;
@@ -39,6 +40,8 @@ export function SkillsPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const { page, setPage, pageCount, pageItems, total, pageSize } = usePagination(skills);
+
   const handleDelete = async (id: string) => {
     if (!confirm(`Delete skill "${id}"? This will also remove all agent assignments.`)) return;
     try {
@@ -69,7 +72,7 @@ export function SkillsPanel() {
       )}
 
       <div className="skill-list">
-        {skills.map((s) => (
+        {pageItems.map((s) => (
           <div className="skill-card" key={s.id}>
             <div className="skill-card__info">
               <span className="skill-card__name">{s.name}</span>
@@ -91,6 +94,8 @@ export function SkillsPanel() {
           </div>
         ))}
       </div>
+
+      <Pagination page={page} pageCount={pageCount} total={total} pageSize={pageSize} onPage={setPage} />
 
       {showCreate && (
         <SkillFormDialog
