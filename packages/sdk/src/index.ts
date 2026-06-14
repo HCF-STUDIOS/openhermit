@@ -19,7 +19,6 @@ import {
   type WsRequest,
   type WsEvent,
   type WsServerMessage,
-  isWsRequest,
 } from '@openhermit/protocol';
 
 export type { SessionAttachment, AttachmentMaterializationState };
