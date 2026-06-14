@@ -5,6 +5,7 @@ import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, Internal
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
+import type { SpeakerTagStreamState } from './message-utils.js';
 
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
@@ -15,6 +16,9 @@ export interface RunnerSession extends SessionDescriptor {
   idleSummaryTimer: ReturnType<typeof setTimeout> | undefined;
   latestAssistantText: string | undefined;
   lastUserMessageText?: string;
+  // Sender names for stripping a copied `[Name]` tag from the reply. Group only.
+  groupSenderNames?: Set<string>;
+  speakerTagStream?: SpeakerTagStreamState | undefined;
   /** Inbound messageId of the user message that triggered the in-flight
    *  turn. Stamped onto every outbound event for that turn as
    *  `correlationId`, so callers can group events back to the originating

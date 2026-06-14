@@ -85,6 +85,111 @@ export const extractThinkingSignature = (message: AssistantMessage): string | un
 export const hasMeaningfulAssistantText = (text: string): boolean =>
   text.trim().length > 0;
 
+// The (?!\() excludes markdown links `[x](y)`; the length cap keeps it to a name.
+const LEADING_SPEAKER_TAG = /^\s*\[([^[\]\n]{1,80})\](?!\()\s*:?\s*/;
+
+// Strip a leading `[Name]` tag the model copied from the group input format
+// (`[DisplayName] text`), only when the name is a known participant. Unknown
+// tags and markdown links are left alone.
+export const stripLeadingSpeakerTag = (
+  text: string,
+  knownNames: Iterable<string>,
+): string => {
+  const match = LEADING_SPEAKER_TAG.exec(text);
+  if (!match) return text;
+
+  const known = toKnownSet(knownNames);
+  if (known.size === 0) return text;
+
+  const candidate = normalizeSpeakerName(match[1]!);
+  if (!known.has(candidate)) return text;
+
+  // An empty assistant turn corrupts the stored history, so keep the original.
+  const stripped = text.slice(match[0].length);
+  return stripped.trim().length > 0 ? stripped : text;
+};
+
+// So a name matches regardless of unicode composition or case.
+export const normalizeSpeakerName = (name: string): string =>
+  name.trim().normalize('NFC').toLowerCase();
+
+const toKnownSet = (knownNames: Iterable<string>): Set<string> => {
+  const known = new Set<string>();
+  for (const name of knownNames) {
+    const norm = normalizeSpeakerName(name);
+    if (norm) known.add(norm);
+  }
+  return known;
+};
+
+// Past this many chars, a leading tag is no longer plausible; stop buffering.
+const MAX_LEAD_BUFFER = 96;
+
+// Without this, a live token stream would flicker `[Name]` before the final
+// strip lands. Buffers the start of a text block until the tag resolves.
+export interface SpeakerTagStreamState {
+  buffer: string;
+  resolved: boolean;
+}
+
+export const newSpeakerTagStream = (): SpeakerTagStreamState => ({
+  buffer: '',
+  resolved: false,
+});
+
+const decideLead = (
+  buffer: string,
+  knownNames: Iterable<string>,
+): { resolved: false } | { resolved: true; emit: string } => {
+  const afterWs = buffer.replace(/^\s+/, '');
+  if (afterWs.length === 0) return { resolved: false };
+  if (afterWs[0] !== '[') return { resolved: true, emit: buffer };
+
+  const match = LEADING_SPEAKER_TAG.exec(buffer);
+  if (match) {
+    const rest = buffer.slice(match[0].length);
+    if (rest.trim().length > 0) {
+      return { resolved: true, emit: stripLeadingSpeakerTag(buffer, knownNames) };
+    }
+    // Tag closed but no content yet, so wait for more if it's a known sender.
+    const candidate = normalizeSpeakerName(match[1]!);
+    if (!toKnownSet(knownNames).has(candidate)) {
+      return { resolved: true, emit: buffer };
+    }
+    return { resolved: false };
+  }
+
+  // Open '[' that can no longer become a single-line tag.
+  if (afterWs.includes('\n') || buffer.length > MAX_LEAD_BUFFER) {
+    return { resolved: true, emit: buffer };
+  }
+  return { resolved: false };
+};
+
+// Returns '' while still buffering the lead, otherwise the text to emit.
+export const pushSpeakerTagDelta = (
+  state: SpeakerTagStreamState,
+  delta: string,
+  knownNames: Iterable<string>,
+): string => {
+  if (state.resolved) return delta;
+  state.buffer += delta;
+  const decision = decideLead(state.buffer, knownNames);
+  if (!decision.resolved) return '';
+  state.resolved = true;
+  return decision.emit;
+};
+
+// Idempotent: returns '' once the block has already resolved.
+export const flushSpeakerTagStream = (
+  state: SpeakerTagStreamState,
+  knownNames: Iterable<string>,
+): string => {
+  if (state.resolved) return '';
+  state.resolved = true;
+  return stripLeadingSpeakerTag(state.buffer, knownNames);
+};
+
 export const createUserMessage = (
   message: SessionMessage,
   attachmentContent: (TextContent | ImageContent)[] = [],

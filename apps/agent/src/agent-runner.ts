@@ -59,6 +59,11 @@ import {
   isAssistantMessage,
   isEmptyAssistantTurn,
   stripEmptyAssistantTurns,
+  stripLeadingSpeakerTag,
+  normalizeSpeakerName,
+  newSpeakerTagStream,
+  pushSpeakerTagDelta,
+  flushSpeakerTagStream,
   serializeDetails,
 } from './agent-runner/message-utils.js';
 import {
@@ -1196,10 +1201,16 @@ export class AgentRunner implements SessionRuntime {
       : message.text;
     const promptMessage = { ...message, text: promptText };
 
+    // Remember senders so we can strip a copied `[Name]` tag from the reply.
+    if (isGroup && message.sender?.displayName) {
+      this.rememberGroupSender(session, message.sender.displayName);
+    }
+
     const run = async (): Promise<void> => {
       try {
         await this.refreshAgentConfiguration(session);
         session.latestAssistantText = undefined;
+        session.speakerTagStream = undefined;
         session.consecutiveToolFailures = 0;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
@@ -1745,6 +1756,11 @@ export class AgentRunner implements SessionRuntime {
 
     this.logRuntime(`auto-created guest user ${guestId} for ${channel}:${channelUserId}`);
     return { userId: guestId, role: 'guest' as const, ...(name ? { userName: name } : {}), ...callerInfo };
+  }
+
+  private rememberGroupSender(session: RunnerSession, name: string | undefined): void {
+    if (!name?.trim()) return;
+    (session.groupSenderNames ??= new Set<string>()).add(normalizeSpeakerName(name));
   }
 
   /**
@@ -2431,6 +2447,9 @@ export class AgentRunner implements SessionRuntime {
       if (entry.role === 'user' && typeof entry.content === 'string') {
         lastAssistant = null;
         const userName = typeof entry.userName === 'string' ? entry.userName : undefined;
+        if (isGroup && userName && session) {
+          this.rememberGroupSender(session, userName);
+        }
         const textContent = isGroup && userName
           ? `[${userName}] ${entry.content}`
           : entry.content;
@@ -2894,13 +2913,41 @@ export class AgentRunner implements SessionRuntime {
           });
         }
 
+        // Same strip on the live stream as the final message; no-op until names exist.
+        const isGroupStream = session.spec.source.type === 'group';
+        if (event.assistantMessageEvent.type === 'text_start' && isGroupStream) {
+          session.speakerTagStream = newSpeakerTagStream();
+        }
+
         if (event.assistantMessageEvent.type === 'text_delta') {
-          void this.events.publish({
-            type: 'text_delta',
-            sessionId: session.spec.sessionId,
-            text: event.assistantMessageEvent.delta,
-            ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
-          });
+          const rawDelta = event.assistantMessageEvent.delta;
+          let outText = rawDelta;
+          if (isGroupStream) {
+            // In case the provider skipped text_start.
+            session.speakerTagStream ??= newSpeakerTagStream();
+            outText = pushSpeakerTagDelta(session.speakerTagStream, rawDelta, session.groupSenderNames ?? []);
+          }
+          if (outText.length > 0) {
+            void this.events.publish({
+              type: 'text_delta',
+              sessionId: session.spec.sessionId,
+              text: outText,
+              ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
+            });
+          }
+        }
+
+        if (event.assistantMessageEvent.type === 'text_end' && session.speakerTagStream) {
+          const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+          if (tail.length > 0) {
+            void this.events.publish({
+              type: 'text_delta',
+              sessionId: session.spec.sessionId,
+              text: tail,
+              ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
+            });
+          }
+          session.speakerTagStream = undefined;
         }
 
         if (event.assistantMessageEvent.type === 'error') {
@@ -2914,6 +2961,20 @@ export class AgentRunner implements SessionRuntime {
       }
 
       case 'message_end': {
+        // Backstop in case the provider emitted no text_end.
+        if (session.speakerTagStream) {
+          const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+          if (tail.length > 0) {
+            void this.events.publish({
+              type: 'text_delta',
+              sessionId: session.spec.sessionId,
+              text: tail,
+              ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
+            });
+          }
+          session.speakerTagStream = undefined;
+        }
+
         if (!isAssistantMessage(event.message)) {
           break;
         }
@@ -2922,6 +2983,12 @@ export class AgentRunner implements SessionRuntime {
         const thinkingText = extractThinkingText(event.message);
         const thinkingSignature = extractThinkingSignature(event.message);
         const assistantMessage = event.message;
+
+        // Used by both the normal and error paths so stored text matches the stream.
+        const cleanGroupText = (text: string): string =>
+          session.spec.source.type === 'group'
+            ? stripLeadingSpeakerTag(text, session.groupSenderNames ?? [])
+            : text;
 
         // Handle error responses from the model provider.
         if (assistantMessage.stopReason === 'error') {
@@ -2944,7 +3011,7 @@ export class AgentRunner implements SessionRuntime {
             await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
               ts,
               role: 'assistant',
-              content: assistantText ?? '',
+              content: cleanGroupText(assistantText ?? ''),
               ...(thinkingText ? { thinking: thinkingText } : {}),
               ...(thinkingSignature ? { thinkingSignature } : {}),
               provider: assistantMessage.provider,
@@ -2979,18 +3046,20 @@ export class AgentRunner implements SessionRuntime {
           break;
         }
 
+        const cleanedText = cleanGroupText(effectiveText);
+
         if (isFinalThinkingOnly) {
           void this.events.publish({
             type: 'text_final',
             sessionId: session.spec.sessionId,
-            text: thinkingText,
+            text: cleanedText,
             ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
           });
         }
 
-        session.latestAssistantText = effectiveText;
+        session.latestAssistantText = cleanedText;
         session.messageCount += 1;
-        session.lastMessagePreview = effectiveText;
+        session.lastMessagePreview = cleanedText;
         const ts = new Date().toISOString();
         session.updatedAt = ts;
         void this.queueSideEffect(session, () => this.persistSessionIndex(session));
@@ -3007,7 +3076,7 @@ export class AgentRunner implements SessionRuntime {
           await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
             ts,
             role: 'assistant',
-            content: effectiveText,
+            content: cleanedText,
             ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
             ...(effectiveThinking && thinkingSignature ? { thinkingSignature } : {}),
             provider: assistantMessage.provider,
