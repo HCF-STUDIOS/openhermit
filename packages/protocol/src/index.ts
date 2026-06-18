@@ -20,6 +20,24 @@ export interface MessageSender {
   displayName?: string;
 }
 
+/**
+ * A participant in a group session. Sent with each group message so the agent
+ * knows who it can address: it strips a copied `[Name]` speaker tag and rewrites
+ * `@Name` references into platform mention markup. `handle` is optional because
+ * not every participant kind has one.
+ */
+export interface MessageParticipant {
+  id: string;
+  type: string;
+  displayName: string;
+  handle?: string;
+}
+
+export interface MessageMention {
+  id: string;
+  type: string;
+}
+
 export interface SessionSpec {
   sessionId: string;
   source: SessionSource;
@@ -88,6 +106,8 @@ export interface SessionMessage {
   text: string;
   attachments?: SessionAttachment[];
   sender?: MessageSender;
+  /** Group roster for this message: who the agent can address / mention. */
+  participants?: MessageParticipant[];
   metadata?: Record<string, unknown>;
   /** Whether the bot was explicitly mentioned. When false in a group session,
    *  the server may inject instead of prompting based on user role. */
@@ -218,7 +238,14 @@ export type OutboundEventBody =
   | { type: 'thinking_delta'; sessionId: string; text: string; correlationId?: string }
   | { type: 'thinking_final'; sessionId: string; text: string; correlationId?: string }
   | { type: 'text_delta'; sessionId: string; text: string; correlationId?: string }
-  | { type: 'text_final'; sessionId: string; text: string; correlationId?: string }
+  | {
+      type: 'text_final';
+      sessionId: string;
+      text: string;
+      correlationId?: string;
+      /** Group participants the agent mentioned in this reply (for notifications). */
+      mentions?: MessageMention[];
+    }
   | { type: 'tool_call'; sessionId: string; tool: string; toolCallId: string; args?: unknown; correlationId?: string }
   | {
       type: 'tool_result';
@@ -1080,6 +1107,14 @@ const isSender = (value: unknown): value is MessageSender => {
   return true;
 };
 
+const isMessageParticipant = (value: unknown): value is MessageParticipant => {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || typeof value.type !== 'string') return false;
+  if (typeof value.displayName !== 'string') return false;
+  if (value.handle !== undefined && typeof value.handle !== 'string') return false;
+  return true;
+};
+
 export const isSessionMessage = (value: unknown): value is SessionMessage => {
   if (!isRecord(value) || typeof value.text !== 'string') {
     return false;
@@ -1091,6 +1126,12 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
 
   if (value.sender !== undefined && !isSender(value.sender)) {
     return false;
+  }
+
+  if (value.participants !== undefined) {
+    if (!Array.isArray(value.participants) || !value.participants.every(isMessageParticipant)) {
+      return false;
+    }
   }
 
   if (value.attachments !== undefined) {

@@ -190,6 +190,141 @@ export const flushSpeakerTagStream = (
   return stripLeadingSpeakerTag(state.buffer, knownNames);
 };
 
+export interface GroupParticipant {
+  id: string;
+  type: string;
+  displayName: string;
+  handle?: string;
+}
+
+export interface MentionRef {
+  id: string;
+  type: string;
+}
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const mentionToken = (name: string): string =>
+  name.trim().normalize('NFC').toLowerCase();
+
+// Fenced code, inline code (1+ backticks), and markdown links: a `@Name` inside
+// these is not a mention and rewriting it would corrupt the markup, so neither
+// transcoding nor mention-extraction touches these regions.
+// The markdown-link arm uses `(?<!@)` so it does not swallow our own mention
+// markup `@[Name](id:type)`, which is otherwise shaped like a link. The fenced
+// arm allows a missing closing fence (runs to end of string), matching how
+// markdown renders an unterminated code block.
+const PROTECTED_SPAN = /```[\s\S]*?(?:```|$)|``[^`]*``|`[^`]*`|(?<!@)\[[^\]\n]*\]\([^)\n]*\)/g;
+
+// Already-formatted platform mention markup `@[DisplayName](id:type)`. id has no
+// colon (matching the platform renderer), type is the remainder.
+const MENTION_MARKUP = /@\[[^\]\n]+\]\(([^():\n]+):([^()\n]+)\)/g;
+
+// Apply `fn` to the text outside protected (code / link) spans, leaving the
+// protected spans verbatim. Used both to transcode and to scan for mentions, so
+// neither acts on code or link contents.
+const mapOutsideProtected = (text: string, fn: (segment: string) => string): string => {
+  let out = '';
+  let last = 0;
+  for (const span of text.matchAll(PROTECTED_SPAN)) {
+    out += fn(text.slice(last, span.index));
+    out += span[0];
+    last = span.index! + span[0].length;
+  }
+  out += fn(text.slice(last));
+  return out;
+};
+
+// Rewrite `@Name` references (a participant's display name, or `@handle` for
+// users that have one) into the platform mention markup `@[DisplayName](id:type)`.
+// Twins have no handle, so display name is the primary key. Unknown or ambiguous
+// names, and anything inside code/links, stay untouched. Returns text only; the
+// resolved mention list is derived from the final text via extractMentionRefs so
+// it can never drift from what is actually rendered.
+// Bound the dynamic alternation so a pathological roster (huge list, very long
+// names) can't build an oversized regex run over every output segment.
+const MAX_MENTION_PARTICIPANTS = 256;
+const MAX_MENTION_TOKEN_CHARS = 128;
+
+export const transcodeGroupMentions = (
+  text: string,
+  participants: Iterable<GroupParticipant>,
+): string => {
+  const byToken = new Map<string, GroupParticipant | null>();
+  const addToken = (raw: string | undefined, participant: GroupParticipant) => {
+    const key = raw ? mentionToken(raw) : '';
+    if (!key || key.length > MAX_MENTION_TOKEN_CHARS) return;
+    const existing = byToken.get(key);
+    if (existing === undefined) byToken.set(key, participant);
+    else if (existing && existing.id !== participant.id) byToken.set(key, null);
+  };
+  let participantCount = 0;
+  for (const participant of participants) {
+    if (++participantCount > MAX_MENTION_PARTICIPANTS) return text;
+    addToken(participant.displayName, participant);
+    addToken(participant.handle, participant);
+  }
+  // Longest first so multi-word names win over their own prefixes.
+  const tokens = [...byToken.keys()].sort((a, b) => b.length - a.length);
+  if (tokens.length === 0) return text;
+
+  const alternation = tokens.map(escapeRegExp).join('|');
+  // `@Name` or the bracketed `@[Name]` the model sometimes emits. The `@` must
+  // not follow a word char, `@` (email) or `/` (path); a bare name must not be
+  // continued by a letter/number/`_`/`-`/`/` (so `@marty-smith`, `@marty/sdk`,
+  // `@Samé` are not partial matches); and the whole thing must not already be a
+  // markup `@[x](y)`. Unicode-aware via the `u` flag.
+  const re = new RegExp(
+    `(?<![\\p{L}\\p{N}_@/])@(?:\\[(${alternation})\\]|(${alternation})(?![\\p{L}\\p{N}_/-]))(?!\\()`,
+    'giu',
+  );
+
+  const rewrite = (segment: string): string =>
+    segment.replace(re, (match, bracketed, bare) => {
+      const participant = byToken.get(mentionToken((bracketed ?? bare) as string));
+      if (!participant) return match;
+      // A display name containing bracket/paren chars would produce malformed
+      // `@[name](id:type)` markup; leave it as plain text rather than emit junk.
+      if (/[[\]()]/.test(participant.displayName)) return match;
+      return `@[${participant.displayName}](${participant.id}:${participant.type})`;
+    });
+
+  return mapOutsideProtected(text, (segment) => rewrite(segment.normalize('NFC')));
+};
+
+// Resolve the mentions actually present in a rendered reply by reading the
+// markup. Deriving from the final text (rather than carrying a separate list)
+// keeps notifications in lock-step with what the user sees, even after later
+// text transforms. Only ids that belong to a current participant count, so
+// stray or forged markup (e.g. `@[Ghost](u999:user)`, or markup inside a code
+// span) never notifies.
+export const extractMentionRefs = (
+  text: string,
+  participants: Iterable<GroupParticipant>,
+): MentionRef[] => {
+  // Authoritative type comes from the roster, not the markup, so a wrong-typed
+  // tag (e.g. `@[Alice](u1:agent)` where u1 is a user) still resolves correctly.
+  const typeById = new Map<string, string>();
+  for (const participant of participants) typeById.set(participant.id, participant.type);
+  if (typeById.size === 0) return [];
+
+  const seen = new Set<string>();
+  const mentions: MentionRef[] = [];
+  mapOutsideProtected(text, (segment) => {
+    for (const match of segment.matchAll(MENTION_MARKUP)) {
+      const id = match[1]!;
+      const type = typeById.get(id);
+      if (type !== undefined && !seen.has(id)) {
+        seen.add(id);
+        mentions.push({ id, type });
+      }
+    }
+    return segment;
+  });
+  return mentions;
+};
+
 export const createUserMessage = (
   message: SessionMessage,
   attachmentContent: (TextContent | ImageContent)[] = [],

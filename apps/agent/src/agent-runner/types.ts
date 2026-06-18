@@ -1,5 +1,5 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
-import type { SessionStatus } from '@openhermit/protocol';
+import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
 import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
 
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
@@ -18,6 +18,9 @@ export interface RunnerSession extends SessionDescriptor {
   lastUserMessageText?: string;
   // Sender names for stripping a copied `[Name]` tag from the reply. Group only.
   groupSenderNames?: Set<string>;
+  // Per-turn snapshot of the group roster (set at run start) used to resolve
+  // `@Name` mentions, so a concurrent later message cannot change it mid-reply.
+  turnGroupParticipants?: MessageParticipant[] | undefined;
   speakerTagStream?: SpeakerTagStreamState | undefined;
   /** Inbound messageId of the user message that triggered the in-flight
    *  turn. Stamped onto every outbound event for that turn as

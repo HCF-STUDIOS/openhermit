@@ -161,6 +161,7 @@ const handleRequest = async (
           ...(p.messageId !== undefined ? { messageId: p.messageId } : {}),
           ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
           ...(p.sender !== undefined ? { sender: p.sender } : {}),
+          ...(p.participants !== undefined ? { participants: p.participants } : {}),
           ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
         };
         if (!isSessionMessage(message)) {

@@ -1576,3 +1576,117 @@ test('AgentRunner.appendMessage bumps messageCount and lastActivityAt', async (t
   // Suppress unused-variable warning.
   void beforeActivity;
 });
+
+test('AgentRunner strips a copied [Name] tag and transcodes @mentions in a group reply', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  // The model copies the input `[Name]` speaker tag and addresses two
+  // participants by bare name — exactly the shape the fix targets.
+  const reply = '[Ayush] sure, @Marty and @Titan are on it';
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([() => createTextResponseStream(reply)]),
+  });
+
+  await runner.openSession({
+    sessionId: 'group:mentions-session',
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+
+  await runner.postMessage('group:mentions-session', {
+    messageId: 'msg-1',
+    text: 'who is on it?',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'u-ayush', displayName: 'Ayush' },
+    participants: [
+      { id: 'u-ayush', type: 'user', displayName: 'Ayush', handle: 'shydev' },
+      { id: 't-marty', type: 'agent', displayName: 'Marty' },
+      { id: 't-titan', type: 'agent', displayName: 'Titan' },
+    ],
+  });
+  await runner.waitForSessionIdle('group:mentions-session');
+
+  const backlog = runner.events.getBacklog('group:mentions-session');
+  const finals = backlog.filter((entry) => entry.event.type === 'text_final');
+  assert.ok(finals.length >= 1, 'expected a text_final event');
+
+  // The authoritative reply is the last text_final (agent_end), which carries
+  // the resolved mention list.
+  const final = finals.at(-1)!.event as {
+    type: 'text_final';
+    text: string;
+    mentions?: { id: string; type: string }[];
+  };
+
+  // 1) The copied leading `[Ayush]` tag is stripped (Ayush is a participant).
+  assert.ok(
+    !final.text.startsWith('[Ayush]'),
+    `leading [Name] tag not stripped: ${final.text}`,
+  );
+  // 2) `@Marty` / `@Titan` are rewritten into platform mention markup.
+  assert.ok(
+    final.text.includes('@[Marty](t-marty:agent)'),
+    `Marty not transcoded: ${final.text}`,
+  );
+  assert.ok(
+    final.text.includes('@[Titan](t-titan:agent)'),
+    `Titan not transcoded: ${final.text}`,
+  );
+  // 3) The mention list is derived from the rendered markup and attached to
+  //    text_final so the platform can fire notifications.
+  assert.deepEqual(final.mentions, [
+    { id: 't-marty', type: 'agent' },
+    { id: 't-titan', type: 'agent' },
+  ]);
+});
+
+test('AgentRunner emits no mentions when a group reply addresses nobody', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('no idea, ask someone else'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'group:no-mentions-session',
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+  await runner.postMessage('group:no-mentions-session', {
+    messageId: 'msg-1',
+    text: 'who is on it?',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'u-ayush', displayName: 'Ayush' },
+    participants: [
+      { id: 'u-ayush', type: 'user', displayName: 'Ayush', handle: 'shydev' },
+      { id: 't-marty', type: 'agent', displayName: 'Marty' },
+    ],
+  });
+  await runner.waitForSessionIdle('group:no-mentions-session');
+
+  const finals = runner.events
+    .getBacklog('group:no-mentions-session')
+    .filter((entry) => entry.event.type === 'text_final');
+  assert.ok(finals.length >= 1, 'expected a text_final event');
+  const final = finals.at(-1)!.event as {
+    type: 'text_final';
+    text: string;
+    mentions?: { id: string; type: string }[];
+  };
+  assert.equal(final.text, 'no idea, ask someone else');
+  assert.equal(final.mentions, undefined);
+});

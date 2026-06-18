@@ -60,6 +60,8 @@ import {
   isEmptyAssistantTurn,
   stripEmptyAssistantTurns,
   stripLeadingSpeakerTag,
+  transcodeGroupMentions,
+  extractMentionRefs,
   normalizeSpeakerName,
   newSpeakerTagStream,
   pushSpeakerTagDelta,
@@ -1179,6 +1181,19 @@ export class AgentRunner implements SessionRuntime {
     const isGroup = session.spec.source.type === 'group';
     const mentioned = message.mentioned !== false;
 
+    // Remember senders on every group message (additive; used to strip a copied
+    // leading [Name]). The roster used to resolve @mentions is snapshotted
+    // per-turn inside run() instead, so a later (e.g. not-mentioned) message
+    // cannot overwrite the roster of an in-flight reply.
+    if (isGroup) {
+      if (message.sender?.displayName) {
+        this.rememberGroupSender(session, message.sender.displayName);
+      }
+      for (const participant of message.participants ?? []) {
+        this.rememberGroupSender(session, participant.displayName);
+      }
+    }
+
     // Group + not mentioned → store only, don't trigger agent
     if (isGroup && !mentioned) {
       session.status = 'idle';
@@ -1201,14 +1216,13 @@ export class AgentRunner implements SessionRuntime {
       : message.text;
     const promptMessage = { ...message, text: promptText };
 
-    // Remember senders so we can strip a copied `[Name]` tag from the reply.
-    if (isGroup && message.sender?.displayName) {
-      this.rememberGroupSender(session, message.sender.displayName);
-    }
-
     const run = async (): Promise<void> => {
       try {
         await this.refreshAgentConfiguration(session);
+        // Snapshot THIS turn's roster so a concurrent later message can't change
+        // which participants @mentions resolve against mid-reply. Runs are
+        // queued sequentially, so this stays stable until agent_end.
+        session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
         session.consecutiveToolFailures = 0;
@@ -2984,10 +2998,18 @@ export class AgentRunner implements SessionRuntime {
         const thinkingSignature = extractThinkingSignature(event.message);
         const assistantMessage = event.message;
 
+        // Snapshot the turn's roster + sender names synchronously: cleanGroupText
+        // is also called from a queued side effect on the error path, by which
+        // time a later turn could have overwritten the live session fields.
+        const turnRoster = session.turnGroupParticipants ?? [];
+        const turnSenderNames = new Set(session.groupSenderNames ?? []);
         // Used by both the normal and error paths so stored text matches the stream.
         const cleanGroupText = (text: string): string =>
           session.spec.source.type === 'group'
-            ? stripLeadingSpeakerTag(text, session.groupSenderNames ?? [])
+            ? transcodeGroupMentions(
+                stripLeadingSpeakerTag(text, turnSenderNames),
+                turnRoster,
+              )
             : text;
 
         // Handle error responses from the model provider.
@@ -3049,6 +3071,8 @@ export class AgentRunner implements SessionRuntime {
         const cleanedText = cleanGroupText(effectiveText);
 
         if (isFinalThinkingOnly) {
+          // Mentions are attached only to the authoritative agent_end text_final
+          // (below), so this intermediate emit never double-notifies.
           void this.events.publish({
             type: 'text_final',
             sessionId: session.spec.sessionId,
@@ -3148,6 +3172,10 @@ export class AgentRunner implements SessionRuntime {
       case 'agent_end': {
         const ts = new Date().toISOString();
         let finalText = session.latestAssistantText;
+        // Capture the roster synchronously: the emit below runs in a detached,
+        // un-awaited async IIFE, so the next queued turn could overwrite
+        // session.turnGroupParticipants before extractMentionRefs runs.
+        const turnRoster = session.turnGroupParticipants ?? [];
         const lastUserMessageText = session.lastUserMessageText;
         session.completedTurnCount += 1;
         session.updatedAt = ts;
@@ -3201,10 +3229,15 @@ export class AgentRunner implements SessionRuntime {
           }
 
           if (finalText) {
+            const finalMentions =
+              session.spec.source.type === 'group'
+                ? extractMentionRefs(finalText, turnRoster)
+                : [];
             await this.events.publish({
               type: 'text_final',
               sessionId: session.spec.sessionId,
               text: finalText,
+              ...(finalMentions.length ? { mentions: finalMentions } : {}),
               ...(turnCorrelationId !== undefined ? { correlationId: turnCorrelationId } : {}),
             });
           }
