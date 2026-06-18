@@ -24,8 +24,6 @@ import {
 } from '@openhermit/store';
 
 import {
-  AgentSecurity,
-  AgentWorkspace,
   DEFAULT_INTROSPECTION_CONFIG,
   DockerContainerManager,
   ExecBackendManager,
@@ -93,7 +91,6 @@ import {
   compactContextIfNeeded,
   estimateAgentMessagesTokens,
   estimateFixedOverheadTokens,
-  estimateTextTokens,
   getContextCompactionMaxTokens,
   truncateToolResults,
 } from './agent-runner/context-compaction.js';
@@ -1018,10 +1015,7 @@ export class AgentRunner implements SessionRuntime {
       );
 
       const config = await this.options.security.readConfig();
-      // Skip introspection silently if the configured provider has no
-      // API key available — pi-agent-core's stream loop runs in an
-      // un-awaited IIFE, so a thrown "No API key" rejects nowhere and
-      // would crash the process.
+      // Skip introspection if the provider has no API key
       if (!this.resolveApiKey(config.model.provider)) {
         this.logRuntime(`introspection skipped: no API key for provider "${config.model.provider}"`);
         return false;
@@ -1098,9 +1092,6 @@ export class AgentRunner implements SessionRuntime {
       message = { ...message, text: transformed.text };
     }
 
-    // If this message arrived via a channel adapter, additionally fire
-    // channel.message.in@v1 so channel-specific plugins (e.g. Slack
-    // signature filtering, Telegram /command parsing) can transform it.
     if (session.spec.source.kind === 'channel' && session.spec.source.platform) {
       const channelTransformed = await this.bus.transform('channel.message.in@v1', {
         agentId: this.scope.agentId,
@@ -1181,10 +1172,7 @@ export class AgentRunner implements SessionRuntime {
     const isGroup = session.spec.source.type === 'group';
     const mentioned = message.mentioned !== false;
 
-    // Remember senders on every group message (additive; used to strip a copied
-    // leading [Name]). The roster used to resolve @mentions is snapshotted
-    // per-turn inside run() instead, so a later (e.g. not-mentioned) message
-    // cannot overwrite the roster of an in-flight reply.
+    // Remember senders on every group message
     if (isGroup) {
       if (message.sender?.displayName) {
         this.rememberGroupSender(session, message.sender.displayName);
@@ -1219,9 +1207,7 @@ export class AgentRunner implements SessionRuntime {
     const run = async (): Promise<void> => {
       try {
         await this.refreshAgentConfiguration(session);
-        // Snapshot THIS turn's roster so a concurrent later message can't change
-        // which participants @mentions resolve against mid-reply. Runs are
-        // queued sequentially, so this stays stable until agent_end.
+        // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
@@ -1281,9 +1267,7 @@ export class AgentRunner implements SessionRuntime {
     const ts = message.occurredAt ?? new Date().toISOString();
     const displayName = message.sender?.displayName;
 
-    // For user-role backfill we resolve the sender outside the side-effect
-    // queue (it can touch the users table). userIds mutation is reflected
-    // in the persisted index after the write below.
+    // User role backfill
     let messageUserId = session.resolvedUserId;
     if (role === 'user' && message.sender) {
       const now = new Date().toISOString();
@@ -1294,11 +1278,7 @@ export class AgentRunner implements SessionRuntime {
       }
     }
 
-    // Run idempotency check + log write inside the per-session side-effect
-    // queue so concurrent appends with the same messageId from this process
-    // serialize and the second one observes the first's row before writing.
-    // (Cross-process dedup still relies on caller retry semantics; the index
-    //  in 0023_session_events_message_id_idx keeps the lookup cheap.)
+    // Run idempotency check
     let deduped = false;
     await this.queueSideEffect(session, async () => {
       if (message.messageId) {
@@ -1323,13 +1303,7 @@ export class AgentRunner implements SessionRuntime {
           ...(message.metadata ? { metadata: message.metadata } : {}),
         });
       } else {
-        // Assistant-role backfill: the agent did not generate this turn —
-        // someone (typically the owner of a shared-account session) acted
-        // as the assistant out-of-band. Leave provider/model unset so it's
-        // visibly distinct from model-generated turns; stamp
-        // metadata.synthetic = true (and the originating sender) for
-        // downstream attribution. No user_message / text_final / text_delta
-        // events are emitted; those are reserved for live turns.
+        // Assistant role backfill
         const metadata: Record<string, unknown> = {
           ...(message.metadata ?? {}),
           synthetic: true,
