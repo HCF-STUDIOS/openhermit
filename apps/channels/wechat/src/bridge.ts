@@ -90,11 +90,18 @@ export class WechatBridge implements ChannelOutbound {
     return this.sendText(params.to, params.text);
   }
 
-  private async sendText(toUserId: string, text: string): Promise<ChannelOutboundResult> {
+  private async sendText(
+    toUserId: string,
+    text: string,
+    turnContextToken?: string,
+  ): Promise<ChannelOutboundResult> {
     const trimmed = text.trim();
     if (!trimmed) return { success: true };
 
-    const contextToken = this.peerContextTokens.get(toUserId);
+    // Replies pass the token snapshotted at their turn's start so a newer
+    // inbound message can't swap it; proactive sends (session_send) fall back
+    // to the latest known token for the peer.
+    const contextToken = turnContextToken ?? this.peerContextTokens.get(toUserId);
     const msg: WeixinMessage = {
       to_user_id: toUserId,
       message_type: MessageType.BOT,
@@ -168,10 +175,17 @@ export class WechatBridge implements ChannelOutbound {
       const media = img.media;
       if (!media || (!media.full_url && !media.encrypt_query_param)) continue;
 
-      // Prefer the hex `aeskey` (raw 16-byte key) over the base64 `media.aes_key`.
-      const aesKeyBase64 = img.aeskey
-        ? Buffer.from(img.aeskey, 'hex').toString('base64')
-        : media.aes_key;
+      // Prefer the hex `aeskey` (raw 16-byte key = 32 hex chars), but only when
+      // it's actually valid hex — otherwise Buffer.from(...,'hex') would
+      // silently truncate to a wrong key. Fall back to the base64 media.aes_key.
+      let aesKeyBase64: string | undefined;
+      const hexKey = img.aeskey?.trim();
+      if (hexKey && /^[0-9a-fA-F]{32}$/.test(hexKey)) {
+        aesKeyBase64 = Buffer.from(hexKey, 'hex').toString('base64');
+      } else {
+        if (hexKey) this.log('image aeskey is not valid 16-byte hex; falling back to media.aes_key');
+        aesKeyBase64 = media.aes_key;
+      }
       if (!aesKeyBase64) {
         this.log('image item missing aes key; skipping');
         continue;
@@ -196,6 +210,11 @@ export class WechatBridge implements ChannelOutbound {
       (item) => item.type === MessageItemType.IMAGE && item.image_item,
     );
     if (!this.extractText(msg) && !hasImage) return;
+
+    // Snapshot this turn's context token up front so the reply echoes the
+    // token of the message it's answering, even if a newer message for the
+    // same peer arrives and overwrites the shared map mid-turn.
+    const turnContextToken = msg.context_token?.trim();
 
     const isGroup = Boolean(msg.group_id?.trim());
     const sessionId = await this.getSessionId(peer, isGroup);
@@ -234,13 +253,13 @@ export class WechatBridge implements ChannelOutbound {
     const result = await this.waitForAgentResponse(sessionId);
     const replyText = result.text;
     if (result.error && !replyText) {
-      await this.sendText(peer, `Error: ${result.error}`);
+      await this.sendText(peer, `Error: ${result.error}`, turnContextToken);
       return;
     }
     if (replyText) {
       const stripped = stripSilenceTokens(replyText);
       if (!stripped.isSilent) {
-        await this.sendText(peer, stripped.hadToken ? stripped.text : replyText);
+        await this.sendText(peer, stripped.hadToken ? stripped.text : replyText, turnContextToken);
       }
     }
   }
