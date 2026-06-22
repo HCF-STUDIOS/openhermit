@@ -363,6 +363,28 @@ export class WechatBridge implements ChannelOutbound {
    * failure so the turn proceeds with whatever other content it has.
    */
   private async resolveVoice(voice: VoiceItem): Promise<string | undefined> {
+    // DIAGNOSTIC: log the exact inbound voice_item shape WeChat produces so we
+    // can mirror it for outbound. Big/secret fields are summarized by length.
+    const m = voice.media ?? {};
+    this.log(
+      'inbound voice_item: ' +
+        JSON.stringify({
+          keys: Object.keys(voice),
+          encode_type: voice.encode_type,
+          sample_rate: voice.sample_rate,
+          bits_per_sample: voice.bits_per_sample,
+          playtime: voice.playtime,
+          hasText: Boolean(voice.text),
+          media: {
+            keys: Object.keys(m),
+            encrypt_type: m.encrypt_type,
+            full_url_len: m.full_url?.length ?? 0,
+            eqp_len: m.encrypt_query_param?.length ?? 0,
+            aes_key_len: m.aes_key?.length ?? 0,
+          },
+        }),
+    );
+
     // WeChat sometimes pre-transcribes the clip — use it and skip the download.
     const pre = voice.text?.trim();
     if (pre) return pre;
