@@ -768,11 +768,12 @@ export class WechatBridge implements ChannelOutbound {
       }
 
       const contextToken = turnContextToken ?? this.peerContextTokens.get(toUserId);
-      const items: MessageItem[] = [];
+
+      // iLink requires exactly ONE item per message (multi-item item_list is
+      // rejected with ret=-2). Send the caption as its own message first.
       if (att.caption?.trim()) {
-        items.push({ type: MessageItemType.TEXT, text_item: { text: att.caption.trim() } });
+        await this.sendText(toUserId, att.caption.trim(), turnContextToken);
       }
-      items.push(item);
 
       const resp = await sendMessage({
         baseUrl: this.runtime.baseUrl,
@@ -783,7 +784,7 @@ export class WechatBridge implements ChannelOutbound {
             message_type: MessageType.BOT,
             client_id: randomUUID(),
             create_time_ms: Date.now(),
-            item_list: items,
+            item_list: [item],
             ...(contextToken ? { context_token: contextToken } : {}),
           },
         },

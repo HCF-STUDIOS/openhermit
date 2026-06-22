@@ -18,7 +18,7 @@ async function deliver(opts: {
   attKind?: string;
   name?: string;
   caption?: string;
-}): Promise<SentMsg> {
+}): Promise<SentMsg[]> {
   const bridge = new WechatBridge(
     { baseUrl: 'https://bot.example/', botToken: 'tok' },
     { baseUrl: 'https://agent.example/', token: 'ctok' },
@@ -33,7 +33,7 @@ async function deliver(opts: {
     kind: opts.kind,
   });
 
-  let sent: SentMsg = {};
+  const sent: SentMsg[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
@@ -45,7 +45,7 @@ async function deliver(opts: {
     }
     if (u.includes('sendmessage')) {
       const body = JSON.parse(String(init?.body)) as { msg?: SentMsg };
-      sent = body.msg ?? {};
+      if (body.msg) sent.push(body.msg);
       return new Response(JSON.stringify({ ret: 0 }), { status: 200 });
     }
     return new Response('{}', { status: 200 });
@@ -70,10 +70,34 @@ async function deliver(opts: {
   return sent;
 }
 
+/** Find the single item of a given kind across all sent messages. */
+function findItem(msgs: SentMsg[], key: string): Record<string, unknown> | undefined {
+  for (const m of msgs) {
+    const it = m.item_list?.find((i) => (i as Record<string, unknown>)[key]);
+    if (it) return it as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+test('every sent message carries exactly one item (iLink requirement)', async () => {
+  const msgs = await deliver({
+    bytes: new Uint8Array(10),
+    mimeType: 'application/pdf',
+    kind: 'document',
+    name: 'a.pdf',
+    caption: 'cap',
+  });
+  for (const m of msgs) assert.equal(m.item_list?.length, 1);
+});
+
 test('a document attachment is sent as a FILE item with name + plaintext len', async () => {
-  const bytes = new Uint8Array(50);
-  const msg = await deliver({ bytes, mimeType: 'application/pdf', kind: 'document', name: 'report.pdf' });
-  const item = msg.item_list?.find((i) => (i as { file_item?: unknown }).file_item) as
+  const msgs = await deliver({
+    bytes: new Uint8Array(50),
+    mimeType: 'application/pdf',
+    kind: 'document',
+    name: 'report.pdf',
+  });
+  const item = findItem(msgs, 'file_item') as
     | { type: number; file_item: { media: Record<string, unknown>; file_name: string; len: string } }
     | undefined;
   assert.ok(item, 'should have a file_item');
@@ -85,9 +109,8 @@ test('a document attachment is sent as a FILE item with name + plaintext len', a
 });
 
 test('an image attachment is sent as an IMAGE item with ciphertext mid_size', async () => {
-  const bytes = new Uint8Array(50);
-  const msg = await deliver({ bytes, mimeType: 'image/jpeg', kind: 'image' });
-  const item = msg.item_list?.find((i) => (i as { image_item?: unknown }).image_item) as
+  const msgs = await deliver({ bytes: new Uint8Array(50), mimeType: 'image/jpeg', kind: 'image' });
+  const item = findItem(msgs, 'image_item') as
     | { type: number; image_item: { mid_size: number } }
     | undefined;
   assert.ok(item, 'should have an image_item');
@@ -95,22 +118,23 @@ test('an image attachment is sent as an IMAGE item with ciphertext mid_size', as
   assert.equal(item!.image_item.mid_size, 64); // padded ciphertext size of 50 bytes
 });
 
-test('a caption is sent as a TEXT item before the media item', async () => {
-  const msg = await deliver({
+test('a caption is sent as its own TEXT message before the media message', async () => {
+  const msgs = await deliver({
     bytes: new Uint8Array(10),
     mimeType: 'application/pdf',
     kind: 'document',
     name: 'a.pdf',
     caption: 'here you go',
   });
-  assert.equal(msg.item_list?.length, 2);
-  const first = msg.item_list![0] as { type: number; text_item?: { text: string } };
-  assert.equal(first.type, 1); // TEXT
-  assert.equal(first.text_item?.text, 'here you go');
+  assert.equal(msgs.length, 2);
+  const textItem = msgs[0]!.item_list![0] as { type: number; text_item?: { text: string } };
+  assert.equal(textItem.type, 1); // TEXT
+  assert.equal(textItem.text_item?.text, 'here you go');
+  assert.ok(findItem(msgs, 'file_item'), 'media follows the caption');
 });
 
 test('the attachment kind hint overrides the downloaded kind', async () => {
   // download reports no kind, but the SSE event hinted image
-  const msg = await deliver({ bytes: new Uint8Array(10), mimeType: 'image/png', attKind: 'image' });
-  assert.ok(msg.item_list?.some((i) => (i as { image_item?: unknown }).image_item));
+  const msgs = await deliver({ bytes: new Uint8Array(10), mimeType: 'image/png', attKind: 'image' });
+  assert.ok(findItem(msgs, 'image_item'));
 });
