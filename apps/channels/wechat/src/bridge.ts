@@ -20,15 +20,18 @@ import { sendMessage } from './ilink/api.js';
 import {
   MessageItemType,
   MessageType,
+  UploadMediaType,
   VoiceEncodeType,
+  type CDNMedia,
   type ImageItem,
+  type MessageItem,
   type VoiceItem,
   type WeixinMessage,
 } from './ilink/types.js';
 import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.js';
 import { SILK_SAMPLE_RATE, silkToWav } from './ilink/silk.js';
 import { oggOpusPlaytimeMs } from './ilink/opus.js';
-import { uploadVoiceToCdn } from './ilink/upload.js';
+import { uploadMediaToCdn, uploadVoiceToCdn } from './ilink/upload.js';
 
 /**
  * Outbound voice replies are OFF by default: iLink silently drops bot→user
@@ -67,12 +70,48 @@ const shouldSpeak = (text: string): boolean => {
   return true;
 };
 
+/** Best-effort file extension from a MIME type, for naming unnamed attachments. */
+const extForMime = (mime: string): string => {
+  const m = mime.toLowerCase().split(';')[0]?.trim() ?? '';
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'video/mp4': 'mp4',
+    'application/pdf': 'pdf',
+    'audio/ogg': 'ogg',
+    'audio/mpeg': 'mp3',
+  };
+  if (map[m]) return map[m];
+  const slash = m.indexOf('/');
+  return slash >= 0 ? m.slice(slash + 1) || 'bin' : 'bin';
+};
+
 /** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+
+/** Practical cap for outbound media: the CDN upload link is slow (~10 KB/s), so
+ * larger files would take too long. Oversized outbound attachments are skipped. */
+const MAX_OUTBOUND_MEDIA_BYTES = 8 * 1024 * 1024;
+
+/** Timeout for outbound media CDN uploads (slow link, larger payloads). */
+const MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
+
+/** An `attachment` SSE event the agent emitted during a turn. */
+interface AttachmentEvent {
+  sessionId: string;
+  attachmentId: string;
+  kind?: string;
+  name?: string;
+  caption?: string;
+}
 
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
+  /** Attachments the agent emitted, delivered after the text reply. */
+  attachments: AttachmentEvent[];
 }
 
 /** Outcome of resolving an inbound message's media. */
@@ -493,6 +532,12 @@ export class WechatBridge implements ChannelOutbound {
         }
       }
     }
+
+    // Deliver any attachments the agent emitted (image/video/file) after the
+    // text reply. Each is isolated so one failure doesn't affect the others.
+    for (const att of result.attachments) {
+      await this.deliverAttachment(peer, att, turnContextToken);
+    }
   }
 
   private static generateSessionId(): string {
@@ -558,7 +603,11 @@ export class WechatBridge implements ChannelOutbound {
     });
 
     if (!response.ok || !response.body) {
-      return { text: undefined, error: `Failed to open event stream (${response.status})` };
+      return {
+        text: undefined,
+        error: `Failed to open event stream (${response.status})`,
+        attachments: [],
+      };
     }
 
     const reader = response.body.getReader();
@@ -569,6 +618,7 @@ export class WechatBridge implements ChannelOutbound {
     let accumulatedText = '';
     let finalText: string | undefined;
     let error: string | undefined;
+    const attachments: AttachmentEvent[] = [];
 
     try {
       while (true) {
@@ -616,6 +666,21 @@ export class WechatBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
+          if (frame.event === 'attachment') {
+            const attachmentId = String(payload.attachmentId ?? '');
+            if (attachmentId) {
+              attachments.push({
+                sessionId: String(payload.sessionId ?? sessionId),
+                attachmentId,
+                ...(payload.kind ? { kind: String(payload.kind) } : {}),
+                ...(payload.name ? { name: String(payload.name) } : {}),
+                ...(typeof payload.caption === 'string' && payload.caption
+                  ? { caption: payload.caption }
+                  : {}),
+              });
+            }
+            continue;
+          }
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
             continue;
@@ -629,6 +694,109 @@ export class WechatBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
     const text = finalText ?? (accumulatedText.trim() || undefined);
-    return { text, error };
+    return { text, error, attachments };
+  }
+
+  /**
+   * Deliver an agent-emitted attachment to a WeChat peer: download the bytes,
+   * upload them to the C2C CDN, and send the matching media item (image / video
+   * / file). Failures are logged and swallowed so one bad attachment never
+   * breaks the turn. Oversized attachments are skipped (the CDN link is slow).
+   */
+  private async deliverAttachment(
+    toUserId: string,
+    att: AttachmentEvent,
+    turnContextToken?: string,
+  ): Promise<void> {
+    try {
+      const { bytes, mimeType, filename, kind } = await this.client.downloadAttachmentBytes(
+        att.sessionId,
+        att.attachmentId,
+      );
+      const buf = Buffer.from(bytes);
+      if (buf.byteLength > MAX_OUTBOUND_MEDIA_BYTES) {
+        this.log(
+          `outbound attachment ${att.attachmentId} too large (${buf.byteLength}B > ${MAX_OUTBOUND_MEDIA_BYTES}); skipping`,
+        );
+        return;
+      }
+
+      const resolvedKind = (att.kind || kind || 'document') as
+        | 'image'
+        | 'audio'
+        | 'video'
+        | 'document';
+      const name = att.name || filename || `attachment.${extForMime(mimeType)}`;
+
+      const mediaType =
+        resolvedKind === 'image'
+          ? UploadMediaType.IMAGE
+          : resolvedKind === 'video'
+            ? UploadMediaType.VIDEO
+            : UploadMediaType.FILE;
+
+      const uploaded = await uploadMediaToCdn({
+        baseUrl: this.runtime.baseUrl,
+        token: this.runtime.botToken,
+        bytes: buf,
+        toUserId,
+        mediaType,
+        timeoutMs: MEDIA_UPLOAD_TIMEOUT_MS,
+      });
+
+      const media: CDNMedia = {
+        encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+        aes_key: Buffer.from(uploaded.aeskeyHex, 'ascii').toString('base64'),
+        encrypt_type: 1,
+      };
+      let item: MessageItem;
+      if (resolvedKind === 'image') {
+        item = {
+          type: MessageItemType.IMAGE,
+          image_item: { media, mid_size: uploaded.fileSizeCiphertext },
+        };
+      } else if (resolvedKind === 'video') {
+        item = {
+          type: MessageItemType.VIDEO,
+          video_item: { media, video_size: uploaded.fileSizeCiphertext },
+        };
+      } else {
+        item = {
+          type: MessageItemType.FILE,
+          file_item: { media, file_name: name, len: String(uploaded.rawsize) },
+        };
+      }
+
+      const contextToken = turnContextToken ?? this.peerContextTokens.get(toUserId);
+      const items: MessageItem[] = [];
+      if (att.caption?.trim()) {
+        items.push({ type: MessageItemType.TEXT, text_item: { text: att.caption.trim() } });
+      }
+      items.push(item);
+
+      const resp = await sendMessage({
+        baseUrl: this.runtime.baseUrl,
+        token: this.runtime.botToken,
+        body: {
+          msg: {
+            to_user_id: toUserId,
+            message_type: MessageType.BOT,
+            client_id: randomUUID(),
+            create_time_ms: Date.now(),
+            item_list: items,
+            ...(contextToken ? { context_token: contextToken } : {}),
+          },
+        },
+      });
+      if ((resp.ret && resp.ret !== 0) || (resp.errcode && resp.errcode !== 0)) {
+        this.log(
+          `attachment send rejected: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ''}`,
+        );
+        return;
+      }
+      this.log(`attachment sent: kind=${resolvedKind} name=${name} ${buf.byteLength}B (ret=${resp.ret ?? 0})`);
+    } catch (err) {
+      this.log(`attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

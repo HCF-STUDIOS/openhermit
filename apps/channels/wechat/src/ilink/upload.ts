@@ -22,8 +22,10 @@ export interface UploadedMedia {
   downloadEncryptedQueryParam: string;
   /** AES key as a hex string (matches how images encode `media.aes_key`). */
   aeskeyHex: string;
-  /** Plaintext byte size. */
+  /** Plaintext byte size (file `len`). */
   rawsize: number;
+  /** Ciphertext byte size after AES padding (image `mid_size` / video `video_size`). */
+  fileSizeCiphertext: number;
 }
 
 /**
@@ -83,7 +85,7 @@ export async function uploadMediaToCdn(
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   });
 
-  return { downloadEncryptedQueryParam, aeskeyHex, rawsize };
+  return { downloadEncryptedQueryParam, aeskeyHex, rawsize, fileSizeCiphertext: filesize };
 }
 
 /** Convenience wrapper for uploading a voice clip (Ogg/Opus). */

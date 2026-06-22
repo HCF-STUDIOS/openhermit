@@ -27,8 +27,13 @@ gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
   path is kept for a possible future iLink change / QQ reuse, but **voice replies
   do not currently reach the user**, which is why it is disabled by default. With
   it off, voice notes are transcribed inbound and answered with text.
-- Inbound file / video and other outbound media (images/files) are not handled
-  yet.
+- **Outbound media** (agent → user): attachments the agent emits (`attachment`
+  events) are downloaded, encrypted, uploaded to the WeChat C2C CDN, and sent as
+  the matching item — **images** (`image_item`), **video** (`video_item`), or any
+  other file as a **file attachment** (`file_item`). Unlike voice, iLink delivers
+  these. Outbound media over 8 MiB is skipped (the CDN upload link is slow); an
+  optional caption is sent as a leading text item.
+- Inbound file / video are not handled yet.
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;
   the admin UI renders it with its own QR-code library.
 - No typing indicators, no multi-account juggling.

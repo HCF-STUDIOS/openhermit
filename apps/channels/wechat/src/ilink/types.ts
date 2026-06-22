@@ -49,7 +49,7 @@ export interface CDNMedia {
   full_url?: string;
 }
 
-/** `MessageItem.image_item` — inbound photo. */
+/** `MessageItem.image_item` — inbound photo (also used for outbound). */
 export interface ImageItem {
   /** Full-resolution CDN reference. */
   media?: CDNMedia;
@@ -59,6 +59,23 @@ export interface ImageItem {
   aeskey?: string;
   url?: string;
   hd_size?: number;
+  /** Outbound: ciphertext size of the uploaded image. */
+  mid_size?: number;
+}
+
+/** `MessageItem.video_item` — outbound video. */
+export interface VideoItem {
+  media?: CDNMedia;
+  /** Ciphertext size of the uploaded video. */
+  video_size?: number;
+}
+
+/** `MessageItem.file_item` — outbound file attachment (any document). */
+export interface FileItem {
+  media?: CDNMedia;
+  file_name?: string;
+  /** Plaintext byte size, as a string. */
+  len?: string;
 }
 
 /** `VoiceItem.encode_type` — audio codec. WeChat voice notes are SILK (6). */
@@ -102,7 +119,8 @@ export interface MessageItem {
   text_item?: TextItem;
   image_item?: ImageItem;
   voice_item?: VoiceItem;
-  /** file_item/video_item remain untyped until later media phases. */
+  video_item?: VideoItem;
+  file_item?: FileItem;
   [key: string]: unknown;
 }
 
