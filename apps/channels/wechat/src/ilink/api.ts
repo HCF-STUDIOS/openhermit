@@ -28,6 +28,7 @@ import type {
   QrCodeResponse,
   QrStatusResponse,
   SendMessageReq,
+  SendMessageResp,
 } from './types.js';
 
 interface PackageJson {
@@ -245,8 +246,8 @@ export const getUpdates = async (
 
 export const sendMessage = async (
   opts: WeixinApiOptions & { body: SendMessageReq },
-): Promise<void> => {
-  await apiPost({
+): Promise<SendMessageResp> => {
+  const raw = await apiPost({
     baseUrl: opts.baseUrl,
     endpoint: 'ilink/bot/sendmessage',
     body: JSON.stringify({ ...opts.body, base_info: buildBaseInfo(opts.botAgent) }),
@@ -254,6 +255,11 @@ export const sendMessage = async (
     timeoutMs: DEFAULT_API_TIMEOUT_MS,
     label: 'sendMessage',
   });
+  try {
+    return raw ? (JSON.parse(raw) as SendMessageResp) : {};
+  } catch {
+    return {};
+  }
 };
 
 /**

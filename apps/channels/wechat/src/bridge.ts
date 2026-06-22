@@ -192,6 +192,10 @@ export class WechatBridge implements ChannelOutbound {
         bytes: encoded.silk,
         toUserId,
       });
+      this.log(
+        `voice reply: silk=${encoded.silk.byteLength}B dur=${Math.round(encoded.durationMs)}ms ` +
+          `uploaded ref=${uploaded.downloadEncryptedQueryParam.length}ch`,
+      );
 
       return await this.sendVoice(toUserId, uploaded, encoded.durationMs, turnContextToken);
     } catch (err) {
@@ -229,11 +233,20 @@ export class WechatBridge implements ChannelOutbound {
       ...(contextToken ? { context_token: contextToken } : {}),
     };
     try {
-      await sendMessage({
+      const resp = await sendMessage({
         baseUrl: this.runtime.baseUrl,
         token: this.runtime.botToken,
         body: { msg },
       });
+      // sendmessage can return HTTP 200 with a non-zero ret/errcode when it
+      // rejects the payload. Treat that as a failure so we fall back to text.
+      if ((resp.ret && resp.ret !== 0) || (resp.errcode && resp.errcode !== 0)) {
+        this.log(
+          `voice send rejected by sendmessage: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ''}`,
+        );
+        return false;
+      }
+      this.log(`voice send accepted (ret=${resp.ret ?? 0})`);
       return true;
     } catch (err) {
       this.log(`failed to send voice to ${toUserId}: ${err instanceof Error ? err.message : String(err)}`);

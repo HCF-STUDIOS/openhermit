@@ -143,6 +143,14 @@ export interface SendMessageReq {
   msg?: WeixinMessage;
 }
 
+/** `ilink/bot/sendmessage` response. A non-zero `ret`/`errcode` means the
+ * server rejected the message even though the HTTP status was 200. */
+export interface SendMessageResp {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+}
+
 /** `GetUploadUrlReq.media_type` — kind of media being uploaded to the CDN. */
 export const UploadMediaType = {
   IMAGE: 1,
