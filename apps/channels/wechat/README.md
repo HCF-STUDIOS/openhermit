@@ -17,14 +17,16 @@ gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
   it is downloaded, decrypted, transcoded to WAV via
   [`silk-wasm`](https://www.npmjs.com/package/silk-wasm), and sent through the
   agent's STT; non-SILK codecs are skipped.
-- **Outbound voice** (DM replies to a voice note): the reply is synthesized via
-  the agent's TTS as **Ogg/Opus @ 48 kHz** (`audio/ogg`), uploaded to the WeChat
-  C2C CDN (`getuploadurl` media_type=VOICE + AES-128-ECB encrypt), and sent as a
-  voice item with `encode_type: 8` (Ogg/Opus) — the format WeChat renders for
-  bot-sent voice, matching Tencent's own `openclaw-weixin` `voice-outbound.ts`.
-  (SILK is the QQ format and is silently dropped by iLink on the bot→user
-  direction.) Anything unspeakable (code blocks, very long text) or any failure
-  falls back to a text reply. Group replies always stay text.
+- **Outbound voice** (DM replies, **off by default**): set
+  `OPENHERMIT_WECHAT_VOICE_REPLY=1` to enable. When on, a reply to a voice note
+  is synthesized via TTS as **Ogg/Opus @ 48 kHz** (`audio/ogg`), uploaded to the
+  WeChat C2C CDN, and sent as a voice item (`encode_type: 8`). **⚠️ Known
+  limitation:** iLink **silently drops bot→user VOICE messages** — the send is
+  accepted (`ret=0`) but the WeChat client never renders it (confirmed live for
+  both SILK and Ogg/Opus; documented by reverse-engineered iLink SDKs). The code
+  path is kept for a possible future iLink change / QQ reuse, but **voice replies
+  do not currently reach the user**, which is why it is disabled by default. With
+  it off, voice notes are transcribed inbound and answered with text.
 - Inbound file / video and other outbound media (images/files) are not handled
   yet.
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;

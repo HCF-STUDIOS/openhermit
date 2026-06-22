@@ -31,13 +31,23 @@ import { oggOpusPlaytimeMs } from './ilink/opus.js';
 import { uploadVoiceToCdn } from './ilink/upload.js';
 
 /**
- * Marker prepended to a transcribed voice note. It both tells the agent the
- * user spoke and asks for a speech-friendly reply, since when the inbound was
- * voice we try to answer with a voice note.
+ * Outbound voice replies are OFF by default: iLink silently drops bot→user
+ * VOICE messages (the send is accepted with ret=0 but the WeChat client never
+ * renders it — confirmed live for both SILK and Ogg/Opus, and documented by
+ * reverse-engineered iLink SDKs). The full TTS→Opus→CDN→voice_item path is kept
+ * for a possible future iLink change / QQ reuse; enable with
+ * OPENHERMIT_WECHAT_VOICE_REPLY=1. When off, voice notes are still transcribed
+ * inbound and answered with text.
  */
-const VOICE_MARKER =
-  '[Voice message, transcribed. Your reply will be spoken aloud, so keep it brief — ' +
-  'a sentence or two — in plain prose without code blocks, markdown, or lists.]';
+const VOICE_REPLY_ENABLED =
+  process.env.OPENHERMIT_WECHAT_VOICE_REPLY === '1' ||
+  process.env.OPENHERMIT_WECHAT_VOICE_REPLY === 'true';
+
+/** Marker prepended to a transcribed voice note so the agent knows the user spoke. */
+const VOICE_MARKER = VOICE_REPLY_ENABLED
+  ? '[Voice message, transcribed. Your reply will be spoken aloud, so keep it brief — ' +
+    'a sentence or two — in plain prose without code blocks, markdown, or lists.]'
+  : '[Voice message, transcribed.]';
 
 /** Cap on text we'll synthesize into a voice reply — longer stays text. Kept
  * small: the upload link to the WeChat CDN is slow (~8 KB/s observed), so a
@@ -470,11 +480,12 @@ export class WechatBridge implements ChannelOutbound {
       const stripped = stripSilenceTokens(replyText);
       if (!stripped.isSilent) {
         const outText = stripped.hadToken ? stripped.text : replyText;
-        // When the user sent voice (DM only), answer with a voice note; fall
-        // back to text if TTS/encode/upload/send fails or the text isn't
-        // speakable. Group replies always stay text.
+        // When the user sent voice (DM only) AND voice replies are enabled,
+        // answer with a voice note; fall back to text if it isn't speakable or
+        // anything fails. Voice replies are off by default (iLink drops them);
+        // group replies always stay text.
         const sentVoice =
-          resolved.wasVoice && !isGroup
+          VOICE_REPLY_ENABLED && resolved.wasVoice && !isGroup
             ? await this.trySendVoiceReply(peer, outText, turnContextToken)
             : false;
         if (!sentVoice) {
