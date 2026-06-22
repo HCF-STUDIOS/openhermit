@@ -70,6 +70,55 @@ test('uploadVoiceToCdn declares plaintext/ciphertext sizes, encrypts, and return
   }
 });
 
+test('uploadVoiceToCdn assembles the upload URL from upload_param when full_url is absent', async () => {
+  let postedUrl: string | undefined;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    void init;
+    const u = String(url);
+    if (u.includes('getuploadurl')) {
+      // No upload_full_url — only upload_param, as the live voice path returns.
+      return new Response(JSON.stringify({ ret: 0, upload_param: 'UP_PARAM_xyz' }), { status: 200 });
+    }
+    postedUrl = u;
+    return new Response(null, { status: 200, headers: { 'x-encrypted-param': 'DL' } });
+  }) as typeof fetch;
+
+  try {
+    const out = await uploadVoiceToCdn({
+      baseUrl: 'https://bot.example/',
+      token: 'tok',
+      bytes: randomBytes(8),
+      toUserId: 'p',
+    });
+    assert.equal(out.downloadEncryptedQueryParam, 'DL');
+    assert.ok(postedUrl?.includes('/upload?encrypted_query_param=UP_PARAM_xyz'));
+    assert.ok(postedUrl?.includes('filekey='));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('uploadVoiceToCdn throws a diagnostic error when the slot has no usable URL', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('getuploadurl')) {
+      return new Response(JSON.stringify({ ret: -1, errcode: 42, errmsg: 'nope' }), { status: 200 });
+    }
+    return new Response(null, { status: 200, headers: { 'x-encrypted-param': 'DL' } });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () =>
+        uploadVoiceToCdn({ baseUrl: 'https://bot.example/', token: 'tok', bytes: randomBytes(8), toUserId: 'p' }),
+      /errcode=42[\s\S]*errmsg=nope/,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('uploadVoiceToCdn throws when the CDN omits x-encrypted-param', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request) => {

@@ -14,7 +14,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import { getUploadUrl, uploadToCdn, type WeixinApiOptions } from './api.js';
-import { aesEcbPaddedSize, encryptAesEcb } from './media.js';
+import { CDN_BASE_URL, aesEcbPaddedSize, buildCdnUploadUrl, encryptAesEcb } from './media.js';
 import { UploadMediaType } from './types.js';
 
 export interface UploadedMedia {
@@ -60,9 +60,17 @@ export async function uploadMediaToCdn(
     },
   });
 
-  const uploadUrl = slot.upload_full_url;
+  // Prefer the server's full URL; otherwise assemble one from upload_param +
+  // filekey against the CDN base (the reference's fallback). If neither is
+  // present the request was likely rejected — surface ret/errcode/errmsg.
+  const uploadUrl =
+    slot.upload_full_url ||
+    (slot.upload_param ? buildCdnUploadUrl(slot.upload_param, filekey, CDN_BASE_URL) : undefined);
   if (!uploadUrl) {
-    throw new Error('getUploadUrl returned no upload_full_url');
+    throw new Error(
+      `getUploadUrl returned no usable URL (ret=${slot.ret} errcode=${slot.errcode} ` +
+        `errmsg=${slot.errmsg ?? ''} keys=${Object.keys(slot).join(',')})`,
+    );
   }
 
   const ciphertext = encryptAesEcb(opts.bytes, aesKey);

@@ -57,6 +57,19 @@ export function buildCdnDownloadUrl(encryptedQueryParam: string, cdnBaseUrl: str
   return `${cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(encryptedQueryParam)}`;
 }
 
+/** Build a CDN upload URL from `upload_param` + `filekey` when the server
+ * returns no `upload_full_url` (mirrors the reference's fallback assembly). */
+export function buildCdnUploadUrl(
+  uploadParam: string,
+  filekey: string,
+  cdnBaseUrl: string,
+): string {
+  return (
+    `${cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}` +
+    `&filekey=${encodeURIComponent(filekey)}`
+  );
+}
+
 /** Resolve the download URL for a media item, preferring the server's full_url. */
 export function resolveCdnUrl(
   encryptQueryParam: string | undefined,
