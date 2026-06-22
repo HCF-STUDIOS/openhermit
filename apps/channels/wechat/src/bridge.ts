@@ -367,6 +367,24 @@ export class WechatBridge implements ChannelOutbound {
           parts.push(transcript);
           wasVoice = true;
         }
+      } else if (item.type === MessageItemType.FILE && item.file_item) {
+        const id = await this.resolveDownloadable(
+          sessionId,
+          item.file_item.media,
+          item.file_item.file_name?.trim() || 'file.bin',
+          'application/octet-stream', // gateway sniffs the real MIME on upload
+          'file',
+        );
+        if (id) ids.push(id);
+      } else if (item.type === MessageItemType.VIDEO && item.video_item) {
+        const id = await this.resolveDownloadable(
+          sessionId,
+          item.video_item.media,
+          'video.mp4',
+          'video/mp4',
+          'video',
+        );
+        if (id) ids.push(id);
       }
     }
 
@@ -409,6 +427,38 @@ export class WechatBridge implements ChannelOutbound {
       return { type: 'file', id: uploaded.id! };
     } catch (err) {
       this.log(`image download/decrypt failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Download + decrypt an inbound file/video CDN media item (key in
+   * `media.aes_key`, base64) and upload it as a durable session attachment.
+   * Returns undefined on a missing ref/key or any failure.
+   */
+  private async resolveDownloadable(
+    sessionId: string,
+    media: CDNMedia | undefined,
+    filename: string,
+    mimeType: string,
+    label: string,
+  ): Promise<{ type: 'file'; id: string } | undefined> {
+    if (!media || (!media.full_url && !media.encrypt_query_param) || !media.aes_key) {
+      this.log(`${label} item missing CDN ref or aes key; skipping`);
+      return undefined;
+    }
+    try {
+      const url = resolveCdnUrl(media.encrypt_query_param, media.full_url, CDN_BASE_URL);
+      const bytes = await downloadAndDecrypt({
+        url,
+        aesKeyBase64: media.aes_key,
+        maxBytes: MAX_MEDIA_BYTES,
+      });
+      const blob = new Blob([bytes as unknown as BlobPart], { type: mimeType });
+      const uploaded = await this.client.uploadAttachment(sessionId, blob, filename);
+      return { type: 'file', id: uploaded.id! };
+    } catch (err) {
+      this.log(`${label} download/decrypt failed: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
   }
@@ -461,7 +511,9 @@ export class WechatBridge implements ChannelOutbound {
     const hasMedia = (msg.item_list ?? []).some(
       (item) =>
         (item.type === MessageItemType.IMAGE && item.image_item) ||
-        (item.type === MessageItemType.VOICE && item.voice_item),
+        (item.type === MessageItemType.VOICE && item.voice_item) ||
+        (item.type === MessageItemType.FILE && item.file_item) ||
+        (item.type === MessageItemType.VIDEO && item.video_item),
     );
     if (!this.extractText(msg) && !hasMedia) return;
 

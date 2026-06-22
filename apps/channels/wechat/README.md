@@ -33,7 +33,10 @@ gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
   other file as a **file attachment** (`file_item`). Unlike voice, iLink delivers
   these. Outbound media over 8 MiB is skipped (the CDN upload link is slow); an
   optional caption is sent as a leading text item.
-- Inbound file / video are not handled yet.
+- **Inbound file / video**: documents and videos a user sends are downloaded
+  from the CDN, AES-128-ECB decrypted, and uploaded to the agent as session
+  attachments (the file keeps its original name; video is `video.mp4`). Over the
+  25 MiB cap they are skipped.
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;
   the admin UI renders it with its own QR-code library.
 - No typing indicators, no multi-account juggling.
