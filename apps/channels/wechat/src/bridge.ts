@@ -36,11 +36,15 @@ import { uploadVoiceToCdn } from './ilink/upload.js';
  * voice we try to answer with a voice note.
  */
 const VOICE_MARKER =
-  '[Voice message, transcribed. Your reply will be converted to speech, so respond in ' +
-  'plain prose without code blocks, markdown formatting, or long lists.]';
+  '[Voice message, transcribed. Your reply will be spoken aloud, so keep it brief — ' +
+  'a sentence or two — in plain prose without code blocks, markdown, or lists.]';
 
-/** Cap on text we'll synthesize into a voice reply — longer stays text. */
-const VOICE_MAX_TEXT_LENGTH = 1000;
+/** Cap on text we'll synthesize into a voice reply — longer stays text. A voice
+ * note should be short; this also keeps the uploaded audio small. */
+const VOICE_MAX_TEXT_LENGTH = 600;
+
+/** Timeout for the (larger) voice CDN upload — audio is bigger than text. */
+const VOICE_UPLOAD_TIMEOUT_MS = 45_000;
 
 /** Whether a reply is fit for voice delivery (mirrors the Telegram bridge). */
 const shouldSpeak = (text: string): boolean => {
@@ -184,17 +188,16 @@ export class WechatBridge implements ChannelOutbound {
       const tts = await this.client.synthesizeAudio({ text, outputMimeType: 'audio/ogg' });
       const bytes = Buffer.from(tts.bytes);
       const playtimeMs = oggOpusPlaytimeMs(bytes) ?? 0;
+      this.log(`voice reply: opus=${bytes.byteLength}B playtime=${playtimeMs}ms; uploading`);
 
       const uploaded = await uploadVoiceToCdn({
         baseUrl: this.runtime.baseUrl,
         token: this.runtime.botToken,
         bytes,
         toUserId,
+        timeoutMs: VOICE_UPLOAD_TIMEOUT_MS,
       });
-      this.log(
-        `voice reply: opus=${bytes.byteLength}B playtime=${playtimeMs}ms ` +
-          `uploaded ref=${uploaded.downloadEncryptedQueryParam.length}ch`,
-      );
+      this.log(`voice reply: uploaded ref=${uploaded.downloadEncryptedQueryParam.length}ch`);
 
       return await this.sendVoice(toUserId, uploaded, playtimeMs, turnContextToken);
     } catch (err) {

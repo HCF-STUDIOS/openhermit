@@ -35,6 +35,8 @@ export async function uploadMediaToCdn(
     bytes: Buffer;
     mediaType: number;
     toUserId: string;
+    /** Timeout for the getUploadUrl + CDN upload legs. */
+    timeoutMs?: number;
   },
 ): Promise<UploadedMedia> {
   const aesKey = randomBytes(16);
@@ -48,6 +50,7 @@ export async function uploadMediaToCdn(
     baseUrl: opts.baseUrl,
     token: opts.token,
     ...(opts.botAgent ? { botAgent: opts.botAgent } : {}),
+    ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
     req: {
       filekey,
       media_type: opts.mediaType,
@@ -74,14 +77,18 @@ export async function uploadMediaToCdn(
   }
 
   const ciphertext = encryptAesEcb(opts.bytes, aesKey);
-  const { downloadEncryptedQueryParam } = await uploadToCdn({ uploadUrl, ciphertext });
+  const { downloadEncryptedQueryParam } = await uploadToCdn({
+    uploadUrl,
+    ciphertext,
+    ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+  });
 
   return { downloadEncryptedQueryParam, aeskeyHex, rawsize };
 }
 
-/** Convenience wrapper for uploading a SILK voice clip. */
+/** Convenience wrapper for uploading a voice clip (Ogg/Opus). */
 export function uploadVoiceToCdn(
-  opts: WeixinApiOptions & { bytes: Buffer; toUserId: string },
+  opts: WeixinApiOptions & { bytes: Buffer; toUserId: string; timeoutMs?: number },
 ): Promise<UploadedMedia> {
   return uploadMediaToCdn({ ...opts, mediaType: UploadMediaType.VOICE });
 }

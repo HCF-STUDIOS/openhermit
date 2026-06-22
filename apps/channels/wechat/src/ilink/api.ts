@@ -268,14 +268,14 @@ export const sendMessage = async (
  * POSTed separately via {@link uploadToCdn}.
  */
 export const getUploadUrl = async (
-  opts: WeixinApiOptions & { req: GetUploadUrlReq },
+  opts: WeixinApiOptions & { req: GetUploadUrlReq; timeoutMs?: number },
 ): Promise<GetUploadUrlResp> => {
   const raw = await apiPost({
     baseUrl: opts.baseUrl,
     endpoint: 'ilink/bot/getuploadurl',
     body: JSON.stringify({ ...opts.req, base_info: buildBaseInfo(opts.botAgent) }),
     token: opts.token,
-    timeoutMs: DEFAULT_API_TIMEOUT_MS,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     label: 'getUploadUrl',
   });
   return JSON.parse(raw) as GetUploadUrlResp;
