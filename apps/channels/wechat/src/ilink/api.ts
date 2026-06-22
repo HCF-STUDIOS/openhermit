@@ -21,6 +21,8 @@ import type {
   BaseInfo,
   GetUpdatesReq,
   GetUpdatesResp,
+  GetUploadUrlReq,
+  GetUploadUrlResp,
   NotifyStartResp,
   NotifyStopResp,
   QrCodeResponse,
@@ -252,6 +254,51 @@ export const sendMessage = async (
     timeoutMs: DEFAULT_API_TIMEOUT_MS,
     label: 'sendMessage',
   });
+};
+
+/**
+ * Request a CDN upload slot for outbound media. Returns the upload URL plus the
+ * `upload_param` the client may use to assemble one. The bytes themselves are
+ * POSTed separately via {@link uploadToCdn}.
+ */
+export const getUploadUrl = async (
+  opts: WeixinApiOptions & { req: GetUploadUrlReq },
+): Promise<GetUploadUrlResp> => {
+  const raw = await apiPost({
+    baseUrl: opts.baseUrl,
+    endpoint: 'ilink/bot/getuploadurl',
+    body: JSON.stringify({ ...opts.req, base_info: buildBaseInfo(opts.botAgent) }),
+    token: opts.token,
+    timeoutMs: DEFAULT_API_TIMEOUT_MS,
+    label: 'getUploadUrl',
+  });
+  return JSON.parse(raw) as GetUploadUrlResp;
+};
+
+/**
+ * Upload already-encrypted bytes to the WeChat C2C CDN. The download reference
+ * comes back in the `x-encrypted-param` response header (not the body); it is
+ * what an outbound media item references via `media.encrypt_query_param`.
+ */
+export const uploadToCdn = async (params: {
+  uploadUrl: string;
+  ciphertext: Buffer;
+  timeoutMs?: number;
+}): Promise<{ downloadEncryptedQueryParam: string }> => {
+  const res = await fetch(params.uploadUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Uint8Array(params.ciphertext),
+    signal: AbortSignal.timeout(params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`uploadToCdn ${res.status}: ${await res.text().catch(() => '')}`);
+  }
+  const downloadEncryptedQueryParam = res.headers.get('x-encrypted-param');
+  if (!downloadEncryptedQueryParam) {
+    throw new Error('uploadToCdn: response missing x-encrypted-param header');
+  }
+  return { downloadEncryptedQueryParam };
 };
 
 export const notifyStart = async (opts: WeixinApiOptions): Promise<NotifyStartResp> => {

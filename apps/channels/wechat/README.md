@@ -16,8 +16,15 @@ gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
   through the agent's STT (the transcript is prefixed with a `[Voice message,
   transcribed.]` marker). When WeChat already supplies its own transcript
   (`voice_item.text`), that is used directly and the download is skipped.
-- Inbound file / video and all **outbound** media are not handled yet
-  (outbound voice/media needs the CDN upload flow).
+- **Outbound voice** (DM replies to a voice note): the reply is synthesized via
+  the agent's TTS (`audio/pcm` → 24 kHz mono), encoded to SILK, uploaded to the
+  WeChat C2C CDN (`getuploadurl` + AES-128-ECB encrypt), and sent as a native
+  voice note. Anything unspeakable (code blocks, very long text) or any failure
+  falls back to a text reply. Group replies always stay text. **Note:** the
+  reference plugin has no outbound-voice path, so the voice-item shape is
+  unverified against the live protocol and may need adjustment.
+- Inbound file / video and other outbound media (images/files) are not handled
+  yet.
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;
   the admin UI renders it with its own QR-code library.
 - No typing indicators, no multi-account juggling.
