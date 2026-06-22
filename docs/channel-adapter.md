@@ -21,7 +21,7 @@ Not bundled in the CLI. Operators install them with `hermit channel install <pkg
 | Platform | Package | Connection |
 |----------|---------|------------|
 | Signal | `@openhermit/channel-signal` | signal-cli-rest-api WebSocket (`MODE=json-rpc`); QR-link setup wizard; text + media (files/images, audio transcribed) |
-| WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text + inbound images |
+| WeChat (personal) | `@openhermit/channel-wechat` | iLink long-poll (`getUpdates`) — text + inbound images + inbound voice (SILK→STT) |
 | WhatsApp | `@openhermit/channel-whatsapp` | WhatsApp Web via Baileys; QR setup wizard — text + media (image/video/document/voice) |
 
 External plugins follow the same manifest contract as bundled ones — there is no special-case loading path. Adding a new external plugin requires no gateway code change, only a config edit and a restart.
@@ -187,7 +187,8 @@ WeChat (external plugin):
 
 - iLink long-poll loop on `bot_token` — no per-message webhook
 - QR-link setup wizard exchanges scan+confirmation for `bot_token` + IDC-pinned `base_url`; both persist on the channel row
-- inbound images: photos are downloaded from the WeChat C2C CDN and AES-128-ECB decrypted, then uploaded as session attachments (vision input); over the 25 MiB cap they are skipped. Inbound voice/file/video and all outbound media are not handled yet
+- inbound images: photos are downloaded from the WeChat C2C CDN and AES-128-ECB decrypted, then uploaded as session attachments (vision input); over the 25 MiB cap they are skipped
+- inbound voice: SILK voice notes are downloaded + decrypted, transcoded to WAV via `silk-wasm`, and transcribed via the agent's STT (prefixed with a `[Voice message, transcribed.]` marker); WeChat's own `voice_item.text` transcript is used directly when present. Inbound file/video and all outbound media are not handled yet
 - no group filtering
 - `errcode === -14` from `getUpdates` is treated as long-poll cursor reset, **not** auth failure
 

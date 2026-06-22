@@ -24,7 +24,7 @@ A **channel** is a transport for messages: the CLI, the web UI, a Telegram bot, 
 
 **Installable as npm packages** (add via `hermit channel install`):
 
-- **WeChat (personal)** — `@openhermit/channel-wechat`. Pair an existing personal WeChat account with the agent using a QR-scan wizard. Text-only v0.
+- **WeChat (personal)** — `@openhermit/channel-wechat`. Pair an existing personal WeChat account with the agent using a QR-scan wizard. Text, inbound images, and inbound voice (transcribed).
 - **WhatsApp** — `@openhermit/channel-whatsapp`. Link a WhatsApp account through WhatsApp Web / Linked Devices using a QR-scan wizard. Supports text plus media (images/video/documents as attachments; voice notes transcribed).
 
 Each non-CLI channel needs a credential (a bot token, app secret, or linked-device auth state). Operator-entered tokens are stored as secrets — see [Chapter 18](18-secrets.md). Channel-owned auth state, such as WhatsApp Web credentials, is stored in encrypted channel credential rows.
@@ -74,7 +74,7 @@ A gateway restart (`hermit gateway stop && hermit gateway start`) is required fo
 - Install with `hermit channel install @openhermit/channel-wechat`, then restart the gateway.
 - Pair the bot through *Manage → Channels → Add channel → WeChat*: the UI renders a QR code that you scan with the WeChat mobile app and confirm. The setup wizard exchanges the scan + confirmation for a long-lived `bot_token` and IDC-pinned `base_url`, which the gateway stores on the channel row.
 - Restarts preserve the login: the gateway reloads `bot_token` from the channel row and resumes the iLink long-poll without re-scanning. You only need to re-pair if you unlink the bot from inside the WeChat client.
-- Media: inbound images are decrypted from the WeChat CDN and uploaded to the agent as vision input (over 25 MiB skipped). Inbound voice/file/video and all outbound media aren't handled yet. No group filtering.
+- Media: inbound images are decrypted from the WeChat CDN and uploaded to the agent as vision input (over 25 MiB skipped). Inbound voice notes are decrypted, transcoded from SILK to WAV via `silk-wasm`, and transcribed via the agent's STT (WeChat's own transcript is used when present). Inbound file/video and all outbound media aren't handled yet. No group filtering.
 
 ### WhatsApp (external plugin)
 

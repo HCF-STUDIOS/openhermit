@@ -61,6 +61,38 @@ export interface ImageItem {
   hd_size?: number;
 }
 
+/** `VoiceItem.encode_type` — audio codec. WeChat voice notes are SILK (6). */
+export const VoiceEncodeType = {
+  PCM: 1,
+  ADPCM: 2,
+  FEATURE: 3,
+  SPEEX: 4,
+  AMR: 5,
+  SILK: 6,
+  MP3: 7,
+  OGG_SPEEX: 8,
+} as const;
+
+/**
+ * `MessageItem.voice_item` — inbound voice note. Shape ported from Tencent's
+ * MIT `openclaw-weixin` (`src/api/types.ts`). Unlike `ImageItem`, voice carries
+ * its AES key only inside `media.aes_key` (base64) — there is no top-level hex
+ * `aeskey`. WeChat sometimes pre-transcribes the clip into `text`.
+ */
+export interface VoiceItem {
+  /** CDN reference to the encrypted audio bytes. */
+  media?: CDNMedia;
+  /** Codec, see {@link VoiceEncodeType}; WeChat voice notes are `SILK` (6). */
+  encode_type?: number;
+  bits_per_sample?: number;
+  /** Sample rate in Hz (WeChat SILK voice notes are 24000). */
+  sample_rate?: number;
+  /** Clip length in milliseconds. */
+  playtime?: number;
+  /** WeChat-side speech-to-text result, when present. */
+  text?: string;
+}
+
 export interface MessageItem {
   type?: number;
   create_time_ms?: number;
@@ -69,7 +101,8 @@ export interface MessageItem {
   msg_id?: string;
   text_item?: TextItem;
   image_item?: ImageItem;
-  /** voice_item/file_item/video_item remain untyped until later media phases. */
+  voice_item?: VoiceItem;
+  /** file_item/video_item remain untyped until later media phases. */
   [key: string]: unknown;
 }
 

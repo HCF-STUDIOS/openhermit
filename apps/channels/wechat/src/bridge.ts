@@ -17,8 +17,18 @@ import type {
 import { stripSilenceTokens } from '@openhermit/shared';
 
 import { sendMessage } from './ilink/api.js';
-import { MessageItemType, MessageType, type WeixinMessage } from './ilink/types.js';
+import {
+  MessageItemType,
+  MessageType,
+  type ImageItem,
+  type VoiceItem,
+  type WeixinMessage,
+} from './ilink/types.js';
 import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.js';
+import { SILK_SAMPLE_RATE, silkToWav } from './ilink/silk.js';
+
+/** Marker prepended to a transcribed voice note so the agent knows the user spoke. */
+const VOICE_MARKER = '[Voice message, transcribed.]';
 
 /** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
@@ -32,6 +42,8 @@ interface TurnResult {
 interface ResolvedInbound {
   text: string;
   attachments?: { type: 'file'; id: string }[];
+  /** True when at least one voice note contributed (transcribed) text. */
+  wasVoice?: boolean;
 }
 
 export interface WechatBridgeRuntime {
@@ -166,50 +178,113 @@ export class WechatBridge implements ChannelOutbound {
    * input). Text/captions are kept. Oversized or failed downloads are skipped.
    */
   private async resolveInbound(sessionId: string, msg: WeixinMessage): Promise<ResolvedInbound> {
-    const text = this.extractText(msg) ?? '';
+    const parts: string[] = [];
+    const base = this.extractText(msg);
+    if (base) parts.push(base);
+
     const ids: { type: 'file'; id: string }[] = [];
+    let wasVoice = false;
 
     for (const item of msg.item_list ?? []) {
-      if (item.type !== MessageItemType.IMAGE || !item.image_item) continue;
-      const img = item.image_item;
-      const media = img.media;
-      if (!media || (!media.full_url && !media.encrypt_query_param)) continue;
-
-      // Prefer the hex `aeskey` (raw 16-byte key = 32 hex chars), but only when
-      // it's actually valid hex — otherwise Buffer.from(...,'hex') would
-      // silently truncate to a wrong key. Fall back to the base64 media.aes_key.
-      let aesKeyBase64: string | undefined;
-      const hexKey = img.aeskey?.trim();
-      if (hexKey && /^[0-9a-fA-F]{32}$/.test(hexKey)) {
-        aesKeyBase64 = Buffer.from(hexKey, 'hex').toString('base64');
-      } else {
-        if (hexKey) this.log('image aeskey is not valid 16-byte hex; falling back to media.aes_key');
-        aesKeyBase64 = media.aes_key;
-      }
-      if (!aesKeyBase64) {
-        this.log('image item missing aes key; skipping');
-        continue;
-      }
-
-      try {
-        const url = resolveCdnUrl(media.encrypt_query_param, media.full_url, CDN_BASE_URL);
-        const bytes = await downloadAndDecrypt({ url, aesKeyBase64, maxBytes: MAX_MEDIA_BYTES });
-        const blob = new Blob([bytes as unknown as BlobPart], { type: 'image/jpeg' });
-        const uploaded = await this.client.uploadAttachment(sessionId, blob, 'image.jpg');
-        ids.push({ type: 'file', id: uploaded.id! });
-      } catch (err) {
-        this.log(`image download/decrypt failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (item.type === MessageItemType.IMAGE && item.image_item) {
+        const id = await this.resolveImage(sessionId, item.image_item);
+        if (id) ids.push(id);
+      } else if (item.type === MessageItemType.VOICE && item.voice_item) {
+        const transcript = await this.resolveVoice(item.voice_item);
+        if (transcript) {
+          parts.push(transcript);
+          wasVoice = true;
+        }
       }
     }
 
-    return { text, ...(ids.length > 0 ? { attachments: ids } : {}) };
+    return {
+      text: parts.join('\n'),
+      wasVoice,
+      ...(ids.length > 0 ? { attachments: ids } : {}),
+    };
+  }
+
+  /** Download + decrypt an inbound image and upload it as a session attachment. */
+  private async resolveImage(
+    sessionId: string,
+    img: ImageItem,
+  ): Promise<{ type: 'file'; id: string } | undefined> {
+    const media = img.media;
+    if (!media || (!media.full_url && !media.encrypt_query_param)) return undefined;
+
+    // Prefer the hex `aeskey` (raw 16-byte key = 32 hex chars), but only when
+    // it's actually valid hex — otherwise Buffer.from(...,'hex') would
+    // silently truncate to a wrong key. Fall back to the base64 media.aes_key.
+    let aesKeyBase64: string | undefined;
+    const hexKey = img.aeskey?.trim();
+    if (hexKey && /^[0-9a-fA-F]{32}$/.test(hexKey)) {
+      aesKeyBase64 = Buffer.from(hexKey, 'hex').toString('base64');
+    } else {
+      if (hexKey) this.log('image aeskey is not valid 16-byte hex; falling back to media.aes_key');
+      aesKeyBase64 = media.aes_key;
+    }
+    if (!aesKeyBase64) {
+      this.log('image item missing aes key; skipping');
+      return undefined;
+    }
+
+    try {
+      const url = resolveCdnUrl(media.encrypt_query_param, media.full_url, CDN_BASE_URL);
+      const bytes = await downloadAndDecrypt({ url, aesKeyBase64, maxBytes: MAX_MEDIA_BYTES });
+      const blob = new Blob([bytes as unknown as BlobPart], { type: 'image/jpeg' });
+      const uploaded = await this.client.uploadAttachment(sessionId, blob, 'image.jpg');
+      return { type: 'file', id: uploaded.id! };
+    } catch (err) {
+      this.log(`image download/decrypt failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolve an inbound voice note to transcribed text. Prefers WeChat's own
+   * transcript when present; otherwise downloads + decrypts the SILK clip,
+   * transcodes it to WAV, and runs the agent's STT. Returns `undefined` on any
+   * failure so the turn proceeds with whatever other content it has.
+   */
+  private async resolveVoice(voice: VoiceItem): Promise<string | undefined> {
+    // WeChat sometimes pre-transcribes the clip — use it and skip the download.
+    const pre = voice.text?.trim();
+    if (pre) return pre;
+
+    const media = voice.media;
+    if (!media || (!media.full_url && !media.encrypt_query_param) || !media.aes_key) {
+      this.log('voice item missing CDN ref or aes key; skipping');
+      return undefined;
+    }
+
+    try {
+      const url = resolveCdnUrl(media.encrypt_query_param, media.full_url, CDN_BASE_URL);
+      const silk = await downloadAndDecrypt({
+        url,
+        aesKeyBase64: media.aes_key,
+        maxBytes: MAX_MEDIA_BYTES,
+      });
+      const decoded = await silkToWav(silk, voice.sample_rate || SILK_SAMPLE_RATE);
+      if (!decoded) {
+        this.log('voice silk decode failed; skipping');
+        return undefined;
+      }
+      const stt = await this.client.transcribeAudio({ bytes: decoded.wav, mimeType: 'audio/wav' });
+      return stt.text.trim() || undefined;
+    } catch (err) {
+      this.log(`voice transcription failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
   }
 
   private async handleMessageInner(msg: WeixinMessage, peer: string): Promise<void> {
-    const hasImage = (msg.item_list ?? []).some(
-      (item) => item.type === MessageItemType.IMAGE && item.image_item,
+    const hasMedia = (msg.item_list ?? []).some(
+      (item) =>
+        (item.type === MessageItemType.IMAGE && item.image_item) ||
+        (item.type === MessageItemType.VOICE && item.voice_item),
     );
-    if (!this.extractText(msg) && !hasImage) return;
+    if (!this.extractText(msg) && !hasMedia) return;
 
     // Snapshot this turn's context token up front so the reply echoes the
     // token of the message it's answering, even if a newer message for the
@@ -224,6 +299,11 @@ export class WechatBridge implements ChannelOutbound {
     // attachments (images become vision input). Text/captions are kept.
     const resolved = await this.resolveInbound(sessionId, msg);
     if (!resolved.text && !resolved.attachments) return;
+
+    // Tag transcribed voice so the agent knows the user spoke (and, once
+    // outbound voice lands, that a spoken reply is appropriate).
+    const agentText =
+      resolved.wasVoice && resolved.text ? `${VOICE_MARKER}\n\n${resolved.text}` : resolved.text;
 
     const senderUserId = msg.from_user_id?.trim();
     const senderPayload = senderUserId
@@ -242,7 +322,7 @@ export class WechatBridge implements ChannelOutbound {
     const postOpts = !isGroup && senderUserId ? { channelUserId: senderUserId } : undefined;
 
     const postResult = await this.client.postMessage(sessionId, {
-      text: resolved.text,
+      text: agentText,
       mentioned: !isGroup,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       ...senderPayload,
