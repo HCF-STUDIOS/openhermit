@@ -20,6 +20,7 @@ import { sendMessage } from './ilink/api.js';
 import {
   MessageItemType,
   MessageType,
+  VoiceEncodeType,
   type ImageItem,
   type VoiceItem,
   type WeixinMessage,
@@ -251,6 +252,12 @@ export class WechatBridge implements ChannelOutbound {
     // WeChat sometimes pre-transcribes the clip — use it and skip the download.
     const pre = voice.text?.trim();
     if (pre) return pre;
+
+    // We only decode SILK; any other codec would just fail after download.
+    if (voice.encode_type !== undefined && voice.encode_type !== VoiceEncodeType.SILK) {
+      this.log(`voice encode_type ${voice.encode_type} is not SILK; skipping`);
+      return undefined;
+    }
 
     const media = voice.media;
     if (!media || (!media.full_url && !media.encrypt_query_param) || !media.aes_key) {
