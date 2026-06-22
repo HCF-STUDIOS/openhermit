@@ -11,7 +11,7 @@
  * `encrypt_query_param` the client assembles against a CDN base URL, plus an
  * AES key. Bytes are AES-128-ECB encrypted and must be decrypted after fetch.
  */
-import { createDecipheriv } from 'node:crypto';
+import { createCipheriv, createDecipheriv } from 'node:crypto';
 
 /** Default WeChat C2C CDN base, overridable via env. Only used when a media
  * item lacks a server-provided `full_url`. */
@@ -22,6 +22,17 @@ export const CDN_BASE_URL =
 export function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
   const decipher = createDecipheriv('aes-128-ecb', key, null);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+/** Encrypt AES-128-ECB (PKCS7 padding) — for outbound CDN uploads. */
+export function encryptAesEcb(plaintext: Buffer, key: Buffer): Buffer {
+  const cipher = createCipheriv('aes-128-ecb', key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+/** Ciphertext size of `n` plaintext bytes under AES-128-ECB + PKCS7 padding. */
+export function aesEcbPaddedSize(n: number): number {
+  return Math.ceil((n + 1) / 16) * 16;
 }
 
 /**

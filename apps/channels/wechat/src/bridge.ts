@@ -26,10 +26,29 @@ import {
   type WeixinMessage,
 } from './ilink/types.js';
 import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.js';
-import { SILK_SAMPLE_RATE, silkToWav } from './ilink/silk.js';
+import { SILK_SAMPLE_RATE, silkToWav, toSilk } from './ilink/silk.js';
+import { uploadVoiceToCdn } from './ilink/upload.js';
 
-/** Marker prepended to a transcribed voice note so the agent knows the user spoke. */
-const VOICE_MARKER = '[Voice message, transcribed.]';
+/**
+ * Marker prepended to a transcribed voice note. It both tells the agent the
+ * user spoke and asks for a speech-friendly reply, since when the inbound was
+ * voice we try to answer with a voice note.
+ */
+const VOICE_MARKER =
+  '[Voice message, transcribed. Your reply will be converted to speech, so respond in ' +
+  'plain prose without code blocks, markdown formatting, or long lists.]';
+
+/** Cap on text we'll synthesize into a voice reply — longer stays text. */
+const VOICE_MAX_TEXT_LENGTH = 1000;
+
+/** Whether a reply is fit for voice delivery (mirrors the Telegram bridge). */
+const shouldSpeak = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.length > VOICE_MAX_TEXT_LENGTH) return false;
+  if (trimmed.includes('```')) return false;
+  return true;
+};
 
 /** Gateway-enforced attachment cap (25 MiB). Skip oversized media early. */
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
@@ -137,6 +156,88 @@ export class WechatBridge implements ChannelOutbound {
       const message = err instanceof Error ? err.message : String(err);
       this.log(`failed to send message to ${toUserId}: ${message}`);
       return { success: false, error: message };
+    }
+  }
+
+  /**
+   * Synthesize `text` to speech, encode it to SILK, upload it to the WeChat
+   * CDN, and send it as a native voice note. Returns `true` on success; on any
+   * failure (TTS unavailable, unspeakable content, encode/upload/send error)
+   * it returns `false` so the caller falls back to a text reply.
+   *
+   * NOTE: the reference `openclaw-weixin` has no outbound voice path, so the
+   * `voice_item` shape and the SILK encode params are unverified against the
+   * live protocol. The graceful fallback keeps a wrong guess from breaking the
+   * conversation — worst case the user gets text instead of a voice note.
+   */
+  private async trySendVoiceReply(
+    toUserId: string,
+    text: string,
+    turnContextToken?: string,
+  ): Promise<boolean> {
+    if (!shouldSpeak(text)) return false;
+    try {
+      // ElevenLabs `audio/pcm` → pcm_24000 (mono s16le, 24 kHz) — exactly what
+      // silk-wasm's encoder wants, and matches WeChat's SILK sample rate.
+      const tts = await this.client.synthesizeAudio({ text, outputMimeType: 'audio/pcm' });
+      const encoded = await toSilk(tts.bytes, SILK_SAMPLE_RATE);
+      if (!encoded) {
+        this.log('voice reply: silk encode failed; falling back to text');
+        return false;
+      }
+
+      const uploaded = await uploadVoiceToCdn({
+        baseUrl: this.runtime.baseUrl,
+        token: this.runtime.botToken,
+        bytes: encoded.silk,
+        toUserId,
+      });
+
+      return await this.sendVoice(toUserId, uploaded, encoded.durationMs, turnContextToken);
+    } catch (err) {
+      this.log(`voice reply failed for ${toUserId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Send an already-uploaded SILK clip as a WeChat voice note. */
+  private async sendVoice(
+    toUserId: string,
+    uploaded: { downloadEncryptedQueryParam: string; aeskeyHex: string },
+    durationMs: number,
+    turnContextToken?: string,
+  ): Promise<boolean> {
+    const contextToken = turnContextToken ?? this.peerContextTokens.get(toUserId);
+    const voiceItem: VoiceItem = {
+      media: {
+        encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+        // Match how images encode the key on outbound: base64 of the hex string.
+        aes_key: Buffer.from(uploaded.aeskeyHex, 'ascii').toString('base64'),
+        encrypt_type: 1,
+      },
+      encode_type: VoiceEncodeType.SILK,
+      sample_rate: SILK_SAMPLE_RATE,
+      bits_per_sample: 16,
+      playtime: Math.round(durationMs),
+    };
+    const msg: WeixinMessage = {
+      to_user_id: toUserId,
+      message_type: MessageType.BOT,
+      client_id: randomUUID(),
+      create_time_ms: Date.now(),
+      item_list: [{ type: MessageItemType.VOICE, voice_item: voiceItem }],
+      ...(contextToken ? { context_token: contextToken } : {}),
+    };
+    try {
+      await sendMessage({
+        baseUrl: this.runtime.baseUrl,
+        token: this.runtime.botToken,
+        body: { msg },
+      });
+      return true;
+    } catch (err) {
+      this.log(`failed to send voice to ${toUserId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
@@ -346,7 +447,17 @@ export class WechatBridge implements ChannelOutbound {
     if (replyText) {
       const stripped = stripSilenceTokens(replyText);
       if (!stripped.isSilent) {
-        await this.sendText(peer, stripped.hadToken ? stripped.text : replyText, turnContextToken);
+        const outText = stripped.hadToken ? stripped.text : replyText;
+        // When the user sent voice (DM only), answer with a voice note; fall
+        // back to text if TTS/encode/upload/send fails or the text isn't
+        // speakable. Group replies always stay text.
+        const sentVoice =
+          resolved.wasVoice && !isGroup
+            ? await this.trySendVoiceReply(peer, outText, turnContextToken)
+            : false;
+        if (!sentVoice) {
+          await this.sendText(peer, outText, turnContextToken);
+        }
       }
     }
   }

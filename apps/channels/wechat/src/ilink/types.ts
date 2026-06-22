@@ -143,6 +143,45 @@ export interface SendMessageReq {
   msg?: WeixinMessage;
 }
 
+/** `GetUploadUrlReq.media_type` — kind of media being uploaded to the CDN. */
+export const UploadMediaType = {
+  IMAGE: 1,
+  VIDEO: 2,
+  FILE: 3,
+  VOICE: 4,
+} as const;
+
+/**
+ * Request a CDN upload slot (`ilink/bot/getuploadurl`). The bytes are
+ * AES-128-ECB encrypted before upload, so both the plaintext size/md5 and the
+ * ciphertext size are declared. Shape ported from Tencent's MIT `openclaw-weixin`
+ * (`src/api/types.ts`).
+ */
+export interface GetUploadUrlReq {
+  filekey?: string;
+  media_type?: number;
+  to_user_id?: string;
+  /** Plaintext size in bytes. */
+  rawsize?: number;
+  /** Plaintext MD5 (hex). */
+  rawfilemd5?: string;
+  /** Ciphertext size after AES-128-ECB + PKCS7 padding. */
+  filesize?: number;
+  no_need_thumb?: boolean;
+  /** Encryption key as a hex string (32 chars / 16 bytes). */
+  aeskey?: string;
+}
+
+export interface GetUploadUrlResp {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+  upload_param?: string;
+  thumb_upload_param?: string;
+  /** Complete upload URL; preferred over assembling from `upload_param`. */
+  upload_full_url?: string;
+}
+
 export interface NotifyStartResp {
   ret?: number;
   errmsg?: string;
