@@ -1,6 +1,6 @@
 {
   "name": "@openhermit/channel-wechat",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenHermit channel plugin for personal WeChat (Weixin) via Tencent iLink. Text-only v0.",
   "license": "MIT",
   "type": "module",

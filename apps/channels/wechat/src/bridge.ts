@@ -148,11 +148,17 @@ export class WechatBridge implements ChannelOutbound {
         }
       : {};
 
+    // DMs: surface the caller via `x-channel-user-id` so the runtime resolves a
+    // session-level channel identity (currentChannel/currentChannelUserId).
+    // Without it, tools like identity_link_request fail with "requires a known
+    // caller channel". Groups stay per-message (no session-level claim).
+    const postOpts = !isGroup && senderUserId ? { channelUserId: senderUserId } : undefined;
+
     const postResult = await this.client.postMessage(sessionId, {
       text,
       mentioned: !isGroup,
       ...senderPayload,
-    });
+    }, postOpts);
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
@@ -208,6 +214,10 @@ export class WechatBridge implements ChannelOutbound {
     if (!isGroup && msg.from_user_id) metadata.wechat_peer_id = msg.from_user_id;
     if (msg.from_user_id) metadata.wechat_from_user_id = msg.from_user_id;
 
+    // DMs: claim a session-level caller identity (see handleMessageInner).
+    const senderUserId = msg.from_user_id?.trim();
+    const openOpts = !isGroup && senderUserId ? { channelUserId: senderUserId } : undefined;
+
     await this.client.openSession({
       sessionId,
       source: {
@@ -217,7 +227,7 @@ export class WechatBridge implements ChannelOutbound {
         type: isGroup ? 'group' : 'direct',
       },
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-    });
+    }, openOpts);
   }
 
   private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
