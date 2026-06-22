@@ -11,18 +11,20 @@ gateway-managed OpenHermit agent over Tencent's **iLink** HTTP protocol.
   become vision input). Attachments over the 25 MiB cap are skipped. The CDN
   base defaults to `https://novac2c.cdn.weixin.qq.com/c2c`, overridable via
   `OPENHERMIT_WECHAT_CDN_BASE_URL`; a server-provided `full_url` is preferred.
-- **Inbound voice**: SILK voice notes are downloaded + decrypted, transcoded to
-  WAV via [`silk-wasm`](https://www.npmjs.com/package/silk-wasm), and transcribed
-  through the agent's STT (the transcript is prefixed with a `[Voice message,
-  transcribed.]` marker). When WeChat already supplies its own transcript
-  (`voice_item.text`), that is used directly and the download is skipped.
+- **Inbound voice**: WeChat usually pre-transcribes voice notes and ships the
+  text in `voice_item.text`, which is used directly (prefixed with a `[Voice
+  message, transcribed.]` marker). If a SILK clip arrives without a transcript
+  it is downloaded, decrypted, transcoded to WAV via
+  [`silk-wasm`](https://www.npmjs.com/package/silk-wasm), and sent through the
+  agent's STT; non-SILK codecs are skipped.
 - **Outbound voice** (DM replies to a voice note): the reply is synthesized via
-  the agent's TTS (`audio/pcm` → 24 kHz mono), encoded to SILK, uploaded to the
-  WeChat C2C CDN (`getuploadurl` + AES-128-ECB encrypt), and sent as a native
-  voice note. Anything unspeakable (code blocks, very long text) or any failure
-  falls back to a text reply. Group replies always stay text. **Note:** the
-  reference plugin has no outbound-voice path, so the voice-item shape is
-  unverified against the live protocol and may need adjustment.
+  the agent's TTS as **Ogg/Opus @ 48 kHz** (`audio/ogg`), uploaded to the WeChat
+  C2C CDN (`getuploadurl` media_type=VOICE + AES-128-ECB encrypt), and sent as a
+  voice item with `encode_type: 8` (Ogg/Opus) — the format WeChat renders for
+  bot-sent voice, matching Tencent's own `openclaw-weixin` `voice-outbound.ts`.
+  (SILK is the QQ format and is silently dropped by iLink on the bot→user
+  direction.) Anything unspeakable (code blocks, very long text) or any failure
+  falls back to a text reply. Group replies always stay text.
 - Inbound file / video and other outbound media (images/files) are not handled
   yet.
 - QR-link wizard (`ChannelSetup`) returns the QR URL as a plain string;

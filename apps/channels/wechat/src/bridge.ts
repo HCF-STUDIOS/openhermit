@@ -26,7 +26,8 @@ import {
   type WeixinMessage,
 } from './ilink/types.js';
 import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.js';
-import { SILK_SAMPLE_RATE, silkToWav, toSilk } from './ilink/silk.js';
+import { SILK_SAMPLE_RATE, silkToWav } from './ilink/silk.js';
+import { oggOpusPlaytimeMs } from './ilink/opus.js';
 import { uploadVoiceToCdn } from './ilink/upload.js';
 
 /**
@@ -160,15 +161,16 @@ export class WechatBridge implements ChannelOutbound {
   }
 
   /**
-   * Synthesize `text` to speech, encode it to SILK, upload it to the WeChat
-   * CDN, and send it as a native voice note. Returns `true` on success; on any
-   * failure (TTS unavailable, unspeakable content, encode/upload/send error)
-   * it returns `false` so the caller falls back to a text reply.
+   * Synthesize `text` to speech as Ogg/Opus, upload it to the WeChat CDN, and
+   * send it as a native voice note. Returns `true` on success; on any failure
+   * (TTS unavailable, unspeakable content, upload/send error) it returns
+   * `false` so the caller falls back to a text reply.
    *
-   * NOTE: the reference `openclaw-weixin` has no outbound voice path, so the
-   * `voice_item` shape and the SILK encode params are unverified against the
-   * live protocol. The graceful fallback keeps a wrong guess from breaking the
-   * conversation — worst case the user gets text instead of a voice note.
+   * WeChat (via iLink) renders bot-sent voice as Ogg/Opus @ 48 kHz
+   * (`encode_type` 8), matching Tencent's own `openclaw-weixin`
+   * `voice-outbound.ts`. (SILK — the QQ format — is silently dropped on the
+   * bot→user direction.) ElevenLabs emits `audio/ogg` as opus_48000, so no
+   * local transcode is needed.
    */
   private async trySendVoiceReply(
     toUserId: string,
@@ -177,38 +179,35 @@ export class WechatBridge implements ChannelOutbound {
   ): Promise<boolean> {
     if (!shouldSpeak(text)) return false;
     try {
-      // ElevenLabs `audio/pcm` → pcm_24000 (mono s16le, 24 kHz) — exactly what
-      // silk-wasm's encoder wants, and matches WeChat's SILK sample rate.
-      const tts = await this.client.synthesizeAudio({ text, outputMimeType: 'audio/pcm' });
-      const encoded = await toSilk(tts.bytes, SILK_SAMPLE_RATE);
-      if (!encoded) {
-        this.log('voice reply: silk encode failed; falling back to text');
-        return false;
-      }
+      // ElevenLabs `audio/ogg` → opus_48000 (Ogg/Opus, mono 48 kHz) — the
+      // format WeChat plays for bot-sent voice notes.
+      const tts = await this.client.synthesizeAudio({ text, outputMimeType: 'audio/ogg' });
+      const bytes = Buffer.from(tts.bytes);
+      const playtimeMs = oggOpusPlaytimeMs(bytes) ?? 0;
 
       const uploaded = await uploadVoiceToCdn({
         baseUrl: this.runtime.baseUrl,
         token: this.runtime.botToken,
-        bytes: encoded.silk,
+        bytes,
         toUserId,
       });
       this.log(
-        `voice reply: silk=${encoded.silk.byteLength}B dur=${Math.round(encoded.durationMs)}ms ` +
+        `voice reply: opus=${bytes.byteLength}B playtime=${playtimeMs}ms ` +
           `uploaded ref=${uploaded.downloadEncryptedQueryParam.length}ch`,
       );
 
-      return await this.sendVoice(toUserId, uploaded, encoded.durationMs, turnContextToken);
+      return await this.sendVoice(toUserId, uploaded, playtimeMs, turnContextToken);
     } catch (err) {
       this.log(`voice reply failed for ${toUserId}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
-  /** Send an already-uploaded SILK clip as a WeChat voice note. */
+  /** Send an already-uploaded Ogg/Opus clip as a WeChat voice note. */
   private async sendVoice(
     toUserId: string,
     uploaded: { downloadEncryptedQueryParam: string; aeskeyHex: string },
-    durationMs: number,
+    playtimeMs: number,
     turnContextToken?: string,
   ): Promise<boolean> {
     const contextToken = turnContextToken ?? this.peerContextTokens.get(toUserId);
@@ -219,10 +218,9 @@ export class WechatBridge implements ChannelOutbound {
         aes_key: Buffer.from(uploaded.aeskeyHex, 'ascii').toString('base64'),
         encrypt_type: 1,
       },
-      encode_type: VoiceEncodeType.SILK,
-      sample_rate: SILK_SAMPLE_RATE,
-      bits_per_sample: 16,
-      playtime: Math.round(durationMs),
+      encode_type: VoiceEncodeType.OGG_SPEEX,
+      sample_rate: 48_000,
+      ...(playtimeMs > 0 ? { playtime: playtimeMs } : {}),
     };
     const msg: WeixinMessage = {
       to_user_id: toUserId,
@@ -363,29 +361,8 @@ export class WechatBridge implements ChannelOutbound {
    * failure so the turn proceeds with whatever other content it has.
    */
   private async resolveVoice(voice: VoiceItem): Promise<string | undefined> {
-    // DIAGNOSTIC: log the exact inbound voice_item shape WeChat produces so we
-    // can mirror it for outbound. Big/secret fields are summarized by length.
-    const m = voice.media ?? {};
-    this.log(
-      'inbound voice_item: ' +
-        JSON.stringify({
-          keys: Object.keys(voice),
-          encode_type: voice.encode_type,
-          sample_rate: voice.sample_rate,
-          bits_per_sample: voice.bits_per_sample,
-          playtime: voice.playtime,
-          hasText: Boolean(voice.text),
-          media: {
-            keys: Object.keys(m),
-            encrypt_type: m.encrypt_type,
-            full_url_len: m.full_url?.length ?? 0,
-            eqp_len: m.encrypt_query_param?.length ?? 0,
-            aes_key_len: m.aes_key?.length ?? 0,
-          },
-        }),
-    );
-
-    // WeChat sometimes pre-transcribes the clip — use it and skip the download.
+    // WeChat sometimes pre-transcribes the clip (voice notes are SPEEX, which
+    // we can't decode locally) — use that transcript and skip the download.
     const pre = voice.text?.trim();
     if (pre) return pre;
 
