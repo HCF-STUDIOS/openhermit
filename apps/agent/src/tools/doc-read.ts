@@ -42,8 +42,7 @@ const MAX_RENDER_PAGES = 10;
 const MAX_XLSX_SHEETS = 50;
 const MAX_XLSX_ROWS_PER_SHEET = 5000;
 // Cache Tesseract's downloaded traineddata in a writable temp dir, not the process cwd.
-const TESSDATA_CACHE =
-  process.env.OPENHERMIT_TESSDATA_CACHE ?? path.join(os.tmpdir(), 'openhermit-tessdata');
+const TESSDATA_CACHE = path.join(os.tmpdir(), 'openhermit-tessdata');
 
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
