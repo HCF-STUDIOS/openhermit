@@ -90,7 +90,11 @@ async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
   return data.text.trim();
 }
 
-async function readPdf(buf: Buffer, maxRenderPages: number): Promise<Block[]> {
+async function readPdf(
+  buf: Buffer,
+  maxRenderPages: number,
+  ocr: ((png: Buffer) => Promise<string>) | null,
+): Promise<Block[]> {
   const pdf = await getDocumentProxy(new Uint8Array(buf));
   const { totalPages, text } = await extractText(pdf, { mergePages: false });
 
@@ -113,16 +117,19 @@ async function readPdf(buf: Buffer, maxRenderPages: number): Promise<Block[]> {
   let rendered = 0;
   for (const pageNo of scannedPages) {
     if (rendered >= maxRenderPages) break;
-    const png = await renderPageAsImage(pdf, pageNo, {
-      canvasImport: () => import('@napi-rs/canvas'),
-      scale: RENDER_SCALE,
-    });
-    blocks.push({
-      type: 'image',
-      data: Buffer.from(png).toString('base64'),
-      mimeType: 'image/png',
-    });
-    blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+    const png = Buffer.from(
+      await renderPageAsImage(pdf, pageNo, {
+        canvasImport: () => import('@napi-rs/canvas'),
+        scale: RENDER_SCALE,
+      }),
+    );
+    if (ocr) {
+      const text = await ocr(png);
+      blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
+    } else {
+      blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+      blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+    }
     rendered += 1;
   }
 
@@ -223,7 +230,7 @@ export const createDocReadTool = (
 
     try {
       if (isPdf(mime, name)) {
-        const blocks = await readPdf(buf, maxRenderPages);
+        const blocks = await readPdf(buf, maxRenderPages, ocr);
         return { content: blocks, details: { id: row.id, kind: 'pdf' } };
       }
       if (isDocx(mime, name)) {

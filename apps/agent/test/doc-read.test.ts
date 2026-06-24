@@ -154,6 +154,18 @@ function pngWithText(text: string): Buffer {
   return canvas.toBuffer('image/png');
 }
 
+test('doc_read does not return image blocks for a scanned PDF when the model is text-only', async () => {
+  const pdf = makePdf(' '); // no text layer -> scanned -> would render an image for vision
+  const ctx = ctxFor(pdf, 'application/pdf', 'scan.pdf');
+  (ctx as { modelSupportsImageInput?: boolean }).modelSupportsImageInput = false;
+  const res = await run(ctx, { attachment_id: 'att_1' });
+  assert.equal(res.details.kind, 'pdf');
+  assert.ok(
+    !res.content.some((b) => b.type === 'image'),
+    'text-only must OCR scanned pages to text, not return image blocks',
+  );
+}, { timeout: 120_000 });
+
 test('doc_read OCRs an image to text when the model is text-only', async () => {
   const png = pngWithText('OCR WORKS 123');
   const ctx = ctxFor(png, 'image/png', 'scan.png');
