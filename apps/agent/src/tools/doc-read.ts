@@ -3,6 +3,7 @@ import { ValidationError } from '@openhermit/shared';
 import mammoth from 'mammoth';
 import ExcelJS from 'exceljs';
 import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
+import { createWorker, type Worker } from 'tesseract.js';
 
 import {
   type PolicyAwareTool,
@@ -83,6 +84,11 @@ const cellToString = (value: unknown): string => {
 
 const csvEscape = (s: string): string =>
   /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+
+async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
+  const { data } = await worker.recognize(png as unknown as Buffer);
+  return data.text.trim();
+}
 
 async function readPdf(buf: Buffer, maxRenderPages: number): Promise<Block[]> {
   const pdf = await getDocumentProxy(new Uint8Array(buf));
@@ -204,6 +210,17 @@ export const createDocReadTool = (
     const buf = await streamToBuffer(stream, MAX_INPUT_BYTES);
     const maxRenderPages = Math.max(0, Math.floor(args.max_pages ?? DEFAULT_MAX_RENDER_PAGES));
 
+    // Text-only models can't read image blocks, so OCR image-bearing content to
+    // text instead. The worker is created on first use and torn down after.
+    const textOnly = context.modelSupportsImageInput === false;
+    let worker: Worker | null = null;
+    const ocr = textOnly
+      ? async (png: Buffer): Promise<string> => {
+          worker ??= await createWorker('eng');
+          return ocrPng(worker, png);
+        }
+      : null;
+
     try {
       if (isPdf(mime, name)) {
         const blocks = await readPdf(buf, maxRenderPages);
@@ -224,6 +241,13 @@ export const createDocReadTool = (
         };
       }
       if (isImageMime(mime)) {
+        if (ocr) {
+          const text = await ocr(buf);
+          return {
+            content: asTextContent(text || `(no text found in image ${name})`),
+            details: { id: row.id, kind: 'image-ocr', mimeType: mime },
+          };
+        }
         return {
           content: [
             { type: 'image' as const, data: buf.toString('base64'), mimeType: mime },
@@ -246,6 +270,8 @@ export const createDocReadTool = (
         ),
         details: { id: row.id, kind: 'extract-error' },
       };
+    } finally {
+      if (worker) await (worker as Worker).terminate();
     }
 
     return {

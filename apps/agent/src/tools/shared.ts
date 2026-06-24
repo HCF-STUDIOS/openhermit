@@ -58,6 +58,9 @@ export interface ToolContext {
   approvalRequestStore?: import('@openhermit/store').ApprovalRequestStore;
   attachmentStore?: AttachmentStore | undefined;
   attachmentStorage?: AttachmentStorage | undefined;
+  /** Whether the active model accepts image input. When false, doc_read OCRs
+   *  scanned pages / images to text instead of returning image blocks. */
+  modelSupportsImageInput?: boolean | undefined;
   /** Copy attachment bytes into the agent's default sandbox at the canonical
    *  per-session path. `attachment_fetch` uses this to self-heal when an
    *  attachment's `materializationState` is `pending` or `failed`. */

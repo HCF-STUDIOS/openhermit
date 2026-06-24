@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { test } from 'node:test';
 
 import ExcelJS from 'exceljs';
+import { createCanvas } from '@napi-rs/canvas';
 
 import { createDocReadTool } from '../src/tools/doc-read.js';
 import type { ToolContext } from '../src/tools/shared.js';
@@ -140,3 +141,25 @@ test('doc_read rejects an unknown attachment id', async () => {
     /no such attachment/,
   );
 });
+
+// A PNG containing rendered text, so OCR has something real to read.
+function pngWithText(text: string): Buffer {
+  const canvas = createCanvas(360, 120);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 360, 120);
+  ctx.fillStyle = '#000000';
+  ctx.font = '48px sans-serif';
+  ctx.fillText(text, 20, 75);
+  return canvas.toBuffer('image/png');
+}
+
+test('doc_read OCRs an image to text when the model is text-only', async () => {
+  const png = pngWithText('OCR WORKS 123');
+  const ctx = ctxFor(png, 'image/png', 'scan.png');
+  (ctx as { modelSupportsImageInput?: boolean }).modelSupportsImageInput = false;
+  const res = await run(ctx, { attachment_id: 'att_1' });
+  assert.equal(res.details.kind, 'image-ocr');
+  assert.ok(!res.content.some((b) => b.type === 'image'), 'text-only must not return an image block');
+  assert.match(textOf(res.content).toUpperCase(), /OCR WORKS/);
+}, { timeout: 120_000 });
