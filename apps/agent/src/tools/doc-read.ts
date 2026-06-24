@@ -4,6 +4,9 @@ import mammoth from 'mammoth';
 import ExcelJS from 'exceljs';
 import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
 import { createWorker, type Worker } from 'tesseract.js';
+import { mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   type PolicyAwareTool,
@@ -32,6 +35,13 @@ const DEFAULT_MAX_RENDER_PAGES = 5;
 // Below this many non-whitespace chars a page is treated as scanned and rendered for vision.
 const MIN_TEXT_CHARS_PER_PAGE = 8;
 const RENDER_SCALE = 2;
+// Bound work on untrusted documents so a huge/malicious file can't tie up the agent.
+const MAX_PDF_PAGES = 200;
+const MAX_XLSX_SHEETS = 50;
+const MAX_XLSX_ROWS_PER_SHEET = 5000;
+// Cache Tesseract's downloaded traineddata in a writable temp dir, not the process cwd.
+const TESSDATA_CACHE =
+  process.env.OPENHERMIT_TESSDATA_CACHE ?? path.join(os.tmpdir(), 'openhermit-tessdata');
 
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -91,75 +101,101 @@ async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
   return data.text.trim();
 }
 
+async function createOcrWorker(): Promise<Worker> {
+  await mkdir(TESSDATA_CACHE, { recursive: true });
+  return createWorker('eng', 1, { cachePath: TESSDATA_CACHE });
+}
+
 async function readPdf(
   buf: Buffer,
   maxRenderPages: number,
   ocr: ((png: Buffer) => Promise<string>) | null,
 ): Promise<Block[]> {
   const pdf = await getDocumentProxy(new Uint8Array(buf));
-  const { totalPages, text } = await extractText(pdf, { mergePages: false });
-
-  const textParts: string[] = [];
-  const scannedPages: number[] = [];
-  text.forEach((pageText, i) => {
-    const clean = (pageText ?? '').trim();
-    if (clean.replace(/\s/g, '').length >= MIN_TEXT_CHARS_PER_PAGE) {
-      textParts.push(`--- page ${i + 1} ---\n${clean}`);
-    } else {
-      scannedPages.push(i + 1);
+  try {
+    if (pdf.numPages > MAX_PDF_PAGES) {
+      return [{
+        type: 'text',
+        text: `This PDF has ${pdf.numPages} pages, exceeding doc_read's ${MAX_PDF_PAGES}-page limit. Use the sandbox_path with Read/Bash, or extract a smaller page range.`,
+      }];
     }
-  });
+    const { totalPages, text } = await extractText(pdf, { mergePages: false });
 
-  const blocks: Block[] = [];
-  if (textParts.length > 0) {
-    blocks.push({ type: 'text', text: textParts.join('\n\n') });
-  }
+    const textParts: string[] = [];
+    const scannedPages: number[] = [];
+    text.forEach((pageText, i) => {
+      const clean = (pageText ?? '').trim();
+      if (clean.replace(/\s/g, '').length >= MIN_TEXT_CHARS_PER_PAGE) {
+        textParts.push(`--- page ${i + 1} ---\n${clean}`);
+      } else {
+        scannedPages.push(i + 1);
+      }
+    });
 
-  let rendered = 0;
-  for (const pageNo of scannedPages) {
-    if (rendered >= maxRenderPages) break;
-    const png = Buffer.from(
-      await renderPageAsImage(pdf, pageNo, {
-        canvasImport: () => import('@napi-rs/canvas'),
-        scale: RENDER_SCALE,
-      }),
-    );
-    if (ocr) {
-      const text = await ocr(png);
-      blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
-    } else {
-      blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
-      blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+    const blocks: Block[] = [];
+    if (textParts.length > 0) {
+      blocks.push({ type: 'text', text: textParts.join('\n\n') });
     }
-    rendered += 1;
-  }
 
-  if (blocks.length === 0) {
-    blocks.push({
-      type: 'text',
-      text: `This PDF has ${totalPages} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`,
-    });
-  } else if (scannedPages.length > rendered) {
-    blocks.push({
-      type: 'text',
-      text: `(${scannedPages.length - rendered} more scanned page(s) not rendered; raise max_pages to see them.)`,
-    });
+    let rendered = 0;
+    for (const pageNo of scannedPages) {
+      if (rendered >= maxRenderPages) break;
+      const png = Buffer.from(
+        await renderPageAsImage(pdf, pageNo, {
+          canvasImport: () => import('@napi-rs/canvas'),
+          scale: RENDER_SCALE,
+        }),
+      );
+      if (ocr) {
+        const text = await ocr(png);
+        blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
+      } else {
+        blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+        blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+      }
+      rendered += 1;
+    }
+
+    if (blocks.length === 0) {
+      blocks.push({
+        type: 'text',
+        text: `This PDF has ${totalPages} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`,
+      });
+    } else if (scannedPages.length > rendered) {
+      blocks.push({
+        type: 'text',
+        text: `(${scannedPages.length - rendered} more scanned page(s) not rendered; raise max_pages to see them.)`,
+      });
+    }
+    return blocks;
+  } finally {
+    await pdf.destroy();
   }
-  return blocks;
 }
 
 async function readXlsx(buf: Buffer): Promise<string> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf as unknown as ArrayBuffer);
   const sheets: string[] = [];
+  let sheetCount = 0;
   wb.eachSheet((ws) => {
+    if (sheetCount >= MAX_XLSX_SHEETS) return;
+    sheetCount += 1;
     const lines: string[] = [];
+    let rows = 0;
+    let truncated = false;
     ws.eachRow({ includeEmpty: false }, (row) => {
+      if (rows >= MAX_XLSX_ROWS_PER_SHEET) { truncated = true; return; }
+      rows += 1;
       const values = Array.isArray(row.values) ? row.values.slice(1) : [];
       lines.push(values.map((v) => csvEscape(cellToString(v))).join(','));
     });
+    if (truncated) lines.push(`… (truncated at ${MAX_XLSX_ROWS_PER_SHEET} rows)`);
     sheets.push(`### ${ws.name}\n${lines.join('\n')}`);
   });
+  if (wb.worksheets.length > MAX_XLSX_SHEETS) {
+    sheets.push(`(… ${wb.worksheets.length - MAX_XLSX_SHEETS} more sheet(s) not shown)`);
+  }
   return sheets.join('\n\n');
 }
 
@@ -168,6 +204,8 @@ export const createDocReadTool = (
 ): PolicyAwareTool<typeof DocReadParams> => ({
   policy: { defaultGrants: [{ type: 'any' }] },
   name: 'doc_read',
+  // Heavy parsing on untrusted bytes — never run concurrently with other tool calls.
+  executionMode: 'sequential',
   label: 'Read Document',
   description:
     'Extract the contents of an uploaded document into the model context. Handles PDF, Word (.docx) and Excel (.xlsx) by pulling out their text, spreadsheets as CSV, and images directly. Scanned/image-only PDF pages are rendered to images so a multimodal model can read them. For plain text/code/JSON or other files, prefer attachment_fetch.',
@@ -224,7 +262,7 @@ export const createDocReadTool = (
     let worker: Worker | null = null;
     const ocr = textOnly
       ? async (png: Buffer): Promise<string> => {
-          worker ??= await createWorker('eng');
+          worker ??= await createOcrWorker();
           return ocrPng(worker, png);
         }
       : null;

@@ -10,3 +10,6 @@ dist/
 TODO.md
 apps/cli/public/
 pnpm-lock.yaml
+
+# Tesseract OCR language data (downloaded at runtime)
+*.traineddata
