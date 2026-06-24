@@ -32,16 +32,12 @@ type DocReadArgs = Static<typeof DocReadParams>;
 
 const MAX_INPUT_BYTES = 20 * 1024 * 1024;
 const DEFAULT_MAX_RENDER_PAGES = 5;
-// Below this many non-whitespace chars a page is treated as scanned and rendered for vision.
 const MIN_TEXT_CHARS_PER_PAGE = 8;
 const RENDER_SCALE = 2;
-// Bound work on untrusted documents so a huge/malicious file can't tie up the agent.
 const MAX_PDF_PAGES = 200;
-// Hard ceiling on pages rendered per call, regardless of the caller's max_pages.
 const MAX_RENDER_PAGES = 10;
 const MAX_XLSX_SHEETS = 50;
 const MAX_XLSX_ROWS_PER_SHEET = 5000;
-// Cache Tesseract's downloaded traineddata in a writable temp dir, not the process cwd.
 const TESSDATA_CACHE = path.join(os.tmpdir(), 'openhermit-tessdata');
 
 const DOCX_MIME =
@@ -205,7 +201,6 @@ export const createDocReadTool = (
 ): PolicyAwareTool<typeof DocReadParams> => ({
   policy: { defaultGrants: [{ type: 'any' }] },
   name: 'doc_read',
-  // Heavy parsing on untrusted bytes — never run concurrently with other tool calls.
   executionMode: 'sequential',
   label: 'Read Document',
   description:
@@ -255,8 +250,7 @@ export const createDocReadTool = (
 
     const stream = await context.attachmentStorage.readStream(row.storageKey);
     const buf = await streamToBuffer(stream, MAX_INPUT_BYTES);
-    // Don't trust row.sizeBytes: if the actual stream overran the cap, streamToBuffer
-    // returns cap+1 bytes — reject rather than parse a truncated oversize file.
+    // row.sizeBytes can lie; streamToBuffer returns cap+1 on overrun — reject oversize.
     if (buf.length > MAX_INPUT_BYTES) {
       return {
         content: asTextContent(
@@ -273,8 +267,7 @@ export const createDocReadTool = (
       Math.max(0, Math.floor(args.max_pages ?? DEFAULT_MAX_RENDER_PAGES)),
     );
 
-    // Text-only models can't read image blocks, so OCR image-bearing content to
-    // text instead. The worker is created on first use and torn down after.
+    // Text-only models can't read image blocks — OCR image content to text instead.
     const textOnly = context.modelSupportsImageInput === false;
     let worker: Worker | null = null;
     const ocr = textOnly
