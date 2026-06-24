@@ -1,5 +1,7 @@
 import { getProviders, getModels } from '@mariozechner/pi-ai';
 
+import { listLocalModels } from './agent-runner/model-utils.js';
+
 export interface ProviderCatalogEntry {
   provider: string;
   models: { id: string; reasoning: boolean }[];
@@ -17,11 +19,17 @@ export interface ProviderCatalogEntry {
  */
 export const listProviderCatalog = (): ProviderCatalogEntry[] => {
   const providers = getProviders();
-  return providers.map((provider) => ({
-    provider,
-    models: getModels(provider).map((m) => ({
+  return providers.map((provider) => {
+    const models = getModels(provider).map((m) => ({
       id: m.id,
       reasoning: Boolean((m as { reasoning?: boolean }).reasoning),
-    })),
-  }));
+    }));
+    // Append local-only models the pi-ai registry lacks.
+    for (const lm of listLocalModels(provider)) {
+      if (!models.some((m) => m.id === lm.id)) {
+        models.push({ id: lm.id, reasoning: Boolean(lm.reasoning) });
+      }
+    }
+    return { provider, models };
+  });
 };
