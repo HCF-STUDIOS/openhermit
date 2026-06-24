@@ -52,8 +52,8 @@ const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
   reasoning: true,
   input: ['text', 'image'],
   cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
-  contextWindow: 512000,
-  maxTokens: 128000,
+  contextWindow: 1000000,
+  maxTokens: 131072,
 } as Model<any>);
 
 const LOCAL_MODELS: Record<string, Model<any>> = {
@@ -61,8 +61,7 @@ const LOCAL_MODELS: Record<string, Model<any>> = {
   'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
 };
 
-// Local Model entries for a provider for surfacing in the
-// picker catalog.
+// Local Model entries for a provider for surfacing in the picker catalog
 export const listLocalModels = (provider: string): Model<any>[] =>
   Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
 

@@ -13,6 +13,7 @@ test('MiniMax-M3 resolves as a multimodal (image-capable) model', () => {
   assert.equal(m.id, 'MiniMax-M3');
   assert.equal(m.api, 'anthropic-messages');
   assert.equal(m.baseUrl, 'https://api.minimax.io/anthropic');
+  assert.equal(m.contextWindow, 1000000, 'M3 context window is 1M per MiniMax docs');
   assert.ok(
     Array.isArray(m.input) && (m.input as string[]).includes('image'),
     'M3 must accept image input or the agent downgrades attachments to text',
