@@ -86,6 +86,7 @@ const csvEscape = (s: string): string =>
   /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 
 async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
+  // tesseract's ImageLike type omits Node Buffer, which it accepts at runtime.
   const { data } = await worker.recognize(png as unknown as Buffer);
   return data.text.trim();
 }

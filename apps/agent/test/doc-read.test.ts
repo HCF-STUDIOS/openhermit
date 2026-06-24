@@ -154,7 +154,7 @@ function pngWithText(text: string): Buffer {
   return canvas.toBuffer('image/png');
 }
 
-test('doc_read does not return image blocks for a scanned PDF when the model is text-only', async () => {
+test('doc_read does not return image blocks for a scanned PDF when the model is text-only', { timeout: 120_000 }, async () => {
   const pdf = makePdf(' '); // no text layer -> scanned -> would render an image for vision
   const ctx = ctxFor(pdf, 'application/pdf', 'scan.pdf');
   (ctx as { modelSupportsImageInput?: boolean }).modelSupportsImageInput = false;
@@ -164,9 +164,13 @@ test('doc_read does not return image blocks for a scanned PDF when the model is 
     !res.content.some((b) => b.type === 'image'),
     'text-only must OCR scanned pages to text, not return image blocks',
   );
-}, { timeout: 120_000 });
+  assert.ok(
+    res.content.some((b) => b.type === 'text' && (b.text ?? '').includes('(OCR)')),
+    'text-only must produce an OCR text block for the scanned page',
+  );
+});
 
-test('doc_read OCRs an image to text when the model is text-only', async () => {
+test('doc_read OCRs an image to text when the model is text-only', { timeout: 120_000 }, async () => {
   const png = pngWithText('OCR WORKS 123');
   const ctx = ctxFor(png, 'image/png', 'scan.png');
   (ctx as { modelSupportsImageInput?: boolean }).modelSupportsImageInput = false;
@@ -174,4 +178,4 @@ test('doc_read OCRs an image to text when the model is text-only', async () => {
   assert.equal(res.details.kind, 'image-ocr');
   assert.ok(!res.content.some((b) => b.type === 'image'), 'text-only must not return an image block');
   assert.match(textOf(res.content).toUpperCase(), /OCR WORKS/);
-}, { timeout: 120_000 });
+});
