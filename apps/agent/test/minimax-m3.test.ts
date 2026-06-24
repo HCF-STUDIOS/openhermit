@@ -34,6 +34,14 @@ test('MiniMax-M3 appears in the picker catalog under minimax with the reasoning 
   assert.equal(m3!.reasoning, true);
 });
 
+test('MiniMax-M3 appears in the picker catalog under minimax-cn too', () => {
+  const minimaxCn = listProviderCatalog().find((p) => p.provider === 'minimax-cn');
+  assert.ok(minimaxCn, 'minimax-cn provider present in catalog');
+  const m3 = minimaxCn!.models.find((m) => m.id === 'MiniMax-M3');
+  assert.ok(m3, 'MiniMax-M3 listed under minimax-cn');
+  assert.equal(m3!.reasoning, true);
+});
+
 test('MiniMax-M2.7 is left untouched and stays text-only (removed only after migration)', () => {
   const m = resolveModel(modelConfig('minimax', 'MiniMax-M2.7'));
   assert.equal(m.id, 'MiniMax-M2.7');
