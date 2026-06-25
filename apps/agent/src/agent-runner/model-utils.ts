@@ -61,27 +61,20 @@ const LOCAL_MODELS: Record<string, Model<any>> = {
   'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
 };
 
-// Local Model entries for a provider for surfacing in the picker catalog
 export const listLocalModels = (provider: string): Model<any>[] =>
   Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
 
 /**
- * Try to fetch a Model entry from pi-ai's built-in registry, falling back to
- * our local overrides for models pi-ai does not carry yet. Returns undefined
- * when neither knows the (provider, model id) pair.
- *
- * Registry first: pi-ai's entries carry authoritative `reasoning`, `compat`,
- * and other capability flags, so we prefer them over guesses (thinking-only
- * models like deepseek-v4-pro, o1 stay flagged correctly even with an explicit
- * base_url). LOCAL_MODELS only fills gaps; once pi-ai registers a model its
- * maintained metadata takes over and the local override can be dropped.
+ * Resolve a Model from pi-ai's registry, falling back to LOCAL_MODELS for
+ * models pi-ai doesn't carry yet. Registry wins when present so its
+ * authoritative capability flags aren't overridden; drop the local entry once
+ * pi-ai registers the model.
  */
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
   let registry: Model<any> | undefined;
   try {
-    // getModel returns undefined (never throws) for an unknown provider/model,
-    // so we coalesce below rather than rely on catch. The catch is a guard for
-    // pi-ai versions that throw instead.
+    // getModel returns undefined (never throws) for unknown models, so coalesce
+    // below; the catch only guards pi-ai versions that throw.
     registry = getModel(provider as never, modelId as never) as Model<any>;
   } catch {
     registry = undefined;
