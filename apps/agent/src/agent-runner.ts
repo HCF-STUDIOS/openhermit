@@ -2029,6 +2029,14 @@ export class AgentRunner implements SessionRuntime {
         ...(input.channelUserId ? { currentChannelUserId: input.channelUserId } : {}),
         storeScope: this.scope,
         agentId: this.scope.agentId,
+        modelSupportsImageInput: (() => {
+          try {
+            const inp = (resolveModel(input.config) as { input?: string[] }).input;
+            return Array.isArray(inp) ? inp.includes('image') : true;
+          } catch {
+            return true;
+          }
+        })(),
         execBackendManager: execManager,
         onExec: () => this.resetWorkspaceIdleTimer(input.config.exec?.lifecycle),
         ...(this.channelOutbound.size > 0 ? { channelOutbound: this.channelOutbound } : {}),

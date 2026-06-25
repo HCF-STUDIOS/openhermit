@@ -10,3 +10,4 @@ dist/
 TODO.md
 apps/cli/public/
 pnpm-lock.yaml
+*.traineddata
