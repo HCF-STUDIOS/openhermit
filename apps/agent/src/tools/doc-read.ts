@@ -100,6 +100,8 @@ async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
 
 async function createOcrWorker(): Promise<Worker> {
   await mkdir(TESSDATA_CACHE, { recursive: true });
+  // tesseract downloads eng.traineddata (~5MB) from its CDN on first use, then
+  // caches it under TESSDATA_CACHE. OCR needs network once; not air-gapped.
   return createWorker('eng', 1, { cachePath: TESSDATA_CACHE });
 }
 
