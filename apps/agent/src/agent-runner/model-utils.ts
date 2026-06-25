@@ -66,23 +66,27 @@ export const listLocalModels = (provider: string): Model<any>[] =>
   Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
 
 /**
- * Try to fetch a Model entry from pi-ai's built-in registry (or our local
- * overrides). Returns undefined when the (provider, model id) pair is not
- * registered.
+ * Try to fetch a Model entry from pi-ai's built-in registry, falling back to
+ * our local overrides for models pi-ai does not carry yet. Returns undefined
+ * when neither knows the (provider, model id) pair.
  *
- * pi-ai's registry carries authoritative `reasoning`, `compat`, and
- * other capability flags. We always prefer registry values over guesses
- * so that thinking-only models (deepseek-v4-pro, o1, etc.) are flagged
- * correctly even when the agent config provides an explicit base_url.
+ * Registry first: pi-ai's entries carry authoritative `reasoning`, `compat`,
+ * and other capability flags, so we prefer them over guesses (thinking-only
+ * models like deepseek-v4-pro, o1 stay flagged correctly even with an explicit
+ * base_url). LOCAL_MODELS only fills gaps; once pi-ai registers a model its
+ * maintained metadata takes over and the local override can be dropped.
  */
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
-  const local = LOCAL_MODELS[`${provider}/${modelId}`];
-  if (local) return local;
+  let registry: Model<any> | undefined;
   try {
-    return getModel(provider as never, modelId as never) as Model<any>;
+    // getModel returns undefined (never throws) for an unknown provider/model,
+    // so we coalesce below rather than rely on catch. The catch is a guard for
+    // pi-ai versions that throw instead.
+    registry = getModel(provider as never, modelId as never) as Model<any>;
   } catch {
-    return undefined;
+    registry = undefined;
   }
+  return registry ?? LOCAL_MODELS[`${provider}/${modelId}`];
 };
 
 export const resolveModel = (config: AgentConfig): Model<any> => {
