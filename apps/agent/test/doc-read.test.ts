@@ -18,11 +18,11 @@ const PNG_BYTES = Buffer.from(
 
 // Build a minimal, valid single-page PDF with the given content stream so we
 // don't need a PDF writer dependency. Offsets are computed so pdf.js parses it.
-function makePdf(streamContent: string): Buffer {
+function makePdf(streamContent: string, mediaBox = '0 0 300 200'): Buffer {
   const objs = [
     `<</Type/Catalog/Pages 2 0 R>>`,
     `<</Type/Pages/Kids[3 0 R]/Count 1>>`,
-    `<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>`,
+    `<</Type/Page/Parent 2 0 R/MediaBox[${mediaBox}]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>`,
     `<</Length ${Buffer.byteLength(streamContent, 'latin1')}>>\nstream\n${streamContent}\nendstream`,
     `<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>`,
   ];
@@ -178,4 +178,36 @@ test('doc_read OCRs an image to text when the model is text-only', { timeout: 12
   assert.equal(res.details.kind, 'image-ocr');
   assert.ok(!res.content.some((b) => b.type === 'image'), 'text-only must not return an image block');
   assert.match(textOf(res.content).toUpperCase(), /OCR WORKS/);
+});
+
+test('doc_read bounds the rendered image size for a large-format page', async () => {
+  // 3000x4000pt page: at the old fixed scale=2 this would render 6000x8000px.
+  const pdf = makePdf(' ', '0 0 3000 4000');
+  const res = await run(ctxFor(pdf, 'application/pdf', 'poster.pdf'), { attachment_id: 'att_1' });
+  const img = res.content.find((b) => b.type === 'image') as { data: string } | undefined;
+  assert.ok(img, 'large scanned page should still render an image');
+  const png = Buffer.from(img.data, 'base64');
+  const width = png.readUInt32BE(16); // PNG IHDR width
+  const height = png.readUInt32BE(20); // PNG IHDR height
+  assert.ok(
+    Math.max(width, height) <= 2200,
+    `rendered long edge ${Math.max(width, height)}px should be capped at RENDER_MAX_DIM (2200)`,
+  );
+});
+
+test('doc_read extracts cell sources from a Jupyter notebook', async () => {
+  const nb = Buffer.from(
+    JSON.stringify({
+      cells: [
+        { cell_type: 'markdown', source: ['# Title\n', 'some notes'] },
+        { cell_type: 'code', source: 'print("hello notebook")', outputs: [{ data: { 'image/png': 'BIGBASE64' } }] },
+      ],
+    }),
+  );
+  const res = await run(ctxFor(nb, 'application/x-ipynb+json', 'analysis.ipynb'), { attachment_id: 'att_1' });
+  assert.equal(res.details.kind, 'ipynb');
+  const text = textOf(res.content);
+  assert.match(text, /# Title/);
+  assert.match(text, /print\("hello notebook"\)/);
+  assert.doesNotMatch(text, /BIGBASE64/, 'notebook outputs must be stripped, only cell sources kept');
 });

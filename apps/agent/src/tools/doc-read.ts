@@ -34,6 +34,7 @@ const MAX_INPUT_BYTES = 20 * 1024 * 1024;
 const DEFAULT_MAX_RENDER_PAGES = 5;
 const MIN_TEXT_CHARS_PER_PAGE = 8;
 const RENDER_SCALE = 2;
+const RENDER_MAX_DIM = 2200;
 const MAX_PDF_PAGES = 200;
 const MAX_RENDER_PAGES = 10;
 const MAX_XLSX_SHEETS = 50;
@@ -52,6 +53,8 @@ const isDocx = (mime: string, name: string): boolean =>
   mime === DOCX_MIME || ends(name, '.docx');
 const isXlsx = (mime: string, name: string): boolean =>
   mime === XLSX_MIME || ends(name, '.xlsx');
+const isNotebook = (mime: string, name: string): boolean =>
+  mime === 'application/x-ipynb+json' || ends(name, '.ipynb');
 const isImageMime = (mime: string): boolean => mime.startsWith('image/');
 const isTextMime = (mime: string): boolean =>
   mime.startsWith('text/') ||
@@ -139,10 +142,14 @@ async function readPdf(
     let rendered = 0;
     for (const pageNo of scannedPages) {
       if (rendered >= maxRenderPages) break;
+      // Cap the long edge so large-format pages (posters, CAD) don't render to
+      // a giant image the model API rejects or bills heavily for.
+      const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
+      const scale = Math.min(RENDER_SCALE, RENDER_MAX_DIM / Math.max(vp.width, vp.height));
       const png = Buffer.from(
         await renderPageAsImage(pdf, pageNo, {
           canvasImport: () => import('@napi-rs/canvas'),
-          scale: RENDER_SCALE,
+          scale,
         }),
       );
       if (ocr) {
@@ -198,6 +205,32 @@ async function readXlsx(buf: Buffer): Promise<string> {
   return sheets.join('\n\n');
 }
 
+const nbSource = (src: unknown): string =>
+  typeof src === 'string'
+    ? src
+    : Array.isArray(src)
+      ? src.filter((s): s is string => typeof s === 'string').join('')
+      : '';
+
+// .ipynb is JSON; dumping it raw floods the context with base64 outputs and
+// metadata, so pull out just the cell sources (like Jupyter's nbconvert).
+function readNotebook(buf: Buffer): string {
+  const nb = JSON.parse(buf.toString('utf8')) as {
+    cells?: unknown[];
+    worksheets?: Array<{ cells?: unknown[] }>;
+  };
+  const cells = Array.isArray(nb.cells)
+    ? nb.cells
+    : (nb.worksheets ?? []).flatMap((ws) => ws?.cells ?? []);
+  const labels: Record<string, string> = { markdown: 'Markdown', code: 'Code', raw: 'Raw' };
+  const out: string[] = [];
+  for (const cell of cells as Array<{ cell_type?: string; source?: unknown }>) {
+    const label = labels[cell?.cell_type ?? ''];
+    if (label) out.push(`--- ${label} cell ---\n${nbSource(cell.source).replace(/\n+$/, '')}`);
+  }
+  return out.join('\n\n').trim();
+}
+
 export const createDocReadTool = (
   context: ToolContext,
 ): PolicyAwareTool<typeof DocReadParams> => ({
@@ -206,7 +239,7 @@ export const createDocReadTool = (
   executionMode: 'sequential',
   label: 'Read Document',
   description:
-    'Extract the contents of an uploaded document into the model context. Handles PDF, Word (.docx) and Excel (.xlsx) by pulling out their text, spreadsheets as CSV, and images directly. Scanned/image-only PDF pages are rendered to images so a multimodal model can read them. For plain text/code/JSON or other files, prefer attachment_fetch.',
+    'Extract the contents of an uploaded document into the model context. Handles PDF, Word (.docx), Excel (.xlsx) and Jupyter notebooks (.ipynb) by pulling out their text, spreadsheets as CSV, notebook cells, and images directly. Scanned/image-only PDF pages are rendered to images so a multimodal model can read them. For plain text/code/JSON or other files, prefer attachment_fetch.',
   parameters: DocReadParams,
   execute: async (_toolCallId, args: DocReadArgs) => {
     if (!context.attachmentStore || !context.attachmentStorage || !context.storeScope) {
@@ -298,6 +331,13 @@ export const createDocReadTool = (
           details: { id: row.id, kind: 'xlsx' },
         };
       }
+      if (isNotebook(mime, name)) {
+        const text = readNotebook(buf);
+        return {
+          content: asTextContent(text || '(notebook has no readable cells)'),
+          details: { id: row.id, kind: 'ipynb' },
+        };
+      }
       if (isImageMime(mime)) {
         if (ocr) {
           const text = await ocr(buf);
@@ -347,7 +387,7 @@ export const createDocReadTool = (
 const DOC_TOOLSET_DESCRIPTION = `\
 ### Documents
 
-\`doc_read\` extracts the contents of an uploaded document into the model context: PDF and Word (.docx) as text, Excel (.xlsx) as CSV, and images directly. Scanned/image-only PDF pages are rendered to images for a multimodal model to read. Pass an \`attachment_id\` from \`attachment_list\`. For plain text/code or other formats, use \`attachment_fetch\`.`;
+\`doc_read\` extracts the contents of an uploaded document into the model context: PDF and Word (.docx) as text, Excel (.xlsx) as CSV, Jupyter notebooks (.ipynb) as cell sources, and images directly. Scanned/image-only PDF pages are rendered to images for a multimodal model to read. Pass an \`attachment_id\` from \`attachment_list\`. For plain text/code or other formats, use \`attachment_fetch\`.`;
 
 export const createDocToolset = (context: ToolContext): Toolset => ({
   id: 'doc',
