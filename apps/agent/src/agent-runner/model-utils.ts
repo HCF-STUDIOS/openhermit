@@ -73,8 +73,6 @@ export const listLocalModels = (provider: string): Model<any>[] =>
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
   let registry: Model<any> | undefined;
   try {
-    // getModel returns undefined (never throws) for unknown models, so coalesce
-    // below; the catch only guards pi-ai versions that throw.
     registry = getModel(provider as never, modelId as never) as Model<any>;
   } catch {
     registry = undefined;
