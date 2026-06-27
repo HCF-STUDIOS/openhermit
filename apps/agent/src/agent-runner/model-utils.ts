@@ -43,21 +43,41 @@ const OPENAI_COMPATIBLE_PROVIDERS: Record<string, { api: string; baseUrl: string
   openrouter: { api: 'openai-completions', baseUrl: 'https://openrouter.ai/api/v1' },
 };
 
+const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
+  id: 'MiniMax-M3',
+  name: 'MiniMax-M3',
+  api: 'anthropic-messages',
+  provider,
+  baseUrl,
+  reasoning: true,
+  input: ['text', 'image'],
+  cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
+  contextWindow: 1000000,
+  maxTokens: 131072,
+} as Model<any>);
+
+const LOCAL_MODELS: Record<string, Model<any>> = {
+  'minimax/MiniMax-M3': minimaxM3('minimax', 'https://api.minimax.io/anthropic'),
+  'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
+};
+
+export const listLocalModels = (provider: string): Model<any>[] =>
+  Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
+
 /**
- * Try to fetch a Model entry from pi-ai's built-in registry. Returns
- * undefined when the (provider, model id) pair is not registered.
- *
- * pi-ai's registry carries authoritative `reasoning`, `compat`, and
- * other capability flags. We always prefer registry values over guesses
- * so that thinking-only models (deepseek-v4-pro, o1, etc.) are flagged
- * correctly even when the agent config provides an explicit base_url.
+ * Resolve a Model from pi-ai's registry, falling back to LOCAL_MODELS for
+ * models pi-ai doesn't carry yet. Registry wins when present so its
+ * authoritative capability flags aren't overridden; drop the local entry once
+ * pi-ai registers the model.
  */
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
+  let registry: Model<any> | undefined;
   try {
-    return getModel(provider as never, modelId as never) as Model<any>;
+    registry = getModel(provider as never, modelId as never) as Model<any>;
   } catch {
-    return undefined;
+    registry = undefined;
   }
+  return registry ?? LOCAL_MODELS[`${provider}/${modelId}`];
 };
 
 export const resolveModel = (config: AgentConfig): Model<any> => {
