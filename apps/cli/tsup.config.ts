@@ -23,7 +23,10 @@ const internalPackages = [
 const pkg = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
 );
-const runtimeExternals = Object.keys(pkg.dependencies ?? {});
+const runtimeExternals = Object.keys({
+  ...pkg.dependencies,
+  ...pkg.optionalDependencies,
+});
 
 export default defineConfig({
   entry: {
