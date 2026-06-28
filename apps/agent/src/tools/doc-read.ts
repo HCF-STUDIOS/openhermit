@@ -3,7 +3,7 @@ import { ValidationError } from '@openhermit/shared';
 import mammoth from 'mammoth';
 import ExcelJS from 'exceljs';
 import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
-import { createWorker, type Worker } from 'tesseract.js';
+import type { Worker } from 'tesseract.js';
 import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -101,7 +101,23 @@ async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
   return data.text.trim();
 }
 
+type CanvasImport = NonNullable<
+  NonNullable<Parameters<typeof renderPageAsImage>[2]>['canvasImport']
+>;
+async function loadCanvasImport(): Promise<CanvasImport | null> {
+  try {
+    await import('@napi-rs/canvas');
+    return () => import('@napi-rs/canvas');
+  } catch {
+    return null;
+  }
+}
+
+const OCR_NOTE =
+  '(OCR ran on this document; tesseract.js downloaded its English language data over the network once and cached it locally for next time.)';
+
 async function createOcrWorker(): Promise<Worker> {
+  const { createWorker } = await import('tesseract.js');
   await mkdir(TESSDATA_CACHE, { recursive: true });
   // tesseract downloads eng.traineddata (~5MB) from its CDN on first use, then
   // caches it under TESSDATA_CACHE. OCR needs network once; not air-gapped.
@@ -111,7 +127,8 @@ async function createOcrWorker(): Promise<Worker> {
 async function readPdf(
   buf: Buffer,
   maxRenderPages: number,
-  ocr: ((png: Buffer) => Promise<string>) | null,
+  ocr: ((png: Buffer) => Promise<string | null>) | null,
+  canvasImport: CanvasImport | null,
 ): Promise<Block[]> {
   const pdf = await getDocumentProxy(new Uint8Array(buf));
   try {
@@ -140,37 +157,44 @@ async function readPdf(
     }
 
     let rendered = 0;
-    for (const pageNo of scannedPages) {
-      if (rendered >= maxRenderPages) break;
-      // Cap the long edge so large-format pages (posters, CAD) don't render to
-      // a giant image the model API rejects or bills heavily for.
-      const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
-      const scale = Math.min(RENDER_SCALE, RENDER_MAX_DIM / Math.max(vp.width, vp.height));
-      const png = Buffer.from(
-        await renderPageAsImage(pdf, pageNo, {
-          canvasImport: () => import('@napi-rs/canvas'),
-          scale,
-        }),
-      );
-      if (ocr) {
-        const text = await ocr(png);
-        blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
-      } else {
-        blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
-        blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+    if (canvasImport && maxRenderPages > 0) {
+      for (const pageNo of scannedPages) {
+        if (rendered >= maxRenderPages) break;
+        const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
+        const scale = Math.min(RENDER_SCALE, RENDER_MAX_DIM / Math.max(vp.width, vp.height));
+        const png = Buffer.from(
+          await renderPageAsImage(pdf, pageNo, { canvasImport, scale }),
+        );
+        if (ocr) {
+          const text = await ocr(png);
+          if (text === null) {
+            // text-only model + OCR backend unavailable
+            blocks.push({ type: 'text', text: `--- page ${pageNo} ---\n(scanned page; OCR is unavailable in this build)` });
+          } else {
+            blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
+          }
+        } else {
+          blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+          blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+        }
+        rendered += 1;
       }
-      rendered += 1;
     }
 
     if (blocks.length === 0) {
       blocks.push({
         type: 'text',
-        text: `This PDF has ${totalPages} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`,
+        text: canvasImport
+          ? `This PDF has ${totalPages} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`
+          : `This PDF has ${totalPages} page(s) of scanned/image-only content, but PDF page rendering is unavailable in this build (the @napi-rs/canvas backend isn't installed). Use the sandbox_path with Read/Bash.`,
       });
     } else if (scannedPages.length > rendered) {
+      const more = scannedPages.length - rendered;
       blocks.push({
         type: 'text',
-        text: `(${scannedPages.length - rendered} more scanned page(s) not rendered; raise max_pages to see them.)`,
+        text: canvasImport
+          ? `(${more} more scanned page(s) not rendered; raise max_pages to see them.)`
+          : `(${more} scanned page(s) not rendered; PDF page rendering is unavailable in this build.)`,
       });
     }
     return blocks;
@@ -305,16 +329,27 @@ export const createDocReadTool = (
     // Text-only models can't read image blocks — OCR image content to text instead.
     const textOnly = context.modelSupportsImageInput === false;
     let worker: Worker | null = null;
+    let ocrUnavailable = false;
+    let ocrUsed = false;
     const ocr = textOnly
-      ? async (png: Buffer): Promise<string> => {
-          worker ??= await createOcrWorker();
+      ? async (png: Buffer): Promise<string | null> => {
+          if (ocrUnavailable) return null;
+          try {
+            worker ??= await createOcrWorker();
+          } catch {
+            ocrUnavailable = true;
+            return null;
+          }
+          ocrUsed = true;
           return ocrPng(worker, png);
         }
       : null;
 
     try {
       if (isPdf(mime, name)) {
-        const blocks = await readPdf(buf, maxRenderPages, ocr);
+        const canvasImport = await loadCanvasImport();
+        const blocks = await readPdf(buf, maxRenderPages, ocr, canvasImport);
+        if (ocrUsed) blocks.push({ type: 'text', text: OCR_NOTE });
         return { content: blocks, details: { id: row.id, kind: 'pdf' } };
       }
       if (isDocx(mime, name)) {
@@ -341,8 +376,16 @@ export const createDocReadTool = (
       if (isImageMime(mime)) {
         if (ocr) {
           const text = await ocr(buf);
+          if (text === null) {
+            return {
+              content: asTextContent(
+                formatJson({ ...summary, note: `image OCR is unavailable in this build (the tesseract.js backend isn't installed). Use a multimodal model, or the sandbox_path with Read/Bash.` }),
+              ),
+              details: { id: row.id, kind: 'image-ocr-unavailable', mimeType: mime },
+            };
+          }
           return {
-            content: asTextContent(text || `(no text found in image ${name})`),
+            content: asTextContent(`${text || `(no text found in image ${name})`}\n\n${OCR_NOTE}`),
             details: { id: row.id, kind: 'image-ocr', mimeType: mime },
           };
         }
