@@ -73,6 +73,10 @@
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
+  "optionalDependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "tesseract.js": "^7.0.0"
+  },
   "devDependencies": {
     "@openhermit/agent": "0.2.0",
     "@openhermit/gateway": "0.2.0",
