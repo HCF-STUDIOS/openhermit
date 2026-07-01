@@ -167,18 +167,22 @@ export class DbAgentStore implements AgentStore {
     }
     if (agentIds.length === 0) return result;
 
-    // Sessions touched in the last 24h (distinct session_id with any event).
+    // Sessions active in the last 24h. Derived from the `sessions` table
+    // (`last_activity_at > since`) rather than `count(distinct session_id)` over
+    // the high-volume `session_events` table — the latter times out at fleet
+    // scale (see issue #208). Backed by idx_sessions_agent (agent_id,
+    // last_activity_at).
     const sessionRows = await this.db
       .select({
-        agentId: sessionEvents.agentId,
-        count: sql<number>`count(distinct ${sessionEvents.sessionId})::int`,
+        agentId: sessions.agentId,
+        count: sql<number>`count(*)::int`,
       })
-      .from(sessionEvents)
+      .from(sessions)
       .where(and(
-        inArray(sessionEvents.agentId, agentIds),
-        gt(sessionEvents.ts, since),
+        inArray(sessions.agentId, agentIds),
+        gt(sessions.lastActivityAt, since),
       ))
-      .groupBy(sessionEvents.agentId);
+      .groupBy(sessions.agentId);
     for (const r of sessionRows) {
       const entry = result.get(r.agentId);
       if (entry) entry.sessions24h = r.count;
@@ -202,15 +206,17 @@ export class DbAgentStore implements AgentStore {
       if (entry) entry.errors24h = r.count;
     }
 
-    // Last activity timestamp (max ts across all events).
+    // Last activity timestamp (max last_activity_at across the agent's
+    // sessions). From the `sessions` table (idx_sessions_agent) instead of
+    // max(ts) over all session_events, which scanned every event per agent.
     const lastRows = await this.db
       .select({
-        agentId: sessionEvents.agentId,
-        lastTs: sql<string>`max(${sessionEvents.ts})`,
+        agentId: sessions.agentId,
+        lastTs: sql<string>`max(${sessions.lastActivityAt})`,
       })
-      .from(sessionEvents)
-      .where(inArray(sessionEvents.agentId, agentIds))
-      .groupBy(sessionEvents.agentId);
+      .from(sessions)
+      .where(inArray(sessions.agentId, agentIds))
+      .groupBy(sessions.agentId);
     for (const r of lastRows) {
       const entry = result.get(r.agentId);
       if (entry && r.lastTs) entry.lastActivity = r.lastTs;

@@ -79,6 +79,8 @@ export const sessionEvents = pgTable('session_events', {
 }, (table) => [
   index('idx_session_events_agent_session').on(table.agentId, table.sessionId, table.ts),
   index('idx_session_events_type').on(table.agentId, table.sessionId, table.eventType, table.id),
+  // Serves fleetStats errors24h: agent_id IN (...) AND event_type = 'error' AND ts > since (issue #208).
+  index('idx_session_events_agent_type_ts').on(table.agentId, table.eventType, table.ts),
 ]);
 
 /**
