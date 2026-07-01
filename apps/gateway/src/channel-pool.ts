@@ -32,6 +32,7 @@ import type {
 } from '@openhermit/store';
 
 import type { ChannelRegistry } from './auth.js';
+import { buildExternalOutboundHandle } from './external-outbound.js';
 
 export interface ChannelPoolOptions {
   agentStore: AgentStore;
@@ -123,6 +124,14 @@ export class ChannelPool {
         });
       }
 
+      // External (API-created) channels have no plugin/bridge, but may opt
+      // into outbound via config (outboundUrl + recipientMetadataKey). Register
+      // a synthesized HTTP outbound so session_send / canSend reach them (#210).
+      const enabledExternals = channels.filter((c) => c.kind === 'external' && c.enabled);
+      for (const row of enabledExternals) {
+        this.registerExternalOutbound(agentId, row);
+      }
+
       const enabledBuiltins = channels.filter((c) => c.kind === 'builtin' && c.enabled);
       if (enabledBuiltins.length === 0) continue;
 
@@ -134,6 +143,28 @@ export class ChannelPool {
         );
       }
     }
+  }
+
+  /**
+   * Register a synthesized outbound for an external channel row that opted in
+   * via config. No-op if the row has no outbound-callback config. The handle is
+   * tracked in `this.handles` so agent hydration picks it up like a plugin's.
+   */
+  private registerExternalOutbound(
+    agentId: string,
+    row: { channelType: string; token: string; config?: Record<string, unknown> },
+  ): void {
+    const handle = buildExternalOutboundHandle(row, (msg) => this.opts.log(`[${agentId}] ${msg}`));
+    if (!handle) return;
+    const handles = this.handles.get(agentId) ?? [];
+    // Replace any existing handle for this channel name.
+    const idx = handles.findIndex((h) => h.name === handle.name);
+    if (idx !== -1) handles.splice(idx, 1);
+    handles.push(handle);
+    this.handles.set(agentId, handles);
+    const runner = this.opts.getRunner(agentId);
+    if (runner && handle.outbound) runner.registerChannelOutbound(handle.outbound);
+    this.opts.log(`[${agentId}] registered external outbound: ${handle.name}`);
   }
 
   /**
