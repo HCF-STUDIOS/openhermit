@@ -42,6 +42,23 @@ test('MiniMax-M3 appears in the picker catalog under minimax-cn too', () => {
   assert.equal(m3!.reasoning, true);
 });
 
+test('MiniMax-M3 resolves under the openrouter provider (OpenAI-compatible, slashed id)', () => {
+  const m = resolveModel(modelConfig('openrouter', 'minimax/minimax-m3'));
+  assert.equal(m.id, 'minimax/minimax-m3');
+  assert.equal(m.api, 'openai-completions');
+  assert.equal(m.baseUrl, 'https://openrouter.ai/api/v1');
+  assert.equal(m.contextWindow, 1000000);
+  assert.ok((m.input as string[]).includes('image'), 'openrouter M3 must be image-capable');
+});
+
+test('MiniMax-M3 appears in the picker catalog under openrouter', () => {
+  const openrouter = listProviderCatalog().find((p) => p.provider === 'openrouter');
+  assert.ok(openrouter, 'openrouter provider present in catalog');
+  const m3 = openrouter!.models.find((m) => m.id === 'minimax/minimax-m3');
+  assert.ok(m3, 'minimax/minimax-m3 listed under openrouter');
+  assert.equal(m3!.reasoning, true);
+});
+
 test('MiniMax-M2.7 is left untouched and stays text-only (removed only after migration)', () => {
   const m = resolveModel(modelConfig('minimax', 'MiniMax-M2.7'));
   assert.equal(m.id, 'MiniMax-M2.7');

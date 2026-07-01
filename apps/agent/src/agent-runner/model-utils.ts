@@ -59,6 +59,21 @@ const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
 const LOCAL_MODELS: Record<string, Model<any>> = {
   'minimax/MiniMax-M3': minimaxM3('minimax', 'https://api.minimax.io/anthropic'),
   'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
+  // OpenRouter routes MiniMax under the lowercase, slashed id and an
+  // OpenAI-compatible API (not anthropic-messages). pi-ai's registry lacks it
+  // through 0.73.1, so add it locally (issue #212). Drop once pi-ai carries it.
+  'openrouter/minimax/minimax-m3': {
+    id: 'minimax/minimax-m3',
+    name: 'MiniMax-M3 (OpenRouter)',
+    api: 'openai-completions',
+    provider: 'openrouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
+    contextWindow: 1000000,
+    maxTokens: 131072,
+  } as Model<any>,
 };
 
 export const listLocalModels = (provider: string): Model<any>[] =>
