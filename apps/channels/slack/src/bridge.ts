@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
-import type { ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
@@ -56,6 +56,12 @@ export class SlackBridge implements ChannelOutbound {
       this.log(`failed to send message to ${params.to}: ${message}`);
       return { success: false, error: message };
     }
+  }
+
+  /** Recipient for `session_send`: the Slack channel id from session metadata. */
+  resolveRecipient(session: OutboundSession): string | undefined {
+    const v = session.metadata?.slack_channel_id;
+    return typeof v === 'string' && v ? v : undefined;
   }
 
   private static generateSessionId(): string {

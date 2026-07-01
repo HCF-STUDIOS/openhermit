@@ -242,8 +242,12 @@ export const resolveOutbound = (
   const adapter = channelOutbound.get(platform);
   if (!adapter) return undefined;
 
-  // Resolve recipient from session metadata.
-  // Each channel has its own metadata convention for the target chat.
+  // Prefer the channel's own recipient resolution — each channel knows its
+  // metadata convention (and this works for custom/external channels too).
+  const resolved = adapter.resolveRecipient?.(session);
+  if (resolved != null && resolved !== '') return { adapter, to: resolved };
+
+  // Back-compat fallback for adapters that predate resolveRecipient.
   if (platform === 'telegram') {
     const chatId = session.metadata?.telegram_chat_id;
     if (chatId !== undefined) return { adapter, to: String(chatId) };

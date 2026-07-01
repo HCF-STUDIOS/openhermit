@@ -1,6 +1,6 @@
 {
   "name": "@openhermit/channel-signal",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenHermit channel plugin for Signal via signal-cli-rest-api (json-rpc receive WS + QR-link setup wizard) with text, media, and voice transcription.",
   "license": "MIT",
   "type": "module",

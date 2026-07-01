@@ -1,6 +1,6 @@
 {
   "name": "@openhermit/channel-whatsapp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "OpenHermit channel plugin for WhatsApp Web via Baileys with text, media, and voice-note support.",
   "license": "MIT",
   "type": "module",

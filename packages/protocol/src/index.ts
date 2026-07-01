@@ -333,6 +333,16 @@ export interface ChannelMessageAction {
 }
 
 /**
+ * Minimal shape of a session that {@link ChannelOutbound.resolveRecipient}
+ * needs to derive an outbound recipient. Each channel reads its own metadata
+ * convention (e.g. `telegram_chat_id`, `wechat_peer_id`).
+ */
+export interface OutboundSession {
+  source: { platform?: string };
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * Interface for channel adapters that support outbound (proactive) messaging.
  * Implementations send the message via the channel API. The caller (e.g. the
  * `session_send` tool) is responsible for recording the delivery as an
@@ -346,6 +356,14 @@ export interface ChannelOutbound {
     text: string;
     actions?: ChannelMessageAction[];
   }): Promise<ChannelOutboundResult>;
+  /**
+   * Derive the outbound recipient (the `to` for {@link send}) for a session
+   * this channel created, from its session metadata. Returns `undefined` when
+   * the session has no resolvable recipient. Implementing this is what lets
+   * `session_send` target this channel — without it, the tool reports the
+   * session "does not support outbound messaging".
+   */
+  resolveRecipient?(session: OutboundSession): string | undefined;
 }
 
 /**

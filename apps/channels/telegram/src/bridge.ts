@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
-import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult } from '@openhermit/protocol';
+import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
 import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramMessageEntity, TelegramUser } from './telegram-api.js';
@@ -195,6 +195,12 @@ export class TelegramBridge implements ChannelOutbound {
       this.log(`failed to send message to chat ${chatId}: ${message}`);
       return { success: false, error: message };
     }
+  }
+
+  /** Recipient for `session_send`: the Telegram chat id from session metadata. */
+  resolveRecipient(session: OutboundSession): string | undefined {
+    const v = session.metadata?.telegram_chat_id;
+    return v != null && v !== '' ? String(v) : undefined;
   }
 
   private buildReplyMarkup(actions?: ChannelMessageAction[]): unknown | undefined {

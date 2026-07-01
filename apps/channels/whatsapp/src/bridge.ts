@@ -3,6 +3,7 @@ import type {
   ChannelMessageAction,
   ChannelOutbound,
   ChannelOutboundResult,
+  OutboundSession,
 } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -120,6 +121,12 @@ export class WhatsAppBridge implements ChannelOutbound {
       this.log(`failed to send WhatsApp message: ${message}`);
       return { success: false, error: message };
     }
+  }
+
+  /** Recipient for `session_send`: the WhatsApp chat JID from session metadata. */
+  resolveRecipient(session: OutboundSession): string | undefined {
+    const v = session.metadata?.whatsapp_chat_jid;
+    return typeof v === 'string' && v ? v : undefined;
   }
 
   async handleIncoming(event: WhatsAppIncomingMessage): Promise<void> {
