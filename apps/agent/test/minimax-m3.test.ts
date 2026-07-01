@@ -59,6 +59,19 @@ test('MiniMax-M3 appears in the picker catalog under openrouter', () => {
   assert.equal(m3!.reasoning, true);
 });
 
+test('MiniMax-M3 is grouped next to the other minimax models under openrouter (not appended last)', () => {
+  const openrouter = listProviderCatalog().find((p) => p.provider === 'openrouter');
+  assert.ok(openrouter);
+  const ids = openrouter!.models.map((m) => m.id);
+  const idx = ids.indexOf('minimax/minimax-m3');
+  assert.ok(idx > 0, 'minimax/minimax-m3 present and not first');
+  // The entry immediately before it belongs to the same minimax family.
+  assert.ok(
+    ids[idx - 1]!.startsWith('minimax/'),
+    `expected a minimax sibling before m3, got ${ids[idx - 1]}`,
+  );
+});
+
 test('MiniMax-M2.7 is left untouched and stays text-only (removed only after migration)', () => {
   const m = resolveModel(modelConfig('minimax', 'MiniMax-M2.7'));
   assert.equal(m.id, 'MiniMax-M2.7');
