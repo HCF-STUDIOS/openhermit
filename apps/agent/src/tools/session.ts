@@ -40,7 +40,11 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
   policy: { defaultGrants: [{ type: 'any' }] },
   name: 'session_list',
   label: 'List Sessions',
-  description: 'List sessions with their descriptions, last activity, message counts, and source. Optionally filter by channel.',
+  description:
+    'List sessions with their descriptions, last activity, message counts, and source. '
+    + 'Each entry includes `canSend` — whether session_send can deliver to it (its channel '
+    + 'supports outbound messaging and a recipient is resolvable); do not attempt session_send '
+    + 'when canSend is false. Optionally filter by channel.',
   parameters: SessionListParams,
   execute: async (_toolCallId, args: SessionListArgs) => {
     if (!context.sessionStore || !context.storeScope) {
@@ -85,6 +89,11 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
       lastActivity: s.lastActivityAt,
       createdAt: s.createdAt,
       lastMessagePreview: s.lastMessagePreview,
+      // Whether session_send can deliver to this session (its channel exposes an
+      // outbound adapter AND a recipient is resolvable from metadata).
+      canSend: context.channelOutbound
+        ? resolveOutbound(s, context.channelOutbound) !== undefined
+        : false,
     }));
 
     return {
