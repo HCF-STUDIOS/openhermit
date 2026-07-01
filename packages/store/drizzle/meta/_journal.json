@@ -239,6 +239,13 @@
       "when": 1780100000000,
       "tag": "0033_channel_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1780200000000,
+      "tag": "0034_fleet_stats_error_index",
+      "breakpoints": true
     }
   ]
 }
