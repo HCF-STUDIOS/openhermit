@@ -13,6 +13,7 @@ import type {
   ChannelMessageAction,
   ChannelOutbound,
   ChannelOutboundResult,
+  OutboundSession,
 } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -176,6 +177,16 @@ export class WechatBridge implements ChannelOutbound {
     // v0 ignores `actions` — iLink has no inline-button equivalent we use yet.
     void params.actions;
     return this.sendText(params.to, params.text);
+  }
+
+  /**
+   * Resolve the `to` for `session_send`: a group id (sent as `to_user_id`), or
+   * the DM peer / sender id. Enables proactive sends to WeChat sessions.
+   */
+  resolveRecipient(session: OutboundSession): string | undefined {
+    const m = session.metadata ?? {};
+    const pick = m.wechat_group_id ?? m.wechat_peer_id ?? m.wechat_from_user_id;
+    return typeof pick === 'string' && pick ? pick : undefined;
   }
 
   private async sendText(

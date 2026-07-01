@@ -5,6 +5,7 @@ import type {
   ChannelMessageAction,
   ChannelOutbound,
   ChannelOutboundResult,
+  OutboundSession,
 } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -125,6 +126,16 @@ export class SignalBridge implements ChannelOutbound {
       this.log(`failed to send to ${redactTarget(params.to)}: ${message}`);
       return { success: false, error: message };
     }
+  }
+
+  /**
+   * Recipient for `session_send`: the Signal group id, or the DM source
+   * (uuid:<uuid> or phone number) from session metadata.
+   */
+  resolveRecipient(session: OutboundSession): string | undefined {
+    const m = session.metadata ?? {};
+    const pick = m.signal_group_id ?? m.signal_source;
+    return typeof pick === 'string' && pick ? pick : undefined;
   }
 
   private async sendChunkToTarget(
