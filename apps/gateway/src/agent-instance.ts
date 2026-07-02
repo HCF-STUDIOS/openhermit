@@ -218,14 +218,9 @@ export class AgentInstanceManager {
     // 6. Wire outbounds from the gateway-level channel pool. Bridges are
     //    owned by the pool and persist across runner eviction; we just
     //    register their send-callbacks on this freshly hydrated runner.
-    if (this.channelPool) {
-      const handles = this.channelPool.getOutbounds(agentId);
-      for (const handle of handles) {
-        if (handle.outbound) runner.registerChannelOutbound(handle.outbound);
-      }
-      if (handles.length > 0) {
-        log(`[${agentId}] attached ${handles.length} pool channel(s): ${handles.map((h) => h.name).join(', ')}`);
-      }
+    const attached = this.syncOutbounds(runner, agentId);
+    if (attached.length > 0) {
+      log(`[${agentId}] attached ${attached.length} pool channel(s): ${attached.join(', ')}`);
     }
 
     // 7. Sync platform skills into the runner's exec backends.
@@ -251,6 +246,28 @@ export class AgentInstanceManager {
     const runner = this.runners.get(agentId);
     if (runner) this.touch(agentId);
     return runner;
+  }
+
+  /**
+   * (Re)register the agent's outbound adapters from the ChannelPool onto the
+   * runner and return the attached channel names. Idempotent
+   * (`registerChannelOutbound` is keyed by channel), so it is safe to call on
+   * every serve — this keeps a hot runner's outbound set current even when a
+   * channel's outbound was registered *after* the runner hydrated (e.g. external
+   * channels registered later during channel-pool start(), or config changes).
+   * Without this, an early-hydrated hot runner would report `canSend:false` /
+   * fail `session_send` for a channel it should be able to reach (#210).
+   */
+  private syncOutbounds(runner: AgentRunner, agentId: string): string[] {
+    if (!this.channelPool) return [];
+    const attached: string[] = [];
+    for (const handle of this.channelPool.getOutbounds(agentId)) {
+      if (handle.outbound) {
+        runner.registerChannelOutbound(handle.outbound);
+        attached.push(handle.name);
+      }
+    }
+    return attached;
   }
 
   /** Mark the agent as recently active so eviction skips it. */
@@ -310,6 +327,10 @@ export class AgentInstanceManager {
     const existing = this.runners.get(agentId);
     if (existing) {
       this.touch(agentId);
+      // Re-sync outbounds: a hot runner may have hydrated before some channel
+      // outbounds were registered (externals are registered as channel-pool
+      // start() progresses). Idempotent; keeps canSend/session_send accurate.
+      this.syncOutbounds(existing, agentId);
       return existing;
     }
 
