@@ -43,10 +43,6 @@ const ENTRIES: any[] = [
 ];
 
 const NAMES: Record<string, string> = { u1: 'Alice OH', u2: 'Bob' };
-const IDENTS: Record<string, { channel: string; channelUserId: string }[]> = {
-  u1: [{ channel: 'telegram', channelUserId: '123' }, { channel: 'wechat', channelUserId: 'wxid_a' }],
-};
-
 const ctx = (): ToolContext =>
   ({
     storeScope: {},
@@ -54,8 +50,6 @@ const ctx = (): ToolContext =>
     sessionStore: { list: async () => ENTRIES.slice() },
     userStore: {
       get: async (id: string) => (NAMES[id] ? { userId: id, name: NAMES[id] } : { userId: id }),
-      listIdentitiesByUserIds: async (ids: string[]) =>
-        new Map(ids.map((id) => [id, IDENTS[id] ?? []])),
     },
   }) as unknown as ToolContext;
 
@@ -72,11 +66,7 @@ test('session_list is ordered by most-recent activity and shows participants + c
   assert.equal(rows[0].sessionId, 's-tg'); // most recent
   assert.equal(rows[0].counterpart, 'Alice (@alice)');
   assert.equal(rows[0].type, 'direct');
-  assert.deepEqual(rows[0].participants[0], {
-    userId: 'u1',
-    name: 'Alice OH',
-    identities: ['telegram:123', 'wechat:wxid_a'],
-  });
+  assert.deepEqual(rows[0].participants[0], { userId: 'u1', name: 'Alice OH' });
   assert.equal(rows[1].sessionId, 's-wx');
   assert.equal(rows[1].counterpart, 'group g1');
 });

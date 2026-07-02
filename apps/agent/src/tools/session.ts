@@ -88,8 +88,9 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
   label: 'List Sessions',
   description:
     'List sessions, most-recently-active first. Each entry shows who the session is with '
-    + '(`participants` = linked OpenHermit users with names/identities; `counterpart` = the '
-    + 'channel-side identity), `type` (direct/group), source, activity, and `canSend` (whether '
+    + '(`participants` = linked OpenHermit users with names — use user_list for their '
+    + 'cross-channel identities; `counterpart` = the channel-side identity), `type` '
+    + '(direct/group), source, activity, and `canSend` (whether '
     + 'session_send can deliver — do not attempt session_send when false). '
     + 'Filter by `channel`, `type`, `user_id`, or `search`; page with `limit`/`offset` '
     + '(details carry `total` and `hasMore`).',
@@ -147,19 +148,16 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
     const offset = Math.max(args.offset ?? 0, 0);
     const page = sessions.slice(offset, offset + limit);
 
-    // Batch-resolve participant names + identities for the page's users only.
+    // Batch-resolve participant names for the page's users only. Cross-channel
+    // identities are intentionally NOT included here — they'd bloat every list
+    // row; use `user_list` to see a user's identities.
     const uids = [...new Set(page.flatMap((s) => s.userIds ?? []))];
     const nameById = new Map<string, string>();
-    let identsById = new Map<string, { channel: string; channelUserId: string }[]>();
     if (uids.length > 0 && context.userStore) {
-      const [records, idents] = await Promise.all([
-        Promise.all(uids.map((id) => context.userStore!.get(id))),
-        context.userStore.listIdentitiesByUserIds(uids),
-      ]);
+      const records = await Promise.all(uids.map((id) => context.userStore!.get(id)));
       records.forEach((r, i) => {
         if (r?.name) nameById.set(uids[i]!, r.name);
       });
-      identsById = idents;
     }
 
     const result = page.map((s) => ({
@@ -170,7 +168,6 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
       participants: (s.userIds ?? []).map((id) => ({
         userId: id,
         ...(nameById.has(id) ? { name: nameById.get(id) } : {}),
-        identities: (identsById.get(id) ?? []).map((idn) => `${idn.channel}:${idn.channelUserId}`),
       })),
       counterpart: describeCounterpart(s.source.platform, s.metadata),
       messageCount: s.messageCount,
