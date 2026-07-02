@@ -29,7 +29,7 @@ OpenHermit builds toolsets per turn from available runtime capabilities and the 
 | `user_merge` | Merge one user into another (owner) |
 | `identity_link_request` | Issue a short-lived token for cross-channel identity linking (any role) |
 | `identity_link_confirm` | Redeem a link token from a different channel to join identities (any role) |
-| `session_list` | List sessions |
+| `session_list` | List sessions (who it's with, type, canSend) — filter by channel/type/user_id/search, paginate, newest first |
 | `session_read` | Read session history |
 | `session_summary` | Read description, working memory, and recent activity |
 | `session_send` | Send a proactive message through a connected channel |

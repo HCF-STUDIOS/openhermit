@@ -13,12 +13,58 @@ import {
 // ── Parameters ──────────────────────────────────────────────────────
 
 const SessionListParams = Type.Object({
-  channel: Type.Optional(Type.String({ description: 'Filter by channel/platform (e.g. "telegram", "cli", "web").' })),
-  limit: Type.Optional(Type.Number({ description: 'Maximum number of sessions to return (default 20).' })),
+  channel: Type.Optional(Type.String({ description: 'Filter by channel/platform (e.g. "telegram", "wechat", "web").' })),
+  type: Type.Optional(Type.String({ description: 'Filter by session type: "direct" or "group".' })),
+  user_id: Type.Optional(Type.String({ description: 'Only sessions that involve this OpenHermit user id.' })),
+  search: Type.Optional(Type.String({ description: 'Case-insensitive substring match over description, last message preview, counterpart, and session id.' })),
   include_inactive: Type.Optional(Type.Boolean({ description: 'Include inactive sessions that were replaced by /new (default false).' })),
+  limit: Type.Optional(Type.Number({ description: 'Page size (default 20, max 100).' })),
+  offset: Type.Optional(Type.Number({ description: 'Number of sessions to skip for pagination (default 0). Results are ordered by most-recent activity first.' })),
 });
 
 type SessionListArgs = Static<typeof SessionListParams>;
+
+/** Trim a value to a non-empty string, or undefined. */
+const asStr = (v: unknown): string | undefined =>
+  typeof v === 'string' && v.trim() ? v.trim() : v != null && typeof v === 'number' ? String(v) : undefined;
+
+/**
+ * Human-readable label for the session's counterpart, derived from the
+ * channel-specific identity fields each bridge writes into session metadata.
+ * Returns undefined when nothing identifying is present.
+ */
+const describeCounterpart = (
+  platform: string | undefined,
+  md: Record<string, unknown> | undefined,
+): string | undefined => {
+  const m = md ?? {};
+  switch (platform) {
+    case 'telegram': {
+      const title = asStr(m.telegram_chat_title);
+      if (title) return title;
+      const name = asStr(m.telegram_first_name);
+      const user = asStr(m.telegram_username);
+      const id = asStr(m.telegram_user_id);
+      if (name && user) return `${name} (@${user})`;
+      return name ?? (user ? `@${user}` : id);
+    }
+    case 'wechat': {
+      const group = asStr(m.wechat_group_id);
+      if (group) return `group ${group}`;
+      return asStr(m.wechat_from_user_id) ?? asStr(m.wechat_peer_id);
+    }
+    case 'signal':
+      return asStr(m.signal_source_number) ?? asStr(m.signal_source);
+    case 'whatsapp':
+      return asStr(m.whatsapp_group_jid) ?? asStr(m.whatsapp_sender_number) ?? asStr(m.whatsapp_chat_jid);
+    case 'slack':
+      return asStr(m.slack_channel_id ?? m.slack_user_id);
+    case 'discord':
+      return asStr(m.discord_channel_id);
+    default:
+      return undefined;
+  }
+};
 
 const SessionReadParams = Type.Object({
   session_id: Type.String({ description: 'Session ID to read messages from.' }),
@@ -41,20 +87,21 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
   name: 'session_list',
   label: 'List Sessions',
   description:
-    'List sessions with their descriptions, last activity, message counts, and source. '
-    + 'Each entry includes `canSend` — whether session_send can deliver to it (its channel '
-    + 'supports outbound messaging and a recipient is resolvable); do not attempt session_send '
-    + 'when canSend is false. Optionally filter by channel.',
+    'List sessions, most-recently-active first. Each entry shows who the session is with '
+    + '(`participants` = linked OpenHermit users with names/identities; `counterpart` = the '
+    + 'channel-side identity), `type` (direct/group), source, activity, and `canSend` (whether '
+    + 'session_send can deliver — do not attempt session_send when false). '
+    + 'Filter by `channel`, `type`, `user_id`, or `search`; page with `limit`/`offset` '
+    + '(details carry `total` and `hasMore`).',
   parameters: SessionListParams,
   execute: async (_toolCallId, args: SessionListArgs) => {
     if (!context.sessionStore || !context.storeScope) {
       throw new ValidationError('session_list is unavailable: no session store is configured.');
     }
 
-    // Owner sees every session on the agent (so it can answer
-    // questions like "who else has chatted with you?" or
-    // "which other identity is also me?"). Non-owners only see
-    // sessions they participate in.
+    // Owner sees every session on the agent (so it can answer questions like
+    // "who else has chatted with you?"). Non-owners only see sessions they
+    // participate in.
     const isOwner = context.currentUserRole === 'owner';
     let sessions = await context.sessionStore.list(
       context.storeScope,
@@ -64,33 +111,74 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
       },
     );
 
-    // Filter by channel/platform if specified
+    // ── Filters ──────────────────────────────────────────────────────
     if (args.channel) {
       const ch = args.channel.trim().toLowerCase();
       sessions = sessions.filter(
-        (s) =>
-          s.source.platform?.toLowerCase() === ch ||
-          s.source.kind?.toLowerCase() === ch,
+        (s) => s.source.platform?.toLowerCase() === ch || s.source.kind?.toLowerCase() === ch,
+      );
+    }
+    if (args.type) {
+      const t = args.type.trim().toLowerCase();
+      sessions = sessions.filter((s) => (s.type ?? s.source.type)?.toLowerCase() === t);
+    }
+    if (args.user_id) {
+      const uid = args.user_id.trim();
+      sessions = sessions.filter((s) => s.userIds?.includes(uid));
+    }
+    if (args.search) {
+      const q = args.search.trim().toLowerCase();
+      sessions = sessions.filter((s) =>
+        [
+          s.sessionId,
+          s.description,
+          s.lastMessagePreview,
+          describeCounterpart(s.source.platform, s.metadata),
+        ]
+          .filter((v): v is string => typeof v === 'string')
+          .some((v) => v.toLowerCase().includes(q)),
       );
     }
 
-    // Sort by last activity (most recent first)
+    // Most recent activity first, then paginate.
     sessions.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+    const total = sessions.length;
+    const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
+    const offset = Math.max(args.offset ?? 0, 0);
+    const page = sessions.slice(offset, offset + limit);
 
-    // Apply limit
-    const limit = args.limit ?? 20;
-    const limited = sessions.slice(0, limit);
+    // Batch-resolve participant names + identities for the page's users only.
+    const uids = [...new Set(page.flatMap((s) => s.userIds ?? []))];
+    const nameById = new Map<string, string>();
+    let identsById = new Map<string, { channel: string; channelUserId: string }[]>();
+    if (uids.length > 0 && context.userStore) {
+      const [records, idents] = await Promise.all([
+        Promise.all(uids.map((id) => context.userStore!.get(id))),
+        context.userStore.listIdentitiesByUserIds(uids),
+      ]);
+      records.forEach((r, i) => {
+        if (r?.name) nameById.set(uids[i]!, r.name);
+      });
+      identsById = idents;
+    }
 
-    const result = limited.map((s) => ({
+    const result = page.map((s) => ({
       sessionId: s.sessionId,
+      type: s.type ?? s.source.type ?? (s.source.platform ? 'direct' : undefined),
       description: s.description ?? '(no description)',
       source: s.source,
+      participants: (s.userIds ?? []).map((id) => ({
+        userId: id,
+        ...(nameById.has(id) ? { name: nameById.get(id) } : {}),
+        identities: (identsById.get(id) ?? []).map((idn) => `${idn.channel}:${idn.channelUserId}`),
+      })),
+      counterpart: describeCounterpart(s.source.platform, s.metadata),
       messageCount: s.messageCount,
       lastActivity: s.lastActivityAt,
       createdAt: s.createdAt,
       lastMessagePreview: s.lastMessagePreview,
-      // Whether session_send can deliver to this session (its channel exposes an
-      // outbound adapter AND a recipient is resolvable from metadata).
+      // Whether session_send can deliver (channel exposes an outbound adapter
+      // AND a recipient resolves from metadata).
       canSend: context.channelOutbound
         ? resolveOutbound(s, context.channelOutbound) !== undefined
         : false,
@@ -98,11 +186,9 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
 
     return {
       content: asTextContent(
-        result.length > 0
-          ? formatJson(result)
-          : 'No sessions found.\n',
+        result.length > 0 ? formatJson(result) : 'No sessions found.\n',
       ),
-      details: { count: result.length, total: sessions.length },
+      details: { count: result.length, total, offset, limit, hasMore: offset + result.length < total },
     };
   },
 });
