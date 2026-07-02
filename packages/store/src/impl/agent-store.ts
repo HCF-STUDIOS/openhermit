@@ -335,7 +335,7 @@ export class DbAgentStore implements AgentStore {
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
-        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+        SUM(GREATEST(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0), 0))::float8 AS usd_total
       FROM buckets
       GROUP BY agent_id, bucket
     `);
@@ -400,7 +400,7 @@ export class DbAgentStore implements AgentStore {
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text      AS output_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheRead')::bigint, 0))::text   AS cache_read_tokens,
         SUM(COALESCE((payload->'usage'->>'cacheWrite')::bigint, 0))::text  AS cache_write_tokens,
-        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+        SUM(GREATEST(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0), 0))::float8 AS usd_total
       FROM buckets
       GROUP BY bucket
     `);
@@ -459,7 +459,7 @@ export class DbAgentStore implements AgentStore {
         COUNT(*)::text       AS calls,
         SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text  AS input_tokens,
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text AS output_tokens,
-        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+        SUM(GREATEST(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0), 0))::float8 AS usd_total
       FROM ${sessionEvents}
       WHERE event_type = 'assistant'
         AND payload ? 'usage'
@@ -478,7 +478,7 @@ export class DbAgentStore implements AgentStore {
         to_char(date_trunc('day', ts::timestamptz), 'YYYY-MM-DD') AS day,
         SUM(COALESCE((payload->'usage'->>'input')::bigint, 0))::text  AS input_tokens,
         SUM(COALESCE((payload->'usage'->>'output')::bigint, 0))::text AS output_tokens,
-        SUM(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0))::float8 AS usd_total
+        SUM(GREATEST(COALESCE((payload->'usage'->'cost'->>'total')::numeric, 0), 0))::float8 AS usd_total
       FROM ${sessionEvents}
       WHERE event_type = 'assistant'
         AND payload ? 'usage'
