@@ -112,6 +112,19 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
       },
     );
 
+    // Resolve user id -> name once (best-effort). Enables filtering by a user's
+    // name via `search` and labeling participants without per-row lookups.
+    const nameById = new Map<string, string>();
+    if (context.userStore) {
+      try {
+        for (const u of await context.userStore.list()) {
+          if (u.name) nameById.set(u.userId, u.name);
+        }
+      } catch {
+        // Names are best-effort; fall back to userId-only participants.
+      }
+    }
+
     // ── Filters ──────────────────────────────────────────────────────
     if (args.channel) {
       const ch = args.channel.trim().toLowerCase();
@@ -135,6 +148,7 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
           s.description,
           s.lastMessagePreview,
           describeCounterpart(s.source.platform, s.metadata),
+          ...(s.userIds ?? []).map((id) => nameById.get(id)),
         ]
           .filter((v): v is string => typeof v === 'string')
           .some((v) => v.toLowerCase().includes(q)),
@@ -148,18 +162,9 @@ export const createSessionListTool = (context: ToolContext): PolicyAwareTool<typ
     const offset = Math.max(args.offset ?? 0, 0);
     const page = sessions.slice(offset, offset + limit);
 
-    // Batch-resolve participant names for the page's users only. Cross-channel
-    // identities are intentionally NOT included here — they'd bloat every list
-    // row; use `user_list` to see a user's identities.
-    const uids = [...new Set(page.flatMap((s) => s.userIds ?? []))];
-    const nameById = new Map<string, string>();
-    if (uids.length > 0 && context.userStore) {
-      const records = await Promise.all(uids.map((id) => context.userStore!.get(id)));
-      records.forEach((r, i) => {
-        if (r?.name) nameById.set(uids[i]!, r.name);
-      });
-    }
-
+    // participants carry { userId, name } (name from the map above). Cross-channel
+    // identities are intentionally omitted — they'd bloat every row; use
+    // `user_list` to see a user's identities.
     const result = page.map((s) => ({
       sessionId: s.sessionId,
       type: s.type ?? s.source.type ?? (s.source.platform ? 'direct' : undefined),

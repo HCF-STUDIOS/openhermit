@@ -50,6 +50,7 @@ const ctx = (): ToolContext =>
     sessionStore: { list: async () => ENTRIES.slice() },
     userStore: {
       get: async (id: string) => (NAMES[id] ? { userId: id, name: NAMES[id] } : { userId: id }),
+      list: async () => Object.entries(NAMES).map(([userId, name]) => ({ userId, name })),
     },
   }) as unknown as ToolContext;
 
@@ -90,6 +91,11 @@ test('filter by user_id', async () => {
 test('search matches description / counterpart', async () => {
   assert.deepEqual((await run({ search: 'alice' })).rows.map((r) => r.sessionId), ['s-tg']);
   assert.deepEqual((await run({ search: 'team group' })).rows.map((r) => r.sessionId), ['s-wx']);
+});
+
+test('search matches a participant name (find a user\'s sessions by name)', async () => {
+  // "Bob" is u2's name, present in neither description nor counterpart.
+  assert.deepEqual((await run({ search: 'bob' })).rows.map((r) => r.sessionId), ['s-wx']);
 });
 
 test('pagination via limit + offset with total/hasMore', async () => {
