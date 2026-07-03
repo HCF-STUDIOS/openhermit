@@ -49,7 +49,8 @@ const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
   api: 'anthropic-messages',
   provider,
   baseUrl,
-  reasoning: true,
+  // reasoning off: MiniMax's /anthropic rejects pi-ai's Anthropic-native thinking param with 400 (2013)
+  reasoning: false,
   input: ['text', 'image'],
   cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
   contextWindow: 1000000,
@@ -103,13 +104,16 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
   //    flag here, so derive it from the user's `thinking` level (anything
   //    other than off / unset implies reasoning capability).
   if (api && baseUrl) {
+    // no reasoning for anthropic-compat endpoints: they reject pi-ai's thinking param (400 2013)
+    const reasoning =
+      api !== 'anthropic-messages' && (config.model.thinking ?? 'off') !== 'off';
     return {
       id: config.model.model,
       name: config.model.model,
       api,
       provider: config.model.provider,
       baseUrl,
-      reasoning: (config.model.thinking ?? 'off') !== 'off',
+      reasoning,
       input: ['text'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128000,
