@@ -25,6 +25,8 @@ interface McpToolInfo {
 interface McpConnectionState {
   serverId: string;
   serverName: string;
+  /** Kept so a tool call that finds this connection in 'error' can reconnect. */
+  server: McpServerRecord;
   status: McpConnectionStatusValue;
   client?: Client;
   transport?: StreamableHTTPClientTransport;
@@ -61,6 +63,7 @@ export class McpClientManager {
     const state: McpConnectionState = {
       serverId: server.id,
       serverName: server.name,
+      server,
       status: 'connecting',
       tools: [],
     };
@@ -167,23 +170,38 @@ export class McpClientManager {
       description: mcpTool.description ?? `MCP tool from ${state.serverName}`,
       parameters: Type.Unsafe(mcpTool.inputSchema),
       execute: async (_toolCallId, params) => {
-        if (state.status === 'connecting') {
+        // Re-read the live connection state rather than the one captured when
+        // this tool wrapper was built — a prior call may have flipped it to
+        // 'error' (e.g. a transport failure mid-session), and a tool built
+        // before that happened would otherwise be stuck referencing a dead
+        // client forever with no way to recover.
+        let current = this.connections.get(state.serverId) ?? state;
+
+        if (current.status === 'error') {
+          // The upstream session may have simply expired; try once to
+          // reconnect before giving up, so the agent self-heals instead of
+          // requiring an owner to manually run mcp_enable again.
+          await this.connect(current.server).catch(() => {});
+          current = this.connections.get(state.serverId) ?? current;
+        }
+
+        if (current.status === 'connecting') {
           return {
             content: asTextContent(
-              `MCP server "${state.serverName}" is still connecting. Try again in a moment.`,
+              `MCP server "${current.serverName}" is still connecting. Try again in a moment.`,
             ),
             details: {},
           };
         }
-        if (!state.client || state.status !== 'connected') {
-          const detail = state.lastError ? ` (last error: ${state.lastError})` : '';
+        if (!current.client || current.status !== 'connected') {
+          const detail = current.lastError ? ` (last error: ${current.lastError})` : '';
           return {
-            content: asTextContent(`MCP server "${state.serverName}" is not connected${detail}.`),
+            content: asTextContent(`MCP server "${current.serverName}" is not connected${detail}.`),
             details: {},
           };
         }
         try {
-          const result = await state.client.callTool({
+          const result = await current.client.callTool({
             name: mcpTool.name,
             arguments: params as Record<string, unknown>,
           });
@@ -204,8 +222,8 @@ export class McpClientManager {
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          state.status = 'error';
-          state.lastError = msg;
+          current.status = 'error';
+          current.lastError = msg;
           return {
             content: asTextContent(`MCP tool call failed: ${msg}`),
             details: {},
