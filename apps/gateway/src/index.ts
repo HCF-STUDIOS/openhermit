@@ -504,12 +504,17 @@ export const main = async (): Promise<void> => {
 
   const host = process.env.GATEWAY_HOST ?? '127.0.0.1';
 
+  const { server, info } = await listen(app.fetch, port, host);
+
   instances.setAdminToken(adminToken);
 
-  // Boot the channel pool BEFORE we start accepting requests, so every
-  // channel's outbound adapter is registered before any runner can hydrate.
-  // Otherwise a runner that hydrates mid-start comes up missing outbounds
-  // (canSend:false / session_send fails) and, being hot, stays that way (#210).
+  // Boot the channel pool. We listen() FIRST so /health responds immediately
+  // and boot never exceeds the platform healthcheck window — channel-pool
+  // start() (DB reads, token decryption, starting pollers for every channel)
+  // can take minutes on large deployments. Outbound adapters registered here
+  // are still picked up by hot/hydrating runners via
+  // AgentInstanceManager.syncOutbounds(), which re-syncs on every serve, so
+  // canSend/session_send stay accurate regardless of start() timing (#210).
   // The pool owns Telegram/Slack/Discord bridges independently of runners;
   // bridges call back via loopback HTTP, hydrating the runner on demand.
   let channelPool: ChannelPool | undefined;
@@ -525,9 +530,9 @@ export const main = async (): Promise<void> => {
         secretStore,
         channelRegistry: channels,
         manifestRegistry,
-        // Channel adapters connect back from inside the host over loopback.
-        // Use the resolved `port` (the listener binds it just below).
-        gatewayBaseUrl: `http://127.0.0.1:${port}`,
+        // Channel adapters connect back from inside the host. Use
+        // 127.0.0.1 even when the public listener is 0.0.0.0.
+        gatewayBaseUrl: `http://127.0.0.1:${info.port}`,
         ...(publicGatewayBaseUrl ? { publicGatewayBaseUrl } : {}),
         getRunner: (agentId) => instances.getRunner(agentId),
         log: logStartup,
@@ -543,8 +548,6 @@ export const main = async (): Promise<void> => {
       logStartup('channel pool skipped (no secret store available)');
     }
   }
-
-  const { server, info } = await listen(app.fetch, port, host);
 
   attachGatewayWs(server as import('node:http').Server, {
     instances,
