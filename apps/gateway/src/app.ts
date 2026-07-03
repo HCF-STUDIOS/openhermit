@@ -2217,8 +2217,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const ids = agentId === '*' ? instances.getRunningAgentIds() : [agentId];
     for (const id of ids) {
       const runner = instances.getRunner(id);
-      if (runner) {
+      if (!runner) continue;
+      // Best-effort per-agent: a runner whose exec backend has been shut down
+      // (e.g. idle timeout) throws "Sandbox is probably not running anymore".
+      // That must not fail the whole operation — the DB enable/disable already
+      // succeeded, and the sandbox re-mounts from listEnabled() on next start.
+      try {
         await syncSkillMounts(id, runner, store);
+      } catch (err) {
+        log(`[${id}] skill mount sync skipped: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   };
