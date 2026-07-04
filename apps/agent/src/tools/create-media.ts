@@ -43,7 +43,7 @@ export interface SubmitCreateJobResult {
   details: SubmitCreateJobDetails;
 }
 
-export const errorResult = (
+const errorResult = (
   mode: CreateMediaMode,
   message: string,
   error: string,
