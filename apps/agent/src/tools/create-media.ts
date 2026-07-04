@@ -43,7 +43,7 @@ export interface SubmitCreateJobResult {
   details: SubmitCreateJobDetails;
 }
 
-const errorResult = (
+export const errorResult = (
   mode: CreateMediaMode,
   message: string,
   error: string,
@@ -277,6 +277,17 @@ export const createVideoTool = (
     'Generate a video clip for the user. This is the ONLY real way to create videos — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a playable video in the chat once generation completes. The twin\'s wallet is charged only on success.',
   parameters: CreateVideoParams,
   execute: async (_toolCallId, args: CreateVideoArgs) => {
+    const hasPrompt = typeof args.prompt === 'string' && args.prompt.trim().length > 0;
+    const hasFirstFrameImage =
+      typeof args.firstFrameImage === 'string' && args.firstFrameImage.trim().length > 0;
+    if (!hasPrompt && !hasFirstFrameImage) {
+      return errorResult(
+        'VIDEO',
+        'Unable to submit VIDEO create job: provide a text prompt (text-to-video) or a firstFrameImage (image-to-video).',
+        'missing_prompt_or_frame',
+      );
+    }
+
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
