@@ -313,7 +313,18 @@ export type OutboundEventBody =
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string };
+  | { type: 'error'; sessionId: string; message: string }
+  | {
+      /**
+       * In-flight media-generation placeholder emitted by a media-generation
+       * tool. Channels/UIs subscribe to this event to render a pending state
+       * for the job until it resolves (typically into an `attachment` event).
+       */
+      type: 'pending_media';
+      sessionId: string;
+      jobId: string;
+      mode: 'IMAGE' | 'VIDEO' | 'TTS' | 'SFX' | 'MUSIC';
+    };
 
 export type OutboundEvent = OutboundEventBody & { eventId: string };
 
