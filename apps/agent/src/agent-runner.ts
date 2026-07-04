@@ -1125,6 +1125,14 @@ export class AgentRunner implements SessionRuntime {
     let messageUserId = session.resolvedUserId;
     if (message.sender) {
       const now = new Date().toISOString();
+      // Track the raw channel identity of THIS message's sender. The toolset
+      // is rebuilt every turn (refreshAgentConfiguration) from these fields,
+      // so caller-scoped tools (e.g. identity_link_*) must reflect who sent
+      // the current message — not whoever opened the session. Matters in
+      // group sessions where a later, different sender joins, and for external
+      // channels (e.g. amiko) whose per-session id can't be derived.
+      if (message.sender.channel) session.resolvedChannel = message.sender.channel;
+      if (message.sender.channelUserId) session.resolvedChannelUserId = message.sender.channelUserId;
       const resolved = await this.resolveMessageSender(message.sender, now);
       if (resolved.userId) {
         messageUserId = resolved.userId;
