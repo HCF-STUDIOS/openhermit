@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -194,7 +194,18 @@ export class SlackBridge implements ChannelOutbound {
     mentioned: boolean,
     threadTs?: string,
   ): Promise<void> {
-    await this.ensureSession(sessionId, event, isDm, threadTs);
+    // A recovered session id may no longer be reopenable (stale/migrated, or
+    // a different resolved identity) — the agent API returns 404 Session not
+    // found. Fall back to a fresh session instead of failing the message.
+    sessionId = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, event, isDm, threadTs),
+      () => {
+        const fresh = SlackBridge.generateSessionId();
+        this.channelSessions.set(this.sessionKey(channelId, threadTs), fresh);
+        return fresh;
+      },
+    );
 
     let displayName: string | undefined;
     if (event.user) {

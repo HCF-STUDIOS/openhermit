@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type {
   ChannelMessageAction,
   ChannelOutbound,
@@ -163,9 +163,20 @@ export class SignalBridge implements ChannelOutbound {
     if (msg.isSelf) return;
 
     const key = conversationKey(msg);
-    const sessionId = await this.getSessionId(key, msg);
+    let sessionId = await this.getSessionId(key, msg);
     const senderChannelUserId = msg.sourceUuid ?? msg.sourceNumber ?? 'unknown';
-    await this.ensureSession(sessionId, msg, senderChannelUserId);
+    // A recovered session id may no longer be reopenable (stale/migrated, or
+    // a different resolved identity) — the agent API returns 404 Session not
+    // found. Fall back to a fresh session instead of failing the message.
+    sessionId = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, msg, senderChannelUserId),
+      () => {
+        const fresh = generateSessionId();
+        this.conversationSessions.set(key, fresh);
+        return fresh;
+      },
+    );
 
     // Resolve attachments: audio is transcribed via STT; other media is
     // uploaded as a durable session attachment (images become vision input).

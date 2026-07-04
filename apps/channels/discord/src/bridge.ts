@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -206,7 +206,18 @@ export class DiscordBridge implements ChannelOutbound {
     sessionId: string,
     text: string,
   ): Promise<void> {
-    await this.ensureSession(sessionId, event);
+    // A recovered session id may no longer be reopenable (stale/migrated, or
+    // a different resolved identity) — the agent API returns 404 Session not
+    // found. Fall back to a fresh session instead of failing the message.
+    sessionId = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, event),
+      () => {
+        const fresh = DiscordBridge.generateSessionId();
+        this.channelSessions.set(event.channelId, fresh);
+        return fresh;
+      },
+    );
 
     const resolved = await this.resolveInbound(sessionId, event, text);
     // Nothing usable (e.g. all attachments failed to fetch and no text).
