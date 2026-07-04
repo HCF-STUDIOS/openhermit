@@ -79,7 +79,7 @@ export async function submitCreateJob(
     );
   }
 
-  const url = `${baseUrl}${gatewayRoutes.agentCreateSubmit()}`;
+  const url = `${baseUrl.replace(/\/+$/, '')}${gatewayRoutes.agentCreateSubmit()}`;
 
   let response: Response;
   try {
@@ -108,8 +108,25 @@ export async function submitCreateJob(
     );
   }
 
-  const data = (await response.json()) as { jobId: string };
-  const jobId = data.jobId;
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (err) {
+    return errorResult(
+      mode,
+      `Failed to submit ${mode} create job: server returned an unreadable response (${err instanceof Error ? err.message : String(err)})`,
+      'bad_response',
+    );
+  }
+
+  const jobId = (data as { jobId?: unknown } | null)?.jobId;
+  if (typeof jobId !== 'string' || !jobId) {
+    return errorResult(
+      mode,
+      `Failed to submit ${mode} create job: server response did not include a job id.`,
+      'bad_response',
+    );
+  }
 
   if (context.publishEvent && context.sessionId) {
     context.publishEvent({
@@ -121,16 +138,20 @@ export async function submitCreateJob(
   }
 
   if (context.messageStore && context.storeScope && context.sessionId) {
-    await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
-      ts: new Date().toISOString(),
-      role: 'assistant',
-      content: '',
-      metadata: {
-        source: 'create_media',
-        mode,
-        jobId,
-      },
-    });
+    try {
+      await context.messageStore.appendLogEntry(context.storeScope, context.sessionId, {
+        ts: new Date().toISOString(),
+        role: 'assistant',
+        content: '',
+        metadata: {
+          source: 'create_media',
+          mode,
+          jobId,
+        },
+      });
+    } catch (err) {
+      console.error(`create_media: failed to persist log entry for ${mode} job ${jobId}:`, err);
+    }
   }
 
   return {
@@ -173,7 +194,16 @@ const CreateImageParams = Type.Object({
     description: 'Text description of the image to generate.',
   }),
   model: Type.String({ minLength: 1, description: 'Image model identifier to generate with.' }),
-  size: Type.String({ description: 'Output image size, e.g. "1024x1024".' }),
+  size: Type.Union(
+    [
+      Type.Literal('1:1'),
+      Type.Literal('16:9'),
+      Type.Literal('9:16'),
+      Type.Literal('4:3'),
+      Type.Literal('3:4'),
+    ],
+    { description: 'Output image aspect ratio.' },
+  ),
 });
 type CreateImageArgs = Static<typeof CreateImageParams>;
 
