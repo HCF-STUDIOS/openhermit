@@ -214,6 +214,118 @@ test('submitCreateJob: empty twinId short-circuits without calling fetch or emit
   assert.equal((result.details as { error?: string }).error, 'missing_credentials');
 });
 
+test('submitCreateJob: 2xx with a non-JSON body returns an error result without emitting pending_media', async (t) => {
+  const { context, publishEvents, appendedEntries } = await makeFakeContext(t);
+  const badJsonResponse = {
+    ok: true,
+    status: 202,
+    json: async () => {
+      throw new SyntaxError('Unexpected token in JSON');
+    },
+    text: async () => 'not json',
+  } as unknown as Response;
+  const fakeFetch = (async () => badJsonResponse) as unknown as typeof fetch;
+
+  const result = await submitCreateJob(
+    context,
+    {
+      mode: 'IMAGE',
+      jobBody: { prompt: 'a cat' },
+      baseUrl: 'https://x.test',
+      twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
+    },
+    { fetch: fakeFetch },
+  );
+
+  assert.equal(publishEvents.length, 0);
+  assert.equal(appendedEntries.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'bad_response');
+});
+
+test('submitCreateJob: 2xx JSON without a jobId returns an error result without emitting pending_media', async (t) => {
+  const { context, publishEvents, appendedEntries } = await makeFakeContext(t);
+  const fakeFetch = (async () => jsonResponse(202, { status: 'queued' })) as unknown as typeof fetch;
+
+  const result = await submitCreateJob(
+    context,
+    {
+      mode: 'IMAGE',
+      jobBody: { prompt: 'a cat' },
+      baseUrl: 'https://x.test',
+      twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
+    },
+    { fetch: fakeFetch },
+  );
+
+  assert.equal(publishEvents.length, 0);
+  assert.equal(appendedEntries.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'bad_response');
+});
+
+test('submitCreateJob: appendLogEntry throwing still returns the success result', async (t) => {
+  const { security, agentId } = await createSecurityFixture(t, { secrets: TWIN_SECRETS });
+  await security.load();
+  const publishEvents: Record<string, unknown>[] = [];
+  const storeScope: StoreScope = { agentId };
+  const messageStore = {
+    appendLogEntry: async () => {
+      throw new Error('store unavailable');
+    },
+  } as unknown as MessageStore;
+  const context: ToolContext = {
+    security,
+    sessionId: 'sess-1',
+    storeScope,
+    messageStore,
+    publishEvent: (event) => {
+      publishEvents.push(event);
+    },
+  };
+  const fakeFetch = (async () => jsonResponse(202, { jobId: 'j1' })) as unknown as typeof fetch;
+
+  const result = await submitCreateJob(
+    context,
+    {
+      mode: 'IMAGE',
+      jobBody: { prompt: 'a cat' },
+      baseUrl: 'https://x.test',
+      twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
+    },
+    { fetch: fakeFetch },
+  );
+
+  assert.equal(publishEvents.length, 1);
+  assert.deepEqual(result.details, { jobId: 'j1', mode: 'IMAGE' });
+  const text = getFirstText(result);
+  assert.match(text, /j1/);
+});
+
+test('submitCreateJob: trailing slash in baseUrl does not produce a double slash', async (t) => {
+  const { context } = await makeFakeContext(t);
+  const calls: FakeFetchCall[] = [];
+  const fakeFetch = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return jsonResponse(202, { jobId: 'j1' });
+  }) as unknown as typeof fetch;
+
+  await submitCreateJob(
+    context,
+    {
+      mode: 'IMAGE',
+      jobBody: { prompt: 'a cat' },
+      baseUrl: 'https://x.test/',
+      twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
+    },
+    { fetch: fakeFetch },
+  );
+
+  assert.equal(calls[0]?.url, 'https://x.test/api/create/jobs');
+});
+
 // ---------------------------------------------------------------------------
 // Per-mode create_* tools
 // ---------------------------------------------------------------------------
@@ -241,7 +353,7 @@ test('create_image: valid args submit an IMAGE job with mapped fields and resolv
   const { fetch: fakeFetch, calls } = captureFetch();
   const tool = createImageTool(context, { fetch: fakeFetch });
 
-  const args = { prompt: 'a cat astronaut', model: 'img-1', size: '1024x1024' };
+  const args = { prompt: 'a cat astronaut', model: 'img-1', size: '1:1' as const };
   assert.equal(Value.Check(tool.parameters, args), true);
 
   await tool.execute('call-1', args, new AbortController().signal, () => {});
@@ -252,7 +364,7 @@ test('create_image: valid args submit an IMAGE job with mapped fields and resolv
     mode: 'IMAGE',
     prompt: 'a cat astronaut',
     model: 'img-1',
-    size: '1024x1024',
+    size: '1:1',
     twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
   });
   assert.equal(publishEvents[0]?.mode, 'IMAGE');
@@ -260,14 +372,38 @@ test('create_image: valid args submit an IMAGE job with mapped fields and resolv
 
 test('create_image: schema rejects args missing the required prompt', () => {
   const tool = createImageTool({ security: undefined as never });
-  assert.equal(Value.Check(tool.parameters, { model: 'img-1', size: '1024x1024' }), false);
+  assert.equal(Value.Check(tool.parameters, { model: 'img-1', size: '1:1' }), false);
 });
 
 test('create_image: schema rejects an empty model', () => {
   const tool = createImageTool({ security: undefined as never });
   assert.equal(
-    Value.Check(tool.parameters, { prompt: 'a cat', model: '', size: '1024x1024' }),
+    Value.Check(tool.parameters, { prompt: 'a cat', model: '', size: '1:1' }),
     false,
+  );
+});
+
+test('create_image: schema rejects a pixel-string size', () => {
+  const tool = createImageTool({ security: undefined as never });
+  assert.equal(
+    Value.Check(tool.parameters, { prompt: 'a cat', model: 'img-1', size: '1024x1024' }),
+    false,
+  );
+});
+
+test('create_image: schema rejects an empty-string size', () => {
+  const tool = createImageTool({ security: undefined as never });
+  assert.equal(
+    Value.Check(tool.parameters, { prompt: 'a cat', model: 'img-1', size: '' }),
+    false,
+  );
+});
+
+test('create_image: schema accepts a valid aspect-ratio size', () => {
+  const tool = createImageTool({ security: undefined as never });
+  assert.equal(
+    Value.Check(tool.parameters, { prompt: 'a cat', model: 'img-1', size: '16:9' }),
+    true,
   );
 });
 
@@ -278,7 +414,7 @@ test('create_image: missing twin credentials short-circuits without calling fetc
 
   const result = await tool.execute(
     'call-1',
-    { prompt: 'a cat', model: 'img-1', size: '1024x1024' },
+    { prompt: 'a cat', model: 'img-1', size: '1:1' },
     new AbortController().signal,
     () => {},
   );
@@ -300,7 +436,7 @@ test('create_image: empty AMIKO_TWIN_ID short-circuits without calling fetch', a
 
   const result = await tool.execute(
     'call-1',
-    { prompt: 'a cat', model: 'img-1', size: '1024x1024' },
+    { prompt: 'a cat', model: 'img-1', size: '1:1' },
     new AbortController().signal,
     () => {},
   );
