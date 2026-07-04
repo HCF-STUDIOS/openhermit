@@ -13,12 +13,19 @@ export type CreateMediaMode = 'IMAGE' | 'VIDEO' | 'TTS' | 'SFX' | 'MUSIC';
 
 export interface SubmitCreateJobInput {
   mode: CreateMediaMode;
-  /** Mode-specific create body, WITHOUT twinId — the twin token binds it server-side. */
+  /** Mode-specific create body. `twinId` is merged in automatically from the field below. */
   jobBody: Record<string, unknown>;
   /** amiko-web base URL, e.g. from the `AMIKO_PLATFORM_URL` per-agent secret. */
   baseUrl: string;
   /** `clawd-`-prefixed twin JWT, e.g. from the `AMIKO_TWIN_TOKEN` per-agent secret. */
   twinToken: string;
+  /**
+   * Twin id, e.g. from the `AMIKO_TWIN_ID` per-agent secret. amiko-web's
+   * `bodySchema` (api/create/jobs/route.ts) requires `twinId` in every mode
+   * branch unconditionally — the twin-token auth only affects ownership,
+   * not body validation — so it must be sent explicitly on every request.
+   */
+  twinId: string;
 }
 
 export interface SubmitCreateJobDeps {
@@ -61,10 +68,10 @@ export async function submitCreateJob(
   input: SubmitCreateJobInput,
   deps: SubmitCreateJobDeps = {},
 ): Promise<SubmitCreateJobResult> {
-  const { mode, jobBody, baseUrl, twinToken } = input;
+  const { mode, jobBody, baseUrl, twinToken, twinId } = input;
   const doFetch = deps.fetch ?? fetch;
 
-  if (!baseUrl || !twinToken) {
+  if (!baseUrl || !twinToken || !twinId) {
     return errorResult(
       mode,
       `Unable to submit ${mode} create job: twin credentials are not configured.`,
@@ -82,7 +89,7 @@ export async function submitCreateJob(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${twinToken}`,
       },
-      body: JSON.stringify(jobBody),
+      body: JSON.stringify({ ...jobBody, twinId }),
     });
   } catch (err) {
     return errorResult(
@@ -140,15 +147,20 @@ export async function submitCreateJob(
  */
 const resolveTwinCreds = (
   security: ToolContext['security'],
-): { baseUrl: string; twinToken: string } => {
+): { baseUrl: string; twinToken: string; twinId: string } => {
   try {
-    const resolved = security.resolveSecrets(['AMIKO_PLATFORM_URL', 'AMIKO_TWIN_TOKEN']);
+    const resolved = security.resolveSecrets([
+      'AMIKO_PLATFORM_URL',
+      'AMIKO_TWIN_TOKEN',
+      'AMIKO_TWIN_ID',
+    ]);
     return {
       baseUrl: resolved.AMIKO_PLATFORM_URL ?? '',
       twinToken: resolved.AMIKO_TWIN_TOKEN ?? '',
+      twinId: resolved.AMIKO_TWIN_ID ?? '',
     };
   } catch {
-    return { baseUrl: '', twinToken: '' };
+    return { baseUrl: '', twinToken: '', twinId: '' };
   }
 };
 
@@ -160,7 +172,7 @@ const CreateImageParams = Type.Object({
     maxLength: 2000,
     description: 'Text description of the image to generate.',
   }),
-  model: Type.String({ description: 'Image model identifier to generate with.' }),
+  model: Type.String({ minLength: 1, description: 'Image model identifier to generate with.' }),
   size: Type.String({ description: 'Output image size, e.g. "1024x1024".' }),
 });
 type CreateImageArgs = Static<typeof CreateImageParams>;
@@ -176,7 +188,7 @@ export const createImageTool = (
     'Generate an image from a text prompt for the user. This is the ONLY real way to create images — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a viewable image in the chat once generation completes. The user is charged only on success.',
   parameters: CreateImageParams,
   execute: async (_toolCallId, args: CreateImageArgs) => {
-    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
       {
@@ -184,6 +196,7 @@ export const createImageTool = (
         jobBody: { mode: 'IMAGE', prompt: args.prompt, model: args.model, size: args.size },
         baseUrl,
         twinToken,
+        twinId,
       },
       deps,
     );
@@ -197,7 +210,7 @@ const CreateVideoParams = Type.Object({
       description: 'Text description of the video. Required for text-to-video; optional when firstFrameImage is supplied.',
     }),
   ),
-  model: Type.String({ description: 'Video model identifier to generate with.' }),
+  model: Type.String({ minLength: 1, description: 'Video model identifier to generate with.' }),
   resolution: Type.Optional(
     Type.Union(
       [
@@ -234,7 +247,7 @@ export const createVideoTool = (
     'Generate a video clip for the user. This is the ONLY real way to create videos — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a playable video in the chat once generation completes. The user is charged only on success.',
   parameters: CreateVideoParams,
   execute: async (_toolCallId, args: CreateVideoArgs) => {
-    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
       {
@@ -250,6 +263,7 @@ export const createVideoTool = (
         },
         baseUrl,
         twinToken,
+        twinId,
       },
       deps,
     );
@@ -262,7 +276,7 @@ const CreateTtsParams = Type.Object({
     maxLength: 5000,
     description: 'Text to speak.',
   }),
-  model: Type.String({ description: 'TTS model identifier to generate with.' }),
+  model: Type.String({ minLength: 1, description: 'TTS model identifier to generate with.' }),
   voiceId: Type.String({ description: 'Voice identifier to speak with.' }),
 });
 type CreateTtsArgs = Static<typeof CreateTtsParams>;
@@ -278,7 +292,7 @@ export const createTtsTool = (
     'Generate spoken audio from text in a specific voice for the user. This is the ONLY real way to create speech audio — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
   parameters: CreateTtsParams,
   execute: async (_toolCallId, args: CreateTtsArgs) => {
-    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
       {
@@ -286,6 +300,7 @@ export const createTtsTool = (
         jobBody: { mode: 'TTS', prompt: args.prompt, model: args.model, voiceId: args.voiceId },
         baseUrl,
         twinToken,
+        twinId,
       },
       deps,
     );
@@ -299,7 +314,7 @@ const CreateSfxParams = Type.Object({
     description: 'Text description of the sound effect to generate.',
   }),
   durationSeconds: Type.Optional(
-    Type.Number({ description: 'Desired sound effect length in seconds.' }),
+    Type.Number({ exclusiveMinimum: 0, description: 'Desired sound effect length in seconds.' }),
   ),
 });
 type CreateSfxArgs = Static<typeof CreateSfxParams>;
@@ -315,7 +330,7 @@ export const createSfxTool = (
     'Generate a short sound effect from a text description for the user. This is the ONLY real way to create sound effects — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
   parameters: CreateSfxParams,
   execute: async (_toolCallId, args: CreateSfxArgs) => {
-    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
       {
@@ -323,6 +338,7 @@ export const createSfxTool = (
         jobBody: { mode: 'SFX', prompt: args.prompt, durationSeconds: args.durationSeconds },
         baseUrl,
         twinToken,
+        twinId,
       },
       deps,
     );
@@ -337,11 +353,16 @@ const CreateMusicParams = Type.Object({
     }),
   ),
   model: Type.Optional(
-    Type.String({ description: 'Music model identifier. Defaults to "music-2.6".' }),
+    Type.String({ minLength: 1, description: 'Music model identifier. Defaults to "music-2.6".' }),
   ),
-  lyrics: Type.Optional(Type.String({ description: 'Lyrics for the song.' })),
+  lyrics: Type.Optional(
+    Type.String({ maxLength: 3500, description: 'Lyrics for the song.' }),
+  ),
   durationMs: Type.Optional(
-    Type.Number({ description: 'Desired track length in milliseconds (integer).' }),
+    Type.Integer({
+      exclusiveMinimum: 0,
+      description: 'Desired track length in milliseconds (integer).',
+    }),
   ),
   isInstrumental: Type.Optional(
     Type.Boolean({ description: 'Whether to generate an instrumental track with no vocals.' }),
@@ -360,7 +381,7 @@ export const createMusicTool = (
     'Generate a song/music track for the user. Async — posts a placeholder that resolves to playable audio in the chat. Charged on success. This is the ONLY real way to create music — it is not a placeholder or simulation.',
   parameters: CreateMusicParams,
   execute: async (_toolCallId, args: CreateMusicArgs) => {
-    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
     return submitCreateJob(
       context,
       {
@@ -375,6 +396,7 @@ export const createMusicTool = (
         },
         baseUrl,
         twinToken,
+        twinId,
       },
       deps,
     );
