@@ -87,6 +87,7 @@ test('submitCreateJob: success emits pending_media, persists, and returns queued
       jobBody: { prompt: 'lofi beat' },
       baseUrl: 'https://x.test',
       twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
     },
     { fetch: fakeFetch },
   );
@@ -95,6 +96,7 @@ test('submitCreateJob: success emits pending_media, persists, and returns queued
   assert.equal(calls[0]?.url, 'https://x.test/api/create/jobs');
   const headers = calls[0]?.init?.headers as Record<string, string>;
   assert.equal(headers['Authorization'], 'Bearer clawd-faketoken');
+  assert.deepEqual(bodyOf(calls[0]!), { prompt: 'lofi beat', twinId: 'twin-1' });
 
   assert.equal(publishEvents.length, 1);
   assert.deepEqual(publishEvents[0], {
@@ -123,6 +125,7 @@ test('submitCreateJob: non-2xx submit returns an error result without emitting p
       jobBody: { prompt: 'a cat' },
       baseUrl: 'https://x.test',
       twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
     },
     { fetch: fakeFetch },
   );
@@ -147,6 +150,7 @@ test('submitCreateJob: network error returns an error result without emitting pe
       jobBody: { prompt: 'hello' },
       baseUrl: 'https://x.test',
       twinToken: 'clawd-faketoken',
+      twinId: 'twin-1',
     },
     { fetch: fakeFetch },
   );
@@ -173,6 +177,33 @@ test('submitCreateJob: empty twinToken short-circuits without calling fetch or e
       jobBody: { prompt: 'boom' },
       baseUrl: 'https://x.test',
       twinToken: '',
+      twinId: 'twin-1',
+    },
+    { fetch: fakeFetch },
+  );
+
+  assert.equal(fetchCalled, false);
+  assert.equal(publishEvents.length, 0);
+  assert.equal(appendedEntries.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'missing_credentials');
+});
+
+test('submitCreateJob: empty twinId short-circuits without calling fetch or emitting pending_media', async (t) => {
+  const { context, publishEvents, appendedEntries } = await makeFakeContext(t);
+  let fetchCalled = false;
+  const fakeFetch = (async () => {
+    fetchCalled = true;
+    return jsonResponse(202, { jobId: 'j1' });
+  }) as unknown as typeof fetch;
+
+  const result = await submitCreateJob(
+    context,
+    {
+      mode: 'SFX',
+      jobBody: { prompt: 'boom' },
+      baseUrl: 'https://x.test',
+      twinToken: 'clawd-faketoken',
+      twinId: '',
     },
     { fetch: fakeFetch },
   );
@@ -190,6 +221,7 @@ test('submitCreateJob: empty twinToken short-circuits without calling fetch or e
 const TWIN_SECRETS = {
   AMIKO_PLATFORM_URL: 'https://x.test',
   AMIKO_TWIN_TOKEN: 'clawd-tooltoken',
+  AMIKO_TWIN_ID: 'twin-tool-id',
 };
 
 const captureFetch = (): { fetch: typeof fetch; calls: FakeFetchCall[] } => {
@@ -216,7 +248,13 @@ test('create_image: valid args submit an IMAGE job with mapped fields and resolv
 
   assert.equal(calls.length, 1);
   assert.equal((calls[0]?.init?.headers as Record<string, string>)['Authorization'], 'Bearer clawd-tooltoken');
-  assert.deepEqual(bodyOf(calls[0]!), { mode: 'IMAGE', prompt: 'a cat astronaut', model: 'img-1', size: '1024x1024' });
+  assert.deepEqual(bodyOf(calls[0]!), {
+    mode: 'IMAGE',
+    prompt: 'a cat astronaut',
+    model: 'img-1',
+    size: '1024x1024',
+    twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
+  });
   assert.equal(publishEvents[0]?.mode, 'IMAGE');
 });
 
@@ -225,8 +263,38 @@ test('create_image: schema rejects args missing the required prompt', () => {
   assert.equal(Value.Check(tool.parameters, { model: 'img-1', size: '1024x1024' }), false);
 });
 
+test('create_image: schema rejects an empty model', () => {
+  const tool = createImageTool({ security: undefined as never });
+  assert.equal(
+    Value.Check(tool.parameters, { prompt: 'a cat', model: '', size: '1024x1024' }),
+    false,
+  );
+});
+
 test('create_image: missing twin credentials short-circuits without calling fetch', async (t) => {
   const { context } = await makeFakeContext(t);
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createImageTool(context, { fetch: fakeFetch });
+
+  const result = await tool.execute(
+    'call-1',
+    { prompt: 'a cat', model: 'img-1', size: '1024x1024' },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(calls.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'missing_credentials');
+});
+
+test('create_image: empty AMIKO_TWIN_ID short-circuits without calling fetch', async (t) => {
+  const { context } = await makeFakeContext(t, {
+    secrets: {
+      AMIKO_PLATFORM_URL: TWIN_SECRETS.AMIKO_PLATFORM_URL,
+      AMIKO_TWIN_TOKEN: TWIN_SECRETS.AMIKO_TWIN_TOKEN,
+      AMIKO_TWIN_ID: '',
+    },
+  });
   const { fetch: fakeFetch, calls } = captureFetch();
   const tool = createImageTool(context, { fetch: fakeFetch });
 
@@ -266,6 +334,7 @@ test('create_video: valid args submit a VIDEO job with explicit fields', async (
     seconds: 10,
     aspectRatio: '16:9',
     firstFrameImage: 'https://x.test/frame.png',
+    twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
   });
   assert.equal(publishEvents[0]?.mode, 'VIDEO');
 });
@@ -290,6 +359,11 @@ test('create_video: schema rejects an invalid resolution enum value', () => {
   );
 });
 
+test('create_video: schema rejects an empty model', () => {
+  const tool = createVideoTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { model: '' }), false);
+});
+
 test('create_tts: valid args submit a TTS job with mapped fields', async (t) => {
   const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
   const { fetch: fakeFetch, calls } = captureFetch();
@@ -300,13 +374,24 @@ test('create_tts: valid args submit a TTS job with mapped fields', async (t) => 
 
   await tool.execute('call-1', args, new AbortController().signal, () => {});
 
-  assert.deepEqual(bodyOf(calls[0]!), { mode: 'TTS', prompt: 'hello there', model: 'tts-1', voiceId: 'voice-1' });
+  assert.deepEqual(bodyOf(calls[0]!), {
+    mode: 'TTS',
+    prompt: 'hello there',
+    model: 'tts-1',
+    voiceId: 'voice-1',
+    twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
+  });
   assert.equal(publishEvents[0]?.mode, 'TTS');
 });
 
 test('create_tts: schema rejects args missing the required voiceId', () => {
   const tool = createTtsTool({ security: undefined as never });
   assert.equal(Value.Check(tool.parameters, { prompt: 'hi', model: 'tts-1' }), false);
+});
+
+test('create_tts: schema rejects an empty model', () => {
+  const tool = createTtsTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { prompt: 'hi', model: '', voiceId: 'voice-1' }), false);
 });
 
 test('create_sfx: valid args submit an SFX job with mapped fields', async (t) => {
@@ -319,13 +404,23 @@ test('create_sfx: valid args submit an SFX job with mapped fields', async (t) =>
 
   await tool.execute('call-1', args, new AbortController().signal, () => {});
 
-  assert.deepEqual(bodyOf(calls[0]!), { mode: 'SFX', prompt: 'a door slamming', durationSeconds: 3 });
+  assert.deepEqual(bodyOf(calls[0]!), {
+    mode: 'SFX',
+    prompt: 'a door slamming',
+    durationSeconds: 3,
+    twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
+  });
   assert.equal(publishEvents[0]?.mode, 'SFX');
 });
 
 test('create_sfx: schema rejects a prompt over 500 characters', () => {
   const tool = createSfxTool({ security: undefined as never });
   assert.equal(Value.Check(tool.parameters, { prompt: 'x'.repeat(501) }), false);
+});
+
+test('create_sfx: schema rejects a negative durationSeconds', () => {
+  const tool = createSfxTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { prompt: 'boom', durationSeconds: -1 }), false);
 });
 
 test('create_music: valid args submit a MUSIC job with mapped fields', async (t) => {
@@ -345,6 +440,7 @@ test('create_music: valid args submit a MUSIC job with mapped fields', async (t)
     lyrics: 'la la la',
     durationMs: 30000,
     isInstrumental: false,
+    twinId: TWIN_SECRETS.AMIKO_TWIN_ID,
   });
   assert.equal(publishEvents[0]?.mode, 'MUSIC');
 });
@@ -362,6 +458,26 @@ test('create_music: model omitted defaults to music-2.6', async (t) => {
 test('create_music: schema rejects a non-numeric durationMs', () => {
   const tool = createMusicTool({ security: undefined as never });
   assert.equal(Value.Check(tool.parameters, { durationMs: 'thirty-thousand' }), false);
+});
+
+test('create_music: schema rejects a non-integer durationMs', () => {
+  const tool = createMusicTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { durationMs: 30000.5 }), false);
+});
+
+test('create_music: schema rejects a negative durationMs', () => {
+  const tool = createMusicTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { durationMs: -100 }), false);
+});
+
+test('create_music: schema rejects lyrics over 3500 characters', () => {
+  const tool = createMusicTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { lyrics: 'x'.repeat(3501) }), false);
+});
+
+test('create_music: schema accepts lyrics at exactly 3500 characters', () => {
+  const tool = createMusicTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { lyrics: 'x'.repeat(3500) }), true);
 });
 
 test('createMediaToolset: registers all five create_* tools under id create_media', async (t) => {

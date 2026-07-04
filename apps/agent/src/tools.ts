@@ -84,6 +84,8 @@ export const createBuiltInToolsets = (
     toolsets.push(createAttachmentToolset(context));
     toolsets.push(createDocToolset(context));
   }
+  // `security` is non-optional on ToolContext, so this always registers —
+  // it reads like a feature gate but isn't one.
   if (context.security) {
     toolsets.push(createMediaToolset(context));
   }
