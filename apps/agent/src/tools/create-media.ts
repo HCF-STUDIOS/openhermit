@@ -1,6 +1,13 @@
+import { Type, type Static } from '@mariozechner/pi-ai';
 import { gatewayRoutes } from '@openhermit/protocol';
 
-import { asTextContent, formatJson, type ToolContext } from './shared.js';
+import {
+  asTextContent,
+  formatJson,
+  type PolicyAwareTool,
+  type Toolset,
+  type ToolContext,
+} from './shared.js';
 
 export type CreateMediaMode = 'IMAGE' | 'VIDEO' | 'TTS' | 'SFX' | 'MUSIC';
 
@@ -124,3 +131,267 @@ export async function submitCreateJob(
     details: { jobId, mode },
   };
 }
+
+/**
+ * Resolves the twin's amiko-web credentials for `submitCreateJob`.
+ * `security.resolveSecrets` throws when a requested secret is missing —
+ * caught here so tools degrade to `submitCreateJob`'s honest
+ * `missing_credentials` error instead of throwing out of `execute`.
+ */
+const resolveTwinCreds = (
+  security: ToolContext['security'],
+): { baseUrl: string; twinToken: string } => {
+  try {
+    const resolved = security.resolveSecrets(['AMIKO_PLATFORM_URL', 'AMIKO_TWIN_TOKEN']);
+    return {
+      baseUrl: resolved.AMIKO_PLATFORM_URL ?? '',
+      twinToken: resolved.AMIKO_TWIN_TOKEN ?? '',
+    };
+  } catch {
+    return { baseUrl: '', twinToken: '' };
+  }
+};
+
+const CREATE_MEDIA_POLICY = { defaultGrants: [{ type: 'role' as const, value: 'owner' as const }, { type: 'role' as const, value: 'user' as const }] };
+
+const CreateImageParams = Type.Object({
+  prompt: Type.String({
+    minLength: 1,
+    maxLength: 2000,
+    description: 'Text description of the image to generate.',
+  }),
+  model: Type.String({ description: 'Image model identifier to generate with.' }),
+  size: Type.String({ description: 'Output image size, e.g. "1024x1024".' }),
+});
+type CreateImageArgs = Static<typeof CreateImageParams>;
+
+export const createImageTool = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): PolicyAwareTool<typeof CreateImageParams> => ({
+  policy: CREATE_MEDIA_POLICY,
+  name: 'create_image',
+  label: 'Create Image',
+  description:
+    'Generate an image from a text prompt for the user. This is the ONLY real way to create images — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a viewable image in the chat once generation completes. The user is charged only on success.',
+  parameters: CreateImageParams,
+  execute: async (_toolCallId, args: CreateImageArgs) => {
+    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    return submitCreateJob(
+      context,
+      {
+        mode: 'IMAGE',
+        jobBody: { mode: 'IMAGE', prompt: args.prompt, model: args.model, size: args.size },
+        baseUrl,
+        twinToken,
+      },
+      deps,
+    );
+  },
+});
+
+const CreateVideoParams = Type.Object({
+  prompt: Type.Optional(
+    Type.String({
+      maxLength: 2000,
+      description: 'Text description of the video. Required for text-to-video; optional when firstFrameImage is supplied.',
+    }),
+  ),
+  model: Type.String({ description: 'Video model identifier to generate with.' }),
+  resolution: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal('512P'),
+        Type.Literal('720P'),
+        Type.Literal('768P'),
+        Type.Literal('1080P'),
+      ],
+      { description: 'Output video resolution. Defaults to "768P".' },
+    ),
+  ),
+  seconds: Type.Optional(
+    Type.Union([Type.Literal(6), Type.Literal(10)], {
+      description: 'Video length in seconds, 6 or 10. Defaults to 6.',
+    }),
+  ),
+  aspectRatio: Type.Optional(
+    Type.String({ description: 'Output aspect ratio, e.g. "16:9".' }),
+  ),
+  firstFrameImage: Type.Optional(
+    Type.String({ description: 'Image-to-video: URL or base64 data URI of the first frame.' }),
+  ),
+});
+type CreateVideoArgs = Static<typeof CreateVideoParams>;
+
+export const createVideoTool = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): PolicyAwareTool<typeof CreateVideoParams> => ({
+  policy: CREATE_MEDIA_POLICY,
+  name: 'create_video',
+  label: 'Create Video',
+  description:
+    'Generate a video clip for the user. This is the ONLY real way to create videos — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a playable video in the chat once generation completes. The user is charged only on success.',
+  parameters: CreateVideoParams,
+  execute: async (_toolCallId, args: CreateVideoArgs) => {
+    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    return submitCreateJob(
+      context,
+      {
+        mode: 'VIDEO',
+        jobBody: {
+          mode: 'VIDEO',
+          prompt: args.prompt,
+          model: args.model,
+          resolution: args.resolution ?? '768P',
+          seconds: args.seconds ?? 6,
+          aspectRatio: args.aspectRatio,
+          firstFrameImage: args.firstFrameImage,
+        },
+        baseUrl,
+        twinToken,
+      },
+      deps,
+    );
+  },
+});
+
+const CreateTtsParams = Type.Object({
+  prompt: Type.String({
+    minLength: 1,
+    maxLength: 5000,
+    description: 'Text to speak.',
+  }),
+  model: Type.String({ description: 'TTS model identifier to generate with.' }),
+  voiceId: Type.String({ description: 'Voice identifier to speak with.' }),
+});
+type CreateTtsArgs = Static<typeof CreateTtsParams>;
+
+export const createTtsTool = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): PolicyAwareTool<typeof CreateTtsParams> => ({
+  policy: CREATE_MEDIA_POLICY,
+  name: 'create_tts',
+  label: 'Create Text-to-Speech',
+  description:
+    'Generate spoken audio from text in a specific voice for the user. This is the ONLY real way to create speech audio — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
+  parameters: CreateTtsParams,
+  execute: async (_toolCallId, args: CreateTtsArgs) => {
+    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    return submitCreateJob(
+      context,
+      {
+        mode: 'TTS',
+        jobBody: { mode: 'TTS', prompt: args.prompt, model: args.model, voiceId: args.voiceId },
+        baseUrl,
+        twinToken,
+      },
+      deps,
+    );
+  },
+});
+
+const CreateSfxParams = Type.Object({
+  prompt: Type.String({
+    minLength: 1,
+    maxLength: 500,
+    description: 'Text description of the sound effect to generate.',
+  }),
+  durationSeconds: Type.Optional(
+    Type.Number({ description: 'Desired sound effect length in seconds.' }),
+  ),
+});
+type CreateSfxArgs = Static<typeof CreateSfxParams>;
+
+export const createSfxTool = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): PolicyAwareTool<typeof CreateSfxParams> => ({
+  policy: CREATE_MEDIA_POLICY,
+  name: 'create_sfx',
+  label: 'Create Sound Effect',
+  description:
+    'Generate a short sound effect from a text description for the user. This is the ONLY real way to create sound effects — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
+  parameters: CreateSfxParams,
+  execute: async (_toolCallId, args: CreateSfxArgs) => {
+    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    return submitCreateJob(
+      context,
+      {
+        mode: 'SFX',
+        jobBody: { mode: 'SFX', prompt: args.prompt, durationSeconds: args.durationSeconds },
+        baseUrl,
+        twinToken,
+      },
+      deps,
+    );
+  },
+});
+
+const CreateMusicParams = Type.Object({
+  prompt: Type.Optional(
+    Type.String({
+      maxLength: 2000,
+      description: 'Description or theme of the song. Optional in cover mode.',
+    }),
+  ),
+  model: Type.Optional(
+    Type.String({ description: 'Music model identifier. Defaults to "music-2.6".' }),
+  ),
+  lyrics: Type.Optional(Type.String({ description: 'Lyrics for the song.' })),
+  durationMs: Type.Optional(
+    Type.Number({ description: 'Desired track length in milliseconds (integer).' }),
+  ),
+  isInstrumental: Type.Optional(
+    Type.Boolean({ description: 'Whether to generate an instrumental track with no vocals.' }),
+  ),
+});
+type CreateMusicArgs = Static<typeof CreateMusicParams>;
+
+export const createMusicTool = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): PolicyAwareTool<typeof CreateMusicParams> => ({
+  policy: CREATE_MEDIA_POLICY,
+  name: 'create_music',
+  label: 'Create Music',
+  description:
+    'Generate a song/music track for the user. Async — posts a placeholder that resolves to playable audio in the chat. Charged on success. This is the ONLY real way to create music — it is not a placeholder or simulation.',
+  parameters: CreateMusicParams,
+  execute: async (_toolCallId, args: CreateMusicArgs) => {
+    const { baseUrl, twinToken } = resolveTwinCreds(context.security);
+    return submitCreateJob(
+      context,
+      {
+        mode: 'MUSIC',
+        jobBody: {
+          mode: 'MUSIC',
+          prompt: args.prompt,
+          model: args.model ?? 'music-2.6',
+          lyrics: args.lyrics,
+          durationMs: args.durationMs,
+          isInstrumental: args.isInstrumental,
+        },
+        baseUrl,
+        twinToken,
+      },
+      deps,
+    );
+  },
+});
+
+export const createMediaToolset = (
+  context: ToolContext,
+  deps: SubmitCreateJobDeps = {},
+): Toolset => ({
+  id: 'create_media',
+  description: 'Generate images, video, speech, sound effects, and music for the user.',
+  tools: [
+    createImageTool(context, deps),
+    createVideoTool(context, deps),
+    createTtsTool(context, deps),
+    createSfxTool(context, deps),
+    createMusicTool(context, deps),
+  ],
+});

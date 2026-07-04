@@ -3,7 +3,17 @@ import { test } from 'node:test';
 
 import type { MessageStore, StoreScope } from '@openhermit/store';
 
-import { submitCreateJob } from '../src/tools/create-media.js';
+import { Value } from 'typebox/value';
+
+import {
+  createImageTool,
+  createMediaToolset,
+  createMusicTool,
+  createSfxTool,
+  createTtsTool,
+  createVideoTool,
+  submitCreateJob,
+} from '../src/tools/create-media.js';
 import type { ToolContext } from '../src/tools/shared.js';
 import { createSecurityFixture } from './helpers.js';
 
@@ -19,12 +29,17 @@ interface FakeFetchCall {
 
 const makeFakeContext = async (
   t: import('node:test').TestContext,
+  options?: { secrets?: Record<string, string> },
 ): Promise<{
   context: ToolContext;
   publishEvents: Record<string, unknown>[];
   appendedEntries: unknown[];
 }> => {
-  const { security, agentId } = await createSecurityFixture(t);
+  const { security, agentId } = await createSecurityFixture(
+    t,
+    options?.secrets ? { secrets: options.secrets } : undefined,
+  );
+  await security.load();
   const publishEvents: Record<string, unknown>[] = [];
   const appendedEntries: unknown[] = [];
 
@@ -166,4 +181,196 @@ test('submitCreateJob: empty twinToken short-circuits without calling fetch or e
   assert.equal(publishEvents.length, 0);
   assert.equal(appendedEntries.length, 0);
   assert.equal((result.details as { error?: string }).error, 'missing_credentials');
+});
+
+// ---------------------------------------------------------------------------
+// Per-mode create_* tools
+// ---------------------------------------------------------------------------
+
+const TWIN_SECRETS = {
+  AMIKO_PLATFORM_URL: 'https://x.test',
+  AMIKO_TWIN_TOKEN: 'clawd-tooltoken',
+};
+
+const captureFetch = (): { fetch: typeof fetch; calls: FakeFetchCall[] } => {
+  const calls: FakeFetchCall[] = [];
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return jsonResponse(202, { jobId: 'job-abc' });
+  }) as unknown as typeof fetch;
+  return { fetch: fetchImpl, calls };
+};
+
+const bodyOf = (call: FakeFetchCall): Record<string, unknown> =>
+  JSON.parse(String(call.init?.body)) as Record<string, unknown>;
+
+test('create_image: valid args submit an IMAGE job with mapped fields and resolved creds', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createImageTool(context, { fetch: fakeFetch });
+
+  const args = { prompt: 'a cat astronaut', model: 'img-1', size: '1024x1024' };
+  assert.equal(Value.Check(tool.parameters, args), true);
+
+  await tool.execute('call-1', args, new AbortController().signal, () => {});
+
+  assert.equal(calls.length, 1);
+  assert.equal((calls[0]?.init?.headers as Record<string, string>)['Authorization'], 'Bearer clawd-tooltoken');
+  assert.deepEqual(bodyOf(calls[0]!), { mode: 'IMAGE', prompt: 'a cat astronaut', model: 'img-1', size: '1024x1024' });
+  assert.equal(publishEvents[0]?.mode, 'IMAGE');
+});
+
+test('create_image: schema rejects args missing the required prompt', () => {
+  const tool = createImageTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { model: 'img-1', size: '1024x1024' }), false);
+});
+
+test('create_image: missing twin credentials short-circuits without calling fetch', async (t) => {
+  const { context } = await makeFakeContext(t);
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createImageTool(context, { fetch: fakeFetch });
+
+  const result = await tool.execute(
+    'call-1',
+    { prompt: 'a cat', model: 'img-1', size: '1024x1024' },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(calls.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'missing_credentials');
+});
+
+test('create_video: valid args submit a VIDEO job with explicit fields', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createVideoTool(context, { fetch: fakeFetch });
+
+  const args = {
+    prompt: 'a dog running',
+    model: 'video-1',
+    resolution: '720P' as const,
+    seconds: 10 as const,
+    aspectRatio: '16:9',
+    firstFrameImage: 'https://x.test/frame.png',
+  };
+  assert.equal(Value.Check(tool.parameters, args), true);
+
+  await tool.execute('call-1', args, new AbortController().signal, () => {});
+
+  assert.deepEqual(bodyOf(calls[0]!), {
+    mode: 'VIDEO',
+    prompt: 'a dog running',
+    model: 'video-1',
+    resolution: '720P',
+    seconds: 10,
+    aspectRatio: '16:9',
+    firstFrameImage: 'https://x.test/frame.png',
+  });
+  assert.equal(publishEvents[0]?.mode, 'VIDEO');
+});
+
+test('create_video: omitted resolution/seconds default to 768P/6', async (t) => {
+  const { context } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createVideoTool(context, { fetch: fakeFetch });
+
+  await tool.execute('call-1', { model: 'video-1' }, new AbortController().signal, () => {});
+
+  const body = bodyOf(calls[0]!);
+  assert.equal(body.resolution, '768P');
+  assert.equal(body.seconds, 6);
+});
+
+test('create_video: schema rejects an invalid resolution enum value', () => {
+  const tool = createVideoTool({ security: undefined as never });
+  assert.equal(
+    Value.Check(tool.parameters, { model: 'video-1', resolution: '4K' }),
+    false,
+  );
+});
+
+test('create_tts: valid args submit a TTS job with mapped fields', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createTtsTool(context, { fetch: fakeFetch });
+
+  const args = { prompt: 'hello there', model: 'tts-1', voiceId: 'voice-1' };
+  assert.equal(Value.Check(tool.parameters, args), true);
+
+  await tool.execute('call-1', args, new AbortController().signal, () => {});
+
+  assert.deepEqual(bodyOf(calls[0]!), { mode: 'TTS', prompt: 'hello there', model: 'tts-1', voiceId: 'voice-1' });
+  assert.equal(publishEvents[0]?.mode, 'TTS');
+});
+
+test('create_tts: schema rejects args missing the required voiceId', () => {
+  const tool = createTtsTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { prompt: 'hi', model: 'tts-1' }), false);
+});
+
+test('create_sfx: valid args submit an SFX job with mapped fields', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createSfxTool(context, { fetch: fakeFetch });
+
+  const args = { prompt: 'a door slamming', durationSeconds: 3 };
+  assert.equal(Value.Check(tool.parameters, args), true);
+
+  await tool.execute('call-1', args, new AbortController().signal, () => {});
+
+  assert.deepEqual(bodyOf(calls[0]!), { mode: 'SFX', prompt: 'a door slamming', durationSeconds: 3 });
+  assert.equal(publishEvents[0]?.mode, 'SFX');
+});
+
+test('create_sfx: schema rejects a prompt over 500 characters', () => {
+  const tool = createSfxTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { prompt: 'x'.repeat(501) }), false);
+});
+
+test('create_music: valid args submit a MUSIC job with mapped fields', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createMusicTool(context, { fetch: fakeFetch });
+
+  const args = { prompt: 'lofi beat', lyrics: 'la la la', durationMs: 30000, isInstrumental: false };
+  assert.equal(Value.Check(tool.parameters, args), true);
+
+  await tool.execute('call-1', args, new AbortController().signal, () => {});
+
+  assert.deepEqual(bodyOf(calls[0]!), {
+    mode: 'MUSIC',
+    prompt: 'lofi beat',
+    model: 'music-2.6',
+    lyrics: 'la la la',
+    durationMs: 30000,
+    isInstrumental: false,
+  });
+  assert.equal(publishEvents[0]?.mode, 'MUSIC');
+});
+
+test('create_music: model omitted defaults to music-2.6', async (t) => {
+  const { context } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createMusicTool(context, { fetch: fakeFetch });
+
+  await tool.execute('call-1', {}, new AbortController().signal, () => {});
+
+  assert.equal(bodyOf(calls[0]!).model, 'music-2.6');
+});
+
+test('create_music: schema rejects a non-numeric durationMs', () => {
+  const tool = createMusicTool({ security: undefined as never });
+  assert.equal(Value.Check(tool.parameters, { durationMs: 'thirty-thousand' }), false);
+});
+
+test('createMediaToolset: registers all five create_* tools under id create_media', async (t) => {
+  const { context } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const toolset = createMediaToolset(context);
+
+  assert.equal(toolset.id, 'create_media');
+  assert.deepEqual(
+    toolset.tools.map((tool) => tool.name).sort(),
+    ['create_image', 'create_music', 'create_sfx', 'create_tts', 'create_video'],
+  );
 });

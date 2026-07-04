@@ -21,6 +21,7 @@ import { createPolicyToolset } from './tools/policy.js';
 import { createApprovalToolset } from './tools/approval-request.js';
 import { createAttachmentToolset } from './tools/attachment.js';
 import { createDocToolset } from './tools/doc-read.js';
+import { createMediaToolset } from './tools/create-media.js';
 
 export type {
   ApprovalCallback,
@@ -82,6 +83,9 @@ export const createBuiltInToolsets = (
   if (context.attachmentStore && context.attachmentStorage) {
     toolsets.push(createAttachmentToolset(context));
     toolsets.push(createDocToolset(context));
+  }
+  if (context.security) {
+    toolsets.push(createMediaToolset(context));
   }
   // working_memory_update is intentionally excluded from the main agent —
   // it is only available to the introspection agent to prevent overwrite conflicts.
