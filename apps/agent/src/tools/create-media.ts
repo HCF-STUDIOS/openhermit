@@ -21,9 +21,9 @@ export interface SubmitCreateJobInput {
   twinToken: string;
   /**
    * Twin id, e.g. from the `AMIKO_TWIN_ID` per-agent secret. amiko-web's
-   * `bodySchema` (api/create/jobs/route.ts) requires `twinId` in every mode
-   * branch unconditionally — the twin-token auth only affects ownership,
-   * not body validation — so it must be sent explicitly on every request.
+   * `bodySchema` in api/create/jobs/route.ts requires `twinId` unconditionally
+   * in every mode branch, since twin-token auth only affects ownership, not
+   * body validation, so it must be sent explicitly on every request.
    */
   twinId: string;
 }
@@ -55,12 +55,12 @@ const errorResult = (
 /**
  * Submits a create job to amiko-web as the twin, emits a `pending_media`
  * event so a skeleton renders in the live conversation, and returns a
- * compact `{jobId, status}` result to the model. Non-blocking — this does
+ * compact `{jobId, status}` result to the model. Non-blocking, this does
  * NOT poll to completion; resolution is client-driven later.
  *
  * Kept pure of secret resolution: `baseUrl`/`twinToken` are explicit inputs
- * so the tool factory (which reads `security.resolveSecrets(...)`) stays the
- * only place that touches secret storage, and this helper is trivially
+ * so the tool factory, which reads `security.resolveSecrets(...)`, stays
+ * the only place that touches secret storage, and this helper is trivially
  * unit-testable.
  */
 export async function submitCreateJob(
@@ -162,7 +162,7 @@ export async function submitCreateJob(
 
 /**
  * Resolves the twin's amiko-web credentials for `submitCreateJob`.
- * `security.resolveSecrets` throws when a requested secret is missing —
+ * `security.resolveSecrets` throws when a requested secret is missing,
  * caught here so tools degrade to `submitCreateJob`'s honest
  * `missing_credentials` error instead of throwing out of `execute`.
  */
