@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
 
 import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
 import { formatAgentResponse, markdownToDiscord } from './formatting.js';

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type {
   ChannelMessageAction,
   ChannelOutbound,
   ChannelOutboundResult,
   OutboundSession,
 } from '@openhermit/protocol';
-import { stripSilenceTokens } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
 
 import type { SendOptions, SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';

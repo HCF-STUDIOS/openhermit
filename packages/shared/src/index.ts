@@ -115,3 +115,8 @@ export const requireEnv = (name: string): string => {
 
   return value;
 };
+
+export {
+  isSessionNotFoundError,
+  openSessionWithFreshFallback,
+} from './session-recovery.js';
