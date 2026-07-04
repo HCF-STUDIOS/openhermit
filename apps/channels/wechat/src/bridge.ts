@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type {
   ChannelMessageAction,
   ChannelOutbound,
@@ -534,8 +534,19 @@ export class WechatBridge implements ChannelOutbound {
     const turnContextToken = msg.context_token?.trim();
 
     const isGroup = Boolean(msg.group_id?.trim());
-    const sessionId = await this.getSessionId(peer, isGroup);
-    await this.ensureSession(sessionId, msg, isGroup);
+    let sessionId = await this.getSessionId(peer, isGroup);
+    // A recovered session id may no longer be reopenable (stale/migrated, or
+    // a different resolved identity) — the agent API returns 404 Session not
+    // found. Fall back to a fresh session instead of failing the message.
+    sessionId = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, msg, isGroup),
+      () => {
+        const fresh = WechatBridge.generateSessionId();
+        this.peerSessions.set(peer, fresh);
+        return fresh;
+      },
+    );
 
     // Download + decrypt inbound images and upload them as session
     // attachments (images become vision input). Text/captions are kept.

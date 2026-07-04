@@ -1,4 +1,4 @@
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type {
   ChannelMessageAction,
   ChannelOutbound,
@@ -157,8 +157,20 @@ export class WhatsAppBridge implements ChannelOutbound {
       return;
     }
 
-    const sessionId = await this.getSessionId(event.chatJid);
-    await this.ensureSession(sessionId, event);
+    let sessionId = await this.getSessionId(event.chatJid);
+    // A recovered session id may no longer be reopenable (stale/migrated, or
+    // a different resolved identity) — the agent API returns 404 Session not
+    // found. Fall back to a fresh session instead of failing the message.
+    sessionId = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, event),
+      () => {
+        const normalized = normalizeJid(event.chatJid);
+        const fresh = generateSessionId(isGroupJid(normalized));
+        this.chatSessions.set(normalized, fresh);
+        return fresh;
+      },
+    );
 
     // Resolve media: inbound voice/audio is transcribed via STT; other media
     // is uploaded as a durable attachment so the agent can read/see it.

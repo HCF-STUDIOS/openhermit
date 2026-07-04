@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
+import { AgentLocalClient, parseSseFrames, openSessionWithFreshFallback } from '@openhermit/sdk';
 import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
 import { stripSilenceTokens } from '@openhermit/shared';
 
@@ -403,8 +403,6 @@ export class TelegramBridge implements ChannelOutbound {
   ): Promise<void> {
     const mentioned = isGroup ? await this.isMentioned(message) : true;
 
-    await this.ensureSession(sessionId, message, isGroup);
-
     const displayName = message.from?.first_name || message.from?.username;
     const senderPayload = message.from
       ? {
@@ -416,14 +414,30 @@ export class TelegramBridge implements ChannelOutbound {
         }
       : {};
 
+    // `getSessionId` may recover a persisted session id the current runner
+    // can no longer reopen (stale/migrated session, or one belonging to a
+    // different resolved identity) — the agent API then returns
+    // `404 Session not found`. Fall back to a fresh session so the message
+    // still gets through instead of surfacing "something went wrong".
+    const sid = await openSessionWithFreshFallback(
+      sessionId,
+      (id) => this.ensureSession(id, message, isGroup),
+      () => {
+        const fresh = TelegramBridge.generateSessionId();
+        this.chatSessions.set(chatId, fresh);
+        this.log(`stale session ${sessionId} for chat ${chatId}; started fresh ${fresh}`);
+        return fresh;
+      },
+    );
+
     // Upload any inbound photo/document/video as a session attachment
     // (images become vision input automatically).
-    const attachments = await this.resolveMediaAttachment(message, sessionId);
+    const attachments = await this.resolveMediaAttachment(message, sid);
 
     // Media-only message whose upload failed: nothing usable to forward.
     if (!text && attachments.length === 0) return;
 
-    const postResult = await this.client.postMessage(sessionId, {
+    const postResult = await this.client.postMessage(sid, {
       text,
       mentioned,
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -434,7 +448,7 @@ export class TelegramBridge implements ChannelOutbound {
 
     void this.telegram.sendChatAction(chatId).catch(() => undefined);
 
-    const result = await this.waitForAgentResponse(sessionId, chatId, inboundWasVoice);
+    const result = await this.waitForAgentResponse(sid, chatId, inboundWasVoice);
 
     if (result.error && !result.text) {
       await this.telegram.sendMessage(chatId, `Error: ${result.error}`);
@@ -442,10 +456,10 @@ export class TelegramBridge implements ChannelOutbound {
       if (inboundWasVoice) {
         const sent = await this.trySendVoiceReply(chatId, result.text);
         if (!sent) {
-          await this.send({ sessionId, to: String(chatId), text: result.text });
+          await this.send({ sessionId: sid, to: String(chatId), text: result.text });
         }
       } else {
-        await this.send({ sessionId, to: String(chatId), text: result.text });
+        await this.send({ sessionId: sid, to: String(chatId), text: result.text });
       }
     }
   }
