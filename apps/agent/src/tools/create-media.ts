@@ -185,7 +185,7 @@ const resolveTwinCreds = (
   }
 };
 
-const CREATE_MEDIA_POLICY = { defaultGrants: [{ type: 'role' as const, value: 'owner' as const }, { type: 'role' as const, value: 'user' as const }] };
+const CREATE_MEDIA_POLICY = { defaultGrants: [{ type: 'role' as const, value: 'owner' as const }] };
 
 const CreateImageParams = Type.Object({
   prompt: Type.String({
@@ -215,7 +215,7 @@ export const createImageTool = (
   name: 'create_image',
   label: 'Create Image',
   description:
-    'Generate an image from a text prompt for the user. This is the ONLY real way to create images — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a viewable image in the chat once generation completes. The user is charged only on success.',
+    'Generate an image from a text prompt for the user. This is the ONLY real way to create images — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a viewable image in the chat once generation completes. The twin\'s wallet is charged only on success.',
   parameters: CreateImageParams,
   execute: async (_toolCallId, args: CreateImageArgs) => {
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
@@ -274,7 +274,7 @@ export const createVideoTool = (
   name: 'create_video',
   label: 'Create Video',
   description:
-    'Generate a video clip for the user. This is the ONLY real way to create videos — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a playable video in the chat once generation completes. The user is charged only on success.',
+    'Generate a video clip for the user. This is the ONLY real way to create videos — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into a playable video in the chat once generation completes. The twin\'s wallet is charged only on success.',
   parameters: CreateVideoParams,
   execute: async (_toolCallId, args: CreateVideoArgs) => {
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
@@ -319,7 +319,7 @@ export const createTtsTool = (
   name: 'create_tts',
   label: 'Create Text-to-Speech',
   description:
-    'Generate spoken audio from text in a specific voice for the user. This is the ONLY real way to create speech audio — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
+    'Generate spoken audio from text in a specific voice for the user. This is the ONLY real way to create speech audio — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The twin\'s wallet is charged only on success.',
   parameters: CreateTtsParams,
   execute: async (_toolCallId, args: CreateTtsArgs) => {
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
@@ -357,7 +357,7 @@ export const createSfxTool = (
   name: 'create_sfx',
   label: 'Create Sound Effect',
   description:
-    'Generate a short sound effect from a text description for the user. This is the ONLY real way to create sound effects — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The user is charged only on success.',
+    'Generate a short sound effect from a text description for the user. This is the ONLY real way to create sound effects — it is not a placeholder or simulation. Submission is asynchronous: it posts a pending-media placeholder that resolves into playable audio in the chat once generation completes. The twin\'s wallet is charged only on success.',
   parameters: CreateSfxParams,
   execute: async (_toolCallId, args: CreateSfxArgs) => {
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);
@@ -408,7 +408,7 @@ export const createMusicTool = (
   name: 'create_music',
   label: 'Create Music',
   description:
-    'Generate a song/music track for the user. Async — posts a placeholder that resolves to playable audio in the chat. Charged on success. This is the ONLY real way to create music — it is not a placeholder or simulation.',
+    'Generate a song/music track for the user. Async — posts a placeholder that resolves to playable audio in the chat. The twin\'s wallet is charged on success. This is the ONLY real way to create music — it is not a placeholder or simulation.',
   parameters: CreateMusicParams,
   execute: async (_toolCallId, args: CreateMusicArgs) => {
     const { baseUrl, twinToken, twinId } = resolveTwinCreds(context.security);

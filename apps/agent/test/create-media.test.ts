@@ -626,3 +626,29 @@ test('createMediaToolset: registers all five create_* tools under id create_medi
     ['create_image', 'create_music', 'create_sfx', 'create_tts', 'create_video'],
   );
 });
+
+test('createMediaToolset: all five create_* tools are owner-only (no user grant)', async (t) => {
+  const { context } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const toolset = createMediaToolset(context);
+
+  assert.equal(toolset.tools.length, 5);
+  for (const tool of toolset.tools) {
+    assert.ok(tool.policy, `${tool.name}: expected a policy to be set`);
+    const roles = tool.policy!.defaultGrants
+      .filter((grant) => grant.type === 'role')
+      .map((grant) => grant.value);
+    assert.ok(
+      roles.includes('owner'),
+      `${tool.name}: expected defaultGrants to include the owner role, got ${JSON.stringify(roles)}`,
+    );
+    assert.ok(
+      !roles.includes('user'),
+      `${tool.name}: expected defaultGrants to NOT include the user role, got ${JSON.stringify(roles)}`,
+    );
+    assert.deepEqual(
+      tool.policy!.defaultGrants,
+      [{ type: 'role', value: 'owner' }],
+      `${tool.name}: expected defaultGrants to be owner-only`,
+    );
+  }
+});
