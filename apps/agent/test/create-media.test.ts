@@ -480,11 +480,35 @@ test('create_video: omitted resolution/seconds default to 768P/6', async (t) => 
   const { fetch: fakeFetch, calls } = captureFetch();
   const tool = createVideoTool(context, { fetch: fakeFetch });
 
-  await tool.execute('call-1', { model: 'video-1' }, new AbortController().signal, () => {});
+  await tool.execute(
+    'call-1',
+    { prompt: 'a dog running', model: 'video-1' },
+    new AbortController().signal,
+    () => {},
+  );
 
   const body = bodyOf(calls[0]!);
   assert.equal(body.resolution, '768P');
   assert.equal(body.seconds, 6);
+});
+
+test('create_video: neither prompt nor firstFrameImage returns an error without calling fetch', async (t) => {
+  const { context, publishEvents } = await makeFakeContext(t, { secrets: TWIN_SECRETS });
+  const { fetch: fakeFetch, calls } = captureFetch();
+  const tool = createVideoTool(context, { fetch: fakeFetch });
+
+  const result = await tool.execute(
+    'call-1',
+    { model: 'video-1' },
+    new AbortController().signal,
+    () => {},
+  );
+
+  assert.equal(calls.length, 0);
+  assert.equal(publishEvents.length, 0);
+  assert.equal((result.details as { error?: string }).error, 'missing_prompt_or_frame');
+  const text = getFirstText(result);
+  assert.match(text, /prompt|firstFrameImage/i);
 });
 
 test('create_video: schema rejects an invalid resolution enum value', () => {
