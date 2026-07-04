@@ -998,6 +998,13 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/voice/tts`,
   agentVoiceTtsPattern: '/api/agents/:agentId/voice/tts',
 
+  /** Create backend job submit/status; flat (not agent-scoped) — auth is via twin token header. */
+  agentCreateSubmit: (): string => '/api/create/jobs',
+  agentCreateSubmitPattern: '/api/create/jobs',
+  agentCreateStatus: (jobId: string): string =>
+    `/api/create/jobs/${encodeURIComponent(jobId)}`,
+  agentCreateStatusPattern: '/api/create/jobs/:jobId',
+
   /** Gateway-level token exchange (device key → user JWT). */
   authToken: '/api/auth/token',
   /** Admin-only global user create (CLI bootstrap). */
