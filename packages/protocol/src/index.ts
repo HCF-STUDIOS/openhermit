@@ -1222,6 +1222,52 @@ export const isToolApprovalRequest = (
   );
 };
 
+const OUTBOUND_MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
+
+/**
+ * The subset of {@link OutboundEventBody} that a trusted server is allowed
+ * to publish directly into a live session via the publish-into-session
+ * gateway route. Everything else (text/thinking deltas, tool events,
+ * approvals, ...) is runtime-internal and stays out of reach.
+ */
+export type PublishableOutboundEvent = Extract<
+  OutboundEventBody,
+  { type: 'attachment' | 'pending_media' }
+>;
+
+export const isPublishableOutboundEvent = (
+  value: unknown,
+): value is PublishableOutboundEvent => {
+  if (!isRecord(value)) return false;
+  if (typeof value.sessionId !== 'string' || !value.sessionId) return false;
+
+  if (value.type === 'attachment') {
+    if (typeof value.attachmentId !== 'string' || !value.attachmentId) return false;
+    if (typeof value.mimeType !== 'string' || !value.mimeType) return false;
+    if (typeof value.kind !== 'string' || !OUTBOUND_MEDIA_KINDS.has(value.kind)) return false;
+    if (!isOptionalString(value.name)) return false;
+    if (!isOptionalString(value.sha256)) return false;
+    if (!isOptionalString(value.caption)) return false;
+    if (!isOptionalString(value.correlationId)) return false;
+    if (
+      value.size !== undefined &&
+      value.size !== null &&
+      (typeof value.size !== 'number' || !Number.isFinite(value.size))
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  if (value.type === 'pending_media') {
+    if (typeof value.correlationId !== 'string' || !value.correlationId) return false;
+    if (typeof value.kind !== 'string' || !OUTBOUND_MEDIA_KINDS.has(value.kind)) return false;
+    return true;
+  }
+
+  return false;
+};
+
 // ---------------------------------------------------------------------------
 // HTTP sync response (POST /sessions/:id/messages?wait=true)
 // ---------------------------------------------------------------------------

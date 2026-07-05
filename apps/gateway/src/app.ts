@@ -64,6 +64,7 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
+import { registerSessionPublishRoute } from './session-publish.js';
 import { resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
@@ -1617,6 +1618,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         unsubscribe();
       }
     });
+  });
+
+  // --- publish-into-session (server -> live session, out of band) ---
+
+  registerSessionPublishRoute(app, {
+    instances,
+    requireAdmin: (authorization) => requireAdmin(authorization),
+    resolveRunner,
+    logger: log,
   });
 
   // --- admin API ---
