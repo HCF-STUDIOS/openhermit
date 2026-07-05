@@ -248,6 +248,33 @@ test('POST session events: attachment ingest failure returns 502 and does not pu
   assert.equal(publishCalls.length, 0);
 });
 
+test('POST session events: attachment ingest request with empty mimeType returns 400 and does not ingest', async () => {
+  const ingestCalls: unknown[] = [];
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async (input) => {
+      ingestCalls.push(input);
+      return { attachmentId: 'att_should_not_happen', mimeType: 'image/png' };
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({
+      event: { type: 'attachment', sessionId, assetUrl: 'https://example.com/photo.png', mimeType: '' },
+    }),
+  });
+
+  assert.equal(res.status, 400);
+  // No ingest means no persisted row, so no orphan can exist.
+  assert.equal(ingestCalls.length, 0);
+  assert.equal(publishCalls.length, 0);
+});
+
 test('POST session events: attachment with assetUrl but no ingest helper configured returns 502', async () => {
   const { app, publishCalls } = buildApp();
   const { agentId, sessionId } = uniqueAgentSession();
