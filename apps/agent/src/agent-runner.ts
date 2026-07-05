@@ -2090,7 +2090,10 @@ export class AgentRunner implements SessionRuntime {
             this.mcpClientManager.connectAll(mcpServers);
           }
         }
-        for (const ts of this.mcpClientManager.getToolsets()) {
+        for (const ts of this.mcpClientManager.getToolsets({
+          agentId: this.scope.agentId,
+          sessionId: input.contextSessionId,
+        })) {
           toolsets.push(wrapToolset(ts));
         }
         if (isOwnerOrUnresolved) {
