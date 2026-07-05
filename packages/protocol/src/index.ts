@@ -318,13 +318,13 @@ export type OutboundEventBody =
       /**
        * In-flight media-generation placeholder emitted by a media-generation
        * tool. Channels and UIs subscribe to this event to render a pending
-       * state for the job until it resolves, typically into an `attachment`
-       * event.
+       * state until it resolves, typically into an `attachment` event with
+       * the same `correlationId`.
        */
       type: 'pending_media';
       sessionId: string;
-      jobId: string;
-      mode: 'IMAGE' | 'VIDEO' | 'TTS' | 'SFX' | 'MUSIC';
+      correlationId: string;
+      kind: 'image' | 'audio' | 'video' | 'document';
     };
 
 export type OutboundEvent = OutboundEventBody & { eventId: string };
@@ -1009,13 +1009,6 @@ export const gatewayRoutes = {
   agentVoiceTts: (agentId: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/voice/tts`,
   agentVoiceTtsPattern: '/api/agents/:agentId/voice/tts',
-
-  /** Create backend job submit/status. Flat, not agent-scoped, auth is via twin token header. */
-  agentCreateSubmit: (): string => '/api/create/jobs',
-  agentCreateSubmitPattern: '/api/create/jobs',
-  agentCreateStatus: (jobId: string): string =>
-    `/api/create/jobs/${encodeURIComponent(jobId)}`,
-  agentCreateStatusPattern: '/api/create/jobs/:jobId',
 
   /** Gateway-level token exchange (device key → user JWT). */
   authToken: '/api/auth/token',
