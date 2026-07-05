@@ -101,7 +101,11 @@ const parseAttachmentIngestRequest = (
 ): AttachmentIngestRequestBody | null => {
   if (typeof value.assetUrl !== 'string' || value.assetUrl.length === 0) return null;
   if (typeof value.sessionId !== 'string' || value.sessionId !== sessionId) return null;
+  // mimeType stays optional, but an explicitly-provided empty string would
+  // survive ingest and then fail the published event's !mimeType check,
+  // orphaning the persisted row. Reject it up front so nothing is ingested.
   if (!isOptionalString(value.mimeType)) return null;
+  if (typeof value.mimeType === 'string' && value.mimeType.length === 0) return null;
   if (value.kind !== undefined && (typeof value.kind !== 'string' || !MEDIA_KINDS.has(value.kind))) {
     return null;
   }
