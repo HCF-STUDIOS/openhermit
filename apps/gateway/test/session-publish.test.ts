@@ -14,6 +14,8 @@ const ADMIN_TOKEN = 'test-admin-token';
 interface BuildAppOptions {
   /** When true, resolveRunner throws NotFoundError (agent/runner gone). */
   runnerMissing?: boolean;
+  /** Mock for the injected asset-ingest helper. Omit to leave ingest unconfigured. */
+  ingestAttachment?: SessionPublishDeps['ingestAttachment'];
 }
 
 function buildApp(opts: BuildAppOptions = {}): {
@@ -52,6 +54,7 @@ function buildApp(opts: BuildAppOptions = {}): {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return runner as any;
     },
+    ingestAttachment: opts.ingestAttachment,
   };
 
   registerSessionPublishRoute(app, deps);
@@ -173,4 +176,119 @@ test('POST session events: unknown/evicted runner returns 404', async () => {
 
   assert.equal(res.status, 404);
   assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: attachment with assetUrl ingests then publishes with the returned attachmentId', async () => {
+  const ingestCalls: unknown[] = [];
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async (input) => {
+      ingestCalls.push(input);
+      return { attachmentId: 'att_ingested_1', mimeType: 'image/png', size: 1234, sha256: 'deadbeef' };
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({
+      event: {
+        type: 'attachment',
+        sessionId,
+        assetUrl: 'https://example.com/photo.png',
+        correlationId: 'corr_1',
+        caption: 'a photo',
+      },
+    }),
+  });
+
+  const body = await res.json();
+  assert.equal(res.status, 202);
+  assert.equal(ingestCalls.length, 1);
+  assert.equal((ingestCalls[0] as { url: string }).url, 'https://example.com/photo.png');
+  assert.equal((ingestCalls[0] as { sessionId: string }).sessionId, sessionId);
+  assert.equal(publishCalls.length, 1);
+  assert.deepEqual(publishCalls[0], {
+    type: 'attachment',
+    sessionId,
+    attachmentId: 'att_ingested_1',
+    mimeType: 'image/png',
+    kind: 'image',
+    size: 1234,
+    sha256: 'deadbeef',
+    caption: 'a photo',
+    correlationId: 'corr_1',
+  });
+  assert.equal(body.attachmentId, 'att_ingested_1');
+});
+
+test('POST session events: attachment ingest failure returns 502 and does not publish', async () => {
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async () => {
+      throw new Error('attachment_fetch_failed: upstream returned 404');
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({
+      event: { type: 'attachment', sessionId, assetUrl: 'https://example.com/missing.png' },
+    }),
+  });
+
+  assert.equal(res.status, 502);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: attachment with assetUrl but no ingest helper configured returns 502', async () => {
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({
+      event: { type: 'attachment', sessionId, assetUrl: 'https://example.com/photo.png' },
+    }),
+  });
+
+  assert.equal(res.status, 502);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: attachment with attachmentId (no assetUrl) still publishes as-is', async () => {
+  const ingestCalls: unknown[] = [];
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async (input) => {
+      ingestCalls.push(input);
+      return { attachmentId: 'unexpected', mimeType: 'image/png' };
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_existing', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(ingestCalls.length, 0);
+  assert.equal(publishCalls.length, 1);
+  assert.deepEqual(publishCalls[0], event);
 });
