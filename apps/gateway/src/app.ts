@@ -64,8 +64,11 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
-import { registerSessionPublishRoute } from './session-publish.js';
-import { resolveInboundAttachments } from '@openhermit/agent/attachments';
+import {
+  registerSessionPublishRoute,
+  type AttachmentIngestResult,
+} from './session-publish.js';
+import { resolveAttachmentByUrl, resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -1625,6 +1628,30 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     requireAdmin: (authorization) => requireAdmin(authorization),
     resolveRunner,
     logger: log,
+    ingestAttachment:
+      options.attachmentStore && options.attachmentStorage
+        ? async ({ agentId, sessionId, url, mimeType, name, runner }): Promise<AttachmentIngestResult> => {
+            const resolved = await resolveAttachmentByUrl({
+              agentId,
+              sessionId,
+              uploaderUserId: null,
+              url,
+              hintMimeType: mimeType,
+              hintName: name,
+              maxBytes: options.attachmentMaxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES,
+              attachmentStore: options.attachmentStore!,
+              attachmentStorage: options.attachmentStorage!,
+              runtime: runner,
+              logger: log,
+            });
+            return {
+              attachmentId: resolved.id!,
+              mimeType: resolved.mimeType!,
+              size: resolved.size,
+              sha256: resolved.sha256,
+            };
+          }
+        : undefined,
   });
 
   // --- admin API ---
