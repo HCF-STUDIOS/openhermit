@@ -7,6 +7,12 @@ import { asTextContent, type PolicyAwareTool, type Toolset } from './tools/share
 
 export type McpConnectionStatusValue = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+/** Caller context forwarded to MCP servers as request `_meta` on tool calls. */
+export interface McpToolsetCtx {
+  agentId?: string;
+  sessionId?: string;
+}
+
 export interface McpConnectionStatus {
   serverId: string;
   serverName: string;
@@ -122,13 +128,13 @@ export class McpClientManager {
     await Promise.all(ids.map((id) => this.disconnect(id)));
   }
 
-  getToolsets(): Toolset[] {
+  getToolsets(ctx?: McpToolsetCtx): Toolset[] {
     const toolsets: Toolset[] = [];
     for (const state of this.connections.values()) {
       if (state.status !== 'connected' || state.tools.length === 0) continue;
 
       const tools: PolicyAwareTool[] = state.tools.map((mcpTool) =>
-        this.adaptTool(state, mcpTool),
+        this.adaptTool(state, mcpTool, ctx),
       );
 
       toolsets.push({
@@ -155,8 +161,15 @@ export class McpClientManager {
     return this.connections.has(serverId);
   }
 
-  private adaptTool(state: McpConnectionState, mcpTool: McpToolInfo): PolicyAwareTool {
+  private adaptTool(
+    state: McpConnectionState,
+    mcpTool: McpToolInfo,
+    ctx?: McpToolsetCtx,
+  ): PolicyAwareTool {
     const toolName = `mcp__${state.serverId}__${mcpTool.name}`;
+    const meta: Record<string, string> = {};
+    if (ctx?.agentId !== undefined) meta.agentId = ctx.agentId;
+    if (ctx?.sessionId !== undefined) meta.sessionId = ctx.sessionId;
 
     return {
       // MCP tools default to owner-only. Owner must explicitly grant
@@ -186,6 +199,7 @@ export class McpClientManager {
           const result = await state.client.callTool({
             name: mcpTool.name,
             arguments: params as Record<string, unknown>,
+            ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
           });
 
           const textParts: string[] = [];
