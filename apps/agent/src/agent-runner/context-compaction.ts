@@ -363,8 +363,25 @@ const parseCompactionSummaryResponse = (
       return normalized.length > 0 ? normalized : undefined;
     }
   } catch {
-    // Not JSON — treat the whole response as the summary.
-    return trimmed.length > 0 ? trimmed : undefined;
+    // Not parseable JSON. Do NOT persist arbitrary assistant text as the
+    // summary: it becomes the session's authoritative history on the next
+    // resume, and models occasionally answer here with a conversational
+    // reply instead of the requested JSON (observed in production). Try to
+    // salvage an embedded JSON object (e.g. `compactionSummary: {...}`);
+    // otherwise drop it — the caller falls back to text extraction and the
+    // previous persisted summary stays authoritative.
+    const embedded = jsonText.match(/\{[\s\S]*\}/);
+    if (embedded) {
+      try {
+        const parsed = JSON.parse(embedded[0]) as { compactionSummary?: unknown };
+        if (typeof parsed.compactionSummary === 'string' && parsed.compactionSummary.trim().length > 0) {
+          return parsed.compactionSummary.trim();
+        }
+      } catch {
+        // fall through to undefined
+      }
+    }
+    return undefined;
   }
 
   return undefined;
@@ -378,13 +395,24 @@ export const runCompactionSummaryTurn = async (input: {
 }): Promise<string | undefined> => {
   const textSummaries = input.compactedMessages
     .map((message) => summarizeMessageForCompaction(message))
-    .filter((line): line is string => Boolean(line));
+    .filter((line): line is string => Boolean(line))
+    // A previously injected summary block may be part of the message list
+    // (it's a user-role message). Its content is already provided via
+    // `previousCompactionSummary` — don't feed it in twice.
+    .filter((line) => !line.includes('Context compaction summary (runtime-generated'));
 
   if (textSummaries.length === 0) {
     return undefined;
   }
 
-  const transcript = textSummaries.join('\n').slice(0, 16_000);
+  // Cap the transcript, keeping head AND tail. A plain head-slice drops the
+  // most recent messages from the summarizer's view — the worst possible
+  // bias, since the persisted summary is the resume boundary and recent
+  // turns are exactly what the next resume needs.
+  const joined = textSummaries.join('\n');
+  const transcript = joined.length > 16_000
+    ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
+    : joined;
 
   const promptParts = [
     'Internal compaction turn:',
@@ -583,9 +611,18 @@ export const compactContextIfNeeded = async (
       // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
+      // Summarize the FULL message list, not just the compacted prefix.
+      // setCompactionSummary appends the summary as a `context_compaction`
+      // event at the TAIL of the session log, and resume restores only the
+      // entries logged after that marker. If the summary covered only the
+      // prefix, everything logged before the marker but outside the summary
+      // — the retained recent tail and the current user turn — would be
+      // lost on the next resume (neither summarized nor restored verbatim).
+      // Covering the full list makes the marker-at-tail boundary correct;
+      // the live context still keeps the tail verbatim via `retained`.
       llmSummary = await runCompactionSummaryTurn({
         sessionId,
-        compactedMessages,
+        compactedMessages: messages,
         previousCompactionSummary: previousSummary,
         createAgent: deps.createCompactionAgent,
       });
