@@ -99,7 +99,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'whatsapp',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
     };
   },
 
