@@ -2707,6 +2707,21 @@ export class AgentRunner implements SessionRuntime {
         supportsImageInput,
       });
       session.resumed = false;
+
+      // Seed the live agent state with the restored history so it PERSISTS
+      // for subsequent generations. Without this the restore is one-shot:
+      // it feeds only the first post-resume generation, then `state.messages`
+      // (which pi-ai keeps appending to from empty) holds just the messages
+      // accumulated since resume — so from the 2nd generation onward (e.g. a
+      // tool-loop turn, or the next user message) the session loses ALL prior
+      // context. Mutate in place to preserve the array reference pi-ai holds.
+      // `restoredMessages` already ends with the current user turn (persisted
+      // by postMessage before agent.prompt), matching pi-ai's single seeded
+      // message, so this replaces rather than duplicates it.
+      if (restoredMessages.length > 0) {
+        session.agent.state.messages.length = 0;
+        session.agent.state.messages.push(...restoredMessages);
+      }
     }
 
     if (sessionWorking.trim()) {
