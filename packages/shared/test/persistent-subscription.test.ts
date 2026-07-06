@@ -30,6 +30,30 @@ function makeStream(text: string, endBehavior: 'close' | 'error'): ReadableStrea
   });
 }
 
+/**
+ * A fake SSE body that enqueues each item after its per-pull delay, then
+ * stays open forever (a never-resolving pull) so that only the idle timeout
+ * can end the stream. Models a live gateway connection that has gone quiet.
+ */
+function makeTimedStream(items: Array<{ delayMs: number; text: string }>): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (i >= items.length) {
+        // Stay open indefinitely; the idle timer is the only thing that ends us.
+        return new Promise<void>(() => {});
+      }
+      const item = items[i++]!;
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode(item.text));
+          resolve();
+        }, item.delayMs);
+      });
+    },
+  });
+}
+
 async function withFetch(impl: typeof fetch, fn: () => Promise<void>): Promise<void> {
   const original = globalThis.fetch;
   globalThis.fetch = impl;
@@ -97,6 +121,73 @@ test('reconnects after a dropped stream without redelivering already-seen ids', 
 
       assert.deepEqual(received, [1, 2, 3]);
       assert.equal(calls, 2);
+    },
+  );
+});
+
+test('closes and resolves after idleTimeoutMs with no frames, without reconnecting', async () => {
+  let calls = 0;
+  await withFetch(
+    async () => {
+      calls += 1;
+      // A live stream that never sends a frame and never closes on its own.
+      return new Response(makeTimedStream([]), { status: 200 });
+    },
+    async () => {
+      const received: SseFrame[] = [];
+      const start = Date.now();
+
+      await startPersistentSubscription({
+        eventsUrl: 'https://example/events',
+        onEvent: (frame) => received.push(frame),
+        idleTimeoutMs: 60,
+        // A short reconnect delay would let a bug reconnect quickly; keep it
+        // large so a wrongful reconnect would hang the test instead of hiding.
+        reconnectDelayMs: 10_000,
+      });
+
+      // Resolved on idle close, not after a reconnect cycle.
+      assert.equal(received.length, 0);
+      assert.equal(calls, 1);
+      assert.ok(Date.now() - start < 5_000, 'should resolve promptly on idle close');
+    },
+  );
+});
+
+test('a frame within idleTimeoutMs resets the idle timer so an active stream is not evicted', async () => {
+  let calls = 0;
+  await withFetch(
+    async () => {
+      calls += 1;
+      // Four frames 25ms apart (each gap < the 60ms idle window), then the
+      // stream goes quiet. If the timer did NOT reset per frame it would
+      // close ~60ms in and miss the later frames.
+      return new Response(
+        makeTimedStream([
+          { delayMs: 25, text: frameText(1, 'attachment', { n: 1 }) },
+          { delayMs: 25, text: frameText(2, 'attachment', { n: 2 }) },
+          { delayMs: 25, text: frameText(3, 'attachment', { n: 3 }) },
+          { delayMs: 25, text: frameText(4, 'attachment', { n: 4 }) },
+        ]),
+        { status: 200 },
+      );
+    },
+    async () => {
+      const received: number[] = [];
+
+      await startPersistentSubscription({
+        eventsUrl: 'https://example/events',
+        onEvent: (frame) => {
+          received.push((JSON.parse(frame.data) as { n: number }).n);
+        },
+        idleTimeoutMs: 60,
+        reconnectDelayMs: 10_000,
+      });
+
+      // All four in-flight frames delivered because each reset the timer;
+      // the stream only idle-closed after the last one, without reconnecting.
+      assert.deepEqual(received, [1, 2, 3, 4]);
+      assert.equal(calls, 1);
     },
   );
 });

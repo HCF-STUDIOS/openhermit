@@ -65,9 +65,21 @@ export interface PersistentSubscriptionOptions {
   abortSignal?: AbortSignal;
   /** Delay before reconnecting after a dropped stream. Default 2000ms. */
   reconnectDelayMs?: number;
+  /**
+   * Bound the lifetime of an otherwise-idle connection. If no real event
+   * (a frame that reaches `onEvent`) arrives within this many ms, the stream
+   * is closed and the subscription RESOLVES without reconnecting, so a caller
+   * can drop it and lazily reopen later. Reset on every delivered event, so an
+   * in-flight job keeps its connection alive. Keepalive pings do NOT reset it
+   * (the gateway pings every ~15s, so counting pings would keep every idle
+   * connection open forever). Default 900000 (15 min), which comfortably
+   * covers a slow create job while still releasing quiet sessions.
+   */
+  idleTimeoutMs?: number;
 }
 
 const DEFAULT_RECONNECT_DELAY_MS = 2000;
+const DEFAULT_IDLE_TIMEOUT_MS = 900_000;
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
   if (signal?.aborted) return Promise.resolve();
@@ -84,17 +96,23 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
  * Open `eventsUrl` as an SSE stream and keep delivering events until
  * `abortSignal` fires. Resumes from `lastEventId` and dedupes by id the
  * same way the existing per-turn bridge loops do; reconnects after a
- * transient drop instead of ending the subscription.
+ * transient drop instead of ending the subscription. Closes and resolves
+ * (without reconnecting) once no real event has arrived for `idleTimeoutMs`,
+ * so a caller can release the connection and reopen lazily later.
  */
 export async function startPersistentSubscription(
   options: PersistentSubscriptionOptions,
 ): Promise<void> {
   const { eventsUrl, onEvent, abortSignal, headers } = options;
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   let cursor = options.lastEventId ?? 0;
 
   while (!abortSignal?.aborted) {
     let sequenceResetChecked = false;
+    // Set when the idle timer fires so we can distinguish a clean idle close
+    // (resolve, do not reconnect) from a transient drop (reconnect).
+    let idleClosed = false;
 
     try {
       const response = await fetch(eventsUrl, {
@@ -110,6 +128,26 @@ export async function startPersistentSubscription(
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearIdle = (): void => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
+      };
+      // Arm (or re-arm) the idle timer. Cancelling the reader unblocks the
+      // pending read, which ends the loop; `idleClosed` then routes us to a
+      // clean resolve instead of a reconnect.
+      const armIdle = (): void => {
+        clearIdle();
+        idleTimer = setTimeout(() => {
+          idleClosed = true;
+          void reader.cancel().catch(() => undefined);
+        }, idleTimeoutMs);
+      };
+      abortSignal?.addEventListener('abort', clearIdle, { once: true });
+      armIdle();
 
       try {
         while (true) {
@@ -140,12 +178,18 @@ export async function startPersistentSubscription(
               }
               continue;
             }
+            // Keepalive pings keep the socket warm but are not real activity,
+            // so they must not reset the idle timer.
             if (frame.event === 'ping') continue;
 
+            // A real event: the connection is doing useful work, so keep it.
+            armIdle();
             onEvent(frame);
           }
         }
       } finally {
+        clearIdle();
+        abortSignal?.removeEventListener('abort', clearIdle);
         await reader.cancel().catch(() => undefined);
       }
     } catch {
@@ -154,6 +198,9 @@ export async function startPersistentSubscription(
     }
 
     if (abortSignal?.aborted) return;
+    // Idle close is a deliberate, clean end: resolve so the caller can drop
+    // this subscription and reopen lazily on the next message.
+    if (idleClosed) return;
     await sleep(reconnectDelayMs, abortSignal);
   }
 }

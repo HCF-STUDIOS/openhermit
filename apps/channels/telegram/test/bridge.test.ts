@@ -85,6 +85,26 @@ function makeStream(text: string): ReadableStream<Uint8Array> {
   });
 }
 
+/**
+ * A fake SSE body that enqueues each item then stays open forever (a
+ * never-resolving pull), so only the idle timeout can end the stream.
+ */
+function makeTimedStream(items: Array<{ delayMs: number; text: string }>): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (i >= items.length) return new Promise<void>(() => {});
+      const item = items[i++]!;
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode(item.text));
+          resolve();
+        }, item.delayMs);
+      });
+    },
+  });
+}
+
 async function withFetch(impl: typeof fetch, fn: () => Promise<void>): Promise<void> {
   const original = globalThis.fetch;
   globalThis.fetch = impl;
@@ -169,4 +189,28 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
 
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], [777, attachmentPayload]);
+});
+
+test('removes the session entry when its subscription ends (idle close), so it reopens lazily', async () => {
+  const { bridge } = newBridge();
+  const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });
+
+  await withFetch(
+    // Serve the one frame, then keep the stream open so only the idle timer
+    // ends it. A short idleTimeoutMs is threaded through below.
+    async () => new Response(makeTimedStream([{ delayMs: 0, text: body }]), { status: 200 }),
+    async () => {
+      (bridge as unknown as { startAttachmentSubscription: (sessionId: string, chatId: number, idleTimeoutMs?: number) => void })
+        .startAttachmentSubscription('sess-3', 999, 40);
+
+      // Subscription is live right after start.
+      await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 1);
+
+      // After the idle timeout with no further frames, it ends and the map
+      // entry is evicted, dropping the connection.
+      await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 0);
+
+      assert.equal((bridge as unknown as { subscriptionCount: number }).subscriptionCount, 0);
+    },
+  );
 });
