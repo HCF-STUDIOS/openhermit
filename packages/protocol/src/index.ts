@@ -313,7 +313,7 @@ export type OutboundEventBody =
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string }
+  | { type: 'error'; sessionId: string; message: string; correlationId?: string }
   | {
       /**
        * In-flight media-generation placeholder emitted by a media-generation
@@ -1232,7 +1232,7 @@ const OUTBOUND_MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
  */
 export type PublishableOutboundEvent = Extract<
   OutboundEventBody,
-  { type: 'attachment' | 'pending_media' }
+  { type: 'attachment' | 'pending_media' | 'error' }
 >;
 
 export const isPublishableOutboundEvent = (
@@ -1262,6 +1262,12 @@ export const isPublishableOutboundEvent = (
   if (value.type === 'pending_media') {
     if (typeof value.correlationId !== 'string' || !value.correlationId) return false;
     if (typeof value.kind !== 'string' || !OUTBOUND_MEDIA_KINDS.has(value.kind)) return false;
+    return true;
+  }
+
+  if (value.type === 'error') {
+    if (typeof value.message !== 'string' || !value.message) return false;
+    if (!isOptionalString(value.correlationId)) return false;
     return true;
   }
 

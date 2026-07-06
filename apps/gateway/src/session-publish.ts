@@ -1,10 +1,14 @@
 /**
  * Publish-into-session gateway route.
  *
- * Lets a trusted server push a standard outbound event (`attachment` or
- * `pending_media`) into a live agent session out of band, so channel
- * bridges deliver it even when there is no active turn. Auth is the
+ * Lets a trusted server push a standard outbound event (`attachment`,
+ * `pending_media`, or `error`) into a live agent session out of band, so
+ * channel bridges deliver it even when there is no active turn. Auth is the
  * gateway admin token, same as the other internal-only routes.
+ *
+ * A pushed `error` event carries an optional `correlationId` so it can
+ * resolve an earlier `pending_media` placeholder to a failed state. It
+ * publishes as-is, same as `pending_media`, no asset ingest involved.
  *
  * An `attachment` push may carry an external `assetUrl` instead of an
  * already-stored `attachmentId`. Channels only know how to fetch bytes
@@ -69,7 +73,7 @@ export interface SessionPublishDeps {
     | undefined;
 }
 
-const ALLOWED_TYPES = new Set(['attachment', 'pending_media']);
+const ALLOWED_TYPES = new Set(['attachment', 'pending_media', 'error']);
 
 const MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
 
@@ -150,7 +154,7 @@ export const registerSessionPublishRoute = (
     const eventType = (eventBody as { type: string }).type;
     if (!ALLOWED_TYPES.has(eventType)) {
       throw new ValidationError(
-        `Event type "${eventType}" cannot be published via this route. Allowed: attachment, pending_media.`,
+        `Event type "${eventType}" cannot be published via this route. Allowed: attachment, pending_media, error.`,
       );
     }
 
