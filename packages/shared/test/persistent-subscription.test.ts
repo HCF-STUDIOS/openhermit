@@ -162,6 +162,76 @@ test('closes and resolves after idleTimeoutMs with no frames, without reconnecti
   );
 });
 
+test('onCursorAdvance reports the cursor so a caller can resume after idle-close without redelivering the backlog', async () => {
+  // Models the real bug: an attachment (id 1) arrives, the connection then
+  // idle-closes (map entry dropped by the caller), and a NEW subscription is
+  // opened later. The gateway always replays its recent backlog on a fresh
+  // connection, so the second stream re-serves id 1 alongside a genuinely
+  // new id 2. A caller that persisted the cursor via `onCursorAdvance` and
+  // passes it back as `lastEventId` must skip the already-delivered id 1 and
+  // still deliver the new id 2 exactly once.
+  let persistedCursor = 0;
+  const received: number[] = [];
+
+  // First connection: delivers id 1, then goes idle forever (only the idle
+  // timer ends it, no reconnect).
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await withFetch(
+      async () => new Response(
+        makeTimedStream([{ delayMs: 0, text: frameText(1, 'attachment', { n: 1 }) }]),
+        { status: 200 },
+      ),
+      async () => {
+        await startPersistentSubscription({
+          eventsUrl: 'https://example/events',
+          onEvent: (frame) => received.push((JSON.parse(frame.data) as { n: number }).n),
+          onCursorAdvance: (cursor) => { persistedCursor = cursor; },
+          idleTimeoutMs: 30,
+          reconnectDelayMs: 10_000,
+        });
+      },
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
+
+  assert.deepEqual(received, [1]);
+  assert.equal(persistedCursor, 1, 'cursor should have advanced to the delivered id');
+
+  // Second "reopen": a fresh call, as a bridge would make after reopening a
+  // session's subscription. The gateway replays its backlog (ids 1 and 2)
+  // because it honors no resume header itself; only the client-side cursor
+  // dedupes. Passing the persisted cursor must skip id 1 and deliver id 2.
+  const abortController = new AbortController();
+  await withFetch(
+    async () => new Response(
+      makeStream(
+        frameText(1, 'attachment', { n: 1 }) + frameText(2, 'attachment', { n: 2 }),
+        'close',
+      ),
+      { status: 200 },
+    ),
+    async () => {
+      await startPersistentSubscription({
+        eventsUrl: 'https://example/events',
+        lastEventId: persistedCursor,
+        onEvent: (frame) => {
+          received.push((JSON.parse(frame.data) as { n: number }).n);
+          abortController.abort();
+        },
+        onCursorAdvance: (cursor) => { persistedCursor = cursor; },
+        abortSignal: abortController.signal,
+        reconnectDelayMs: 5,
+      });
+    },
+  );
+
+  // The already-delivered attachment (id 1) must NOT be redelivered; the new
+  // one (id 2) must be delivered. Total: exactly one delivery per id.
+  assert.deepEqual(received, [1, 2]);
+});
+
 test('a frame within idleTimeoutMs resets the idle timer so an active stream is not evicted', async () => {
   let calls = 0;
   await withFetch(

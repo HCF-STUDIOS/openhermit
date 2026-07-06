@@ -37,6 +37,14 @@ export class SlackBridge implements ChannelOutbound {
    * attachment.
    */
   private readonly subscriptions = new Map<string, AbortController>();
+  /**
+   * Highest out-of-turn event id delivered per sessionId, kept separate
+   * from `subscriptions` so it survives idle-close/reopen. The gateway
+   * replays its recent backlog on every fresh connection, so without this
+   * a reopened subscription starts its cursor at 0 and redelivers whatever
+   * was already sent before the idle close.
+   */
+  private readonly subscriptionCursors = new Map<string, number>();
   private readonly channelSessions = new Map<string, string>();
 
   constructor(
@@ -187,6 +195,7 @@ export class SlackBridge implements ChannelOutbound {
         await this.client.checkpointSession(oldSessionId, { reason: 'new_session' });
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
+      this.subscriptionCursors.delete(oldSessionId);
     }
 
     const newSessionId = SlackBridge.generateSessionId();
@@ -333,6 +342,8 @@ export class SlackBridge implements ChannelOutbound {
       eventsUrl: this.client.buildEventsUrl(sessionId),
       headers: { authorization: `Bearer ${this.clientToken}` },
       abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
         if (frame.event !== 'attachment') return;
