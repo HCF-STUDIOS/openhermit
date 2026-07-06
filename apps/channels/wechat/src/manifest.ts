@@ -64,7 +64,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'wechat',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
     };
   },
   setup: createWechatSetup(),
