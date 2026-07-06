@@ -2361,7 +2361,16 @@ export class AgentRunner implements SessionRuntime {
       ...(streamFn ? { streamFn } : {}),
       getApiKey: (provider) => this.resolveApiKey(provider),
       transformContext: (messages, signal) =>
-        this.transformContext(input.contextSessionId, messages, signal),
+        this.transformContext(
+          input.contextSessionId,
+          messages,
+          signal,
+          // Only the main session agent may persist compaction results back
+          // into the session's live state. Internal side agents (compaction:
+          // `<sid>:compaction`, introspection: `<sid>:introspection`) share
+          // contextSessionId but must never mutate the main agent's state.
+          input.agentSessionId === input.contextSessionId,
+        ),
       transport: 'sse',
       ...(input.afterToolCall ? { afterToolCall: input.afterToolCall } : {}),
     });
@@ -2694,6 +2703,7 @@ export class AgentRunner implements SessionRuntime {
     sessionId: string,
     messages: AgentMessage[],
     _signal?: AbortSignal,
+    isMainSessionAgent = false,
   ): Promise<AgentMessage[]> {
     const config = await this.options.security.readConfig();
     const sessionWorking =
@@ -2802,6 +2812,32 @@ export class AgentRunner implements SessionRuntime {
         : undefined,
       logRuntime: (msg) => this.logRuntime(msg),
     });
+
+    // Persist a compaction back into the session's live state. The hook's
+    // return value only feeds THIS request — without a write-back the
+    // (uncompacted, still-growing) state re-triggers the whole compaction
+    // machinery, including the extra LLM summary call and a new
+    // context_compaction marker event, on EVERY subsequent generation
+    // (observed in production: 71 markers in one hour for one session).
+    // Writing the compacted core back makes the session drop under budget
+    // again, so the next genuine compaction is far away.
+    //
+    // Details:
+    // - Only the main session agent may do this (side agents share
+    //   contextSessionId but must not mutate the main state).
+    // - Exclude the per-generation contextBlocks (working memory): they are
+    //   freshly prepended on every generation and would otherwise stack up.
+    // - Mutate in place to preserve the array reference pi-ai holds, so the
+    //   in-flight generation's appends land on the compacted list.
+    const didCompact = finalMessages.length !== contextBlocks.length + truncatedMessages.length;
+    if (isMainSessionAgent && didCompact) {
+      const liveState = this.sessions.get(sessionId)?.agent.state.messages;
+      if (liveState) {
+        const core = finalMessages.slice(contextBlocks.length);
+        liveState.length = 0;
+        liveState.push(...core);
+      }
+    }
 
     if (AgentRunner.DEBUG) {
       const budget = getContextCompactionMaxTokens(config, {
