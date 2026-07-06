@@ -126,6 +126,32 @@ test('POST session events: valid token + valid pending_media publishes and retur
   assert.deepEqual(publishCalls[0], event);
 });
 
+test('POST session events: valid token + valid error event with correlationId publishes as-is and returns 202', async () => {
+  const ingestCalls: unknown[] = [];
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async (input) => {
+      ingestCalls.push(input);
+      return { attachmentId: 'unexpected', mimeType: 'image/png' };
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const event = { type: 'error', sessionId, message: 'media generation failed', correlationId: 'corr_1' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(ingestCalls.length, 0);
+  assert.equal(publishCalls.length, 1);
+  assert.deepEqual(publishCalls[0], event);
+});
+
 test('POST session events: disallowed event type returns 400', async () => {
   const { app, publishCalls } = buildApp();
   const { agentId, sessionId } = uniqueAgentSession();
