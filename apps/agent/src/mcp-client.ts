@@ -7,7 +7,7 @@ import { asTextContent, type PolicyAwareTool, type Toolset } from './tools/share
 
 export type McpConnectionStatusValue = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-/** Caller context forwarded to MCP servers as request `_meta` on tool calls. */
+/** Caller context forwarded to MCP servers as request _meta on tool calls. */
 export interface McpToolsetCtx {
   agentId?: string;
   sessionId?: string;
@@ -184,15 +184,15 @@ export class McpClientManager {
       parameters: Type.Unsafe(mcpTool.inputSchema),
       execute: async (_toolCallId, params) => {
         // Re-read the live connection state rather than the one captured when
-        // this tool wrapper was built — a prior call may have flipped it to
-        // 'error' (e.g. a transport failure mid-session), and a tool built
-        // before that happened would otherwise be stuck referencing a dead
-        // client forever with no way to recover.
+        // this tool wrapper was built. A prior call may have flipped it to
+        // 'error' via a transport failure mid-session. A tool built before
+        // that happened would otherwise be stuck referencing a dead client
+        // forever with no way to recover.
         let current = this.connections.get(state.serverId) ?? state;
 
         if (current.status === 'error') {
-          // The upstream session may have simply expired; try once to
-          // reconnect before giving up, so the agent self-heals instead of
+          // The upstream session may have simply expired. Try once to
+          // reconnect before giving up so the agent self-heals instead of
           // requiring an owner to manually run mcp_enable again.
           await this.connect(current.server).catch(() => {});
           current = this.connections.get(state.serverId) ?? current;

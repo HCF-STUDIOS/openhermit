@@ -33,19 +33,17 @@ export class DiscordBridge implements ChannelOutbound {
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
   /**
-   * Persistent out-of-turn subscriptions, keyed by sessionId. This is the
-   * SINGLE owner of attachment delivery for a session (the per-turn loop in
-   * `waitForAgentResponse` no longer delivers attachments) so a live turn
-   * and the persistent subscription can never both deliver the same
-   * attachment.
+   * Persistent out-of-turn subscriptions keyed by sessionId. Single owner
+   * of attachment delivery for a session. The per-turn loop no longer
+   * delivers attachments so a live turn and this subscription never deliver
+   * the same attachment twice.
    */
   private readonly subscriptions = new Map<string, AbortController>();
   /**
-   * Highest out-of-turn event id delivered per sessionId, kept separate
+   * Highest out-of-turn event id delivered per sessionId. Kept separate
    * from `subscriptions` so it survives idle-close/reopen. The gateway
-   * replays its recent backlog on every fresh connection, so without this
-   * a reopened subscription starts its cursor at 0 and redelivers whatever
-   * was already sent before the idle close.
+   * replays its backlog on every fresh connection. Without this a reopened
+   * subscription starts at cursor 0 and redelivers what was already sent.
    */
   private readonly subscriptionCursors = new Map<string, number>();
   private readonly channelSessions = new Map<string, string>();
@@ -212,8 +210,8 @@ export class DiscordBridge implements ChannelOutbound {
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
       this.subscriptionCursors.delete(oldSessionId);
-      // Stop the orphaned persistent subscription instead of leaving it to
-      // reconnect/poll the dead session until its idle timeout.
+      // Stop the orphaned subscription instead of letting it poll the dead
+      // session until idle timeout.
       this.subscriptions.get(oldSessionId)?.abort();
       this.subscriptions.delete(oldSessionId);
     }
@@ -235,8 +233,8 @@ export class DiscordBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event),
       () => {
-        // The stale session's persistent subscription would otherwise keep
-        // reconnecting/polling a dead session until its idle timeout.
+        // The stale session subscription would otherwise keep polling a
+        // dead session until idle timeout.
         this.subscriptions.get(sessionId)?.abort();
         this.subscriptions.delete(sessionId);
         const fresh = DiscordBridge.generateSessionId();
@@ -328,13 +326,13 @@ export class DiscordBridge implements ChannelOutbound {
   }
 
   /**
-   * Start (once per sessionId) the persistent out-of-turn subscription that
-   * delivers `attachment` events pushed after a turn ends. Idempotent: a
-   * session that already has a live subscription is left alone.
+   * Start the persistent out-of-turn subscription that delivers `attachment`
+   * events pushed after a turn ends. Once per sessionId. Idempotent. A
+   * session with a live subscription is left alone.
    *
-   * This is the exactly-once boundary: attachment delivery for a session
-   * happens ONLY here, never in the per-turn loop, so the two readers of
-   * the same event stream can't both deliver the same attachment.
+   * This is the exactly-once boundary. Attachment delivery happens only here
+   * never in the per-turn loop. Neither reader of the shared event stream
+   * delivers the same attachment twice.
    */
   private startAttachmentSubscription(sessionId: string, channelId: string, idleTimeoutMs?: number): void {
     if (this.subscriptions.has(sessionId)) return;
@@ -365,7 +363,7 @@ export class DiscordBridge implements ChannelOutbound {
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => {
-      // The subscription ended (idle-closed, aborted, or reconnect-exhausted).
+      // The subscription ended: idle-closed or aborted or reconnect-exhausted.
       // Drop its map entry so the connection is released and the next message
       // reopens lazily. Guard by identity so we never evict a fresh
       // subscription that already replaced this one.
@@ -490,10 +488,10 @@ export class DiscordBridge implements ChannelOutbound {
             continue;
           }
 
-          // `attachment` events are delivered exclusively by the persistent
-          // subscription (see `startAttachmentSubscription`), never here.
-          // Both readers watch the same event stream, so handling it in two
-          // places would deliver every in-turn attachment twice.
+          // `attachment` events are delivered only by the persistent
+          // subscription in `startAttachmentSubscription` never here.
+          // Both readers watch the same stream. Handling it in two places
+          // would deliver every in-turn attachment twice.
 
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;

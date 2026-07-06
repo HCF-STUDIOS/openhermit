@@ -139,19 +139,16 @@ export class WechatBridge implements ChannelOutbound {
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
   /**
-   * Persistent out-of-turn subscriptions, keyed by sessionId. This is the
-   * SINGLE owner of attachment delivery for a session (the per-turn loop in
-   * `waitForAgentResponse` no longer delivers attachments) so a live turn
-   * and the persistent subscription can never both deliver the same
-   * attachment.
+   * Persistent out-of-turn subscriptions keyed by sessionId. Single owner of
+   * attachment delivery for a session. The per-turn loop no longer delivers
+   * attachments so a turn and this subscription can never double-deliver.
    */
   private readonly subscriptions = new Map<string, AbortController>();
   /**
-   * Highest out-of-turn event id delivered per sessionId, kept separate
-   * from `subscriptions` so it survives idle-close/reopen. The gateway
-   * replays its recent backlog on every fresh connection, so without this
-   * a reopened subscription starts its cursor at 0 and redelivers whatever
-   * was already sent before the idle close.
+   * Highest out-of-turn event id delivered per sessionId. Kept separate from
+   * `subscriptions` so it survives idle-close/reopen. The gateway replays its
+   * backlog on every fresh connection. Without this a reopened subscription
+   * starts at cursor 0 and redelivers what was already sent.
    */
   private readonly subscriptionCursors = new Map<string, number>();
   /** sessionId per peer (DM peer id or group id). */
@@ -685,13 +682,13 @@ export class WechatBridge implements ChannelOutbound {
   }
 
   /**
-   * Start (once per sessionId) the persistent out-of-turn subscription that
-   * delivers `attachment` events pushed after a turn ends. Idempotent: a
-   * session that already has a live subscription is left alone.
+   * Start the persistent out-of-turn subscription that delivers `attachment`
+   * events pushed after a turn ends. Idempotent. A session with a live
+   * subscription is left alone.
    *
-   * This is the exactly-once boundary: attachment delivery for a session
-   * happens ONLY here, never in the per-turn loop, so the two readers of
-   * the same event stream can't both deliver the same attachment.
+   * The exactly-once boundary. Attachment delivery happens only here and
+   * never in the per-turn loop so the two stream readers can't both deliver
+   * the same attachment.
    */
   private startAttachmentSubscription(sessionId: string, peer: string, idleTimeoutMs?: number): void {
     if (this.subscriptions.has(sessionId)) return;
@@ -731,8 +728,8 @@ export class WechatBridge implements ChannelOutbound {
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => {
-      // The subscription ended (idle-closed, aborted, or reconnect-exhausted).
-      // Drop its map entry so the connection is released and the next message
+      // The subscription ended by idle-close abort or reconnect-exhaustion.
+      // Drop its map entry so the connection releases and the next message
       // reopens lazily. Guard by identity so we never evict a fresh
       // subscription that already replaced this one.
       if (this.subscriptions.get(sessionId) === abortController) {
@@ -824,10 +821,10 @@ export class WechatBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
-          // `attachment` events are delivered exclusively by the persistent
-          // subscription (see `startAttachmentSubscription`), never here.
-          // Both readers watch the same event stream, so handling it in two
-          // places would deliver every in-turn attachment twice.
+          // `attachment` events are delivered only by the persistent
+          // subscription in `startAttachmentSubscription` never here. Both
+          // readers watch the same stream so handling it in two places would
+          // deliver every in-turn attachment twice.
 
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;

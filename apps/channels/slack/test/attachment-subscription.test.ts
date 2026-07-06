@@ -3,14 +3,11 @@ import { test } from 'node:test';
 
 import { SlackBridge } from '../src/bridge.js';
 
-// --- Out-of-turn attachment delivery via the persistent subscription ---
-//
-// Mirrors the Telegram bridge's wiring: `startAttachmentSubscription`
-// (started per-session from `ensureSession`) is the SINGLE owner of
-// `attachment` event delivery. The per-turn loop in `waitForAgentResponse`
-// no longer touches attachment events at all, so the two readers of the
-// same session event stream can never both call `deliverAttachment` for
-// the same event.
+// Out-of-turn attachment delivery via the persistent subscription.
+// startAttachmentSubscription is the single owner of attachment delivery.
+// It is started per session from ensureSession. The per-turn loop no longer
+// touches attachment events so the two readers of the same stream never
+// both call deliverAttachment for the same event.
 
 function frameText(id: number | undefined, event: string, data: unknown): string {
   const lines: string[] = [];
@@ -20,7 +17,7 @@ function frameText(id: number | undefined, event: string, data: unknown): string
   return `${lines.join('\n')}\n\n`;
 }
 
-/** A fake SSE body: delivers `text` on the first read, then closes. */
+/** Fake SSE body. Delivers text on the first read then closes. */
 function makeStream(text: string): ReadableStream<Uint8Array> {
   let delivered = false;
   return new ReadableStream({
@@ -36,8 +33,8 @@ function makeStream(text: string): ReadableStream<Uint8Array> {
 }
 
 /**
- * A fake SSE body that enqueues each item then stays open forever (a
- * never-resolving pull), so only the idle timeout can end the stream.
+ * Fake SSE body that enqueues each item then stays open forever with a
+ * never-resolving pull. Only the idle timeout can end the stream.
  */
 function makeTimedStream(items: Array<{ delayMs: number; text: string }>): ReadableStream<Uint8Array> {
   let i = 0;
@@ -78,7 +75,7 @@ const fakeSlackApi = {} as unknown as ConstructorParameters<typeof SlackBridge>[
 function newBridge(): { bridge: SlackBridge; calls: Array<[string, Record<string, unknown>, string | undefined]> } {
   const bridge = new SlackBridge(fakeSlackApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
   const calls: Array<[string, Record<string, unknown>, string | undefined]> = [];
-  // deliverAttachment is private; stub it on the instance so both delivery
+  // deliverAttachment is private. Stub it on the instance so both delivery
   // paths under test route through this spy instead of the real Slack API.
   (bridge as unknown as {
     deliverAttachment: (channelId: string, payload: Record<string, unknown>, threadTs?: string) => Promise<void>;
@@ -119,13 +116,13 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
-      // The persistent subscription is already watching this session, as it
-      // would be from the moment the session was opened.
+      // The persistent subscription is already watching this session. It
+      // would be live from the moment the session was opened.
       (bridge as unknown as { startAttachmentSubscription: (sessionId: string, channelId: string, threadTs?: string) => void })
         .startAttachmentSubscription('sess-2', 'chan-777');
 
-      // The per-turn loop reads the SAME event stream concurrently, as it
-      // does mid-turn in production.
+      // The per-turn loop reads the same event stream concurrently. This is
+      // what happens mid-turn in production.
       await (bridge as unknown as {
         waitForAgentResponse: (sessionId: string, channelId: string, threadTs?: string) => Promise<unknown>;
       }).waitForAgentResponse('sess-2', 'chan-777');
@@ -140,15 +137,13 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
 });
 
 test('does not redeliver an attachment after idle-close and reopen (exactly-once across reconnects)', async () => {
-  // Reproduces the regression: an out-of-turn attachment (id 1) is
-  // delivered, the subscription then idle-closes (its subscriptions map
-  // entry is dropped), and a later message reopens the subscription the way
-  // `ensureSession` does. The gateway replays its backlog on every fresh
-  // connection regardless of reconnect vs. brand-new session, so the
-  // reopened stream re-serves id 1. Without a cursor that survives the
-  // idle-close/reopen cycle, the bridge has no way to know id 1 was already
-  // delivered and sends it again. A genuinely new event (id 2) after reopen
-  // must still be delivered.
+  // Reproduces the regression. An out-of-turn attachment id 1 is delivered.
+  // The subscription then idle-closes and its map entry is dropped. A later
+  // message reopens the subscription the way ensureSession does. The gateway
+  // replays its backlog on every fresh connection so the reopened stream
+  // re-serves id 1. Without a cursor that survives idle-close and reopen the
+  // bridge cannot know id 1 was already delivered and sends it again. A new
+  // event id 2 after reopen must still be delivered.
   const { bridge, calls } = newBridge();
   const firstBody = frameText(1, 'attachment', { sessionId: 'sess-4', attachmentId: 'a1', kind: 'document', name: 'one.pdf' });
   const secondBody =
@@ -187,7 +182,7 @@ test('removes the session entry when its subscription ends (idle close), so it r
   const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });
 
   await withFetch(
-    // Serve the one frame, then keep the stream open so only the idle timer
+    // Serve the one frame then keep the stream open so only the idle timer
     // ends it. A short idleTimeoutMs is threaded through below.
     async () => new Response(makeTimedStream([{ delayMs: 0, text: body }]), { status: 200 }),
     async () => {
@@ -198,8 +193,8 @@ test('removes the session entry when its subscription ends (idle close), so it r
       // Subscription is live right after start.
       await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 1);
 
-      // After the idle timeout with no further frames, it ends and the map
-      // entry is evicted, dropping the connection.
+      // After the idle timeout with no further frames it ends. The map entry
+      // is evicted and the connection drops.
       await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 0);
 
       assert.equal((bridge as unknown as { subscriptionCount: number }).subscriptionCount, 0);

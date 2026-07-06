@@ -1623,7 +1623,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     });
   });
 
-  // --- publish-into-session (server -> live session, out of band) ---
+  // --- publish-into-session: server to live session out of band ---
 
   registerSessionPublishRoute(app, {
     instances,
