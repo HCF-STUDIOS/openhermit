@@ -326,9 +326,11 @@ export class SlackBridge implements ChannelOutbound {
   /**
    * Start the persistent out-of-turn subscription once per sessionId. It
    * delivers attachment events pushed after a turn ends. Idempotent. A
-   * session with a live subscription is left alone. This is the exactly-once
-   * boundary. Attachment delivery happens only here and never in the per-turn
-   * loop so the two readers of the same stream cannot both deliver it.
+   * session with a live subscription is left alone. This is the single
+   * owner of attachment delivery so the two readers of the same stream
+   * cannot both deliver it. The cursor advances before the upload finishes
+   * so delivery is at most once and not a durability guarantee. A failed
+   * upload is not retried.
    */
   private startAttachmentSubscription(
     sessionId: string,
