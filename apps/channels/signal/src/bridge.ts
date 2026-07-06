@@ -7,7 +7,8 @@ import type {
   ChannelOutboundResult,
   OutboundSession,
 } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import type { SseFrame } from '@openhermit/shared';
 
 import type { SendOptions, SignalApi, SignalIncomingMessage } from './signal-api.js';
 import { formatAgentResponse } from './formatting.js';
@@ -86,6 +87,14 @@ export class SignalBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
+  /**
+   * Persistent out-of-turn subscriptions, keyed by sessionId. This is the
+   * SINGLE owner of attachment delivery for a session (the per-turn loop in
+   * `waitForAgentResponse` no longer delivers attachments) so a live turn
+   * and the persistent subscription can never both deliver the same
+   * attachment.
+   */
+  private readonly subscriptions = new Map<string, AbortController>();
   private readonly conversationSessions = new Map<string, string>();
   private readonly allowedSenders: string[] | undefined;
   private readonly allowedGroupIds: string[] | undefined;
@@ -347,6 +356,67 @@ export class SignalBridge implements ChannelOutbound {
       },
       metadata,
     }, openOpts);
+
+    this.startAttachmentSubscription(sessionId, conversationKey(msg));
+  }
+
+  /**
+   * Start (once per sessionId) the persistent out-of-turn subscription that
+   * delivers `attachment` events pushed after a turn ends. Idempotent: a
+   * session that already has a live subscription is left alone.
+   *
+   * This is the exactly-once boundary: attachment delivery for a session
+   * happens ONLY here, never in the per-turn loop, so the two readers of
+   * the same event stream can't both deliver the same attachment.
+   */
+  private startAttachmentSubscription(sessionId: string, target: string, idleTimeoutMs?: number): void {
+    if (this.subscriptions.has(sessionId)) return;
+
+    const abortController = new AbortController();
+    this.subscriptions.set(sessionId, abortController);
+
+    void startPersistentSubscription({
+      eventsUrl: this.client.buildEventsUrl(sessionId),
+      headers: { authorization: `Bearer ${this.clientToken}` },
+      abortSignal: abortController.signal,
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      onEvent: (frame: SseFrame) => {
+        if (frame.event !== 'attachment') return;
+        try {
+          const payload = frame.data.length > 0
+            ? (JSON.parse(frame.data) as Record<string, unknown>)
+            : {};
+          void this.deliverAttachment(target, payload).catch((err) => {
+            this.log(`out-of-turn attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } catch (err) {
+          this.log(`failed to parse out-of-turn attachment event: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    }).catch((err) => {
+      this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => {
+      // The subscription ended (idle-closed, aborted, or reconnect-exhausted).
+      // Drop its map entry so the connection is released and the next message
+      // reopens lazily. Guard by identity so we never evict a fresh
+      // subscription that already replaced this one.
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
+    });
+  }
+
+  /** Number of live persistent subscriptions. Exposed for tests. */
+  get subscriptionCount(): number {
+    return this.subscriptions.size;
+  }
+
+  /** Stop all persistent subscriptions. Called on bridge/adapter shutdown. */
+  stop(): void {
+    for (const controller of this.subscriptions.values()) {
+      controller.abort();
+    }
+    this.subscriptions.clear();
   }
 
   private async waitForAgentResponse(sessionId: string, target: string): Promise<TurnResult> {
@@ -427,16 +497,11 @@ export class SignalBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
-          if (frame.event === 'attachment') {
-            try {
-              await this.deliverAttachment(target, payload);
-            } catch (err) {
-              this.log(
-                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-            continue;
-          }
+          // `attachment` events are delivered exclusively by the persistent
+          // subscription (see `startAttachmentSubscription`), never here.
+          // Both readers watch the same event stream, so handling it in two
+          // places would deliver every in-turn attachment twice.
+
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
             continue;
