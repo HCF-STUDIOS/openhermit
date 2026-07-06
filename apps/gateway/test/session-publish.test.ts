@@ -251,6 +251,39 @@ test('POST session events: attachment with assetUrl ingests then publishes with 
   assert.equal(body.attachmentId, 'att_ingested_1');
 });
 
+test('POST session events: published attachment uses the sniffed mimeType/kind, not a mismatched caller hint', async () => {
+  const { app, publishCalls } = buildApp({
+    ingestAttachment: async () => {
+      // The fetch actually sniffed (and persisted) a PDF, regardless of the
+      // caller's hint below.
+      return { attachmentId: 'att_ingested_2', mimeType: 'application/pdf' };
+    },
+  });
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+    body: JSON.stringify({
+      event: {
+        type: 'attachment',
+        sessionId,
+        assetUrl: 'https://example.com/mislabeled',
+        mimeType: 'image/png',
+      },
+    }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(publishCalls.length, 1);
+  const published = publishCalls[0] as { mimeType: string; kind: string };
+  assert.equal(published.mimeType, 'application/pdf', 'published event must reflect the sniffed type, not the hint');
+  assert.equal(published.kind, 'document');
+});
+
 test('POST session events: attachment ingest failure returns 502 and does not publish', async () => {
   const { app, publishCalls } = buildApp({
     ingestAttachment: async () => {
