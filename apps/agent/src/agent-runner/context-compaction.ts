@@ -27,6 +27,14 @@ export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
 // wire — which kills prompt caching and inflates per-turn latency.
 export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 80;
 
+/**
+ * Hysteresis ratio: when compaction triggers (at the token budget or the
+ * message-count cap), shrink down to this fraction of the threshold so the
+ * session has headroom before the next compaction. Without it, a compaction
+ * that lands exactly at the cap re-triggers on the very next message.
+ */
+export const COMPACTION_TARGET_RATIO = 0.75;
+
 // ── Token estimation ───────────────────────────────────────────────────
 
 export const estimateTextTokens = (text: string): number =>
@@ -363,8 +371,25 @@ const parseCompactionSummaryResponse = (
       return normalized.length > 0 ? normalized : undefined;
     }
   } catch {
-    // Not JSON — treat the whole response as the summary.
-    return trimmed.length > 0 ? trimmed : undefined;
+    // Not parseable JSON. Do NOT persist arbitrary assistant text as the
+    // summary: it becomes the session's authoritative history on the next
+    // resume, and models occasionally answer here with a conversational
+    // reply instead of the requested JSON (observed in production). Try to
+    // salvage an embedded JSON object (e.g. `compactionSummary: {...}`);
+    // otherwise drop it — the caller falls back to text extraction and the
+    // previous persisted summary stays authoritative.
+    const embedded = jsonText.match(/\{[\s\S]*\}/);
+    if (embedded) {
+      try {
+        const parsed = JSON.parse(embedded[0]) as { compactionSummary?: unknown };
+        if (typeof parsed.compactionSummary === 'string' && parsed.compactionSummary.trim().length > 0) {
+          return parsed.compactionSummary.trim();
+        }
+      } catch {
+        // fall through to undefined
+      }
+    }
+    return undefined;
   }
 
   return undefined;
@@ -378,13 +403,24 @@ export const runCompactionSummaryTurn = async (input: {
 }): Promise<string | undefined> => {
   const textSummaries = input.compactedMessages
     .map((message) => summarizeMessageForCompaction(message))
-    .filter((line): line is string => Boolean(line));
+    .filter((line): line is string => Boolean(line))
+    // A previously injected summary block may be part of the message list
+    // (it's a user-role message). Its content is already provided via
+    // `previousCompactionSummary` — don't feed it in twice.
+    .filter((line) => !line.includes('Context compaction summary (runtime-generated'));
 
   if (textSummaries.length === 0) {
     return undefined;
   }
 
-  const transcript = textSummaries.join('\n').slice(0, 16_000);
+  // Cap the transcript, keeping head AND tail. A plain head-slice drops the
+  // most recent messages from the summarizer's view — the worst possible
+  // bias, since the persisted summary is the resume boundary and recent
+  // turns are exactly what the next resume needs.
+  const joined = textSummaries.join('\n');
+  const transcript = joined.length > 16_000
+    ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
+    : joined;
 
   const promptParts = [
     'Internal compaction turn:',
@@ -545,11 +581,26 @@ export const compactContextIfNeeded = async (
     );
   };
 
+  // Hysteresis: compact DOWN TO a target below the trigger thresholds, not
+  // to the thresholds themselves. Compacting to exactly the cap leaves zero
+  // headroom — a couple of new messages re-trip the trigger, and (since the
+  // result is persisted back into the live state) the session pays another
+  // LLM summary + marker on nearly every generation. Targeting ~75% gives
+  // real headroom before the next genuine compaction.
+  const targetTokens = Math.floor(budget * COMPACTION_TARGET_RATIO);
+  // Floor at retainCountOption+1 so a small ratio can't compact below the
+  // configured recent-message retention — but never above the hard cap
+  // (recentMessageCount may legitimately exceed maxMessages in config).
+  const targetMessages = Math.min(
+    maxMessages,
+    Math.max(retainCountOption + 1, Math.floor(maxMessages * COMPACTION_TARGET_RATIO)),
+  );
+
   // First pass: find the retain count without LLM summary (text-extraction only).
   let compacted = buildCandidate(retainCount, undefined);
 
   while (
-    (effectiveTokens(compacted) > budget || compacted.length > maxMessages)
+    (effectiveTokens(compacted) > targetTokens || compacted.length > targetMessages)
     && retainCount > 1
   ) {
     retainCount -= 1;
@@ -557,13 +608,13 @@ export const compactContextIfNeeded = async (
   }
 
   // Expansion phase: grow retainCount as long as we stay under the
-  // token budget AND under the message-count cap. Without the count
+  // token target AND under the message-count target. Without the count
   // cap, count-only triggers (lots of tiny messages well below budget)
   // would expand right back to the full list and undo the compaction.
   while (retainCount < messages.length) {
     const expanded = buildCandidate(retainCount + 1, undefined);
 
-    if (effectiveTokens(expanded) > budget || expanded.length > maxMessages) {
+    if (effectiveTokens(expanded) > targetTokens || expanded.length > targetMessages) {
       break;
     }
 
@@ -583,9 +634,18 @@ export const compactContextIfNeeded = async (
       // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
+      // Summarize the FULL message list, not just the compacted prefix.
+      // setCompactionSummary appends the summary as a `context_compaction`
+      // event at the TAIL of the session log, and resume restores only the
+      // entries logged after that marker. If the summary covered only the
+      // prefix, everything logged before the marker but outside the summary
+      // — the retained recent tail and the current user turn — would be
+      // lost on the next resume (neither summarized nor restored verbatim).
+      // Covering the full list makes the marker-at-tail boundary correct;
+      // the live context still keeps the tail verbatim via `retained`.
       llmSummary = await runCompactionSummaryTurn({
         sessionId,
-        compactedMessages,
+        compactedMessages: messages,
         previousCompactionSummary: previousSummary,
         createAgent: deps.createCompactionAgent,
       });

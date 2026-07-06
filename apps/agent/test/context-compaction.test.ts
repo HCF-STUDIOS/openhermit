@@ -530,7 +530,11 @@ test('runCompactionSummaryTurn extracts JSON summary from agent response', async
   assert.equal(result, 'User discussed project setup.');
 });
 
-test('runCompactionSummaryTurn handles plain text response (non-JSON)', async () => {
+test('runCompactionSummaryTurn rejects a plain text (non-JSON) response', async () => {
+  // A non-JSON answer here is usually the model replying conversationally
+  // instead of summarizing (observed in production). It must NOT be
+  // persisted as the session's authoritative summary — the caller falls
+  // back to text extraction and keeps the previous persisted summary.
   const mockAgent = {
     prompt: async () => {},
     waitForIdle: async () => {},
@@ -538,7 +542,7 @@ test('runCompactionSummaryTurn handles plain text response (non-JSON)', async ()
       messages: [
         {
           role: 'assistant' as const,
-          content: [{ type: 'text' as const, text: 'The user set up a project and ran tests.' }],
+          content: [{ type: 'text' as const, text: 'OK, I saved the lyrics. Now generating the song...' }],
           ...assistantDefaults,
           timestamp: Date.now(),
         },
@@ -552,7 +556,68 @@ test('runCompactionSummaryTurn handles plain text response (non-JSON)', async ()
     previousCompactionSummary: undefined,
     createAgent: async () => mockAgent as any,
   });
-  assert.equal(result, 'The user set up a project and ran tests.');
+  assert.equal(result, undefined);
+});
+
+test('runCompactionSummaryTurn salvages a JSON object embedded in a non-JSON wrapper', async () => {
+  const mockAgent = {
+    prompt: async () => {},
+    waitForIdle: async () => {},
+    state: {
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: 'compactionSummary: {"compactionSummary": "User and agent collaborated on a song."}' }],
+          ...assistantDefaults,
+          timestamp: Date.now(),
+        },
+      ],
+    },
+  };
+
+  const result = await runCompactionSummaryTurn({
+    sessionId: 's1',
+    compactedMessages: [makeUserMessage('hello')],
+    previousCompactionSummary: undefined,
+    createAgent: async () => mockAgent as any,
+  });
+  assert.equal(result, 'User and agent collaborated on a song.');
+});
+
+test('runCompactionSummaryTurn summarizer input excludes previously injected summary blocks', async () => {
+  let promptText = '';
+  const mockAgent = {
+    prompt: async (msg: any) => { promptText = msg.content[0].text; },
+    waitForIdle: async () => {},
+    state: {
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: '{"compactionSummary": "ok"}' }],
+          ...assistantDefaults,
+          timestamp: Date.now(),
+        },
+      ],
+    },
+  };
+
+  await runCompactionSummaryTurn({
+    sessionId: 's1',
+    compactedMessages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Context compaction summary (runtime-generated, read-only context):\n\nOld summary body.' }],
+        timestamp: Date.now(),
+      } as any,
+      makeUserMessage('fresh message about ORCHID'),
+    ],
+    previousCompactionSummary: 'Old summary body.',
+    createAgent: async () => mockAgent as any,
+  });
+  assert.ok(promptText.includes('fresh message about ORCHID'));
+  // The old summary appears once (as previousCompactionSummary), not twice.
+  const occurrences = promptText.split('Old summary body.').length - 1;
+  assert.equal(occurrences, 1);
 });
 
 test('runCompactionSummaryTurn handles code-fenced JSON response', async () => {
@@ -892,4 +957,34 @@ test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context wi
   assert.ok(resultText.length <= TOOL_RESULT_MAX_CHARS_CAP + 200, // +marker overhead
     `result kept ${resultText.length} chars, expected ≤ ~${TOOL_RESULT_MAX_CHARS_CAP}`);
   assert.ok(resultText.includes('[truncated:'));
+});
+
+test('compactContextIfNeeded compacts below the trigger with headroom (hysteresis)', async () => {
+  // Count-triggered compaction must land meaningfully BELOW maxMessages —
+  // landing exactly at the cap re-triggers (with another LLM summary call
+  // and marker) on the very next message once results are persisted.
+  const messages: AgentMessage[] = [];
+  for (let i = 0; i < 113; i += 1) {
+    messages.push(makeUserMessage(`note ${i}`));
+  }
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 1_000_000,
+      contextCompactionRecentMessageCount: 6,
+      contextCompactionMaxMessages: 80,
+    },
+  });
+
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  // target = floor(80 * 0.75) = 60 (+1 leeway for the summary block)
+  assert.ok(
+    result.length <= 61,
+    `compacted to ${result.length} messages — expected ≤ 61 (75% of the 80 cap + summary block)`,
+  );
+  // Adding a handful of new messages must NOT re-trigger.
+  const afterGrowth = result.concat(
+    Array.from({ length: 5 }, (_, i) => makeUserMessage(`new ${i}`)),
+  );
+  const second = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
+  assert.equal(second.length, afterGrowth.length, 'no re-compaction within the headroom window');
 });
