@@ -120,3 +120,9 @@ export {
   isSessionNotFoundError,
   openSessionWithFreshFallback,
 } from './session-recovery.js';
+
+export { startPersistentSubscription } from './persistent-subscription.js';
+export type {
+  PersistentSubscriptionOptions,
+  SseFrame,
+} from './persistent-subscription.js';
