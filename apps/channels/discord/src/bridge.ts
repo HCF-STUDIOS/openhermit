@@ -212,6 +212,10 @@ export class DiscordBridge implements ChannelOutbound {
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
       this.subscriptionCursors.delete(oldSessionId);
+      // Stop the orphaned persistent subscription instead of leaving it to
+      // reconnect/poll the dead session until its idle timeout.
+      this.subscriptions.get(oldSessionId)?.abort();
+      this.subscriptions.delete(oldSessionId);
     }
 
     const newSessionId = DiscordBridge.generateSessionId();
@@ -231,6 +235,10 @@ export class DiscordBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = DiscordBridge.generateSessionId();
         this.channelSessions.set(event.channelId, fresh);
         return fresh;

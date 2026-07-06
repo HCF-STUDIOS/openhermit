@@ -196,6 +196,10 @@ export class SlackBridge implements ChannelOutbound {
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
       this.subscriptionCursors.delete(oldSessionId);
+      // Stop the orphaned persistent subscription instead of leaving it to
+      // reconnect/poll the dead session until its idle timeout.
+      this.subscriptions.get(oldSessionId)?.abort();
+      this.subscriptions.delete(oldSessionId);
     }
 
     const newSessionId = SlackBridge.generateSessionId();
@@ -219,6 +223,10 @@ export class SlackBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event, isDm, threadTs),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = SlackBridge.generateSessionId();
         this.channelSessions.set(this.sessionKey(channelId, threadTs), fresh);
         return fresh;
