@@ -194,7 +194,11 @@ export const registerSessionPublishRoute = (
         return c.json({ error: message, code: 'attachment_ingest_failed' }, 502);
       }
 
-      const finalMimeType = ingestReq.mimeType ?? ingested.mimeType;
+      // The ingest path sniffs the real type regardless of what the caller
+      // hinted, so the published event must reflect what was persisted, not
+      // the hint (which ingest only falls back to when the fetch itself has
+      // no declared content-type).
+      const finalMimeType = ingested.mimeType;
       const finalEvent: OutboundEventBody = {
         type: 'attachment',
         sessionId,
