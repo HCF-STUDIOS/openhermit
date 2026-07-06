@@ -64,7 +64,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'telegram',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
       ...(mode === 'webhook'
         ? { handleWebhook: (req) => bot.handleWebhookRequest(req) }
         : {}),
