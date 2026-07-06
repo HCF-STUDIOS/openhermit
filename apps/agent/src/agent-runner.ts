@@ -2130,7 +2130,19 @@ export class AgentRunner implements SessionRuntime {
     const notifyOwner = this.makeNotifyOwnerApproval();
     const eventBroker = this.events;
 
-    const filteredTools = tools
+    // Explicitly-provided toolsets (`input.tools`) are internal runtime turns
+    // — introspection and compaction — whose tools are curated by the caller
+    // and run with no user principal. Do NOT apply user-policy filtering to
+    // them: the principal has no role, so role-granted tools (memory_add/
+    // memory_update: owner|user) and internal-only tools (working_memory_update:
+    // defaultGrants []) all evaluate to deny and get silently dropped — the
+    // model, whose prompt instructs it to call them, then gets "Tool X not
+    // found" (observed fleet-wide: 44k+ failed introspection memory writes).
+    // Introspection is documented as exempt from approval wrapping for the
+    // same reason.
+    const filteredTools = input.tools
+      ? tools
+      : tools
       .filter((t: any) => {
         const toolMatches = resolveToolMatches(policyRows, t.name, t.policy);
         const toolDecision = evaluateAccess(principal, toolMatches);
