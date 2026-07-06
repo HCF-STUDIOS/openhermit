@@ -189,6 +189,10 @@ export class SignalBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, msg, senderChannelUserId),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = generateSessionId();
         this.conversationSessions.set(key, fresh);
         return fresh;

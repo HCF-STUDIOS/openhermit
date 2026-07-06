@@ -182,6 +182,10 @@ export class WhatsAppBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const normalized = normalizeJid(event.chatJid);
         const fresh = generateSessionId(isGroupJid(normalized));
         this.chatSessions.set(normalized, fresh);
@@ -336,6 +340,10 @@ export class WhatsAppBridge implements ChannelOutbound {
     }
     this.lastEventIds.delete(oldSessionId);
     this.subscriptionCursors.delete(oldSessionId);
+    // Stop the orphaned persistent subscription instead of leaving it to
+    // reconnect/poll the dead session until its idle timeout.
+    this.subscriptions.get(oldSessionId)?.abort();
+    this.subscriptions.delete(oldSessionId);
     const newSessionId = generateSessionId(isGroupJid(normalizedChatJid));
     this.chatSessions.set(normalizedChatJid, newSessionId);
     await this.whatsapp.sendText(normalizedChatJid, 'New conversation started.');

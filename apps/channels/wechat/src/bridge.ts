@@ -557,6 +557,10 @@ export class WechatBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, msg, isGroup),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = WechatBridge.generateSessionId();
         this.peerSessions.set(peer, fresh);
         return fresh;

@@ -403,6 +403,10 @@ export class TelegramBridge implements ChannelOutbound {
     }
     this.lastEventIds.delete(oldSessionId);
     this.subscriptionCursors.delete(oldSessionId);
+    // Stop the orphaned persistent subscription instead of leaving it to
+    // reconnect/poll the dead session until its idle timeout.
+    this.subscriptions.get(oldSessionId)?.abort();
+    this.subscriptions.delete(oldSessionId);
 
     // Generate a fresh sessionId for this chat.
     const newSessionId = TelegramBridge.generateSessionId();
@@ -441,6 +445,10 @@ export class TelegramBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, message, isGroup),
       () => {
+        // The stale session's persistent subscription would otherwise keep
+        // reconnecting/polling a dead session until its idle timeout.
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = TelegramBridge.generateSessionId();
         this.chatSessions.set(chatId, fresh);
         this.log(`stale session ${sessionId} for chat ${chatId}; started fresh ${fresh}`);

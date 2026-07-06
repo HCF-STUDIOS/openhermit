@@ -240,6 +240,40 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
 });
 
+test('/new (handleNew) aborts and removes the old session\'s persistent subscription, not just its cursor', async () => {
+  // A dedicated fake API (not the shared module-level one) so stubbing
+  // sendMessage here can't affect other tests that rely on it being absent.
+  const localTelegramApi = {
+    sendChatAction: async () => true,
+    sendMessage: async () => ({ message_id: 1 }),
+  } as unknown as TelegramApi;
+  const bridge = new TelegramBridge(localTelegramApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+  const chatId = 4321;
+
+  // Stub the network calls handleNew makes so the test stays offline.
+  (bridge as unknown as { client: { checkpointSession: () => Promise<unknown> } }).client.checkpointSession =
+    async () => ({});
+
+  // Seed the chat's current (soon-to-be-old) session and a live persistent
+  // subscription for it, the way `ensureSession` would have left it.
+  (bridge as unknown as { chatSessions: Map<number, string> }).chatSessions.set(chatId, 'old-sess');
+  const oldAbortController = new AbortController();
+  let aborted = false;
+  oldAbortController.signal.addEventListener('abort', () => { aborted = true; });
+  (bridge as unknown as { subscriptions: Map<string, AbortController> }).subscriptions.set('old-sess', oldAbortController);
+
+  await (bridge as unknown as { handleNew: (chatId: number) => Promise<void> }).handleNew(chatId);
+
+  assert.equal(aborted, true, 'the old session subscription must be aborted, not left running');
+  assert.equal(
+    (bridge as unknown as { subscriptions: Map<string, AbortController> }).subscriptions.has('old-sess'),
+    false,
+    'the old session subscription map entry must be removed',
+  );
+  // A fresh session id must have replaced the old one for this chat.
+  assert.notEqual((bridge as unknown as { chatSessions: Map<number, string> }).chatSessions.get(chatId), 'old-sess');
+});
+
 test('removes the session entry when its subscription ends (idle close), so it reopens lazily', async () => {
   const { bridge } = newBridge();
   const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });
