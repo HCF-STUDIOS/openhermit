@@ -43,7 +43,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'discord',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
     };
   },
 };
