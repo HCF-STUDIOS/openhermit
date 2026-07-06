@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { pickMediaFile } from '../src/bridge.js';
-import type { TelegramMessage } from '../src/telegram-api.js';
+import { pickMediaFile, TelegramBridge } from '../src/bridge.js';
+import type { TelegramApi, TelegramMessage } from '../src/telegram-api.js';
 
 const baseMessage = (extra: Partial<TelegramMessage>): TelegramMessage => ({
   message_id: 1,
@@ -51,4 +51,122 @@ test('pickMediaFile maps a video with fallbacks', () => {
 
 test('pickMediaFile returns undefined for a text-only message', () => {
   assert.equal(pickMediaFile(baseMessage({ text: 'hello' })), undefined);
+});
+
+// --- Out-of-turn attachment delivery via the persistent subscription ---
+//
+// These exercise the wiring added for exactly-once attachment delivery:
+// `startAttachmentSubscription` (started per-session, e.g. from
+// `ensureSession`) is the SINGLE owner of `attachment` event delivery.
+// The per-turn loop in `waitForAgentResponse` no longer touches attachment
+// events at all, so the two readers of the same session event stream can
+// never both call `deliverAttachmentToTelegram` for the same event.
+
+function frameText(id: number | undefined, event: string, data: unknown): string {
+  const lines: string[] = [];
+  if (id !== undefined) lines.push(`id: ${id}`);
+  lines.push(`event: ${event}`);
+  lines.push(`data: ${JSON.stringify(data)}`);
+  return `${lines.join('\n')}\n\n`;
+}
+
+/** A fake SSE body: delivers `text` on the first read, then closes. */
+function makeStream(text: string): ReadableStream<Uint8Array> {
+  let delivered = false;
+  return new ReadableStream({
+    pull(controller) {
+      if (!delivered) {
+        delivered = true;
+        controller.enqueue(new TextEncoder().encode(text));
+        return;
+      }
+      controller.close();
+    },
+  });
+}
+
+async function withFetch(impl: typeof fetch, fn: () => Promise<void>): Promise<void> {
+  const original = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+const fakeTelegramApi = {
+  sendChatAction: async () => true,
+} as unknown as TelegramApi;
+
+function newBridge(): { bridge: TelegramBridge; calls: Array<[number, Record<string, unknown>]> } {
+  const bridge = new TelegramBridge(fakeTelegramApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+  const calls: Array<[number, Record<string, unknown>]> = [];
+  // deliverAttachmentToTelegram is private; stub it on the instance so both
+  // delivery paths under test route through this spy instead of touching
+  // the real Telegram Bot API.
+  (bridge as unknown as { deliverAttachmentToTelegram: (chatId: number, payload: Record<string, unknown>) => Promise<void> }).deliverAttachmentToTelegram =
+    async (chatId, payload) => {
+      calls.push([chatId, payload]);
+    };
+  return { bridge, calls };
+}
+
+test('delivers an out-of-turn attachment (no active turn) via the persistent subscription', async () => {
+  const { bridge, calls } = newBridge();
+  const attachmentPayload = { sessionId: 'sess-1', attachmentId: 'att-1', kind: 'document', name: 'report.pdf' };
+  const body = frameText(1, 'attachment', attachmentPayload);
+
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      (bridge as unknown as { startAttachmentSubscription: (sessionId: string, chatId: number) => void })
+        .startAttachmentSubscription('sess-1', 555);
+
+      await waitFor(() => calls.length > 0);
+      (bridge as unknown as { stop: () => void }).stop();
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], [555, attachmentPayload]);
+});
+
+test('an in-turn attachment is delivered exactly once, not doubled, with both the per-turn loop and the persistent subscription reading the same stream', async () => {
+  const { bridge, calls } = newBridge();
+  const attachmentPayload = { sessionId: 'sess-2', attachmentId: 'att-2', kind: 'image', name: 'x.png' };
+  const body =
+    frameText(1, 'text_delta', { text: 'hi' }) +
+    frameText(2, 'attachment', attachmentPayload) +
+    frameText(3, 'agent_end', {});
+
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      // The persistent subscription is already watching this session, as it
+      // would be from the moment the session was opened.
+      (bridge as unknown as { startAttachmentSubscription: (sessionId: string, chatId: number) => void })
+        .startAttachmentSubscription('sess-2', 777);
+
+      // The per-turn loop reads the SAME event stream concurrently, as it
+      // does mid-turn in production.
+      await (bridge as unknown as {
+        waitForAgentResponse: (sessionId: string, chatId: number, suppress?: boolean) => Promise<unknown>;
+      }).waitForAgentResponse('sess-2', 777, false);
+
+      await waitFor(() => calls.length > 0);
+      (bridge as unknown as { stop: () => void }).stop();
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], [777, attachmentPayload]);
 });
