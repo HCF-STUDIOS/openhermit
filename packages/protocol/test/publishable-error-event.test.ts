@@ -39,3 +39,41 @@ test('isPublishableOutboundEvent still rejects a runtime-internal type like text
     false,
   );
 });
+
+test('isPublishableOutboundEvent rejects an attachment with size: null (the type is number | undefined, never null)', () => {
+  assert.equal(
+    isPublishableOutboundEvent({
+      type: 'attachment',
+      sessionId: 's1',
+      attachmentId: 'att_1',
+      mimeType: 'image/png',
+      kind: 'image',
+      size: null,
+    }),
+    false,
+  );
+});
+
+test('isPublishableOutboundEvent still accepts an attachment with no size and a numeric size', () => {
+  assert.equal(
+    isPublishableOutboundEvent({
+      type: 'attachment',
+      sessionId: 's1',
+      attachmentId: 'att_1',
+      mimeType: 'image/png',
+      kind: 'image',
+    }),
+    true,
+  );
+  assert.equal(
+    isPublishableOutboundEvent({
+      type: 'attachment',
+      sessionId: 's1',
+      attachmentId: 'att_1',
+      mimeType: 'image/png',
+      kind: 'image',
+      size: 1234,
+    }),
+    true,
+  );
+});
