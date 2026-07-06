@@ -606,7 +606,7 @@ export class TelegramBridge implements ChannelOutbound {
    * happens ONLY here, never in the per-turn loop, so the two readers of
    * the same event stream can't both deliver the same attachment.
    */
-  private startAttachmentSubscription(sessionId: string, chatId: number): void {
+  private startAttachmentSubscription(sessionId: string, chatId: number, idleTimeoutMs?: number): void {
     if (this.subscriptions.has(sessionId)) return;
 
     const abortController = new AbortController();
@@ -616,6 +616,7 @@ export class TelegramBridge implements ChannelOutbound {
       eventsUrl: this.client.buildEventsUrl(sessionId),
       headers: { authorization: `Bearer ${this.clientToken}` },
       abortSignal: abortController.signal,
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
         if (frame.event !== 'attachment') return;
         try {
@@ -631,7 +632,20 @@ export class TelegramBridge implements ChannelOutbound {
       },
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => {
+      // The subscription ended (idle-closed, aborted, or reconnect-exhausted).
+      // Drop its map entry so the connection is released and the next message
+      // reopens lazily. Guard by identity so we never evict a fresh
+      // subscription that already replaced this one.
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
     });
+  }
+
+  /** Number of live persistent subscriptions. Exposed for tests. */
+  get subscriptionCount(): number {
+    return this.subscriptions.size;
   }
 
   /** Stop all persistent subscriptions. Called on bridge/adapter shutdown. */
