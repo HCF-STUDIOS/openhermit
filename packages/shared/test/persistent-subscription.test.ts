@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 
 import { startPersistentSubscription, type SseFrame } from '../src/persistent-subscription.js';
@@ -230,6 +231,43 @@ test('onCursorAdvance reports the cursor so a caller can resume after idle-close
   // The already-delivered attachment (id 1) must NOT be redelivered; the new
   // one (id 2) must be delivered. Total: exactly one delivery per id.
   assert.deepEqual(received, [1, 2]);
+});
+
+test('does not leak an abort listener per reconnect once the retry timer wins', async () => {
+  // Each `!response.ok` reconnect sleeps before retrying. When the sleep
+  // timer resolves on its own (no abort), it must detach the abort listener
+  // it registered, otherwise one listener accumulates per retry for the
+  // life of the subscription.
+  let calls = 0;
+  await withFetch(
+    async () => {
+      calls += 1;
+      if (calls <= 3) return new Response(null, { status: 500 });
+      return new Response(makeTimedStream([]), { status: 200 });
+    },
+    async () => {
+      const abortController = new AbortController();
+      const keepAlive = setInterval(() => {}, 1000);
+      try {
+        await startPersistentSubscription({
+          eventsUrl: 'https://example/events',
+          onEvent: () => {},
+          abortSignal: abortController.signal,
+          reconnectDelayMs: 5,
+          idleTimeoutMs: 30,
+        });
+      } finally {
+        clearInterval(keepAlive);
+      }
+
+      assert.equal(calls, 4, 'three failed reconnects then one idle-closed connection');
+      assert.equal(
+        getEventListeners(abortController.signal, 'abort').length,
+        0,
+        'no abort listeners should remain attached after the subscription resolves',
+      );
+    },
+  );
 });
 
 test('a frame within idleTimeoutMs resets the idle timer so an active stream is not evicted', async () => {
