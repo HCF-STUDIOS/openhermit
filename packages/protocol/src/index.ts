@@ -1251,7 +1251,6 @@ export const isPublishableOutboundEvent = (
     if (!isOptionalString(value.correlationId)) return false;
     if (
       value.size !== undefined &&
-      value.size !== null &&
       (typeof value.size !== 'number' || !Number.isFinite(value.size))
     ) {
       return false;
