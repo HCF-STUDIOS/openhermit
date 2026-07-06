@@ -93,11 +93,18 @@ const DEFAULT_IDLE_TIMEOUT_MS = 900_000;
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
   if (signal?.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
+    const onAbort = (): void => {
       clearTimeout(timer);
       resolve();
-    }, { once: true });
+    };
+    // The timer wins on every reconnect where nothing aborts, so it must
+    // detach its own abort listener, otherwise one accumulates per retry
+    // for the lifetime of the subscription.
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 };
 
