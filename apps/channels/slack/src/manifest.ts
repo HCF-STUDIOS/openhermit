@@ -44,7 +44,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'slack',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
     };
   },
 };
