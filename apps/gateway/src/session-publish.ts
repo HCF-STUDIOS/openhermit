@@ -200,7 +200,7 @@ export const registerSessionPublishRoute = (
         sessionId,
         attachmentId: ingested.attachmentId,
         mimeType: finalMimeType,
-        kind: ingestReq.kind ?? inferAttachmentKind(finalMimeType),
+        kind: inferAttachmentKind(finalMimeType),
         ...(ingestReq.name !== undefined ? { name: ingestReq.name } : {}),
         ...(ingested.size !== undefined ? { size: ingested.size } : {}),
         ...(ingested.sha256 !== undefined ? { sha256: ingested.sha256 } : {}),
