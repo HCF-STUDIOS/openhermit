@@ -532,9 +532,9 @@ test('runCompactionSummaryTurn extracts JSON summary from agent response', async
 
 test('runCompactionSummaryTurn rejects a plain text (non-JSON) response', async () => {
   // A non-JSON answer here is usually the model replying conversationally
-  // instead of summarizing (observed in production). It must NOT be
-  // persisted as the session's authoritative summary — the caller falls
-  // back to text extraction and keeps the previous persisted summary.
+  // instead of summarizing. It must not be persisted as the session's
+  // authoritative summary. The caller falls back to text extraction and
+  // keeps the previous persisted summary.
   const mockAgent = {
     prompt: async () => {},
     waitForIdle: async () => {},
@@ -615,7 +615,7 @@ test('runCompactionSummaryTurn summarizer input excludes previously injected sum
     createAgent: async () => mockAgent as any,
   });
   assert.ok(promptText.includes('fresh message about ORCHID'));
-  // The old summary appears once (as previousCompactionSummary), not twice.
+  // The old summary appears once as previousCompactionSummary not twice.
   const occurrences = promptText.split('Old summary body.').length - 1;
   assert.equal(occurrences, 1);
 });
@@ -960,9 +960,9 @@ test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context wi
 });
 
 test('compactContextIfNeeded compacts below the trigger with headroom (hysteresis)', async () => {
-  // Count-triggered compaction must land meaningfully BELOW maxMessages —
-  // landing exactly at the cap re-triggers (with another LLM summary call
-  // and marker) on the very next message once results are persisted.
+  // Count-triggered compaction must land meaningfully below maxMessages.
+  // Landing exactly at the cap re-triggers on the very next message once
+  // results are persisted. That costs another LLM summary call and marker.
   const messages: AgentMessage[] = [];
   for (let i = 0; i < 113; i += 1) {
     messages.push(makeUserMessage(`note ${i}`));
@@ -976,12 +976,12 @@ test('compactContextIfNeeded compacts below the trigger with headroom (hysteresi
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
-  // target = floor(80 * 0.75) = 60 (+1 leeway for the summary block)
+  // target = floor of 80 * 0.75 = 60. Plus 1 leeway for the summary block.
   assert.ok(
     result.length <= 61,
     `compacted to ${result.length} messages — expected ≤ 61 (75% of the 80 cap + summary block)`,
   );
-  // Adding a handful of new messages must NOT re-trigger.
+  // Adding a handful of new messages must not re-trigger.
   const afterGrowth = result.concat(
     Array.from({ length: 5 }, (_, i) => makeUserMessage(`new ${i}`)),
   );

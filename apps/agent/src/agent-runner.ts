@@ -2133,16 +2133,14 @@ export class AgentRunner implements SessionRuntime {
     const notifyOwner = this.makeNotifyOwnerApproval();
     const eventBroker = this.events;
 
-    // Explicitly-provided toolsets (`input.tools`) are internal runtime turns
-    // — introspection and compaction — whose tools are curated by the caller
-    // and run with no user principal. Do NOT apply user-policy filtering to
-    // them: the principal has no role, so role-granted tools (memory_add/
-    // memory_update: owner|user) and internal-only tools (working_memory_update:
-    // defaultGrants []) all evaluate to deny and get silently dropped — the
-    // model, whose prompt instructs it to call them, then gets "Tool X not
-    // found" (observed fleet-wide: 44k+ failed introspection memory writes).
-    // Introspection is documented as exempt from approval wrapping for the
-    // same reason.
+    // input.tools are internal runtime turns for introspection and compaction.
+    // Their tools are curated by the caller and run with no user principal.
+    // Skip user-policy filtering here. The principal has no role. Role-granted
+    // tools like memory_add and internal-only tools like working_memory_update
+    // would all evaluate to deny and get silently dropped. The model is
+    // prompted to call them and would get "Tool not found". This caused 44k
+    // failed introspection memory writes fleet-wide. Introspection is likewise
+    // exempt from approval wrapping.
     const filteredTools = input.tools
       ? tools
       : tools
@@ -2369,9 +2367,9 @@ export class AgentRunner implements SessionRuntime {
           messages,
           signal,
           // Only the main session agent may persist compaction results back
-          // into the session's live state. Internal side agents (compaction:
-          // `<sid>:compaction`, introspection: `<sid>:introspection`) share
-          // contextSessionId but must never mutate the main agent's state.
+          // into the session's live state. Internal side agents for compaction
+          // and introspection share contextSessionId but must never mutate the
+          // main agent's state.
           input.agentSessionId === input.contextSessionId,
         ),
       transport: 'sse',
@@ -2733,16 +2731,15 @@ export class AgentRunner implements SessionRuntime {
       });
       session.resumed = false;
 
-      // Seed the live agent state with the restored history so it PERSISTS
-      // for subsequent generations. Without this the restore is one-shot:
-      // it feeds only the first post-resume generation, then `state.messages`
-      // (which pi-ai keeps appending to from empty) holds just the messages
-      // accumulated since resume — so from the 2nd generation onward (e.g. a
-      // tool-loop turn, or the next user message) the session loses ALL prior
-      // context. Mutate in place to preserve the array reference pi-ai holds.
-      // `restoredMessages` already ends with the current user turn (persisted
-      // by postMessage before agent.prompt), matching pi-ai's single seeded
-      // message, so this replaces rather than duplicates it.
+      // Seed the live agent state with the restored history so it persists for
+      // subsequent generations. Without this the restore is one-shot. It feeds
+      // only the first post-resume generation. After that state.messages holds
+      // only messages accumulated since resume because pi-ai keeps appending to
+      // it from empty. So from the second generation onward the session loses
+      // all prior context. Mutate in place to preserve the array reference
+      // pi-ai holds. restoredMessages already ends with the current user turn
+      // persisted by postMessage before agent.prompt. That matches pi-ai's
+      // single seeded message so this replaces rather than duplicates it.
       if (restoredMessages.length > 0) {
         session.agent.state.messages.length = 0;
         session.agent.state.messages.push(...restoredMessages);
@@ -2817,21 +2814,19 @@ export class AgentRunner implements SessionRuntime {
     });
 
     // Persist a compaction back into the session's live state. The hook's
-    // return value only feeds THIS request — without a write-back the
-    // (uncompacted, still-growing) state re-triggers the whole compaction
-    // machinery, including the extra LLM summary call and a new
-    // context_compaction marker event, on EVERY subsequent generation
-    // (observed in production: 71 markers in one hour for one session).
-    // Writing the compacted core back makes the session drop under budget
-    // again, so the next genuine compaction is far away.
+    // return value only feeds this request. Without a write-back the
+    // uncompacted still-growing state re-triggers the whole compaction
+    // machinery on every subsequent generation. That includes the extra LLM
+    // summary call and a new context_compaction marker event. Production saw
+    // 71 markers in one hour for one session. Writing the compacted core back
+    // drops the session under budget so the next genuine compaction is far off.
     //
-    // Details:
-    // - Only the main session agent may do this (side agents share
-    //   contextSessionId but must not mutate the main state).
-    // - Exclude the per-generation contextBlocks (working memory): they are
-    //   freshly prepended on every generation and would otherwise stack up.
-    // - Mutate in place to preserve the array reference pi-ai holds, so the
-    //   in-flight generation's appends land on the compacted list.
+    // Only the main session agent may do this. Side agents share
+    // contextSessionId but must not mutate the main state.
+    // Exclude the per-generation contextBlocks for working memory. They are
+    // freshly prepended on every generation and would otherwise stack up.
+    // Mutate in place to preserve the array reference pi-ai holds so the
+    // in-flight generation's appends land on the compacted list.
     const didCompact = finalMessages.length !== contextBlocks.length + truncatedMessages.length;
     if (isMainSessionAgent && didCompact) {
       const liveState = this.sessions.get(sessionId)?.agent.state.messages;

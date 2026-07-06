@@ -28,10 +28,10 @@ export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
 export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 80;
 
 /**
- * Hysteresis ratio: when compaction triggers (at the token budget or the
- * message-count cap), shrink down to this fraction of the threshold so the
- * session has headroom before the next compaction. Without it, a compaction
- * that lands exactly at the cap re-triggers on the very next message.
+ * Hysteresis ratio. When compaction triggers at the token budget or
+ * message-count cap it shrinks down to this fraction of the threshold. That
+ * gives the session headroom before the next compaction. Without it a
+ * compaction landing exactly at the cap re-triggers on the very next message.
  */
 export const COMPACTION_TARGET_RATIO = 0.75;
 
@@ -371,12 +371,11 @@ const parseCompactionSummaryResponse = (
       return normalized.length > 0 ? normalized : undefined;
     }
   } catch {
-    // Not parseable JSON. Do NOT persist arbitrary assistant text as the
-    // summary: it becomes the session's authoritative history on the next
-    // resume, and models occasionally answer here with a conversational
-    // reply instead of the requested JSON (observed in production). Try to
-    // salvage an embedded JSON object (e.g. `compactionSummary: {...}`);
-    // otherwise drop it — the caller falls back to text extraction and the
+    // Not parseable JSON. Do not persist arbitrary assistant text as the
+    // summary. It becomes the session's authoritative history on the next
+    // resume. Models occasionally answer here with a conversational reply
+    // instead of the requested JSON. Try to salvage an embedded JSON object.
+    // Otherwise drop it. The caller falls back to text extraction and the
     // previous persisted summary stays authoritative.
     const embedded = jsonText.match(/\{[\s\S]*\}/);
     if (embedded) {
@@ -386,7 +385,7 @@ const parseCompactionSummaryResponse = (
           return parsed.compactionSummary.trim();
         }
       } catch {
-        // fall through to undefined
+        // Salvage is best-effort. Ignore parse failure.
       }
     }
     return undefined;
@@ -404,19 +403,19 @@ export const runCompactionSummaryTurn = async (input: {
   const textSummaries = input.compactedMessages
     .map((message) => summarizeMessageForCompaction(message))
     .filter((line): line is string => Boolean(line))
-    // A previously injected summary block may be part of the message list
-    // (it's a user-role message). Its content is already provided via
-    // `previousCompactionSummary` — don't feed it in twice.
+    // A previously injected summary block may be in the message list as a
+    // user-role message. Its content is already provided via
+    // previousCompactionSummary. Do not feed it in twice.
     .filter((line) => !line.includes('Context compaction summary (runtime-generated'));
 
   if (textSummaries.length === 0) {
     return undefined;
   }
 
-  // Cap the transcript, keeping head AND tail. A plain head-slice drops the
-  // most recent messages from the summarizer's view — the worst possible
-  // bias, since the persisted summary is the resume boundary and recent
-  // turns are exactly what the next resume needs.
+  // Cap the transcript keeping head and tail. A plain head-slice drops the
+  // most recent messages from the summarizer's view. That is the worst bias.
+  // The persisted summary is the resume boundary and recent turns are exactly
+  // what the next resume needs.
   const joined = textSummaries.join('\n');
   const transcript = joined.length > 16_000
     ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
@@ -581,16 +580,16 @@ export const compactContextIfNeeded = async (
     );
   };
 
-  // Hysteresis: compact DOWN TO a target below the trigger thresholds, not
-  // to the thresholds themselves. Compacting to exactly the cap leaves zero
-  // headroom — a couple of new messages re-trip the trigger, and (since the
-  // result is persisted back into the live state) the session pays another
-  // LLM summary + marker on nearly every generation. Targeting ~75% gives
-  // real headroom before the next genuine compaction.
+  // Hysteresis. Compact down to a target below the trigger thresholds not to
+  // the thresholds themselves. Compacting to exactly the cap leaves zero
+  // headroom. A couple of new messages re-trip the trigger. Since the result
+  // is persisted back into the live state the session then pays another LLM
+  // summary and marker on nearly every generation. Targeting ~75% gives real
+  // headroom before the next genuine compaction.
   const targetTokens = Math.floor(budget * COMPACTION_TARGET_RATIO);
   // Floor at retainCountOption+1 so a small ratio can't compact below the
-  // configured recent-message retention — but never above the hard cap
-  // (recentMessageCount may legitimately exceed maxMessages in config).
+  // configured recent-message retention. Never above the hard cap.
+  // recentMessageCount may legitimately exceed maxMessages in config.
   const targetMessages = Math.min(
     maxMessages,
     Math.max(retainCountOption + 1, Math.floor(maxMessages * COMPACTION_TARGET_RATIO)),
@@ -634,15 +633,15 @@ export const compactContextIfNeeded = async (
       // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
-      // Summarize the FULL message list, not just the compacted prefix.
-      // setCompactionSummary appends the summary as a `context_compaction`
-      // event at the TAIL of the session log, and resume restores only the
-      // entries logged after that marker. If the summary covered only the
-      // prefix, everything logged before the marker but outside the summary
-      // — the retained recent tail and the current user turn — would be
-      // lost on the next resume (neither summarized nor restored verbatim).
-      // Covering the full list makes the marker-at-tail boundary correct;
-      // the live context still keeps the tail verbatim via `retained`.
+      // Summarize the full message list not just the compacted prefix.
+      // setCompactionSummary appends the summary as a context_compaction
+      // event at the tail of the session log. Resume restores only entries
+      // logged after that marker. If the summary covered only the prefix then
+      // everything logged before the marker but outside the summary would be
+      // lost on the next resume. That is the retained recent tail and the
+      // current user turn. Covering the full list makes the marker-at-tail
+      // boundary correct. The live context still keeps the tail verbatim via
+      // retained.
       llmSummary = await runCompactionSummaryTurn({
         sessionId,
         compactedMessages: messages,

@@ -53,14 +53,12 @@ test('pickMediaFile returns undefined for a text-only message', () => {
   assert.equal(pickMediaFile(baseMessage({ text: 'hello' })), undefined);
 });
 
-// --- Out-of-turn attachment delivery via the persistent subscription ---
-//
-// These exercise the wiring added for exactly-once attachment delivery:
-// `startAttachmentSubscription` (started per-session, e.g. from
-// `ensureSession`) is the SINGLE owner of `attachment` event delivery.
-// The per-turn loop in `waitForAgentResponse` no longer touches attachment
-// events at all, so the two readers of the same session event stream can
-// never both call `deliverAttachmentToTelegram` for the same event.
+// Out-of-turn attachment delivery via the persistent subscription.
+// These exercise the wiring for exactly-once attachment delivery.
+// startAttachmentSubscription is the single owner of attachment delivery.
+// It is started per session from ensureSession. The per-turn loop no longer
+// touches attachment events so the two readers of the same stream never
+// both call deliverAttachmentToTelegram for the same event.
 
 function frameText(id: number | undefined, event: string, data: unknown): string {
   const lines: string[] = [];
@@ -70,7 +68,7 @@ function frameText(id: number | undefined, event: string, data: unknown): string
   return `${lines.join('\n')}\n\n`;
 }
 
-/** A fake SSE body: delivers `text` on the first read, then closes. */
+/** Fake SSE body. Delivers text on the first read then closes. */
 function makeStream(text: string): ReadableStream<Uint8Array> {
   let delivered = false;
   return new ReadableStream({
@@ -86,8 +84,8 @@ function makeStream(text: string): ReadableStream<Uint8Array> {
 }
 
 /**
- * A fake SSE body that enqueues each item then stays open forever (a
- * never-resolving pull), so only the idle timeout can end the stream.
+ * Fake SSE body that enqueues each item then stays open forever with a
+ * never-resolving pull. Only the idle timeout can end the stream.
  */
 function makeTimedStream(items: Array<{ delayMs: number; text: string }>): ReadableStream<Uint8Array> {
   let i = 0;
@@ -130,7 +128,7 @@ const fakeTelegramApi = {
 function newBridge(): { bridge: TelegramBridge; calls: Array<[number, Record<string, unknown>]> } {
   const bridge = new TelegramBridge(fakeTelegramApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
   const calls: Array<[number, Record<string, unknown>]> = [];
-  // deliverAttachmentToTelegram is private; stub it on the instance so both
+  // deliverAttachmentToTelegram is private. Stub it on the instance so both
   // delivery paths under test route through this spy instead of touching
   // the real Telegram Bot API.
   (bridge as unknown as { deliverAttachmentToTelegram: (chatId: number, payload: Record<string, unknown>) => Promise<void> }).deliverAttachmentToTelegram =
@@ -171,13 +169,13 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
-      // The persistent subscription is already watching this session, as it
-      // would be from the moment the session was opened.
+      // The persistent subscription is already watching this session. It
+      // would be live from the moment the session was opened.
       (bridge as unknown as { startAttachmentSubscription: (sessionId: string, chatId: number) => void })
         .startAttachmentSubscription('sess-2', 777);
 
-      // The per-turn loop reads the SAME event stream concurrently, as it
-      // does mid-turn in production.
+      // The per-turn loop reads the same event stream concurrently. This is
+      // what happens mid-turn in production.
       await (bridge as unknown as {
         waitForAgentResponse: (sessionId: string, chatId: number, suppress?: boolean) => Promise<unknown>;
       }).waitForAgentResponse('sess-2', 777, false);
@@ -192,15 +190,13 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
 });
 
 test('does not redeliver an attachment after idle-close and reopen (exactly-once across reconnects)', async () => {
-  // Reproduces the regression: an out-of-turn attachment (id 1) is
-  // delivered, the subscription then idle-closes (its subscriptions map
-  // entry is dropped, same as `removes the session entry...` above), and a
-  // later message reopens the subscription the way `ensureSession` does. The
-  // gateway replays its backlog on every fresh connection regardless of
-  // reconnect vs. brand-new session, so the reopened stream re-serves id 1.
-  // Without a cursor that survives the idle-close/reopen cycle, the bridge
-  // has no way to know id 1 was already delivered and sends it again. A
-  // genuinely new event (id 2) after reopen must still be delivered.
+  // Reproduces the regression. An out-of-turn attachment id 1 is delivered.
+  // The subscription then idle-closes and its map entry is dropped. A later
+  // message reopens the subscription the way ensureSession does. The gateway
+  // replays its backlog on every fresh connection so the reopened stream
+  // re-serves id 1. Without a cursor that survives idle-close and reopen the
+  // bridge cannot know id 1 was already delivered and sends it again. A new
+  // event id 2 after reopen must still be delivered.
   const { bridge, calls } = newBridge();
   const firstBody = frameText(1, 'attachment', { sessionId: 'sess-4', attachmentId: 'a1', kind: 'document', name: 'one.pdf' });
   const secondBody =
@@ -211,11 +207,11 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   await withFetch(
     async () => {
       call += 1;
-      // First connection: serve the one frame, then idle forever.
+      // First connection. Serve the one frame then idle forever.
       if (call === 1) return new Response(makeTimedStream([{ delayMs: 0, text: firstBody }]), { status: 200 });
-      // Second connection (the reopen): the gateway replays its backlog,
-      // which still contains id 1, plus the new id 2, then goes quiet
-      // (mirrors the first connection so only the idle timer ends it).
+      // Second connection is the reopen. The gateway replays its backlog
+      // which still contains id 1 plus the new id 2 then goes quiet. This
+      // mirrors the first connection so only the idle timer ends it.
       return new Response(makeTimedStream([{ delayMs: 0, text: secondBody }]), { status: 200 });
     },
     async () => {
@@ -224,12 +220,12 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
       }).startAttachmentSubscription.bind(bridge);
       const subscriptionCount = () => (bridge as unknown as { subscriptionCount: number }).subscriptionCount;
 
-      // First open: short idle timeout so it closes quickly on its own.
+      // First open. Short idle timeout so it closes quickly on its own.
       startAttachmentSubscription('sess-4', 4242, 40);
       await waitFor(() => calls.length >= 1);
       await waitFor(() => subscriptionCount() === 0);
 
-      // Reopen, as `ensureSession` does on the next inbound message.
+      // Reopen as ensureSession does on the next inbound message.
       startAttachmentSubscription('sess-4', 4242, 40);
       await waitFor(() => calls.length >= 2, 2000);
       await waitFor(() => subscriptionCount() === 0);
@@ -241,8 +237,8 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
 });
 
 test('/new (handleNew) aborts and removes the old session\'s persistent subscription, not just its cursor', async () => {
-  // A dedicated fake API (not the shared module-level one) so stubbing
-  // sendMessage here can't affect other tests that rely on it being absent.
+  // A dedicated fake API not the shared module-level one. Stubbing
+  // sendMessage here cannot affect other tests that rely on it being absent.
   const localTelegramApi = {
     sendChatAction: async () => true,
     sendMessage: async () => ({ message_id: 1 }),
@@ -254,8 +250,8 @@ test('/new (handleNew) aborts and removes the old session\'s persistent subscrip
   (bridge as unknown as { client: { checkpointSession: () => Promise<unknown> } }).client.checkpointSession =
     async () => ({});
 
-  // Seed the chat's current (soon-to-be-old) session and a live persistent
-  // subscription for it, the way `ensureSession` would have left it.
+  // Seed the chat's current soon-to-be-old session and a live persistent
+  // subscription for it the way ensureSession would have left it.
   (bridge as unknown as { chatSessions: Map<number, string> }).chatSessions.set(chatId, 'old-sess');
   const oldAbortController = new AbortController();
   let aborted = false;
@@ -279,7 +275,7 @@ test('removes the session entry when its subscription ends (idle close), so it r
   const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });
 
   await withFetch(
-    // Serve the one frame, then keep the stream open so only the idle timer
+    // Serve the one frame then keep the stream open so only the idle timer
     // ends it. A short idleTimeoutMs is threaded through below.
     async () => new Response(makeTimedStream([{ delayMs: 0, text: body }]), { status: 200 }),
     async () => {
@@ -289,8 +285,8 @@ test('removes the session entry when its subscription ends (idle close), so it r
       // Subscription is live right after start.
       await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 1);
 
-      // After the idle timeout with no further frames, it ends and the map
-      // entry is evicted, dropping the connection.
+      // After the idle timeout with no further frames it ends. The map entry
+      // is evicted and the connection drops.
       await waitFor(() => (bridge as unknown as { subscriptionCount: number }).subscriptionCount === 0);
 
       assert.equal((bridge as unknown as { subscriptionCount: number }).subscriptionCount, 0);

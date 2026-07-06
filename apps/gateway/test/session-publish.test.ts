@@ -12,7 +12,7 @@ import {
 const ADMIN_TOKEN = 'test-admin-token';
 
 interface BuildAppOptions {
-  /** When true, resolveRunner throws NotFoundError (agent/runner gone). */
+  /** When true resolveRunner throws NotFoundError. Agent or runner is gone. */
   runnerMissing?: boolean;
   /** Mock for the injected asset-ingest helper. Omit to leave ingest unconfigured. */
   ingestAttachment?: SessionPublishDeps['ingestAttachment'];
@@ -254,8 +254,8 @@ test('POST session events: attachment with assetUrl ingests then publishes with 
 test('POST session events: published attachment uses the sniffed mimeType/kind, not a mismatched caller hint', async () => {
   const { app, publishCalls } = buildApp({
     ingestAttachment: async () => {
-      // The fetch actually sniffed (and persisted) a PDF, regardless of the
-      // caller's hint below.
+      // The fetch sniffed and persisted a PDF regardless of the caller hint
+      // below.
       return { attachmentId: 'att_ingested_2', mimeType: 'application/pdf' };
     },
   });
@@ -329,7 +329,7 @@ test('POST session events: attachment ingest request with empty mimeType returns
   });
 
   assert.equal(res.status, 400);
-  // No ingest means no persisted row, so no orphan can exist.
+  // No ingest means no persisted row so no orphan can exist.
   assert.equal(ingestCalls.length, 0);
   assert.equal(publishCalls.length, 0);
 });
