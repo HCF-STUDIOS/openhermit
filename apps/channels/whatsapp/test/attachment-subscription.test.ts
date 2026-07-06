@@ -126,8 +126,8 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
       // The per-turn loop reads the SAME event stream concurrently, as it
       // does mid-turn in production.
       await (bridge as unknown as {
-        waitForAgentResponse: (sessionId: string, target: string) => Promise<unknown>;
-      }).waitForAgentResponse('sess-2', '15551230002@s.whatsapp.net');
+        waitForAgentResponse: (sessionId: string) => Promise<unknown>;
+      }).waitForAgentResponse('sess-2');
 
       await waitFor(() => calls.length > 0);
       (bridge as unknown as { stop: () => void }).stop();

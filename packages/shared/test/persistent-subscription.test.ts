@@ -137,14 +137,22 @@ test('closes and resolves after idleTimeoutMs with no frames, without reconnecti
       const received: SseFrame[] = [];
       const start = Date.now();
 
-      await startPersistentSubscription({
-        eventsUrl: 'https://example/events',
-        onEvent: (frame) => received.push(frame),
-        idleTimeoutMs: 60,
-        // A short reconnect delay would let a bug reconnect quickly; keep it
-        // large so a wrongful reconnect would hang the test instead of hiding.
-        reconnectDelayMs: 10_000,
-      });
+      // The idle timer is unref'd in production so it never blocks process
+      // exit; keep a ref'd interval alive here so the test's own event loop
+      // doesn't end before that timer gets a chance to fire.
+      const keepAlive = setInterval(() => {}, 1000);
+      try {
+        await startPersistentSubscription({
+          eventsUrl: 'https://example/events',
+          onEvent: (frame) => received.push(frame),
+          idleTimeoutMs: 60,
+          // A short reconnect delay would let a bug reconnect quickly; keep it
+          // large so a wrongful reconnect would hang the test instead of hiding.
+          reconnectDelayMs: 10_000,
+        });
+      } finally {
+        clearInterval(keepAlive);
+      }
 
       // Resolved on idle close, not after a reconnect cycle.
       assert.equal(received.length, 0);
@@ -175,14 +183,21 @@ test('a frame within idleTimeoutMs resets the idle timer so an active stream is 
     async () => {
       const received: number[] = [];
 
-      await startPersistentSubscription({
-        eventsUrl: 'https://example/events',
-        onEvent: (frame) => {
-          received.push((JSON.parse(frame.data) as { n: number }).n);
-        },
-        idleTimeoutMs: 60,
-        reconnectDelayMs: 10_000,
-      });
+      // See the previous test: the idle timer is unref'd in production, so
+      // keep the test's event loop alive independently of it.
+      const keepAlive = setInterval(() => {}, 1000);
+      try {
+        await startPersistentSubscription({
+          eventsUrl: 'https://example/events',
+          onEvent: (frame) => {
+            received.push((JSON.parse(frame.data) as { n: number }).n);
+          },
+          idleTimeoutMs: 60,
+          reconnectDelayMs: 10_000,
+        });
+      } finally {
+        clearInterval(keepAlive);
+      }
 
       // All four in-flight frames delivered because each reset the timer;
       // the stream only idle-closed after the last one, without reconnecting.

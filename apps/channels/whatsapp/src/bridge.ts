@@ -245,7 +245,7 @@ export class WhatsAppBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId, event.chatJid);
+    const result = await this.waitForAgentResponse(sessionId);
     if (result.error && !result.text) {
       await this.send({ sessionId, to: event.chatJid, text: `Error: ${result.error}` });
     } else if (result.text) {
@@ -444,7 +444,7 @@ export class WhatsAppBridge implements ChannelOutbound {
     this.subscriptions.clear();
   }
 
-  private async waitForAgentResponse(sessionId: string, target: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
     const controller = new AbortController();
