@@ -103,6 +103,14 @@ export class TelegramBridge implements ChannelOutbound {
    * attachment event.
    */
   private readonly subscriptions = new Map<string, AbortController>();
+  /**
+   * Highest out-of-turn event id delivered per sessionId, kept separate
+   * from `subscriptions` so it survives idle-close/reopen. The gateway
+   * replays its recent backlog on every fresh connection, so without this
+   * a reopened subscription starts its cursor at 0 and redelivers whatever
+   * was already sent before the idle close.
+   */
+  private readonly subscriptionCursors = new Map<string, number>();
   /** Current sessionId per chat. */
   private readonly chatSessions = new Map<number, string>();
   /** Bot user info, lazily fetched via getMe(). */
@@ -394,6 +402,7 @@ export class TelegramBridge implements ChannelOutbound {
       // Session may not exist yet — that's fine.
     }
     this.lastEventIds.delete(oldSessionId);
+    this.subscriptionCursors.delete(oldSessionId);
 
     // Generate a fresh sessionId for this chat.
     const newSessionId = TelegramBridge.generateSessionId();
@@ -616,6 +625,8 @@ export class TelegramBridge implements ChannelOutbound {
       eventsUrl: this.client.buildEventsUrl(sessionId),
       headers: { authorization: `Bearer ${this.clientToken}` },
       abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
         if (frame.event !== 'attachment') return;

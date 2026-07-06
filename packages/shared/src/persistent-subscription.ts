@@ -62,6 +62,15 @@ export interface PersistentSubscriptionOptions {
   lastEventId?: number;
   headers?: Record<string, string>;
   onEvent: (frame: SseFrame) => void;
+  /**
+   * Called whenever the internal cursor changes (a new max id seen, or a
+   * reset to 0 on detected sequence rollover). Callers use this to persist
+   * the cursor somewhere that survives this subscription being torn down
+   * (e.g. on idle close), so a later `startPersistentSubscription` call for
+   * the same logical session can resume from it via `lastEventId` instead
+   * of re-reading the backlog from scratch and re-delivering old events.
+   */
+  onCursorAdvance?: (cursor: number) => void;
   abortSignal?: AbortSignal;
   /** Delay before reconnecting after a dropped stream. Default 2000ms. */
   reconnectDelayMs?: number;
@@ -103,7 +112,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 export async function startPersistentSubscription(
   options: PersistentSubscriptionOptions,
 ): Promise<void> {
-  const { eventsUrl, onEvent, abortSignal, headers } = options;
+  const { eventsUrl, onEvent, abortSignal, headers, onCursorAdvance } = options;
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   let cursor = options.lastEventId ?? 0;
@@ -162,7 +171,10 @@ export async function startPersistentSubscription(
 
           for (const frame of parsed.frames) {
             if (frame.id !== undefined && frame.id <= cursor) continue;
-            if (frame.id !== undefined) cursor = frame.id;
+            if (frame.id !== undefined) {
+              cursor = frame.id;
+              onCursorAdvance?.(cursor);
+            }
 
             if (frame.event === 'ready') {
               // Detect sequence reset: a new runner restarts ids at 1, so a
@@ -175,6 +187,7 @@ export async function startPersistentSubscription(
                     : {};
                   if (typeof data.nextEventId === 'number' && data.nextEventId <= cursor) {
                     cursor = 0;
+                    onCursorAdvance?.(cursor);
                   }
                 } catch { /* ignore, fall back to stored cursor */ }
               }

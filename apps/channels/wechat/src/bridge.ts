@@ -146,6 +146,14 @@ export class WechatBridge implements ChannelOutbound {
    * attachment.
    */
   private readonly subscriptions = new Map<string, AbortController>();
+  /**
+   * Highest out-of-turn event id delivered per sessionId, kept separate
+   * from `subscriptions` so it survives idle-close/reopen. The gateway
+   * replays its recent backlog on every fresh connection, so without this
+   * a reopened subscription starts its cursor at 0 and redelivers whatever
+   * was already sent before the idle close.
+   */
+  private readonly subscriptionCursors = new Map<string, number>();
   /** sessionId per peer (DM peer id or group id). */
   private readonly peerSessions = new Map<string, string>();
   /** Per-peer message queue to serialize handling. */
@@ -691,6 +699,8 @@ export class WechatBridge implements ChannelOutbound {
       eventsUrl: this.client.buildEventsUrl(sessionId),
       headers: { authorization: `Bearer ${this.clientToken}` },
       abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
         if (frame.event !== 'attachment') return;

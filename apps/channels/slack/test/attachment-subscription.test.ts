@@ -139,6 +139,49 @@ test('an in-turn attachment is delivered exactly once, not doubled, with both th
   assert.deepEqual(calls[0], ['chan-777', attachmentPayload, undefined]);
 });
 
+test('does not redeliver an attachment after idle-close and reopen (exactly-once across reconnects)', async () => {
+  // Reproduces the regression: an out-of-turn attachment (id 1) is
+  // delivered, the subscription then idle-closes (its subscriptions map
+  // entry is dropped), and a later message reopens the subscription the way
+  // `ensureSession` does. The gateway replays its backlog on every fresh
+  // connection regardless of reconnect vs. brand-new session, so the
+  // reopened stream re-serves id 1. Without a cursor that survives the
+  // idle-close/reopen cycle, the bridge has no way to know id 1 was already
+  // delivered and sends it again. A genuinely new event (id 2) after reopen
+  // must still be delivered.
+  const { bridge, calls } = newBridge();
+  const firstBody = frameText(1, 'attachment', { sessionId: 'sess-4', attachmentId: 'a1', kind: 'document', name: 'one.pdf' });
+  const secondBody =
+    frameText(1, 'attachment', { sessionId: 'sess-4', attachmentId: 'a1', kind: 'document', name: 'one.pdf' }) +
+    frameText(2, 'attachment', { sessionId: 'sess-4', attachmentId: 'a2', kind: 'document', name: 'two.pdf' });
+
+  let call = 0;
+  await withFetch(
+    async () => {
+      call += 1;
+      if (call === 1) return new Response(makeTimedStream([{ delayMs: 0, text: firstBody }]), { status: 200 });
+      return new Response(makeTimedStream([{ delayMs: 0, text: secondBody }]), { status: 200 });
+    },
+    async () => {
+      const startAttachmentSubscription = (bridge as unknown as {
+        startAttachmentSubscription: (sessionId: string, channelId: string, threadTs?: string, idleTimeoutMs?: number) => void;
+      }).startAttachmentSubscription.bind(bridge);
+      const subscriptionCount = () => (bridge as unknown as { subscriptionCount: number }).subscriptionCount;
+
+      startAttachmentSubscription('sess-4', 'chan-4242', undefined, 40);
+      await waitFor(() => calls.length >= 1);
+      await waitFor(() => subscriptionCount() === 0);
+
+      startAttachmentSubscription('sess-4', 'chan-4242', undefined, 40);
+      await waitFor(() => calls.length >= 2, 2000);
+      await waitFor(() => subscriptionCount() === 0);
+    },
+  );
+
+  assert.equal(calls.length, 2, 'attachment a1 must be delivered exactly once total, and a2 exactly once');
+  assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
+});
+
 test('removes the session entry when its subscription ends (idle close), so it reopens lazily', async () => {
   const { bridge } = newBridge();
   const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });
