@@ -63,7 +63,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'signal',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
     };
   },
 
