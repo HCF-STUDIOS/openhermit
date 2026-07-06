@@ -27,6 +27,14 @@ export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
 // wire — which kills prompt caching and inflates per-turn latency.
 export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 80;
 
+/**
+ * Hysteresis ratio: when compaction triggers (at the token budget or the
+ * message-count cap), shrink down to this fraction of the threshold so the
+ * session has headroom before the next compaction. Without it, a compaction
+ * that lands exactly at the cap re-triggers on the very next message.
+ */
+export const COMPACTION_TARGET_RATIO = 0.75;
+
 // ── Token estimation ───────────────────────────────────────────────────
 
 export const estimateTextTokens = (text: string): number =>
@@ -573,11 +581,26 @@ export const compactContextIfNeeded = async (
     );
   };
 
+  // Hysteresis: compact DOWN TO a target below the trigger thresholds, not
+  // to the thresholds themselves. Compacting to exactly the cap leaves zero
+  // headroom — a couple of new messages re-trip the trigger, and (since the
+  // result is persisted back into the live state) the session pays another
+  // LLM summary + marker on nearly every generation. Targeting ~75% gives
+  // real headroom before the next genuine compaction.
+  const targetTokens = Math.floor(budget * COMPACTION_TARGET_RATIO);
+  // Floor at retainCountOption+1 so a small ratio can't compact below the
+  // configured recent-message retention — but never above the hard cap
+  // (recentMessageCount may legitimately exceed maxMessages in config).
+  const targetMessages = Math.min(
+    maxMessages,
+    Math.max(retainCountOption + 1, Math.floor(maxMessages * COMPACTION_TARGET_RATIO)),
+  );
+
   // First pass: find the retain count without LLM summary (text-extraction only).
   let compacted = buildCandidate(retainCount, undefined);
 
   while (
-    (effectiveTokens(compacted) > budget || compacted.length > maxMessages)
+    (effectiveTokens(compacted) > targetTokens || compacted.length > targetMessages)
     && retainCount > 1
   ) {
     retainCount -= 1;
@@ -585,13 +608,13 @@ export const compactContextIfNeeded = async (
   }
 
   // Expansion phase: grow retainCount as long as we stay under the
-  // token budget AND under the message-count cap. Without the count
+  // token target AND under the message-count target. Without the count
   // cap, count-only triggers (lots of tiny messages well below budget)
   // would expand right back to the full list and undo the compaction.
   while (retainCount < messages.length) {
     const expanded = buildCandidate(retainCount + 1, undefined);
 
-    if (effectiveTokens(expanded) > budget || expanded.length > maxMessages) {
+    if (effectiveTokens(expanded) > targetTokens || expanded.length > targetMessages) {
       break;
     }
 
