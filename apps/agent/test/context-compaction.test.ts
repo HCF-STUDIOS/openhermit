@@ -958,3 +958,33 @@ test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context wi
     `result kept ${resultText.length} chars, expected ≤ ~${TOOL_RESULT_MAX_CHARS_CAP}`);
   assert.ok(resultText.includes('[truncated:'));
 });
+
+test('compactContextIfNeeded compacts below the trigger with headroom (hysteresis)', async () => {
+  // Count-triggered compaction must land meaningfully BELOW maxMessages —
+  // landing exactly at the cap re-triggers (with another LLM summary call
+  // and marker) on the very next message once results are persisted.
+  const messages: AgentMessage[] = [];
+  for (let i = 0; i < 113; i += 1) {
+    messages.push(makeUserMessage(`note ${i}`));
+  }
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 1_000_000,
+      contextCompactionRecentMessageCount: 6,
+      contextCompactionMaxMessages: 80,
+    },
+  });
+
+  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  // target = floor(80 * 0.75) = 60 (+1 leeway for the summary block)
+  assert.ok(
+    result.length <= 61,
+    `compacted to ${result.length} messages — expected ≤ 61 (75% of the 80 cap + summary block)`,
+  );
+  // Adding a handful of new messages must NOT re-trigger.
+  const afterGrowth = result.concat(
+    Array.from({ length: 5 }, (_, i) => makeUserMessage(`new ${i}`)),
+  );
+  const second = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
+  assert.equal(second.length, afterGrowth.length, 'no re-compaction within the headroom window');
+});
