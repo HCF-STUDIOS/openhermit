@@ -145,6 +145,8 @@ export async function startPersistentSubscription(
           idleClosed = true;
           void reader.cancel().catch(() => undefined);
         }, idleTimeoutMs);
+        // Don't let an idle subscription hold the event loop open.
+        idleTimer.unref?.();
       };
       abortSignal?.addEventListener('abort', clearIdle, { once: true });
       armIdle();
