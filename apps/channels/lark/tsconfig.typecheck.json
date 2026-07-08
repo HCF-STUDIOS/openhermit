@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../../..",
+    "noEmit": true,
+    "composite": false,
+    "incremental": false
+  },
+  "include": [
+    "src",
+    "../../../packages/protocol/src",
+    "../../../packages/sdk/src",
+    "../../../packages/shared/src"
+  ]
+}
