@@ -10,7 +10,30 @@ export interface LarkRuntimeConfig {
    * `lark` → open.larksuite.com (international). Defaults to `feishu`.
    */
   domain?: 'feishu' | 'lark';
+  /**
+   * Event delivery mode. `ws` (default) holds the platform's WebSocket
+   * long connection — no public URL needed. `webhook` receives events on
+   * the gateway's public webhook route; paste that URL into the Developer
+   * Console (Lark has no programmatic setWebhook).
+   */
+  mode?: 'ws' | 'webhook';
+  /** Webhook-mode Encrypt Key (Console → Events). Optional but recommended. */
+  encrypt_key?: string;
+  /** Webhook-mode Verification Token (Console → Events). Optional. */
+  verification_token?: string;
 }
+
+/**
+ * Optional secrets resolve to their raw `${{…}}` placeholder when the
+ * operator never set them; treat that as unset (same convention as the
+ * Debox optional API secret).
+ */
+const optionalSecret = (v: unknown): string | undefined => {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  if (!t || t.startsWith('${{')) return undefined;
+  return t;
+};
 
 export const parseLarkConfig = (input: unknown): LarkRuntimeConfig => {
   if (typeof input !== 'object' || input === null) {
@@ -24,10 +47,16 @@ export const parseLarkConfig = (input: unknown): LarkRuntimeConfig => {
     throw new Error('lark config requires app_secret (set the LARK_APP_SECRET secret)');
   }
   const domain = raw.domain === 'lark' ? 'lark' : 'feishu';
+  const mode = raw.mode === 'webhook' ? 'webhook' : 'ws';
+  const encryptKey = optionalSecret(raw.encrypt_key);
+  const verificationToken = optionalSecret(raw.verification_token);
   return {
     ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : {}),
     app_id: appId,
     app_secret: appSecret,
     domain,
+    mode,
+    ...(encryptKey ? { encrypt_key: encryptKey } : {}),
+    ...(verificationToken ? { verification_token: verificationToken } : {}),
   };
 };

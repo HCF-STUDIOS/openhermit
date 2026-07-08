@@ -7,6 +7,7 @@
 export { LarkBridge } from './bridge.js';
 export type { LarkInboundMessage } from './bridge.js';
 export { LarkBot } from './bot.js';
+export type { WebhookRequestLike, WebhookResponseLike } from './bot.js';
 export { LarkApi } from './lark-api.js';
 export { parseLarkConfig } from './config.js';
 export type { LarkRuntimeConfig } from './config.js';

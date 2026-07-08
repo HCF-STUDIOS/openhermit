@@ -1,14 +1,28 @@
 /**
- * Lark bot. Receives events over the platform's WebSocket long connection
- * (no public URL required — the SDK maintains and reconnects the socket),
- * normalizes `im.message.receive_v1`, and forwards to the bridge.
+ * Lark bot. Two event delivery modes:
  *
- * Constraint worth knowing: Lark allows ONE live WS connection per app.
- * Running two gateways against the same app_id makes them fight (the
- * platform reports "system busy"), same failure family as Telegram's
- * getUpdates Conflict — use one Lark app per agent.
+ * - `ws` (default): the platform's WebSocket long connection — the SDK
+ *   maintains and reconnects the socket; no public URL required.
+ *   Constraint: Lark allows ONE live WS connection per app. Two gateways
+ *   sharing an app_id fight over it ("system busy") — same failure family
+ *   as Telegram's getUpdates Conflict. One Lark app per agent.
+ *
+ * - `webhook`: events arrive on the gateway's public webhook route
+ *   (`…/channels/lark/webhook`). Lark has no programmatic setWebhook —
+ *   the operator pastes the URL into the Developer Console. The handler
+ *   answers the url_verification challenge synchronously and dispatches
+ *   real events asynchronously (Lark retries on slow responses, so we
+ *   ack fast; `message_id` dedup absorbs redeliveries).
+ *
+ * Both modes share the same EventDispatcher and normalization path.
  */
-import { WSClient, EventDispatcher, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
+import {
+  WSClient,
+  EventDispatcher,
+  Domain,
+  LoggerLevel,
+  generateChallenge,
+} from '@larksuiteoapi/node-sdk';
 
 import type { LarkApi } from './lark-api.js';
 import type { LarkBridge, LarkInboundMessage } from './bridge.js';
@@ -18,10 +32,28 @@ export interface LarkBotOptions {
   appId: string;
   appSecret: string;
   domainKey: 'feishu' | 'lark';
+  mode: 'ws' | 'webhook';
+  /** Webhook-mode Encrypt Key; enables event decryption + signature checks. */
+  encryptKey?: string;
+  /** Webhook-mode Verification Token. */
+  verificationToken?: string;
+  /** Public webhook URL, for operator guidance in the logs. */
+  webhookUrl?: string;
   api: LarkApi;
   bridge: LarkBridge;
   logger?: (message: string) => void;
   reportRuntimeError?: (error: string | null) => void;
+}
+
+export interface WebhookRequestLike {
+  headers: Record<string, string>;
+  rawBody: string;
+}
+
+export interface WebhookResponseLike {
+  status: number;
+  body?: string;
+  headers?: Record<string, string>;
 }
 
 /** The subset of the `im.message.receive_v1` event payload we consume. */
@@ -42,12 +74,33 @@ interface ReceiveEvent {
 
 export class LarkBot {
   private readonly log: (message: string) => void;
+  private readonly dispatcher: EventDispatcher;
   private ws: WSClient | undefined;
   private botOpenId: string | undefined;
   private readonly recentlyHandled = new Set<string>();
 
   constructor(private readonly options: LarkBotOptions) {
     this.log = options.logger ?? ((msg: string) => console.log(`[lark-bot] ${msg}`));
+    this.dispatcher = new EventDispatcher({
+      ...(options.encryptKey ? { encryptKey: options.encryptKey } : {}),
+      ...(options.verificationToken ? { verificationToken: options.verificationToken } : {}),
+      loggerLevel: LoggerLevel.error,
+    }).register({
+      'im.message.receive_v1': async (data: unknown) => {
+        try {
+          await this.handleReceive(data as ReceiveEvent);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log(`error handling message: ${msg}`);
+          const chatId = (data as ReceiveEvent).message?.chat_id;
+          if (chatId) {
+            await this.options.api
+              .sendText(chatId, 'Sorry, something went wrong. Please try again.')
+              .catch(() => undefined);
+          }
+        }
+      },
+    });
   }
 
   async start(): Promise<void> {
@@ -64,22 +117,14 @@ export class LarkBot {
       this.options.reportRuntimeError?.(`bot info failed: ${msg}`);
     }
 
-    const dispatcher = new EventDispatcher({}).register({
-      'im.message.receive_v1': async (data: unknown) => {
-        try {
-          await this.handleReceive(data as ReceiveEvent);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.log(`error handling message: ${msg}`);
-          const chatId = (data as ReceiveEvent).message?.chat_id;
-          if (chatId) {
-            await this.options.api
-              .sendText(chatId, 'Sorry, something went wrong. Please try again.')
-              .catch(() => undefined);
-          }
-        }
-      },
-    });
+    if (this.options.mode === 'webhook') {
+      this.log(
+        `webhook mode — configure this Request URL in the Developer Console: ${
+          this.options.webhookUrl ?? '(no public gateway URL configured!)'
+        }`,
+      );
+      return;
+    }
 
     this.ws = new WSClient({
       appId: this.options.appId,
@@ -88,7 +133,7 @@ export class LarkBot {
       loggerLevel: LoggerLevel.error,
     });
     // start() is non-blocking; the SDK owns reconnection with backoff.
-    this.ws.start({ eventDispatcher: dispatcher });
+    this.ws.start({ eventDispatcher: this.dispatcher });
     this.log('websocket long connection started');
   }
 
@@ -98,6 +143,56 @@ export class LarkBot {
     } catch { /* ignore */ }
     this.ws = undefined;
     this.log('bot stopped');
+  }
+
+  /**
+   * Webhook-mode entry, called by the gateway dispatcher. Answers the
+   * url_verification challenge synchronously; real events are verified +
+   * decrypted by the SDK dispatcher and handled asynchronously so Lark
+   * gets its ack well inside the retry window.
+   */
+  async handleWebhookRequest(req: WebhookRequestLike): Promise<WebhookResponseLike> {
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(req.rawBody) as Record<string, unknown>;
+    } catch {
+      return { status: 400, body: 'invalid json' };
+    }
+
+    // URL verification handshake (plaintext or encrypted).
+    try {
+      const { isChallenge, challenge } = generateChallenge(body as { encrypt?: string }, {
+        encryptKey: this.options.encryptKey ?? '',
+      });
+      if (isChallenge) {
+        return {
+          status: 200,
+          body: JSON.stringify(challenge),
+          headers: { 'content-type': 'application/json' },
+        };
+      }
+    } catch (err) {
+      // Encrypted challenge but no/wrong encrypt key configured.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`webhook challenge failed: ${msg}`);
+      return { status: 400, body: 'challenge failed' };
+    }
+
+    // Signature validation reads `data.headers` while JSON.stringify(data)
+    // must reproduce the original body — keep headers on the prototype
+    // (same trick as the SDK's own adapters).
+    const invokeData = Object.assign(
+      Object.create({ headers: req.headers }),
+      body,
+    ) as Record<string, unknown>;
+
+    // Dispatch asynchronously: the agent turn can take minutes, Lark
+    // redelivers on slow acks, and message_id dedup absorbs any repeats.
+    void this.dispatcher.invoke(invokeData).catch((err) => {
+      this.log(`webhook dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    return { status: 200, body: '{"ok":true}', headers: { 'content-type': 'application/json' } };
   }
 
   private async handleReceive(event: ReceiveEvent): Promise<void> {

@@ -2,8 +2,12 @@
 
 OpenHermit channel plugin for **Lark / 飞书 (Feishu)**.
 
-Uses the platform's **WebSocket long-connection** event mode — no public URL,
-webhook, or tunnel required. The gateway only needs outbound internet access.
+Two event delivery modes:
+
+- **WebSocket long connection** (default) — no public URL, webhook, or tunnel
+  required; the gateway only needs outbound internet access.
+- **Webhook** — events POST to the gateway's public webhook route. Use when
+  you already run behind a public HTTPS URL and prefer push delivery.
 
 Supports both platforms: **飞书** (`open.feishu.cn`, China) and
 **Lark international** (`open.larksuite.com`) — pick via the `domain` config.
@@ -42,9 +46,16 @@ hermit channel install @openhermit/channel-lark
      (**without this the bot receives nothing in groups** — the most common
      misconfiguration)
    - `im:resource` — upload/download message images & files
-4. **Subscribe to events** (Event Subscriptions): choose **“Receive events
-   through a persistent connection (WebSocket)”** as the delivery mode, then
-   add the event `im.message.receive_v1`.
+4. **Subscribe to events** (Event Subscriptions), then add the event
+   `im.message.receive_v1`. Pick the delivery mode:
+   - **WebSocket** (default): choose **“Receive events through a persistent
+     connection”** in the Console.
+   - **Webhook**: choose **“Send events to a Request URL”**. The exact URL to
+     paste (`…/api/agents/<id>/channels/lark/webhook`) is printed in the
+     channel logs at start — it needs `OPENHERMIT_GATEWAY_PUBLIC_URL` set on
+     the gateway. Copy the Console's **Encrypt Key** / **Verification Token**
+     into the `LARK_ENCRYPT_KEY` / `LARK_VERIFICATION_TOKEN` secrets
+     (recommended; events are then decrypted and signature-checked).
 5. **Publish an app version** and approve it — permissions and events only
    take effect on a released version.
 6. In the OpenHermit admin UI, enable the **Lark / 飞书** channel on the
@@ -59,7 +70,10 @@ Stored in the agent's channel row:
 {
   "app_id": "cli_a1b2c3d4…",
   "app_secret": "${{LARK_APP_SECRET}}",
-  "domain": "feishu"
+  "domain": "feishu",
+  "mode": "ws",
+  "encrypt_key": "${{LARK_ENCRYPT_KEY}}",
+  "verification_token": "${{LARK_VERIFICATION_TOKEN}}"
 }
 ```
 
@@ -68,6 +82,9 @@ Stored in the agent's channel row:
 | `app_id` | `cli_…` | Developer Console → Credentials & Basic Info |
 | `app_secret` | secret ref | via the `LARK_APP_SECRET` agent secret |
 | `domain` | `feishu` (default) \| `lark` | which platform your tenant lives on |
+| `mode` | `ws` (default) \| `webhook` | event delivery; webhook needs a public gateway URL |
+| `encrypt_key` | optional secret ref | webhook mode: decrypt + signature-check events |
+| `verification_token` | optional secret ref | webhook mode: challenge token check |
 
 ## Troubleshooting
 
@@ -83,4 +100,3 @@ Stored in the agent's channel row:
 - Interactive cards / rich-post outbound (replies are plain text)
 - Sender display names (needs `contact:user.base:readonly`; planned)
 - Inbound voice STT transcription (audio arrives as a file attachment)
-- Webhook event mode (WS long connection only)
