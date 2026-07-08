@@ -1590,10 +1590,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
 
     return streamSSE(c, async (stream) => {
-      // Emit ready before the backlog. It carries nextEventId so a client
-      // holding a stale cursor from a previous runner resets to 0 before it
-      // filters the backlog burst (a new runner restarts ids at 1). Sending
-      // it after the backlog would skip that burst against the stale cursor.
+      // Emit ready (with nextEventId) before the backlog so a client holding a
+      // stale cursor resets to 0 before filtering the burst; a new runner
+      // restarts ids at 1, so sending it after would skip that burst.
       await stream.writeSSE({
         event: 'ready',
         data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),

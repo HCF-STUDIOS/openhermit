@@ -316,10 +316,9 @@ export type OutboundEventBody =
   | { type: 'error'; sessionId: string; message: string; correlationId?: string }
   | {
       /**
-       * In-flight media-generation placeholder emitted by a media-generation
-       * tool. Channels and UIs subscribe to this event to render a pending
-       * state until it resolves. It typically becomes an `attachment`
-       * event with the same `correlationId`.
+       * In-flight media placeholder from a media-generation tool; channels/UIs
+       * render a pending state until it resolves, typically to an `attachment`
+       * with the same `correlationId`.
        */
       type: 'pending_media';
       sessionId: string;
@@ -1225,9 +1224,8 @@ export const isToolApprovalRequest = (
 const OUTBOUND_MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
 
 /**
- * Subset of OutboundEventBody a trusted server may publish directly into a
- * live session via the publish-into-session gateway route. Everything else
- * is runtime-internal and stays out of reach.
+ * Subset of OutboundEventBody a trusted server may publish into a live session
+ * via the publish-into-session route; everything else stays runtime-internal.
  */
 export type PublishableOutboundEvent = Extract<
   OutboundEventBody,

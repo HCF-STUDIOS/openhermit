@@ -87,19 +87,9 @@ export class SignalBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
-  /**
-   * Persistent out-of-turn subscriptions keyed by sessionId. Single owner
-   * of attachment delivery for a session. The per-turn loop no longer
-   * delivers attachments so a live turn and this subscription never deliver
-   * the same attachment twice.
-   */
+  /** Out-of-turn subscriptions by sessionId; sole owner of attachment delivery (per-turn loop no longer delivers, so no double-delivery). */
   private readonly subscriptions = new Map<string, AbortController>();
-  /**
-   * Highest out-of-turn event id delivered per sessionId. Kept separate
-   * from `subscriptions` so it survives idle-close/reopen. The gateway
-   * replays its backlog on every fresh connection. Without this a reopened
-   * subscription starts at cursor 0 and redelivers what was already sent.
-   */
+  /** Highest out-of-turn id delivered per sessionId. Survives idle-close/reopen so a reopened subscription doesn't redeliver the replayed backlog. */
   private readonly subscriptionCursors = new Map<string, number>();
   private readonly conversationSessions = new Map<string, string>();
   private readonly allowedSenders: string[] | undefined;
@@ -187,8 +177,7 @@ export class SignalBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, msg, senderChannelUserId),
       () => {
-        // The stale session subscription would otherwise keep polling a
-        // dead session until idle timeout.
+        // Stop the stale subscription so it doesn't poll the dead session until idle timeout.
         this.subscriptions.get(sessionId)?.abort();
         this.subscriptions.delete(sessionId);
         const fresh = generateSessionId();
@@ -371,13 +360,9 @@ export class SignalBridge implements ChannelOutbound {
   }
 
   /**
-   * Start the persistent out-of-turn subscription that delivers `attachment`
-   * events pushed after a turn ends. Once per sessionId. Idempotent. A
-   * session with a live subscription is left alone.
-   *
-   * This is the exactly-once boundary. Attachment delivery happens only here
-   * never in the per-turn loop. Neither reader of the shared event stream
-   * delivers the same attachment twice.
+   * Start the out-of-turn subscription delivering `attachment` events pushed
+   * after a turn. Idempotent per sessionId. The exactly-once boundary:
+   * attachment delivery happens only here, never in the per-turn loop.
    */
   private startAttachmentSubscription(sessionId: string, target: string, idleTimeoutMs?: number): void {
     if (this.subscriptions.has(sessionId)) return;
@@ -408,10 +393,8 @@ export class SignalBridge implements ChannelOutbound {
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => {
-      // The subscription ended: idle-closed or aborted or reconnect-exhausted.
-      // Drop its map entry so the connection is released and the next message
-      // reopens lazily. Guard by identity so we never evict a fresh
-      // subscription that already replaced this one.
+      // Subscription ended; drop its entry so the next message reopens lazily.
+      // Guard by identity so we never evict a fresh subscription that replaced it.
       if (this.subscriptions.get(sessionId) === abortController) {
         this.subscriptions.delete(sessionId);
       }
@@ -509,10 +492,7 @@ export class SignalBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
-          // `attachment` events are delivered only by the persistent
-          // subscription in `startAttachmentSubscription` never here.
-          // Both readers watch the same stream. Handling it in two places
-          // would deliver every in-turn attachment twice.
+          // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
