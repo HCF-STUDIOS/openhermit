@@ -29,18 +29,9 @@ export class SlackBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
-  /**
-   * Persistent out-of-turn subscriptions keyed by sessionId. Single owner of
-   * attachment delivery. The per-turn loop no longer delivers attachments so
-   * the same attachment is never delivered twice.
-   */
+  /** Out-of-turn subscriptions by sessionId; sole owner of attachment delivery (per-turn loop no longer delivers, so no double-delivery). */
   private readonly subscriptions = new Map<string, AbortController>();
-  /**
-   * Highest out-of-turn event id delivered per sessionId. Kept separate from
-   * subscriptions so it survives idle-close and reopen. The gateway replays
-   * its backlog on every fresh connection. Without this a reopened
-   * subscription would restart at 0 and redeliver what was already sent.
-   */
+  /** Highest out-of-turn id delivered per sessionId. Survives idle-close/reopen so a reopened subscription doesn't redeliver the replayed backlog. */
   private readonly subscriptionCursors = new Map<string, number>();
   private readonly channelSessions = new Map<string, string>();
 
@@ -193,8 +184,7 @@ export class SlackBridge implements ChannelOutbound {
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
       this.subscriptionCursors.delete(oldSessionId);
-      // Stop the orphaned subscription. Otherwise it keeps polling a dead
-      // session until its idle timeout.
+      // Stop the orphaned subscription so it doesn't poll the dead session until idle timeout.
       this.subscriptions.get(oldSessionId)?.abort();
       this.subscriptions.delete(oldSessionId);
     }
@@ -220,8 +210,7 @@ export class SlackBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event, isDm, threadTs),
       () => {
-        // The stale session's subscription would otherwise keep polling a
-        // dead session until its idle timeout.
+        // Stop the stale subscription so it doesn't poll the dead session until idle timeout.
         this.subscriptions.get(sessionId)?.abort();
         this.subscriptions.delete(sessionId);
         const fresh = SlackBridge.generateSessionId();
@@ -324,13 +313,10 @@ export class SlackBridge implements ChannelOutbound {
   }
 
   /**
-   * Start the persistent out-of-turn subscription once per sessionId. It
-   * delivers attachment events pushed after a turn ends. Idempotent. A
-   * session with a live subscription is left alone. This is the single
-   * owner of attachment delivery so the two readers of the same stream
-   * cannot both deliver it. The cursor advances before the upload finishes
-   * so delivery is at most once and not a durability guarantee. A failed
-   * upload is not retried.
+   * Start the out-of-turn subscription delivering `attachment` events pushed
+   * after a turn. Idempotent per sessionId. Sole owner of attachment delivery.
+   * Cursor advances before the upload finishes, so delivery is at-most-once
+   * (a failed upload is not retried), not a durability guarantee.
    */
   private startAttachmentSubscription(
     sessionId: string,
@@ -366,10 +352,8 @@ export class SlackBridge implements ChannelOutbound {
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => {
-      // The subscription ended. Idle-closed aborted or reconnect-exhausted.
-      // Drop its map entry so the connection is released and the next message
-      // reopens lazily. Guard by identity so we never evict a fresh
-      // subscription that already replaced this one.
+      // Subscription ended; drop its entry so the next message reopens lazily.
+      // Guard by identity so we never evict a fresh subscription that replaced it.
       if (this.subscriptions.get(sessionId) === abortController) {
         this.subscriptions.delete(sessionId);
       }
@@ -489,10 +473,7 @@ export class SlackBridge implements ChannelOutbound {
             continue;
           }
 
-          // attachment events are delivered only by the persistent
-          // subscription. See startAttachmentSubscription. Never here.
-          // Both readers watch the same stream so handling it in two
-          // places would deliver every in-turn attachment twice.
+          // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;

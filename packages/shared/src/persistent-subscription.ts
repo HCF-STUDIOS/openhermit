@@ -1,16 +1,10 @@
 /**
- * Shared persistent SSE subscription helper for channel bridges.
- *
- * The gateway's session events endpoint never closes on its own and replays
- * the full recent backlog on every new connection. Callers dedupe by
- * comparing each frame's id against the highest id already seen. Per-turn
- * bridge loops open this stream and read until `agent_end` then disconnect.
- * So events the server pushes after a turn ends are never read. A delayed
- * media attachment or a late error gets missed. This helper keeps the same
- * connect/resume/dedup loop open across turns and reconnects on a transient
- * drop so out-of-turn events still get delivered. It is transport-generic.
- * It forwards every non-transport frame to `onEvent` as-is and knows nothing
- * about media attachments or any particular channel.
+ * Persistent SSE subscription helper for channel bridges. Per-turn loops read
+ * the session events stream until `agent_end` then disconnect, so events the
+ * server pushes after a turn (delayed media, a late error) are missed. This
+ * keeps the same connect/resume/dedup loop open across turns and reconnects on
+ * a transient drop. Transport-generic: forwards every non-transport frame to
+ * `onEvent` as-is, knowing nothing about attachments or channels.
  */
 
 export interface SseFrame {
@@ -19,9 +13,8 @@ export interface SseFrame {
   data: string;
 }
 
-// Mirrors packages/sdk/src/sse.ts's parseSseFrames. Duplicated not imported.
-// @openhermit/sdk already depends on @openhermit/shared so importing the
-// other way would be circular.
+// Mirrors packages/sdk/src/sse.ts's parseSseFrames; duplicated because sdk
+// already depends on shared, so importing back would be circular.
 const parseSseFrames = (
   buffer: string,
 ): { frames: SseFrame[]; remainder: string } => {
@@ -62,26 +55,20 @@ export interface PersistentSubscriptionOptions {
   headers?: Record<string, string>;
   onEvent: (frame: SseFrame) => void;
   /**
-   * Called whenever the internal cursor changes. A new max id seen or a reset
-   * to 0 on detected sequence rollover. Callers persist the cursor somewhere
-   * that survives this subscription being torn down such as on idle close.
-   * A later `startPersistentSubscription` call for the same logical session
-   * then resumes via `lastEventId` instead of re-reading the backlog and
-   * re-delivering old events.
+   * Fires when the cursor changes (new max id, or reset to 0 on sequence
+   * rollover). Persist it beyond this subscription's lifetime so a later
+   * call resumes via `lastEventId` instead of replaying the backlog.
    */
   onCursorAdvance?: (cursor: number) => void;
   abortSignal?: AbortSignal;
   /** Delay before reconnecting after a dropped stream. Default 2000ms. */
   reconnectDelayMs?: number;
   /**
-   * Bound the lifetime of an otherwise-idle connection. If no real event
-   * arrives within this many ms the stream is closed and the subscription
-   * RESOLVES without reconnecting so a caller can drop it and reopen later.
-   * A real event is a frame that reaches `onEvent`. Reset on every delivered
-   * event so an in-flight job keeps its connection alive. Keepalive pings do
-   * NOT reset it. The gateway pings every ~15s so counting pings would keep
-   * every idle connection open forever. Default 900000 ms which is 15 min.
-   * It covers a slow create job while still releasing quiet sessions.
+   * Close an idle connection after this many ms with no real event (a frame
+   * reaching `onEvent`), resolving without reconnecting so the caller can
+   * reopen later. Reset per delivered event; keepalive pings do NOT reset it
+   * (the gateway pings ~15s, which would pin every idle connection open).
+   * Default 900000ms (15 min): covers a slow create job, releases quiet sessions.
    */
   idleTimeoutMs?: number;
 }
@@ -96,9 +83,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
       clearTimeout(timer);
       resolve();
     };
-    // The timer wins on every reconnect where nothing aborts so it must
-    // detach its own abort listener. Otherwise one accumulates per retry
-    // for the lifetime of the subscription.
+    // The timer usually wins, so detach its own abort listener or one leaks per retry.
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       resolve();
@@ -108,12 +93,10 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 };
 
 /**
- * Open `eventsUrl` as an SSE stream and keep delivering events until
- * `abortSignal` fires. Resumes from `lastEventId` and dedupes by id the
- * same way the existing per-turn bridge loops do. Reconnects after a
- * transient drop instead of ending the subscription. Closes and resolves
- * without reconnecting once no real event has arrived for `idleTimeoutMs`
- * so a caller can release the connection and reopen lazily later.
+ * Open `eventsUrl` as SSE and deliver events until `abortSignal` fires.
+ * Resumes from `lastEventId`, dedupes by id, reconnects on transient drops.
+ * Resolves without reconnecting once idle for `idleTimeoutMs` so the caller
+ * can release the connection and reopen lazily.
  */
 export async function startPersistentSubscription(
   options: PersistentSubscriptionOptions,
@@ -125,8 +108,7 @@ export async function startPersistentSubscription(
 
   while (!abortSignal?.aborted) {
     let sequenceResetChecked = false;
-    // Set when the idle timer fires so we can distinguish a clean idle close
-    // from a transient drop. Clean close resolves. Transient drop reconnects.
+    // Set when the idle timer fires: clean close resolves, transient drop reconnects.
     let idleClosed = false;
 
     try {
@@ -151,9 +133,8 @@ export async function startPersistentSubscription(
           idleTimer = undefined;
         }
       };
-      // Arm or re-arm the idle timer. Cancelling the reader unblocks the
-      // pending read which ends the loop. `idleClosed` then routes us to a
-      // clean resolve instead of a reconnect.
+      // Arm/re-arm the idle timer. Cancelling the reader ends the read loop;
+      // `idleClosed` then routes to a clean resolve, not a reconnect.
       const armIdle = (): void => {
         clearIdle();
         idleTimer = setTimeout(() => {
@@ -183,8 +164,7 @@ export async function startPersistentSubscription(
             }
 
             if (frame.event === 'ready') {
-              // Detect sequence reset. A new runner restarts ids at 1 so a
-              // stored cursor from a previous runner would skip every event.
+              // A new runner restarts ids at 1, so a stale cursor would skip every event: reset it.
               if (!sequenceResetChecked) {
                 sequenceResetChecked = true;
                 try {
@@ -199,11 +179,10 @@ export async function startPersistentSubscription(
               }
               continue;
             }
-            // Keepalive pings keep the socket warm but are not real activity
-            // so they must not reset the idle timer.
+            // Keepalive pings are not real activity: don't reset the idle timer.
             if (frame.event === 'ping') continue;
 
-            // A real event. The connection is doing useful work so keep it.
+            // Real event: keep the connection alive.
             armIdle();
             onEvent(frame);
           }
@@ -214,13 +193,11 @@ export async function startPersistentSubscription(
         await reader.cancel().catch(() => undefined);
       }
     } catch {
-      // Transient drop such as a network error or aborted read. Fall
-      // through to reconnect below unless shutdown was requested.
+      // Transient drop (network error, aborted read); fall through to reconnect unless shutting down.
     }
 
     if (abortSignal?.aborted) return;
-    // Idle close is a deliberate clean end. Resolve so the caller can drop
-    // this subscription and reopen lazily on the next message.
+    // Idle close is a clean end: resolve so the caller reopens lazily on the next message.
     if (idleClosed) return;
     await sleep(reconnectDelayMs, abortSignal);
   }

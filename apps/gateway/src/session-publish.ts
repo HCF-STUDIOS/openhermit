@@ -1,23 +1,9 @@
 /**
- * Publish-into-session gateway route.
- *
- * Lets a trusted server push a standard outbound event into a live agent
- * session out of band so channel bridges deliver it even with no active turn.
- * Allowed types: `attachment` `pending_media` `error`. Auth is the gateway
- * admin token like the other internal-only routes.
- *
- * A pushed `error` may carry a `correlationId` to resolve an earlier
- * `pending_media` placeholder to a failed state. It publishes as-is with no
- * asset ingest.
- *
- * An `attachment` push may carry an external `assetUrl` instead of a stored
- * `attachmentId`. Channels only fetch bytes from the `attachmentId` bytes
- * route so a bare URL never reaches the user. When `assetUrl` is present the
- * handler first ingests it into a `session_attachments` row via
- * `ingestAttachment`. That is the same fetch-and-persist path
- * `attachment_send` and inbound postMessage use. Only then does it publish
- * the real `attachment` event with the returned `attachmentId`. If ingest
- * fails nothing is published and the route returns 502.
+ * Gateway route to push an outbound event (`attachment`|`pending_media`|`error`)
+ * into a live session out of band, so bridges deliver it with no active turn.
+ * Admin-token auth. An `attachment` carrying an external `assetUrl` is first
+ * ingested to a session_attachments row (same SSRF-guarded path as
+ * attachment_send) and published by attachmentId; ingest failure -> 502.
  */
 import type { Hono } from 'hono';
 
@@ -32,7 +18,7 @@ import { inferAttachmentKind } from '@openhermit/agent/attachments';
 import type { AgentRunner } from '@openhermit/agent/agent-runner';
 import type { AgentInstanceManager } from './agent-instance.js';
 
-/** Rendering-hint literal shared with `OutboundEventBody`'s attachment kind. */
+/** Rendering-hint literal, mirrors `OutboundEventBody`'s attachment kind. */
 type AttachmentKind = 'image' | 'audio' | 'video' | 'document';
 
 export interface AttachmentIngestInput {
@@ -40,11 +26,10 @@ export interface AttachmentIngestInput {
   sessionId: string;
   /** External URL to fetch and persist as a session attachment. */
   url: string;
-  /** Optional MIME hint; the ingest path sniffs the real type regardless. */
+  /** MIME hint; ingest sniffs the real type regardless. */
   mimeType?: string | undefined;
-  /** Optional display name hint. */
   name?: string | undefined;
-  /** Runner for the target session. Already resolved by the route. */
+  /** Runner for the target session, already resolved by the route. */
   runner: AgentRunner;
 }
 
@@ -63,10 +48,7 @@ export interface SessionPublishDeps {
     agentId: string,
   ) => Promise<AgentRunner>;
   logger?: (message: string) => void;
-  /**
-   * Ingests an external asset URL into a `session_attachments` row.
-   * Omit to disable asset-ingest pushes. An `assetUrl` event then 502s.
-   */
+  /** Ingests an asset URL into a session_attachments row. Omit to 502 `assetUrl` pushes. */
   ingestAttachment?:
     | ((input: AttachmentIngestInput) => Promise<AttachmentIngestResult>)
     | undefined;
@@ -80,10 +62,9 @@ const isOptionalString = (value: unknown): value is string | undefined =>
   value === undefined || typeof value === 'string';
 
 /**
- * Shape of a pushed attachment not yet stored. It carries `assetUrl` instead
- * of `attachmentId` so it is deliberately not a valid `OutboundEventBody`. It
- * never satisfies `isPublishableOutboundEvent` and cannot leak through to
- * publish unresolved.
+ * A pushed attachment not yet stored: carries `assetUrl`, not `attachmentId`,
+ * so it is deliberately not a valid `OutboundEventBody` and can never satisfy
+ * `isPublishableOutboundEvent` to leak through unresolved.
  */
 interface AttachmentIngestRequestBody {
   type: 'attachment';
@@ -102,9 +83,7 @@ const parseAttachmentIngestRequest = (
 ): AttachmentIngestRequestBody | null => {
   if (typeof value.assetUrl !== 'string' || value.assetUrl.length === 0) return null;
   if (typeof value.sessionId !== 'string' || value.sessionId !== sessionId) return null;
-  // mimeType stays optional. An explicit empty string would survive ingest
-  // then fail the published event's !mimeType check and orphan the persisted
-  // row. Reject it up front so nothing is ingested.
+  // Reject an explicit empty mimeType: it ingests, then fails the published !mimeType check and orphans the row.
   if (!isOptionalString(value.mimeType)) return null;
   if (typeof value.mimeType === 'string' && value.mimeType.length === 0) return null;
   if (value.kind !== undefined && (typeof value.kind !== 'string' || !MEDIA_KINDS.has(value.kind))) {
@@ -191,9 +170,7 @@ export const registerSessionPublishRoute = (
         return c.json({ error: message, code: 'attachment_ingest_failed' }, 502);
       }
 
-      // The ingest path sniffs the real type regardless of the caller hint so
-      // the published event must reflect what was persisted. Ingest only falls
-      // back to the hint when the fetch has no declared content-type.
+      // Publish the persisted type: ingest sniffs it and only falls back to the hint when the fetch declares none.
       const finalMimeType = ingested.mimeType;
       const finalEvent: OutboundEventBody = {
         type: 'attachment',
