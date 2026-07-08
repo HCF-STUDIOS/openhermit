@@ -1592,6 +1592,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
 
     return streamSSE(c, async (stream) => {
+      // Emit ready before the backlog. It carries nextEventId so a client
+      // holding a stale cursor from a previous runner resets to 0 before it
+      // filters the backlog burst (a new runner restarts ids at 1). Sending
+      // it after the backlog would skip that burst against the stale cursor.
+      await stream.writeSSE({
+        event: 'ready',
+        data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
+      });
+
       for (const envelope of runtime.events.getBacklog(sessionId)) {
         await writeEvent(stream, envelope);
       }
@@ -1608,13 +1617,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }, SSE_PING_INTERVAL_MS);
 
       try {
-        // Include nextEventId so clients with a stored last-event cursor
-        // can detect sequence resets after runner eviction (broker is
-        // per-runner; new runner restarts ids at 1).
-        await stream.writeSSE({
-          event: 'ready',
-          data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
-        });
         await waitForAbort(c.req.raw.signal);
       } finally {
         clearInterval(heartbeat);
