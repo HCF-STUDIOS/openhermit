@@ -11,6 +11,7 @@ import {
   estimateAgentMessagesTokens,
   estimateFixedOverheadTokens,
   getCompactionRetainedStartIndex,
+  applyRollingWindow,
   summarizeMessageForCompaction,
   buildContextCompactionBlock,
   compactContextIfNeeded,
@@ -987,4 +988,58 @@ test('compactContextIfNeeded compacts below the trigger with headroom (hysteresi
   );
   const second = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
   assert.equal(second.length, afterGrowth.length, 'no re-compaction within the headroom window');
+});
+
+// ── applyRollingWindow ──────────────────────────────────────────────────
+
+test('applyRollingWindow returns all messages when count <= maxMessages', () => {
+  const messages = [
+    makeUserMessage('a'),
+    makeAssistantMessage('b'),
+    makeUserMessage('c'),
+  ];
+  const result = applyRollingWindow(messages, 5);
+  assert.equal(result.length, 3);
+  assert.deepEqual(result, messages);
+});
+
+test('applyRollingWindow returns the last N when no tool pair straddles the boundary', () => {
+  const messages = [
+    makeUserMessage('u0'),
+    makeUserMessage('u1'),
+    makeUserMessage('u2'),
+    makeUserMessage('u3'),
+    makeUserMessage('u4'),
+    makeUserMessage('u5'),
+  ];
+  const result = applyRollingWindow(messages, 3);
+  assert.equal(result.length, 3);
+  assert.deepEqual(result, messages.slice(3));
+});
+
+test('applyRollingWindow never orphans a toolResult at the boundary', () => {
+  const messages = [
+    makeUserMessage('u0'),
+    makeToolCallMessage('search'),
+    makeToolResultMessage('search', 'result'),
+    makeUserMessage('u3'),
+    makeAssistantMessage('a4'),
+    makeUserMessage('u5'),
+  ];
+  // N=4 → raw cut at index 2, which is a bare toolResult preceded by the
+  // assistant toolCall; boundary must move back to include the toolCall.
+  const result = applyRollingWindow(messages, 4);
+  assert.notEqual(result[0].role, 'toolResult');
+  assert.equal(result[0].role, 'assistant');
+  assert.deepEqual(result, messages.slice(1));
+});
+
+test('applyRollingWindow returns input unchanged for maxMessages <= 0', () => {
+  const messages = [
+    makeUserMessage('a'),
+    makeUserMessage('b'),
+    makeUserMessage('c'),
+  ];
+  assert.equal(applyRollingWindow(messages, 0), messages);
+  assert.equal(applyRollingWindow(messages, -5), messages);
 });
