@@ -49,13 +49,30 @@ export const isEmptyAssistantTurn = (message: AgentMessage): boolean => {
 export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage[] =>
   messages.filter((message) => !isEmptyAssistantTurn(message));
 
+/**
+ * Remove inline reasoning tags a provider may emit inside a normal text block
+ * (`<think>…</think>`, `<thinking>…</thinking>`, `<reasoning>…</reasoning>`),
+ * so model reasoning never leaks into the user-facing reply. Structured
+ * `thinking` blocks are handled separately and are unaffected. Only paired tags
+ * are stripped; an unclosed tag is left as-is to avoid blanking a truncated
+ * real reply. If stripping empties the text entirely (a pathological
+ * reasoning-only text block), the original is returned unchanged.
+ */
+export const stripReasoningTags = (text: string): string => {
+  const stripped = text
+    .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return stripped.length > 0 ? stripped : text.trim();
+};
+
 export const extractAssistantText = (message: AssistantMessage): string => {
   const textParts = message.content
     .filter((content): content is Extract<typeof content, { type: 'text' }> => content.type === 'text')
     .map((content) => content.text.trim())
     .filter((text) => text.length > 0);
 
-  return textParts.join('\n\n');
+  return stripReasoningTags(textParts.join('\n\n'));
 };
 
 export const extractThinkingText = (message: AssistantMessage): string => {
