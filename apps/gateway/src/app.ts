@@ -1600,13 +1600,36 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
       });
 
-      for (const envelope of runtime.events.getBacklog(sessionId)) {
-        await writeEvent(stream, envelope);
-      }
-
+      // Subscribe first, then replay backlog. The old getBacklog-then-subscribe
+      // path awaited each backlog write before subscribe, so a publish in that
+      // window (including out-of-band attachments) landed in the broker backlog
+      // but never on this stream until reconnect. Buffer live events that arrive
+      // while the backlog is still writing, then drain with id dedupe.
+      const pendingLive: SessionEventEnvelope[] = [];
+      let replayingBacklog = true;
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
+        if (replayingBacklog) {
+          pendingLive.push(envelope);
+          return;
+        }
         await writeEvent(stream, envelope);
       });
+
+      const backlog = runtime.events.getBacklog(sessionId);
+      let maxBacklogId = 0;
+      for (const envelope of backlog) {
+        maxBacklogId = Math.max(maxBacklogId, envelope.id);
+        await writeEvent(stream, envelope);
+      }
+      // Flip before splicing so any concurrent publish is handled by the live
+      // path rather than a second push into pendingLive that we would drop.
+      replayingBacklog = false;
+      const leftoverLive = pendingLive.splice(0, pendingLive.length);
+      for (const envelope of leftoverLive) {
+        if (envelope.id > maxBacklogId) {
+          await writeEvent(stream, envelope);
+        }
+      }
 
       const heartbeat = setInterval(() => {
         void stream.writeSSE({
