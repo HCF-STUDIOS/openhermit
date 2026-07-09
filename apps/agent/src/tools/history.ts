@@ -11,8 +11,14 @@ import {
 // ── Parameters ──────────────────────────────────────────────────────
 
 const HistoryFetchParams = Type.Object({
-  limit: Type.Optional(Type.Number({ description: 'Maximum number of older messages to return (default 50).' })),
-  offset: Type.Optional(Type.Number({ description: 'Number of messages to skip from the end (0 = most recent). Use with limit to page backwards through this conversation.' })),
+  limit: Type.Optional(Type.Number({ description: 'Maximum number of messages to return (default 50).' })),
+  offset: Type.Optional(Type.Number({
+    description:
+      'Number of messages to skip from the end before returning (same pagination model as session_read). '
+      + 'Default 0 returns the most recent messages, which usually already sit in the live window. '
+      + 'To reach turns that scrolled out of the rolling window, set offset ≈ rolling_window_messages '
+      + '(default 40 when that config is set), then page further back by increasing offset.',
+  })),
 });
 
 type HistoryFetchArgs = Static<typeof HistoryFetchParams>;
@@ -24,8 +30,11 @@ export const createHistoryFetchTool = (context: ToolContext): PolicyAwareTool<ty
   name: 'fetch_full_history',
   label: 'Fetch Full History',
   description:
-    'Fetch older messages from THIS conversation that may have scrolled out of the live context window. '
-    + 'Returns user and assistant messages, most recent first. Page backwards with `limit`/`offset`. '
+    'Fetch messages from THIS conversation via the store (same offset/limit model as session_read). '
+    + 'Returns user and assistant messages, most recent first. '
+    + 'offset 0 (default) returns the most recent messages, which are usually already in the live context. '
+    + 'To fetch older messages that scrolled out of a rolling window, set offset ≈ rolling_window_messages '
+    + '(default 40) and page further with higher offsets. '
     + 'Use this when you need context from earlier in the conversation that is no longer visible.',
   parameters: HistoryFetchParams,
   execute: async (_toolCallId, args: HistoryFetchArgs) => {
@@ -63,7 +72,7 @@ export const createHistoryFetchTool = (context: ToolContext): PolicyAwareTool<ty
 const HISTORY_DESCRIPTION = `\
 ### Conversation History
 
-When a rolling context window is active, only the most recent messages are kept live. Use \`fetch_full_history\` to pull older messages from this conversation on demand — nothing is lost.`;
+When a rolling context window is active, only the most recent messages are kept live. Use \`fetch_full_history\` to pull older messages from this conversation on demand — nothing is lost. Default offset 0 returns the most recent store tail (often already in context); set offset ≈ \`rolling_window_messages\` (default 40) to reach scrolled-out turns.`;
 
 export const createHistoryToolset = (context: ToolContext): Toolset => ({
   id: 'history',

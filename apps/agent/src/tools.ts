@@ -67,7 +67,7 @@ export const createBuiltInToolsets = (
   if (context.sessionStore) {
     toolsets.push(createSessionToolset(context));
   }
-  if (context.messageStore && context.sessionId) {
+  if (context.messageStore && context.storeScope && context.sessionId) {
     toolsets.push(createHistoryToolset(context));
   }
   if (context.scheduleStore) {
