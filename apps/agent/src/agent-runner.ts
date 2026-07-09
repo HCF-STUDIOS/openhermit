@@ -88,6 +88,7 @@ import {
   withApproval,
 } from './tools.js';
 import {
+  applyRollingWindow,
   compactContextIfNeeded,
   estimateAgentMessagesTokens,
   estimateFixedOverheadTokens,
@@ -2780,6 +2781,18 @@ export class AgentRunner implements SessionRuntime {
     const model = resolveModel(config);
     const truncatedMessages = truncateToolResults(cleanedMessages, model.contextWindow);
 
+    // Opt-in rolling context window (default-off). When enabled, cap the
+    // per-turn context handed to the model to the last N messages (tool-pair
+    // safe). This is REQUEST-ONLY: `windowedMessages` feeds this generation
+    // only and is never written back into live `state.messages`, so with the
+    // flag absent the behaviour below is byte-identical to today (same
+    // reference flows through). Older turns stay fetchable via
+    // `fetch_full_history`.
+    const rolling = config.context?.rolling_window_enabled === true;
+    const windowedMessages = rolling
+      ? applyRollingWindow(truncatedMessages, config.context?.rolling_window_messages ?? 40)
+      : truncatedMessages;
+
     // Only offer LLM compaction when we have a dedicated API key.
     // When streamFn is provided (tests, proxied setups), the shared stream
     // should not be consumed by an internal compaction turn.
@@ -2797,7 +2810,7 @@ export class AgentRunner implements SessionRuntime {
       tools: agentState?.tools,
     });
 
-    const finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, truncatedMessages, {
+    const finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
       store: this.store,
       scope: this.scope,
       options: {
@@ -2829,8 +2842,12 @@ export class AgentRunner implements SessionRuntime {
     //   freshly prepended on every generation and would otherwise stack up.
     // - Mutate in place to preserve the array reference pi-ai holds, so the
     //   in-flight generation's appends land on the compacted list.
-    const didCompact = finalMessages.length !== contextBlocks.length + truncatedMessages.length;
-    if (isMainSessionAgent && didCompact) {
+    const didCompact = finalMessages.length !== contextBlocks.length + windowedMessages.length;
+    // The rolling window is request-only: when it is active we never persist
+    // the truncated view back into live state (that would drop older turns
+    // the agent can still pull via `fetch_full_history`). With the flag off
+    // this guard is a no-op and the write-back path is unchanged.
+    if (isMainSessionAgent && didCompact && !rolling) {
       const liveState = this.sessions.get(sessionId)?.agent.state.messages;
       if (liveState) {
         const core = finalMessages.slice(contextBlocks.length);
