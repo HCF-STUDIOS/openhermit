@@ -236,6 +236,77 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
 });
 
+test('stale-session fallback clears subscriptionCursors and lastEventIds for the abandoned id', async () => {
+  // openSessionWithFreshFallback's freshSessionId callback must match
+  // handleNew cleanup: drop cursor maps so an abandoned id cannot write
+  // back subscriptionCursors on a late onCursorAdvance, and so memory
+  // does not grow with every recovered-stale session.
+  const localTelegramApi = {
+    sendChatAction: async () => true,
+    sendMessage: async () => ({ message_id: 1 }),
+  } as unknown as TelegramApi;
+  const bridge = new TelegramBridge(localTelegramApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+
+  const staleId = 'stale-sess';
+  (bridge as unknown as { lastEventIds: Map<string, number> }).lastEventIds.set(staleId, 42);
+  (bridge as unknown as { subscriptionCursors: Map<string, number> }).subscriptionCursors.set(staleId, 7);
+  const oldAbortController = new AbortController();
+  let aborted = false;
+  oldAbortController.signal.addEventListener('abort', () => { aborted = true; });
+  (bridge as unknown as { subscriptions: Map<string, AbortController> }).subscriptions.set(staleId, oldAbortController);
+  (bridge as unknown as { chatSessions: Map<number, string> }).chatSessions.set(99, staleId);
+
+  // Stub ensureSession to 404 once on the stale id, then succeed on the fresh id.
+  const state = bridge as unknown as {
+    ensureSession: (id: string, message: unknown, isGroup: boolean) => Promise<void>;
+    sendToAgent: (
+      chatId: number,
+      sessionId: string,
+      text: string,
+      message: unknown,
+      isGroup: boolean,
+    ) => Promise<void>;
+    client: { postMessage: (...args: unknown[]) => Promise<unknown> };
+  };
+  let ensureCalls = 0;
+  state.ensureSession = async (id: string) => {
+    ensureCalls += 1;
+    if (ensureCalls === 1 && id === staleId) {
+      throw new Error('HTTP 404: Session not found');
+    }
+  };
+  // Avoid network after open succeeds: pretend the agent did not trigger a turn.
+  state.client.postMessage = async () => ({ triggered: false });
+
+  await state.sendToAgent(
+    99,
+    staleId,
+    'hi',
+    { chat: { id: 99 }, from: { id: 1, first_name: 't' }, message_id: 1, date: 0, text: 'hi' },
+    false,
+  );
+
+  assert.equal(aborted, true, 'stale subscription must be aborted');
+  assert.equal(
+    (bridge as unknown as { subscriptions: Map<string, AbortController> }).subscriptions.has(staleId),
+    false,
+  );
+  assert.equal(
+    (bridge as unknown as { subscriptionCursors: Map<string, number> }).subscriptionCursors.has(staleId),
+    false,
+    'subscriptionCursors entry for abandoned id must be cleared',
+  );
+  assert.equal(
+    (bridge as unknown as { lastEventIds: Map<string, number> }).lastEventIds.has(staleId),
+    false,
+    'lastEventIds entry for abandoned id must be cleared',
+  );
+  assert.notEqual(
+    (bridge as unknown as { chatSessions: Map<number, string> }).chatSessions.get(99),
+    staleId,
+  );
+});
+
 test('/new (handleNew) aborts and removes the old session\'s persistent subscription, not just its cursor', async () => {
   // A dedicated fake API not the shared module-level one. Stubbing
   // sendMessage here cannot affect other tests that rely on it being absent.
