@@ -1029,8 +1029,8 @@ test('applyRollingWindow never orphans a toolResult at the boundary', () => {
   // N=4 → raw cut at index 2, which is a bare toolResult preceded by the
   // assistant toolCall; boundary must move back to include the toolCall.
   const result = applyRollingWindow(messages, 4);
-  assert.notEqual(result[0].role, 'toolResult');
-  assert.equal(result[0].role, 'assistant');
+  assert.notEqual(result[0]!.role, 'toolResult');
+  assert.equal(result[0]!.role, 'assistant');
   assert.deepEqual(result, messages.slice(1));
 });
 
