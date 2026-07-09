@@ -270,6 +270,42 @@ test('does not leak an abort listener per reconnect once the retry timer wins', 
   );
 });
 
+test('onEnding fires when idle closes, before the subscription promise settles', async () => {
+  // Bridges gate reopens on a map entry held until teardown finishes. If
+  // that entry is only cleared in a finally after cancel settles, a
+  // concurrent start no-ops during the window. onEnding must fire as soon
+  // as idle decides to end, while the promise is still pending.
+  let onEndingCalls = 0;
+  let promiseSettled = false;
+  let onEndingWhilePending = false;
+
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await withFetch(
+      async () => new Response(makeTimedStream([]), { status: 200 }),
+      async () => {
+        const done = startPersistentSubscription({
+          eventsUrl: 'https://example/events',
+          onEvent: () => {},
+          onEnding: () => {
+            onEndingCalls += 1;
+            onEndingWhilePending = !promiseSettled;
+          },
+          idleTimeoutMs: 40,
+          reconnectDelayMs: 10_000,
+        });
+        await done;
+        promiseSettled = true;
+      },
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
+
+  assert.equal(onEndingCalls, 1, 'onEnding should fire exactly once on idle close');
+  assert.equal(onEndingWhilePending, true, 'onEnding must run before the promise settles');
+});
+
 test('a frame within idleTimeoutMs resets the idle timer so an active stream is not evicted', async () => {
   let calls = 0;
   await withFetch(

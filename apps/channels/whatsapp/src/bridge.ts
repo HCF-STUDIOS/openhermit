@@ -170,7 +170,9 @@ export class WhatsAppBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event),
       () => {
-        // Stop the stale subscription so it doesn't poll the dead session until idle timeout.
+        // Match handleNewSession: drop cursor/state and stop polling the abandoned session.
+        this.lastEventIds.delete(sessionId);
+        this.subscriptionCursors.delete(sessionId);
         this.subscriptions.get(sessionId)?.abort();
         this.subscriptions.delete(sessionId);
         const normalized = normalizeJid(event.chatJid);
@@ -398,6 +400,14 @@ export class WhatsAppBridge implements ChannelOutbound {
 
     const abortController = new AbortController();
     this.subscriptions.set(sessionId, abortController);
+    // Drop map entry as soon as idle decides to end (onEnding) and again in
+    // finally for abort/other ends. Identity guard so a concurrent reopen
+    // that already replaced this controller is never evicted.
+    const release = (): void => {
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
+    };
 
     void startPersistentSubscription({
       eventsUrl: this.client.buildEventsUrl(sessionId),
@@ -405,6 +415,7 @@ export class WhatsAppBridge implements ChannelOutbound {
       abortSignal: abortController.signal,
       lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
       onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
+      onEnding: release,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
         if (frame.event !== 'attachment') return;
@@ -421,13 +432,7 @@ export class WhatsAppBridge implements ChannelOutbound {
       },
     }).catch((err) => {
       this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
-    }).finally(() => {
-      // Subscription ended; drop its entry so the next message reopens lazily.
-      // Guard by identity so we never evict a fresh subscription that replaced it.
-      if (this.subscriptions.get(sessionId) === abortController) {
-        this.subscriptions.delete(sessionId);
-      }
-    });
+    }).finally(release);
   }
 
   /** Number of live persistent subscriptions. Exposed for tests. */

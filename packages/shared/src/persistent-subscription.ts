@@ -60,6 +60,13 @@ export interface PersistentSubscriptionOptions {
    * call resumes via `lastEventId` instead of replaying the backlog.
    */
   onCursorAdvance?: (cursor: number) => void;
+  /**
+   * Fires when idle timeout decides to end the subscription, before the
+   * reader cancel and promise settle. Callers that gate reopens on a map
+   * entry (channel bridges) should drop that entry here so a concurrent
+   * start is not no-op'd during teardown.
+   */
+  onEnding?: () => void;
   abortSignal?: AbortSignal;
   /** Delay before reconnecting after a dropped stream. Default 2000ms. */
   reconnectDelayMs?: number;
@@ -101,7 +108,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
 export async function startPersistentSubscription(
   options: PersistentSubscriptionOptions,
 ): Promise<void> {
-  const { eventsUrl, onEvent, abortSignal, headers, onCursorAdvance } = options;
+  const { eventsUrl, onEvent, abortSignal, headers, onCursorAdvance, onEnding } = options;
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   let cursor = options.lastEventId ?? 0;
@@ -139,6 +146,13 @@ export async function startPersistentSubscription(
         clearIdle();
         idleTimer = setTimeout(() => {
           idleClosed = true;
+          // Drop caller bookkeeping before async cancel so a concurrent
+          // start is not blocked while teardown still runs.
+          try {
+            onEnding?.();
+          } catch {
+            /* caller errors must not stall teardown */
+          }
           void reader.cancel().catch(() => undefined);
         }, idleTimeoutMs);
         // Don't let an idle subscription hold the event loop open.
