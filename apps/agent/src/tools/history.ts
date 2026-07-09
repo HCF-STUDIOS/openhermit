@@ -46,7 +46,7 @@ export const createHistoryFetchTool = (context: ToolContext): PolicyAwareTool<ty
     }
 
     const formatted = messages.map((m) => {
-      const tag = m.role === 'user' ? '[USER]' : m.role === 'assistant' ? '[ASSISTANT]' : `[${m.role.toUpperCase()}]`;
+      const tag = `[${m.role.toUpperCase()}]`;
       const preview = m.content.length > 500 ? `${m.content.slice(0, 500)}…` : m.content;
       return `${m.ts} ${tag} ${preview}`;
     }).join('\n\n');

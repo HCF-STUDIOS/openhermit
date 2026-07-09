@@ -2793,38 +2793,50 @@ export class AgentRunner implements SessionRuntime {
       ? applyRollingWindow(truncatedMessages, config.context?.rolling_window_messages ?? 40)
       : truncatedMessages;
 
-    // Only offer LLM compaction when we have a dedicated API key.
-    // When streamFn is provided (tests, proxied setups), the shared stream
-    // should not be consumed by an internal compaction turn.
-    const canRunLlmCompaction =
-      !this.options.streamFn && Boolean(this.resolveApiKey(config.model.provider));
+    // When the rolling window is active it already bounds the per-turn context,
+    // so we must NOT run compaction on the truncated view: compaction can
+    // compute AND PERSIST a summary derived from only the last-N messages,
+    // corrupting the stored summary with a partial history. Skip it entirely
+    // and send the windowed messages directly. Older turns stay fetchable via
+    // `fetch_full_history`. With the flag off this branch is not taken and the
+    // compaction path below is byte-identical to before.
+    let finalMessages: AgentMessage[];
+    if (rolling) {
+      finalMessages = [...contextBlocks, ...windowedMessages];
+    } else {
+      // Only offer LLM compaction when we have a dedicated API key.
+      // When streamFn is provided (tests, proxied setups), the shared stream
+      // should not be consumed by an internal compaction turn.
+      const canRunLlmCompaction =
+        !this.options.streamFn && Boolean(this.resolveApiKey(config.model.provider));
 
-    // System prompt + tool catalog also live in every request payload.
-    // Surface them to compaction so its budget check sees the real wire
-    // size, not just the messages portion. Read from the active session's
-    // agent state when available — that's the same `systemPrompt` /
-    // `tools` snapshot the LLM call will use.
-    const agentState = this.sessions.get(sessionId)?.agent.state;
-    const overheadTokens = estimateFixedOverheadTokens({
-      systemPrompt: agentState?.systemPrompt,
-      tools: agentState?.tools,
-    });
+      // System prompt + tool catalog also live in every request payload.
+      // Surface them to compaction so its budget check sees the real wire
+      // size, not just the messages portion. Read from the active session's
+      // agent state when available — that's the same `systemPrompt` /
+      // `tools` snapshot the LLM call will use.
+      const agentState = this.sessions.get(sessionId)?.agent.state;
+      const overheadTokens = estimateFixedOverheadTokens({
+        systemPrompt: agentState?.systemPrompt,
+        tools: agentState?.tools,
+      });
 
-    const finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
-      store: this.store,
-      scope: this.scope,
-      options: {
-        contextCompactionMaxTokens: this.options.contextCompactionMaxTokens,
-        contextCompactionRecentMessageCount: this.options.contextCompactionRecentMessageCount,
-        contextCompactionSummaryMaxChars: this.options.contextCompactionSummaryMaxChars,
-        contextCompactionMaxMessages: this.options.contextCompactionMaxMessages,
-        fixedOverheadTokens: overheadTokens,
-      },
-      createCompactionAgent: canRunLlmCompaction
-        ? (sid) => this.createCompactionAgent(sid, config)
-        : undefined,
-      logRuntime: (msg) => this.logRuntime(msg),
-    });
+      finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
+        store: this.store,
+        scope: this.scope,
+        options: {
+          contextCompactionMaxTokens: this.options.contextCompactionMaxTokens,
+          contextCompactionRecentMessageCount: this.options.contextCompactionRecentMessageCount,
+          contextCompactionSummaryMaxChars: this.options.contextCompactionSummaryMaxChars,
+          contextCompactionMaxMessages: this.options.contextCompactionMaxMessages,
+          fixedOverheadTokens: overheadTokens,
+        },
+        createCompactionAgent: canRunLlmCompaction
+          ? (sid) => this.createCompactionAgent(sid, config)
+          : undefined,
+        logRuntime: (msg) => this.logRuntime(msg),
+      });
+    }
 
     // Persist a compaction back into the session's live state. The hook's
     // return value only feeds THIS request — without a write-back the
