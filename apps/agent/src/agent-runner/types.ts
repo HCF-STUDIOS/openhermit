@@ -5,7 +5,7 @@ import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, Internal
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
-import type { SpeakerTagStreamState } from './message-utils.js';
+import type { ReasoningTagStreamState, SpeakerTagStreamState } from './message-utils.js';
 
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
@@ -22,6 +22,8 @@ export interface RunnerSession extends SessionDescriptor {
   // `@Name` mentions, so a concurrent later message cannot change it mid-reply.
   turnGroupParticipants?: MessageParticipant[] | undefined;
   speakerTagStream?: SpeakerTagStreamState | undefined;
+  // Suppresses inline <think>/<thinking>/<reasoning> bodies on the live stream.
+  reasoningTagStream?: ReasoningTagStreamState | undefined;
   /** Inbound messageId of the user message that triggered the in-flight
    *  turn. Stamped onto every outbound event for that turn as
    *  `correlationId`, so callers can group events back to the originating

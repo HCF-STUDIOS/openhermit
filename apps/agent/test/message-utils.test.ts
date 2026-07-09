@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
+import type { AssistantMessage } from '@mariozechner/pi-ai';
 
-import { stripReasoningTags, extractAssistantText } from '../src/agent-runner/message-utils.js';
+import {
+  stripReasoningTags,
+  extractAssistantText,
+  newReasoningTagStream,
+  pushReasoningTagDelta,
+  flushReasoningTagStream,
+} from '../src/agent-runner/message-utils.js';
 
-const assistantMsg = (text: string): AgentMessage =>
-  ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1 }) as unknown as AgentMessage;
+const assistantMsg = (text: string): AssistantMessage =>
+  ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1 }) as unknown as AssistantMessage;
+
+const runReasoningStream = (chunks: string[]): string => {
+  const state = newReasoningTagStream();
+  let out = '';
+  for (const chunk of chunks) out += pushReasoningTagDelta(state, chunk);
+  out += flushReasoningTagStream(state);
+  return out;
+};
 
 test('stripReasoningTags removes a leading think block, keeps the answer', () => {
   assert.equal(
@@ -29,7 +43,74 @@ test('stripReasoningTags leaves a pure-reasoning text unchanged (no blanking)', 
   assert.equal(stripReasoningTags(only), only);
 });
 
+test('stripReasoningTags strips multiline think blocks', () => {
+  assert.equal(
+    stripReasoningTags('<think>\nline1\nline2\n</think>\n\nAnswer'),
+    'Answer',
+  );
+});
+
+test('stripReasoningTags leaves an unclosed tag as-is', () => {
+  const open = '<think>partial answer continues';
+  assert.equal(stripReasoningTags(open), open);
+});
+
 test('extractAssistantText strips inline reasoning from a text block', () => {
   const msg = assistantMsg('<think>plan</think>Final answer.');
   assert.equal(extractAssistantText(msg), 'Final answer.');
+});
+
+test('extractAssistantText strips across multiple text parts', () => {
+  const msg = {
+    role: 'assistant',
+    content: [
+      { type: 'text', text: '<think>step1</think>Part A' },
+      { type: 'text', text: '<thinking>step2</thinking>Part B' },
+    ],
+    timestamp: 1,
+  } as unknown as AssistantMessage;
+  assert.equal(extractAssistantText(msg), 'Part A\n\nPart B');
+});
+
+describe('reasoning tag stream', () => {
+  test('suppresses a think block streamed across chunks, keeps the answer', () => {
+    assert.equal(
+      runReasoningStream(['<think>', 'let me reason', '</think>', 'Hello there']),
+      'Hello there',
+    );
+  });
+
+  test('buffers a partial open tag until it resolves', () => {
+    const state = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(state, '<thi'), '');
+    assert.equal(pushReasoningTagDelta(state, 'nk>secret'), '');
+    assert.equal(pushReasoningTagDelta(state, '</think>Visible'), 'Visible');
+    assert.equal(flushReasoningTagStream(state), '');
+  });
+
+  test('passes non-tag text through immediately', () => {
+    const state = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(state, 'Fair point.'), 'Fair point.');
+    assert.equal(pushReasoningTagDelta(state, ' Nice.'), ' Nice.');
+  });
+
+  test('emits a non-reasoning angle bracket without stalling', () => {
+    assert.equal(runReasoningStream(['a < b and <div>ok</div>']), 'a < b and <div>ok</div>');
+  });
+
+  test('flush of an unclosed tag surfaces the remainder (no blanking)', () => {
+    const state = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(state, '<think>still going'), '');
+    assert.equal(flushReasoningTagStream(state), '<think>still going');
+  });
+
+  test('handles thinking and reasoning variants mid-stream', () => {
+    assert.equal(runReasoningStream(['A', '<thinking>hmm</thinking>', 'B']), 'AB');
+    assert.equal(runReasoningStream(['<reasoning>x</reasoning>', 'done']), 'done');
+  });
+
+  test('char-by-char fragmentation still strips a full block', () => {
+    const full = '<think>plan</think>Final.';
+    assert.equal(runReasoningStream([...full]), 'Final.');
+  });
 });

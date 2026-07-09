@@ -64,6 +64,9 @@ import {
   newSpeakerTagStream,
   pushSpeakerTagDelta,
   flushSpeakerTagStream,
+  newReasoningTagStream,
+  pushReasoningTagDelta,
+  flushReasoningTagStream,
   serializeDetails,
 } from './agent-runner/message-utils.js';
 import {
@@ -1219,6 +1222,7 @@ export class AgentRunner implements SessionRuntime {
         session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
+        session.reasoningTagStream = undefined;
         session.consecutiveToolFailures = 0;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
@@ -2980,19 +2984,24 @@ export class AgentRunner implements SessionRuntime {
           });
         }
 
-        // Same strip on the live stream as the final message; no-op until names exist.
+        // Live-stream strips mirror the final extractAssistantText pass so
+        // reasoning tags never flash (or stick, on clients that prefer deltas).
         const isGroupStream = session.spec.source.type === 'group';
-        if (event.assistantMessageEvent.type === 'text_start' && isGroupStream) {
-          session.speakerTagStream = newSpeakerTagStream();
+        if (event.assistantMessageEvent.type === 'text_start') {
+          session.reasoningTagStream = newReasoningTagStream();
+          if (isGroupStream) {
+            session.speakerTagStream = newSpeakerTagStream();
+          }
         }
 
         if (event.assistantMessageEvent.type === 'text_delta') {
           const rawDelta = event.assistantMessageEvent.delta;
-          let outText = rawDelta;
+          // In case the provider skipped text_start.
+          session.reasoningTagStream ??= newReasoningTagStream();
+          let outText = pushReasoningTagDelta(session.reasoningTagStream, rawDelta);
           if (isGroupStream) {
-            // In case the provider skipped text_start.
             session.speakerTagStream ??= newSpeakerTagStream();
-            outText = pushSpeakerTagDelta(session.speakerTagStream, rawDelta, session.groupSenderNames ?? []);
+            outText = pushSpeakerTagDelta(session.speakerTagStream, outText, session.groupSenderNames ?? []);
           }
           if (outText.length > 0) {
             void this.events.publish({
@@ -3004,8 +3013,20 @@ export class AgentRunner implements SessionRuntime {
           }
         }
 
-        if (event.assistantMessageEvent.type === 'text_end' && session.speakerTagStream) {
-          const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+        if (event.assistantMessageEvent.type === 'text_end') {
+          let tail = '';
+          if (session.reasoningTagStream) {
+            tail += flushReasoningTagStream(session.reasoningTagStream);
+            session.reasoningTagStream = undefined;
+          }
+          if (session.speakerTagStream) {
+            // Feed any reasoning flush into the speaker-tag guard first.
+            if (tail.length > 0) {
+              tail = pushSpeakerTagDelta(session.speakerTagStream, tail, session.groupSenderNames ?? []);
+            }
+            tail += flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+            session.speakerTagStream = undefined;
+          }
           if (tail.length > 0) {
             void this.events.publish({
               type: 'text_delta',
@@ -3014,7 +3035,6 @@ export class AgentRunner implements SessionRuntime {
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
             });
           }
-          session.speakerTagStream = undefined;
         }
 
         if (event.assistantMessageEvent.type === 'error') {
@@ -3029,8 +3049,19 @@ export class AgentRunner implements SessionRuntime {
 
       case 'message_end': {
         // Backstop in case the provider emitted no text_end.
-        if (session.speakerTagStream) {
-          const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+        {
+          let tail = '';
+          if (session.reasoningTagStream) {
+            tail += flushReasoningTagStream(session.reasoningTagStream);
+            session.reasoningTagStream = undefined;
+          }
+          if (session.speakerTagStream) {
+            if (tail.length > 0) {
+              tail = pushSpeakerTagDelta(session.speakerTagStream, tail, session.groupSenderNames ?? []);
+            }
+            tail += flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
+            session.speakerTagStream = undefined;
+          }
           if (tail.length > 0) {
             void this.events.publish({
               type: 'text_delta',
@@ -3039,7 +3070,6 @@ export class AgentRunner implements SessionRuntime {
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
             });
           }
-          session.speakerTagStream = undefined;
         }
 
         if (!isAssistantMessage(event.message)) {
