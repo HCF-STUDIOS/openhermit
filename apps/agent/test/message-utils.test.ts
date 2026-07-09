@@ -38,14 +38,27 @@ test('stripReasoningTags is a no-op when there are no tags', () => {
   assert.equal(stripReasoningTags('just a normal reply'), 'just a normal reply');
 });
 
-test('stripReasoningTags leaves a pure-reasoning text unchanged (no blanking)', () => {
-  const only = '<think>only reasoning, no answer</think>';
-  assert.equal(stripReasoningTags(only), only);
+test('stripReasoningTags returns pure-reasoning interiors without wrappers', () => {
+  assert.equal(
+    stripReasoningTags('<think>only reasoning, no answer</think>'),
+    'only reasoning, no answer',
+  );
+  assert.equal(
+    stripReasoningTags('<thinking>a</thinking><reasoning>b</reasoning>'),
+    'a\n\nb',
+  );
 });
 
 test('stripReasoningTags strips multiline think blocks', () => {
   assert.equal(
     stripReasoningTags('<think>\nline1\nline2\n</think>\n\nAnswer'),
+    'Answer',
+  );
+});
+
+test('stripReasoningTags peels nested same-name tags without residual close markup', () => {
+  assert.equal(
+    stripReasoningTags('<think>outer <think>inner</think> still</think>Answer'),
     'Answer',
   );
 });

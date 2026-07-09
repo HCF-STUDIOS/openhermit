@@ -49,6 +49,11 @@ export const isEmptyAssistantTurn = (message: AgentMessage): boolean => {
 export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage[] =>
   messages.filter((message) => !isEmptyAssistantTurn(message));
 
+// Innermost pair only: body may not contain another reasoning open tag. Used
+// iteratively so nested same-name tags do not leave residual close markup.
+const REASONING_INNERMOST_RE =
+  /<(think|thinking|reasoning)>((?:(?!<(?:think|thinking|reasoning)>)[\s\S])*?)<\/\1>/gi;
+
 /**
  * Remove inline reasoning tags a provider may emit inside a normal text block
  * (`<think>…</think>`, `<thinking>…</thinking>`, `<reasoning>…</reasoning>`),
@@ -56,14 +61,27 @@ export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage
  * `thinking` blocks are handled separately and are unaffected. Only paired tags
  * are stripped; an unclosed tag is left as-is to avoid blanking a truncated
  * real reply. If stripping empties the text entirely (a pathological
- * reasoning-only text block), the original is returned unchanged.
+ * reasoning-only text block), return the tag interiors without wrappers so the
+ * reply is not blanked and raw markup does not leak.
  */
 export const stripReasoningTags = (text: string): string => {
-  const stripped = text
-    .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return stripped.length > 0 ? stripped : text.trim();
+  const interiors: string[] = [];
+  let working = text;
+  // Peel innermost pairs first so nested same-name tags collapse cleanly.
+  for (;;) {
+    let progressed = false;
+    working = working.replace(REASONING_INNERMOST_RE, (_match, _name, body: string) => {
+      progressed = true;
+      const inner = body.trim();
+      if (inner.length > 0) interiors.push(inner);
+      return '';
+    });
+    if (!progressed) break;
+  }
+  const stripped = working.replace(/\n{3,}/g, '\n\n').trim();
+  if (stripped.length > 0) return stripped;
+  if (interiors.length > 0) return interiors.join('\n\n');
+  return text.trim();
 };
 
 // Live-stream counterpart to stripReasoningTags. Providers often stream the
