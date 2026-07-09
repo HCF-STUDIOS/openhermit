@@ -180,7 +180,7 @@ and its per-agent secrets. All `config` subcommands require
 hermit config show --agent main
 hermit config get model.model --agent main
 hermit config set model.provider openrouter --agent main
-hermit config set model.model google/gemini-3-flash-preview --agent main
+hermit config set model.model google/gemini-3.5-flash --agent main
 ```
 
 ### `hermit config secrets`
@@ -419,7 +419,7 @@ hermit logs --json | jq 'select(.level=="error")'
 | Create an agent | `hermit agents create main` (active by default; hydrates on first request) |
 | Talk to it | `hermit chat --agent main` |
 | Set a model API key | `hermit config secrets set OPENROUTER_API_KEY ... --agent main` |
-| Switch model | `hermit config set model.model google/gemini-3-flash-preview --agent main` |
+| Switch model | `hermit config set model.model google/gemini-3.5-flash --agent main` |
 | Add a rule everywhere | `hermit instructions append rules "..." --all` |
 | Enable a skill on every agent | `hermit skills enable my-skill --all` |
 | Schedule a weekly task | `hermit schedules create --type cron --cron '0 17 * * FRI' --prompt "..." --agent main` |
