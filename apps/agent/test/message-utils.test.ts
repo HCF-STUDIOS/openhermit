@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import type { AgentMessage } from '@mariozechner/pi-agent-core';
+
 import { stripReasoningTags, extractAssistantText } from '../src/agent-runner/message-utils.js';
+
+const assistantMsg = (text: string): AgentMessage =>
+  ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1 }) as unknown as AgentMessage;
 
 test('stripReasoningTags removes a leading think block, keeps the answer', () => {
   assert.equal(
@@ -25,9 +30,6 @@ test('stripReasoningTags leaves a pure-reasoning text unchanged (no blanking)', 
 });
 
 test('extractAssistantText strips inline reasoning from a text block', () => {
-  const msg = {
-    role: 'assistant',
-    content: [{ type: 'text', text: '<think>plan</think>Final answer.' }],
-  } as any;
+  const msg = assistantMsg('<think>plan</think>Final answer.');
   assert.equal(extractAssistantText(msg), 'Final answer.');
 });
