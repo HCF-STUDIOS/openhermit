@@ -2940,7 +2940,8 @@ export class AgentRunner implements SessionRuntime {
 
     const timeoutMs = twoStep.reply_timeout_ms ?? 8000;
     let agent: Agent | undefined;
-    const timer = setTimeout(() => agent?.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; agent?.abort(); }, timeoutMs);
     let replyText: string | null = null;
     let replyTokens: number | undefined;
     try {
@@ -2956,6 +2957,9 @@ export class AgentRunner implements SessionRuntime {
         ].join('\n'),
         ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
       });
+      // The timeout may have fired during construction, before `agent` existed
+      // for the timer to abort; honor it now.
+      if (timedOut) agent.abort();
       await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
       await agent.waitForIdle();
       const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
@@ -3459,6 +3463,15 @@ export class AgentRunner implements SessionRuntime {
             type: 'agent_end',
             sessionId: session.spec.sessionId,
           });
+
+          // For two-step turns finalText is only settled here (after the reply
+          // pass overwrote the draft), so trace inside the pass to record the
+          // reply the user actually received, not the draft.
+          if (isTwoStepTurn && this.options.langfuse && session.langfuseTurnContext) {
+            await endTurnTrace(this.options.langfuse, session.langfuseTurnContext, {
+              ...(finalText ? { text: finalText } : {}),
+            });
+          }
         })();
 
         if (isTwoStepTurn) {
@@ -3472,7 +3485,7 @@ export class AgentRunner implements SessionRuntime {
           void replyPass;
         }
 
-        if (this.options.langfuse && session.langfuseTurnContext) {
+        if (!isTwoStepTurn && this.options.langfuse && session.langfuseTurnContext) {
           void endTurnTrace(this.options.langfuse, session.langfuseTurnContext, {
             ...(finalText ? { text: finalText } : {}),
           });

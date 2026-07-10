@@ -68,9 +68,8 @@ export const stripReasoningTags = (text: string): string => {
 
 /**
  * The reply pass must never silently drop a code block the draft had. Counts
- * fence markers rather than parsing markdown, since an odd count in either
- * string already signals a truncated/malformed fence the rewrite shouldn't
- * be trusted to have preserved faithfully.
+ * ``` fence markers rather than parsing markdown, and rejects any rewrite with
+ * fewer fences than the draft (a dropped or unclosed code block).
  */
 export const hasCodeFenceParity = (draft: string, rewrite: string): boolean => {
   const fences = (s: string) => (s.match(/```/g) ?? []).length;
