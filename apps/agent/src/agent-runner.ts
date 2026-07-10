@@ -1216,6 +1216,13 @@ export class AgentRunner implements SessionRuntime {
 
     const run = async (): Promise<void> => {
       try {
+        if (session.pendingReplyPass) {
+          // Two-step turns publish text_final from a queue-chained but
+          // un-awaited-by-run() reply pass; wait for it here so this turn's
+          // events can never interleave ahead of the prior turn's final.
+          await session.pendingReplyPass.catch(() => undefined);
+          delete session.pendingReplyPass;
+        }
         await this.refreshAgentConfiguration(session);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
@@ -3359,7 +3366,7 @@ export class AgentRunner implements SessionRuntime {
 
         const turnCorrelationId = session.currentTurnCorrelationId;
         delete session.currentTurnCorrelationId;
-        void (async () => {
+        const replyPass = (async () => {
           if (isTwoStepTurn && finalText && finalText.trim() !== '<NO_REPLY>') {
             const rewrite = await this.generateStyledReply(session, draftText!);
             finalText = this.acceptRewrite(draftText!, rewrite) ? (rewrite as string) : draftText;
@@ -3421,6 +3428,17 @@ export class AgentRunner implements SessionRuntime {
             sessionId: session.spec.sessionId,
           });
         })();
+
+        if (isTwoStepTurn) {
+          // The next queued turn's run() awaits this before starting, so
+          // turn ordering holds even though the pass itself is not awaited
+          // here. Also chain it through session.sideEffects so teardown's
+          // `await session.sideEffects` never orphans it fire-and-forget.
+          session.pendingReplyPass = replyPass;
+          void this.queueSideEffect(session, () => replyPass);
+        } else {
+          void replyPass;
+        }
 
         if (this.options.langfuse && session.langfuseTurnContext) {
           void endTurnTrace(this.options.langfuse, session.langfuseTurnContext, {

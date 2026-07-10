@@ -87,13 +87,17 @@ const thinkingOnlyTurn = (thinking: string) => () => createThinkingOnlyResponseS
  * per-turn scripted streamFn, so a "turn" is just `postAndIdle(text)`.
  * Reused by every two-step task's tests.
  */
+type Responder = () =>
+  | ReturnType<typeof createAssistantMessageEventStream>
+  | Promise<ReturnType<typeof createAssistantMessageEventStream>>;
+
 const createTwoStepFixture = async (t: TestContext) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
   });
   await security.load();
 
-  const responders: Array<() => ReturnType<typeof createAssistantMessageEventStream>> = [];
+  const responders: Responder[] = [];
   let callIndex = 0;
   const streamFn: StreamFn = async () => {
     const responder = responders[callIndex];
@@ -126,35 +130,88 @@ const createTwoStepFixture = async (t: TestContext) => {
     },
     async postAndIdle(
       text: string,
-      options?: { responders?: Array<() => ReturnType<typeof createAssistantMessageEventStream>> },
+      options?: { responders?: Responder[] },
     ): Promise<void> {
       messageCounter += 1;
+      const ordinal = messageCounter;
       if (options?.responders?.length) {
         responders.push(...options.responders);
       } else {
-        responders.push(() => createTextResponseStream(`response ${messageCounter}`));
+        responders.push(() => createTextResponseStream(`response ${ordinal}`));
       }
-      await runner.postMessage(sessionId, { messageId: `msg-${messageCounter}`, text });
+      await runner.postMessage(sessionId, { messageId: `msg-${ordinal}`, text });
       await runner.waitForSessionIdle(sessionId);
-      // The agent_end handler's text_final publish runs in a detached,
-      // un-awaited IIFE (queue chaining lands in a later task), and now
-      // does real work (generateStyledReply) when two-step is active, so
-      // waitForSessionIdle can return before it settles. Give it a few
-      // extra ticks so the backlog reflects the completed turn.
-      for (let i = 0; i < 5000; i += 1) {
+      // The agent_end handler's text_final publish runs in a detached IIFE
+      // (queue-chained via session.pendingReplyPass, not awaited by
+      // waitForSessionIdle) and does real work (generateStyledReply) when
+      // two-step is active, so waitForSessionIdle can return before it
+      // settles. Give it a few extra real time to let the backlog reflect
+      // the completed turn (time-bound, not iteration-bound -- iteration
+      // counts don't map to a fixed amount of wall-clock time under load).
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
         const agentEnds = runner.events
           .getBacklog(sessionId)
           .filter((entry) => entry.event.type === 'agent_end').length;
-        if (agentEnds >= messageCounter) break;
+        if (agentEnds >= ordinal) break;
         await new Promise((resolve) => setImmediate(resolve));
       }
+    },
+    /**
+     * Fire-and-continue variant of `postAndIdle`: queues the turn and
+     * resolves once that turn's own `agent_end` has landed in the backlog,
+     * without waiting for `session.queue`/`sideEffects` overall -- so two
+     * calls can be launched back to back to exercise queue-chaining/ordering
+     * across turns (see the queue-chaining tests).
+     */
+    async post(text: string, options?: { responders?: Responder[] }): Promise<void> {
+      messageCounter += 1;
+      const ordinal = messageCounter;
+      const messageId = `msg-${ordinal}`;
+      if (options?.responders?.length) {
+        responders.push(...options.responders);
+      } else {
+        responders.push(() => createTextResponseStream(`response ${ordinal}`));
+      }
+      await runner.postMessage(sessionId, { messageId, text });
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const agentEnds = runner.events
+          .getBacklog(sessionId)
+          .filter((entry) => entry.event.type === 'agent_end').length;
+        if (agentEnds >= ordinal) return;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      throw new Error(`timed out waiting for turn "${messageId}" to complete`);
     },
     backlog() {
       return runner.events.getBacklog(sessionId).map((entry) => entry.event);
     },
+    /** Number of streamFn calls made so far -- used to observe queue ordering directly. */
+    callCount(): number {
+      return callIndex;
+    },
     /** Scripts the next raw streamFn call — used to drive generateStyledReply directly. */
-    scriptReply(responder: () => ReturnType<typeof createAssistantMessageEventStream>): void {
+    scriptReply(responder: Responder): void {
       responders.push(responder);
+    },
+    /**
+     * A gated responder: the stream is only produced once `release()` is
+     * called, so it can hold a two-step reply pass open mid-flight to
+     * exercise queue-chaining/teardown ordering.
+     */
+    deferReply(replyText = 'gated reply'): { responder: Responder; release: () => void } {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return {
+        responder: async () => {
+          await gate;
+          return createTextResponseStream(replyText);
+        },
+        release,
+      };
     },
     /** Test-only accessor for the private reply-pass method (TS `private` is compile-time only). */
     generateStyledReplyForTest(session: RunnerSession, draftText: string): Promise<string | null> {
@@ -341,4 +398,111 @@ test('two-step: reply failure falls back to draft in text_final', async (t) => {
   const finals = fx.backlog().filter((e) => e.type === 'text_final');
   assert.equal(finals.length, 1);
   assert.equal((finals[0] as { text: string }).text, 'raw draft');
+});
+
+test('two-step: A text_final precedes any B event', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  const gate = fx.deferReply('A reply');
+
+  const a = fx.post('A message', { responders: [draftTurn('A draft'), gate.responder] });
+  // Wait for A's draft turn to finish and its reply pass to reach (and
+  // block on) the gated streamFn call -- exactly 2 calls made so far.
+  // Time-bound (not iteration-bound): the real DB round trips in
+  // postMessage/refreshAgentConfiguration take a variable amount of wall
+  // clock time under load.
+  const draftDeadline = Date.now() + 5000;
+  while (fx.callCount() < 2 && Date.now() < draftDeadline) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(fx.callCount(), 2, 'expected A draft + gated A reply call before B is posted');
+
+  const b = fx.post('B message', { responders: [draftTurn('B draft'), replyTurn('B reply')] });
+  // Give B's queued turn real wall-clock time to attempt running while A's
+  // reply pass is still gated open. Without chaining the next turn on
+  // session.pendingReplyPass, nothing stops B's draft from starting here,
+  // which would bump the call count to 3.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(fx.callCount(), 2, "B's draft must not start until A's reply pass settles");
+
+  gate.release();
+  await Promise.all([a, b]);
+
+  const backlog = fx.backlog();
+  const idxAFinal = backlog.findIndex(
+    (e) => e.type === 'text_final' && (e as { text: string }).text === 'A reply',
+  );
+  const idxBFirst = backlog.findIndex(
+    (e) => 'correlationId' in e && (e as { correlationId?: string }).correlationId === 'msg-2',
+  );
+  assert.notEqual(idxAFinal, -1);
+  assert.notEqual(idxBFirst, -1);
+  assert.ok(idxAFinal < idxBFirst, `expected A's text_final (${idxAFinal}) before B's first event (${idxBFirst})`);
+});
+
+test('two-step: reply pass is awaited at teardown, not orphaned', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+  const config = await security.readConfig();
+  await security.writeConfig({ ...config, experiments: { two_step: { enabled: true } } });
+
+  const responders: Responder[] = [];
+  let callIndex = 0;
+  const streamFn: StreamFn = async () => {
+    const responder = responders[callIndex];
+    callIndex += 1;
+    if (!responder) {
+      throw new Error(`Unexpected stream call #${callIndex}`);
+    }
+    return responder();
+  };
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  responders.push(
+    () => createTextResponseStream('teardown draft'),
+    async () => {
+      await gate;
+      return createTextResponseStream('teardown reply');
+    },
+  );
+
+  const runner = await AgentRunner.create({ workspace, security, streamFn });
+  const sessionId = `schedule:teardown-${randomBytes(4).toString('hex')}`;
+
+  const teardown = runner.runScheduledJob(
+    {
+      agentId: security.agentId,
+      scheduleId: `sched-${randomBytes(4).toString('hex')}`,
+      type: 'once',
+      status: 'active',
+      prompt: 'run once',
+      sessionMode: { kind: 'ephemeral' },
+      delivery: { kind: 'silent' },
+      policy: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      runCount: 0,
+      consecutiveErrors: 0,
+    },
+    sessionId,
+  );
+
+  // Release the gated reply responder before the teardown sequence
+  // (session.queue -> session.sideEffects -> status='inactive') reaches its
+  // sideEffects wait -- if the reply pass isn't chained into sideEffects,
+  // teardown proceeds without it and the styled reply never lands.
+  release();
+  await teardown;
+
+  const finals = runner.events
+    .getBacklog(sessionId)
+    .filter((entry) => entry.event.type === 'text_final')
+    .map((entry) => entry.event);
+  assert.equal(finals.length, 1);
+  assert.equal((finals[0] as { text: string }).text, 'teardown reply');
 });
