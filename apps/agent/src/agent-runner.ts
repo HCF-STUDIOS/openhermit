@@ -3336,6 +3336,12 @@ export class AgentRunner implements SessionRuntime {
         const turnCorrelationId = session.currentTurnCorrelationId;
         delete session.currentTurnCorrelationId;
         void (async () => {
+          if (session.twoStepActive && finalText && finalText.trim() !== '<NO_REPLY>') {
+            const draft = finalText;
+            const rewrite = await this.generateStyledReply(session, draft);
+            finalText = this.acceptRewrite(draft, rewrite) ? (rewrite as string) : draft;
+          }
+
           // For channel-bound sessions, run the channel.message.out@v1
           // transform so plugins can scrub/rewrite outbound text (e.g.
           // PII unmasking, brand-voice enforcement) before adapters

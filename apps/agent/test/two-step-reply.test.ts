@@ -56,6 +56,9 @@ const createTextResponseStream = (text: string) => {
 /** Scripts a plain no-tools draft turn for `postAndIdle`'s `responders` option. */
 const draftTurn = (text: string) => () => createTextResponseStream(text);
 
+/** Scripts the reply-pass turn (second scripted streamFn call) for `postAndIdle`'s `responders` option. */
+const replyTurn = (text: string) => () => createTextResponseStream(text);
+
 /**
  * Stream where the model emits only a thinking block and no text, mirroring
  * the DeepSeek R1 / kimi-k2.6 final-thinking-only shape that isFinalThinkingOnly
@@ -133,6 +136,18 @@ const createTwoStepFixture = async (t: TestContext) => {
       }
       await runner.postMessage(sessionId, { messageId: `msg-${messageCounter}`, text });
       await runner.waitForSessionIdle(sessionId);
+      // The agent_end handler's text_final publish runs in a detached,
+      // un-awaited IIFE (queue chaining lands in a later task), and now
+      // does real work (generateStyledReply) when two-step is active, so
+      // waitForSessionIdle can return before it settles. Give it a few
+      // extra ticks so the backlog reflects the completed turn.
+      for (let i = 0; i < 5000; i += 1) {
+        const agentEnds = runner.events
+          .getBacklog(sessionId)
+          .filter((entry) => entry.event.type === 'agent_end').length;
+        if (agentEnds >= messageCounter) break;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
     },
     backlog() {
       return runner.events.getBacklog(sessionId).map((entry) => entry.event);
@@ -290,4 +305,29 @@ for (const [draft, rewrite, keepRewrite] of fidelityCases) {
 test('NO_REPLY draft skips the pass', async (t) => {
   const fx = await createTwoStepFixture(t);
   assert.equal(fx.acceptRewriteForTest('<NO_REPLY>', 'anything'), false);
+});
+
+test('two-step: one text_final carrying the reply', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  await fx.postAndIdle('hi', { responders: [draftTurn('raw draft'), replyTurn('styled reply')] });
+  const finals = fx.backlog().filter((e) => e.type === 'text_final');
+  assert.equal(finals.length, 1);
+  assert.equal((finals[0] as { text: string }).text, 'styled reply');
+});
+
+test('two-step: reply failure falls back to draft in text_final', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  await fx.postAndIdle('hi', {
+    responders: [
+      draftTurn('raw draft'),
+      () => {
+        throw new Error('boom');
+      },
+    ],
+  });
+  const finals = fx.backlog().filter((e) => e.type === 'text_final');
+  assert.equal(finals.length, 1);
+  assert.equal((finals[0] as { text: string }).text, 'raw draft');
 });
