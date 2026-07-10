@@ -146,6 +146,16 @@ const VoiceConfigSchema = z.object({
   tts: TtsConfigSchema.optional(),
 });
 
+const TwoStepConfigSchema = z.object({
+  enabled: z.boolean(),
+  reply_model: ModelConfigSchema.optional(),
+  reply_timeout_ms: z.number().int().positive().optional(),
+});
+
+const ExperimentsConfigSchema = z.object({
+  two_step: TwoStepConfigSchema.optional(),
+});
+
 const AgentRuntimeConfigSchema = z.object({
   workspace_root: z.string(),
   model: ModelConfigSchema,
@@ -154,7 +164,12 @@ const AgentRuntimeConfigSchema = z.object({
   web: WebConfigSchema.optional(),
   channels: ChannelsConfigSchema.optional(),
   voice: VoiceConfigSchema.optional(),
+  experiments: ExperimentsConfigSchema.optional(),
 });
+
+/** Schema-boundary parse for tests; validates known fields without requiring the full config. */
+export const parseAgentRuntimeConfig = (config: unknown) =>
+  AgentRuntimeConfigSchema.partial().parse(config);
 
 function validateConfig(config: unknown, filePath: string): asserts config is AgentRuntimeConfig {
   const result = AgentRuntimeConfigSchema.safeParse(config);

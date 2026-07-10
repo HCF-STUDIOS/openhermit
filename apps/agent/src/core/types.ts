@@ -48,6 +48,12 @@ export const DEFAULT_INTROSPECTION_CONFIG: IntrospectionConfig = {
   model: null,
 };
 
+export interface TwoStepConfig {
+  enabled: boolean;
+  reply_model?: AgentModelConfig | undefined;
+  reply_timeout_ms?: number | undefined;
+}
+
 export interface MemoryConfig {
   context_entry_limit?: number | undefined;
   introspection?: IntrospectionConfig | undefined;
@@ -141,6 +147,7 @@ export interface AgentRuntimeConfig {
    * `@openhermit/voice`).
    */
   voice?: import('@openhermit/voice').VoiceConfig;
+  experiments?: { two_step?: TwoStepConfig | undefined } | undefined;
 }
 
 export type AgentConfig = AgentRuntimeConfig;
