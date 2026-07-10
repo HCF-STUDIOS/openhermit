@@ -185,9 +185,10 @@ const createTwoStepFixture = async (t: TestContext, options?: { langfuse?: Langf
         const agentEnds = runner.events
           .getBacklog(sessionId)
           .filter((entry) => entry.event.type === 'agent_end').length;
-        if (agentEnds >= ordinal) break;
+        if (agentEnds >= ordinal) return;
         await new Promise((resolve) => setImmediate(resolve));
       }
+      throw new Error(`postAndIdle: turn ${ordinal} never reached agent_end within 10s`);
     },
     /**
      * Fire-and-continue variant of `postAndIdle`: queues the turn and
@@ -383,6 +384,18 @@ const fidelityCases: [string, string, boolean][] = [
   ['plain draft', 'plain reply', true],
   ['```js\nx\n```', 'no fence here', false],
   ['has content', '', false],
+  // Reasoning-only rewrite must fall back to the draft, never publish reasoning.
+  ['real draft', '<think>just reasoning</think>', false],
+  // An unclosed reasoning block is still reasoning-only and must be rejected.
+  ['real draft', '<think>truncated reasoning that never closes', false],
+  // A link re-punctuated in the rewrite is still preserved (no false reject).
+  ['see https://example.com/docs. more', 'yo https://example.com/docs now', true],
+  // Unclosed/odd fence count in the rewrite is rejected even if >= the draft.
+  ['```js\nx\n```', '```js\nx\n```\n```extra', false],
+  // A draft URL dropped by the rewrite is rejected.
+  ['see https://example.com/docs', 'see the docs', false],
+  // A draft URL preserved verbatim is accepted.
+  ['see https://example.com/docs', 'check out https://example.com/docs now', true],
 ];
 for (const [draft, rewrite, keepRewrite] of fidelityCases) {
   test(`fidelity guard: ${draft.slice(0, 12)}`, async (t) => {

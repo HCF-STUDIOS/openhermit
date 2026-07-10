@@ -55,10 +55,11 @@ import {
   extractToolResultDetails,
   extractToolResultText,
   hasCodeFenceParity,
+  hasVisibleReply,
+  preservesLinks,
   isAssistantMessage,
   isEmptyAssistantTurn,
   stripEmptyAssistantTurns,
-  stripReasoningTags,
   stripLeadingSpeakerTag,
   transcodeGroupMentions,
   extractMentionRefs,
@@ -2941,32 +2942,41 @@ export class AgentRunner implements SessionRuntime {
     const timeoutMs = twoStep.reply_timeout_ms ?? 8000;
     let agent: Agent | undefined;
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; agent?.abort(); }, timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A true deadline over the WHOLE pass: agent construction can hang and the
+    // prompt/waitForIdle can overrun, so race everything against the timeout.
+    // When the deadline wins we return null (draft fallback) and abort the
+    // in-flight agent; any output that lands after timedOut is also rejected.
+    const deadline = new Promise<null>((resolve) => {
+      timer = setTimeout(() => { timedOut = true; agent?.abort(); resolve(null); }, timeoutMs);
+    });
     let replyText: string | null = null;
     let replyTokens: number | undefined;
     try {
-      agent = await this.createConfiguredAgent({
-        config: replyConfig,
-        agentSessionId: replySessionId,
-        contextSessionId: session.spec.sessionId,
-        tools: [],
-        extraSystemPrompt: [
-          'Below is a DRAFT answer produced by your reasoning pass.',
-          'Rewrite it as your final user-facing reply in your own voice and tone.',
-          'Preserve all facts, links, and code verbatim. Output only the reply.',
-        ].join('\n'),
-        ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
-      });
-      // The timeout may have fired during construction, before `agent` existed
-      // for the timer to abort; honor it now.
-      if (timedOut) agent.abort();
-      await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
-      await agent.waitForIdle();
-      const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
-      const rewrite = lastAssistant ? extractAssistantText(lastAssistant).trim() : '';
-      replyText = rewrite ? rewrite : null;
-      replyTokens = lastAssistant?.usage?.totalTokens;
-      return replyText;
+      const work = (async (): Promise<string | null> => {
+        agent = await this.createConfiguredAgent({
+          config: replyConfig,
+          agentSessionId: replySessionId,
+          contextSessionId: session.spec.sessionId,
+          tools: [],
+          extraSystemPrompt: [
+            'Below is a DRAFT answer produced by your reasoning pass.',
+            'Rewrite it as your final user-facing reply in your own voice and tone.',
+            'Preserve all facts, links, and code verbatim. Output only the reply.',
+          ].join('\n'),
+          ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
+        });
+        if (timedOut) return null;
+        await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
+        await agent.waitForIdle();
+        if (timedOut) return null;
+        const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
+        const rewrite = lastAssistant ? extractAssistantText(lastAssistant).trim() : '';
+        replyText = rewrite ? rewrite : null;
+        replyTokens = lastAssistant?.usage?.totalTokens;
+        return replyText;
+      })();
+      return await Promise.race([work, deadline]);
     } catch {
       return null;
     } finally {
@@ -2997,8 +3007,11 @@ export class AgentRunner implements SessionRuntime {
    */
   private acceptRewrite(draft: string, rewrite: string | null): boolean {
     if (draft.trim() === '<NO_REPLY>') return false;
-    if (!rewrite || stripReasoningTags(rewrite).trim() === '') return false;
-    return hasCodeFenceParity(draft, rewrite);
+    // Reject empty and reasoning-only rewrites: stripReasoningTags falls back
+    // to the original text when stripping empties it, so a `<think>…</think>`
+    // rewrite would otherwise be published as the reply.
+    if (!rewrite || !hasVisibleReply(rewrite)) return false;
+    return hasCodeFenceParity(draft, rewrite) && preservesLinks(draft, rewrite);
   }
 
   private buildReplyInput(lastUserMessageText: string | undefined, draftText: string): AgentMessage {
@@ -3450,8 +3463,12 @@ export class AgentRunner implements SessionRuntime {
               ts,
               role: 'assistant',
               content: finalText,
+              // `thinking` is the draft reply TEXT, not signed provider
+              // reasoning, so the draft's thinkingSignature is deliberately
+              // dropped: buildResumptionMessages would otherwise replay the
+              // draft as signed reasoning and signature-validating providers
+              // would reject the next turn.
               thinking: draftText,
-              ...(draftAssistantMeta?.thinkingSignature ? { thinkingSignature: draftAssistantMeta.thinkingSignature } : {}),
               provider: draftAssistantMeta?.provider ?? 'anthropic',
               model: draftAssistantMeta?.model ?? 'unknown',
               usage: draftAssistantMeta?.usage,

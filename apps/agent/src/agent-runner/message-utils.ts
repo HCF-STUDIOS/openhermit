@@ -66,14 +66,36 @@ export const stripReasoningTags = (text: string): string => {
   return stripped.length > 0 ? stripped : text.trim();
 };
 
+const REASONING_TAG_RE = /<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi;
+
 /**
  * The reply pass must never silently drop a code block the draft had. Counts
- * ``` fence markers rather than parsing markdown, and rejects any rewrite with
- * fewer fences than the draft (a dropped or unclosed code block).
+ * ``` fence markers rather than parsing markdown, and rejects a rewrite with
+ * fewer fences than the draft (a dropped block) or an odd fence count (an
+ * unclosed block the rewrite introduced).
  */
 export const hasCodeFenceParity = (draft: string, rewrite: string): boolean => {
   const fences = (s: string) => (s.match(/```/g) ?? []).length;
-  return fences(rewrite) >= fences(draft);
+  return fences(rewrite) >= fences(draft) && fences(rewrite) % 2 === 0;
+};
+
+/** True if the text still has user-facing content once reasoning tags are removed. */
+export const hasVisibleReply = (text: string): boolean =>
+  text
+    .replace(REASONING_TAG_RE, '')
+    // An unclosed reasoning block (truncated output) leaks reasoning too, so
+    // treat everything from an unmatched opening tag onward as reasoning.
+    .replace(/<(think|thinking|reasoning)>[\s\S]*$/i, '')
+    .trim().length > 0;
+
+/** Every http(s) URL in the draft must survive verbatim in the rewrite. */
+export const preservesLinks = (draft: string, rewrite: string): boolean => {
+  // Trailing sentence punctuation is not part of the URL; keep it out of the
+  // comparison so a preserved link that is re-punctuated isn't false-rejected.
+  const urls = (draft.match(/https?:\/\/[^\s)\]]+/gi) ?? []).map((url) =>
+    url.replace(/[.,!?;:]+$/, ''),
+  );
+  return urls.every((url) => rewrite.includes(url));
 };
 
 export const extractAssistantText = (message: AssistantMessage): string => {
