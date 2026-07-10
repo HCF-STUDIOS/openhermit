@@ -247,10 +247,18 @@ const createTwoStepFixture = async (t: TestContext, options?: { langfuse?: Langf
       };
     },
     /** Test-only accessor for the private reply-pass method (TS `private` is compile-time only). */
-    generateStyledReplyForTest(session: RunnerSession, draftText: string): Promise<string | null> {
+    generateStyledReplyForTest(
+      session: RunnerSession,
+      draftText: string,
+      lastUserMessageText?: string,
+    ): Promise<string | null> {
       return (runner as unknown as {
-        generateStyledReply(session: RunnerSession, draftText: string): Promise<string | null>;
-      }).generateStyledReply(session, draftText);
+        generateStyledReply(
+          session: RunnerSession,
+          draftText: string,
+          lastUserMessageText: string | undefined,
+        ): Promise<string | null>;
+      }).generateStyledReply(session, draftText, lastUserMessageText);
     },
     /** Test-only accessor for the private fidelity-guard predicate. */
     acceptRewriteForTest(draft: string, rewrite: string | null): boolean {

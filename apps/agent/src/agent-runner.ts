@@ -2910,7 +2910,11 @@ export class AgentRunner implements SessionRuntime {
    * lose the answer — returns null on throw / timeout / empty output / missing
    * provider key, and the caller falls back to publishing the draft.
    */
-  private async generateStyledReply(session: RunnerSession, draftText: string): Promise<string | null> {
+  private async generateStyledReply(
+    session: RunnerSession,
+    draftText: string,
+    lastUserMessageText: string | undefined,
+  ): Promise<string | null> {
     const config = await this.options.security.readConfig();
     const twoStep = config.experiments?.two_step;
     if (!twoStep?.enabled) return null;
@@ -2967,7 +2971,7 @@ export class AgentRunner implements SessionRuntime {
           ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
         });
         if (timedOut) return null;
-        await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
+        await agent.prompt(this.buildReplyInput(lastUserMessageText, draftText));
         await agent.waitForIdle();
         if (timedOut) return null;
         const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
@@ -3417,7 +3421,10 @@ export class AgentRunner implements SessionRuntime {
         delete session.currentTurnCorrelationId;
         const replyPass = (async () => {
           if (isTwoStepTurn && finalText && finalText.trim() !== '<NO_REPLY>') {
-            const rewrite = await this.generateStyledReply(session, draftText!);
+            // Use the user-text snapshot captured before this pass was queued;
+            // a later postMessage can overwrite session.lastUserMessageText
+            // before the queued reply pass builds its prompt.
+            const rewrite = await this.generateStyledReply(session, draftText!, lastUserMessageText);
             finalText = this.acceptRewrite(draftText!, rewrite) ? (rewrite as string) : draftText;
           }
 
@@ -3457,12 +3464,15 @@ export class AgentRunner implements SessionRuntime {
           // Single-entry persistence: the draft's assistant row is suppressed
           // at message_end (see the `!isTwoStepTurn` gate there) so the reply
           // pass never produces a duplicate assistant row -- one entry per
-          // two-step turn, content = reply, thinking = draft.
-          if (isTwoStepTurn && finalText) {
+          // two-step turn, content = reply, thinking = draft. Fall back to the
+          // draft as content when channel.message.out@v1 stripped finalText to
+          // empty, so the turn never loses its assistant history row.
+          const persistedContent = finalText || draftText;
+          if (isTwoStepTurn && persistedContent && persistedContent.trim() !== '<NO_REPLY>') {
             await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
               ts,
               role: 'assistant',
-              content: finalText,
+              content: persistedContent,
               // `thinking` is the draft reply TEXT, not signed provider
               // reasoning, so the draft's thinkingSignature is deliberately
               // dropped: buildResumptionMessages would otherwise replay the
