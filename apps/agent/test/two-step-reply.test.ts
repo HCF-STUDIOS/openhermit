@@ -57,6 +57,29 @@ const createTextResponseStream = (text: string) => {
 const draftTurn = (text: string) => () => createTextResponseStream(text);
 
 /**
+ * Stream where the model emits only a thinking block and no text, mirroring
+ * the DeepSeek R1 / kimi-k2.6 final-thinking-only shape that isFinalThinkingOnly
+ * rescues on the flag-off path (see agent-runner.test.ts's
+ * createThinkingOnlyToolUseStream). stopReason 'stop' with zero tool calls
+ * exercises the same guard as stopReason 'toolUse' with zero toolCall blocks.
+ */
+const createThinkingOnlyResponseStream = (thinking: string) => {
+  const stream = createAssistantMessageEventStream();
+  const message = createAssistantMessage([{ type: 'thinking', thinking }]);
+
+  stream.push({ type: 'start', partial: createAssistantMessage([]) });
+  stream.push({ type: 'thinking_start', contentIndex: 0, partial: message });
+  stream.push({ type: 'thinking_delta', contentIndex: 0, delta: thinking, partial: message });
+  stream.push({ type: 'thinking_end', contentIndex: 0, content: thinking, partial: message });
+  stream.push({ type: 'done', reason: 'stop', message });
+
+  return stream;
+};
+
+/** Scripts a thinking-only draft turn for `postAndIdle`'s `responders` option. */
+const thinkingOnlyTurn = (thinking: string) => () => createThinkingOnlyResponseStream(thinking);
+
+/**
  * Wraps createSecurityFixture + AgentRunner.create + openSession behind a
  * per-turn scripted streamFn, so a "turn" is just `postAndIdle(text)`.
  * Reused by every two-step task's tests.
@@ -151,4 +174,28 @@ test('flag off: event stream unchanged (text_delta present)', async (t) => {
   await fx.setFlag(false);
   await fx.postAndIdle('hello', { responders: [draftTurn('raw draft')] });
   assert.ok(fx.backlog().some((e) => e.type === 'text_delta'));
+});
+
+test('flag on: thinking-only draft is not promoted to a premature text_final', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  await fx.postAndIdle('hi', { responders: [thinkingOnlyTurn('internal reasoning only')] });
+  // isFinalThinkingOnly is gated off while two-step is active, so message_end
+  // never promotes thinking to text_final (only a future agent_end reply
+  // pass would ever publish one for this draft).
+  const finals = fx.backlog().filter((e) => e.type === 'text_final');
+  assert.equal(finals.length, 0);
+});
+
+test('flag off: thinking-only promotion behavior is unchanged', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(false);
+  await fx.postAndIdle('hi', { responders: [thinkingOnlyTurn('internal reasoning only')] });
+  // Matches agent-runner.test.ts's kimi-k2.6 regression: message_end promotes
+  // thinking to text_final, and agent_end double-publishes it, so >= 1.
+  const finals = fx.backlog().filter((e) => e.type === 'text_final');
+  assert.ok(finals.length >= 1);
+  for (const final of finals) {
+    assert.match((final as { text: string }).text, /internal reasoning/);
+  }
 });

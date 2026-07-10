@@ -3034,7 +3034,7 @@ export class AgentRunner implements SessionRuntime {
           const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
           if (tail.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: tail,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
