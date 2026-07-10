@@ -564,3 +564,14 @@ test('flag off: no reply-pass trace is created', async (t) => {
 
   assert.equal(langfuse.traces.filter((tr) => tr.body.name === 'openhermit.two_step_reply').length, 0);
 });
+
+test('flag off: exact baseline event sequence and call count', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(false);
+  // createSequentialStreamFn-style responders throw on an unexpected extra call -- a stray reply pass fails the test
+  await fx.postAndIdle('hi', { responders: [draftTurn('answer')] }); // exactly one turn allowed
+  const kinds = fx.backlog().map((e) => e.type);
+  assert.ok(kinds.includes('text_delta'));
+  assert.equal(kinds.filter((k) => k === 'text_final').length, 1);
+  assert.ok(!kinds.includes('thinking_delta')); // no gating when off
+});
