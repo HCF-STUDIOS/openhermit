@@ -92,10 +92,12 @@ export const hasVisibleReply = (text: string): boolean =>
 export const preservesLinks = (draft: string, rewrite: string): boolean => {
   // Trailing sentence punctuation is not part of the URL; keep it out of the
   // comparison so a preserved link that is re-punctuated isn't false-rejected.
-  const urls = (draft.match(/https?:\/\/[^\s)\]]+/gi) ?? []).map((url) =>
-    url.replace(/[.,!?;:]+$/, ''),
-  );
-  return urls.every((url) => rewrite.includes(url));
+  const extractUrls = (text: string): string[] =>
+    (text.match(/https?:\/\/[^\s)\]]+/gi) ?? []).map((url) => url.replace(/[.,!?;:]+$/, ''));
+  // Compare whole URLs, not substrings: `includes` would accept a rewrite that
+  // redirected `https://trusted.example` to `https://trusted.example.evil`.
+  const rewriteUrls = new Set(extractUrls(rewrite));
+  return extractUrls(draft).every((url) => rewriteUrls.has(url));
 };
 
 export const extractAssistantText = (message: AssistantMessage): string => {

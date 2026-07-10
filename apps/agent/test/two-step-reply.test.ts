@@ -398,6 +398,8 @@ const fidelityCases: [string, string, boolean][] = [
   ['real draft', '<think>truncated reasoning that never closes', false],
   // A link re-punctuated in the rewrite is still preserved (no false reject).
   ['see https://example.com/docs. more', 'yo https://example.com/docs now', true],
+  // A rewrite that redirects the link to a lookalike host is rejected (not a substring match).
+  ['visit https://trusted.example', 'visit https://trusted.example.evil', false],
   // Unclosed/odd fence count in the rewrite is rejected even if >= the draft.
   ['```js\nx\n```', '```js\nx\n```\n```extra', false],
   // A draft URL dropped by the rewrite is rejected.
