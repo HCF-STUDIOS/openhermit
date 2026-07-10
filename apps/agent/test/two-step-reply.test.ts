@@ -218,15 +218,18 @@ test('flag on + group source: message_end backstop flushes thinking_delta, not t
   assert.ok(kinds.includes('thinking_delta'));
 });
 
-test('flag on: thinking-only draft is not promoted to a premature text_final', async (t) => {
+test('flag on: thinking-only draft is not promoted at message_end, but survives as the agent_end fallback', async (t) => {
   const fx = await createTwoStepFixture(t);
   await fx.setFlag(true);
   await fx.postAndIdle('hi', { responders: [thinkingOnlyTurn('internal reasoning only')] });
   // isFinalThinkingOnly is gated off while two-step is active, so message_end
-  // never promotes thinking to text_final (only a future agent_end reply
-  // pass would ever publish one for this draft).
+  // never promotes thinking to an early text_final. But latestAssistantText
+  // still carries the draft's thinking as its fallback content, so agent_end
+  // publishes exactly one text_final from it (no reply pass wired yet) --
+  // the answer must never be silently dropped.
   const finals = fx.backlog().filter((e) => e.type === 'text_final');
-  assert.equal(finals.length, 0);
+  assert.equal(finals.length, 1);
+  assert.match((finals[0] as { text: string }).text, /internal reasoning/);
 });
 
 test('flag off: thinking-only promotion behavior is unchanged', async (t) => {

@@ -3111,12 +3111,12 @@ export class AgentRunner implements SessionRuntime {
         // agent loop won't dispatch anything (no toolCall blocks), so without this rescue
         // the turn would persist with empty content and the channel adapter would never see
         // a text_final event, producing a phantom "interrupted reply".
-        const isFinalThinkingOnly =
-          !session.twoStepActive
-          && !hasText
+        const isThinkingOnly =
+          !hasText
           && hasThinking
           && (assistantMessage.stopReason !== 'toolUse' || toolCallCount === 0);
-        const effectiveText = isFinalThinkingOnly ? thinkingText : (assistantText || '');
+        const isFinalThinkingOnly = !session.twoStepActive && isThinkingOnly;
+        const effectiveText = isThinkingOnly ? thinkingText : (assistantText || '');
         const effectiveThinking = isFinalThinkingOnly ? undefined : (hasThinking ? thinkingText : undefined);
 
         if (!hasText && !hasThinking) {
