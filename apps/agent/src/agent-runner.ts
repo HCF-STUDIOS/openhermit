@@ -2997,7 +2997,7 @@ export class AgentRunner implements SessionRuntime {
           }
           if (outText.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: outText,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
@@ -3009,7 +3009,7 @@ export class AgentRunner implements SessionRuntime {
           const tail = flushSpeakerTagStream(session.speakerTagStream, session.groupSenderNames ?? []);
           if (tail.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: tail,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
@@ -3112,7 +3112,8 @@ export class AgentRunner implements SessionRuntime {
         // the turn would persist with empty content and the channel adapter would never see
         // a text_final event, producing a phantom "interrupted reply".
         const isFinalThinkingOnly =
-          !hasText
+          !session.twoStepActive
+          && !hasText
           && hasThinking
           && (assistantMessage.stopReason !== 'toolUse' || toolCallCount === 0);
         const effectiveText = isFinalThinkingOnly ? thinkingText : (assistantText || '');

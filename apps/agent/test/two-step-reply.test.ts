@@ -53,6 +53,9 @@ const createTextResponseStream = (text: string) => {
   return stream;
 };
 
+/** Scripts a plain no-tools draft turn for `postAndIdle`'s `responders` option. */
+const draftTurn = (text: string) => () => createTextResponseStream(text);
+
 /**
  * Wraps createSecurityFixture + AgentRunner.create + openSession behind a
  * per-turn scripted streamFn, so a "turn" is just `postAndIdle(text)`.
@@ -95,11 +98,21 @@ const createTwoStepFixture = async (t: TestContext) => {
       const config = await security.readConfig();
       await security.writeConfig({ ...config, experiments: { two_step: { enabled } } });
     },
-    async postAndIdle(text: string): Promise<void> {
+    async postAndIdle(
+      text: string,
+      options?: { responders?: Array<() => ReturnType<typeof createAssistantMessageEventStream>> },
+    ): Promise<void> {
       messageCounter += 1;
-      responders.push(() => createTextResponseStream(`response ${messageCounter}`));
+      if (options?.responders?.length) {
+        responders.push(...options.responders);
+      } else {
+        responders.push(() => createTextResponseStream(`response ${messageCounter}`));
+      }
       await runner.postMessage(sessionId, { messageId: `msg-${messageCounter}`, text });
       await runner.waitForSessionIdle(sessionId);
+    },
+    backlog() {
+      return runner.events.getBacklog(sessionId).map((entry) => entry.event);
     },
   };
 };
@@ -122,4 +135,20 @@ test('twoStepActive re-stamps hot each turn', async (t) => {
   await fx.setFlag(true); // configStore.setConfig, no restart
   await fx.postAndIdle('again');
   assert.equal(fx.session.twoStepActive, true);
+});
+
+test('flag on: draft streams as thinking_delta, no text_delta', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  await fx.postAndIdle('hello', { responders: [draftTurn('raw draft')] });
+  const kinds = fx.backlog().map((e) => e.type);
+  assert.equal(kinds.filter((k) => k === 'text_delta').length, 0);
+  assert.ok(kinds.includes('thinking_delta'));
+});
+
+test('flag off: event stream unchanged (text_delta present)', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(false);
+  await fx.postAndIdle('hello', { responders: [draftTurn('raw draft')] });
+  assert.ok(fx.backlog().some((e) => e.type === 'text_delta'));
 });
