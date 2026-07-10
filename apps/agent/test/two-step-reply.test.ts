@@ -176,6 +176,48 @@ test('flag off: event stream unchanged (text_delta present)', async (t) => {
   assert.ok(fx.backlog().some((e) => e.type === 'text_delta'));
 });
 
+test('flag on + group source: message_end backstop flushes thinking_delta, not text_delta', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+  const config = await security.readConfig();
+  await security.writeConfig({ ...config, experiments: { two_step: { enabled: true } } });
+
+  // An unclosed `[Name` tag never resolves without a text_end, so the
+  // message_end backstop (not the text_end path) is what flushes it.
+  const streamFn: StreamFn = async () => {
+    const stream = createAssistantMessageEventStream();
+    const text = '[Unclosed tag with no closing bracket';
+    const partial = createAssistantMessage([{ type: 'text', text }]);
+    stream.push({ type: 'start', partial: createAssistantMessage([]) });
+    stream.push({ type: 'text_start', contentIndex: 0, partial });
+    stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial });
+    // No text_end pushed: the provider skipped it, exercising the backstop.
+    stream.push({ type: 'done', reason: 'stop', message: partial });
+    return stream;
+  };
+
+  const runner = await AgentRunner.create({ workspace, security, streamFn });
+  const sessionId = `group:backstop-${randomBytes(4).toString('hex')}`;
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+  await runner.postMessage(sessionId, {
+    messageId: 'msg-1',
+    text: 'hello group',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'u-1', displayName: 'User' },
+    participants: [{ id: 'u-1', type: 'user', displayName: 'User' }],
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  const kinds = runner.events.getBacklog(sessionId).map((entry) => entry.event.type);
+  assert.equal(kinds.filter((k) => k === 'text_delta').length, 0);
+  assert.ok(kinds.includes('thinking_delta'));
+});
+
 test('flag on: thinking-only draft is not promoted to a premature text_final', async (t) => {
   const fx = await createTwoStepFixture(t);
   await fx.setFlag(true);
