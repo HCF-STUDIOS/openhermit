@@ -147,6 +147,12 @@ const createTwoStepFixture = async (t: TestContext) => {
         generateStyledReply(session: RunnerSession, draftText: string): Promise<string | null>;
       }).generateStyledReply(session, draftText);
     },
+    /** Test-only accessor for the private fidelity-guard predicate. */
+    acceptRewriteForTest(draft: string, rewrite: string | null): boolean {
+      return (runner as unknown as {
+        acceptRewrite(draft: string, rewrite: string | null): boolean;
+      }).acceptRewrite(draft, rewrite);
+    },
   };
 };
 
@@ -267,4 +273,21 @@ test('generateStyledReply returns rewrite on success, null on failure', async (t
   fx.scriptReply(() => { throw new Error('provider down'); });
   const bad = await fx.generateStyledReplyForTest(fx.session, 'raw draft');
   assert.equal(bad, null);
+});
+
+const fidelityCases: [string, string, boolean][] = [
+  ['plain draft', 'plain reply', true],
+  ['```js\nx\n```', 'no fence here', false],
+  ['has content', '', false],
+];
+for (const [draft, rewrite, keepRewrite] of fidelityCases) {
+  test(`fidelity guard: ${draft.slice(0, 12)}`, async (t) => {
+    const fx = await createTwoStepFixture(t);
+    assert.equal(fx.acceptRewriteForTest(draft, rewrite), keepRewrite);
+  });
+}
+
+test('NO_REPLY draft skips the pass', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  assert.equal(fx.acceptRewriteForTest('<NO_REPLY>', 'anything'), false);
 });

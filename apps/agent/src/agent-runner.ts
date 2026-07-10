@@ -54,9 +54,11 @@ import {
   prepareAttachmentContent,
   extractToolResultDetails,
   extractToolResultText,
+  hasCodeFenceParity,
   isAssistantMessage,
   isEmptyAssistantTurn,
   stripEmptyAssistantTurns,
+  stripReasoningTags,
   stripLeadingSpeakerTag,
   transcodeGroupMentions,
   extractMentionRefs,
@@ -2943,6 +2945,17 @@ export class AgentRunner implements SessionRuntime {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Fidelity guard: reject the rewrite (keep the draft) when it's empty, when
+   * it dropped code fences the draft had, or when the draft itself was
+   * `<NO_REPLY>` (the pass is skipped entirely in that case).
+   */
+  private acceptRewrite(draft: string, rewrite: string | null): boolean {
+    if (draft.trim() === '<NO_REPLY>') return false;
+    if (!rewrite || stripReasoningTags(rewrite).trim() === '') return false;
+    return hasCodeFenceParity(draft, rewrite);
   }
 
   private buildReplyInput(lastUserMessageText: string | undefined, draftText: string): AgentMessage {

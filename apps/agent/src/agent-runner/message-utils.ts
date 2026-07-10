@@ -66,6 +66,17 @@ export const stripReasoningTags = (text: string): string => {
   return stripped.length > 0 ? stripped : text.trim();
 };
 
+/**
+ * The reply pass must never silently drop a code block the draft had. Counts
+ * fence markers rather than parsing markdown, since an odd count in either
+ * string already signals a truncated/malformed fence the rewrite shouldn't
+ * be trusted to have preserved faithfully.
+ */
+export const hasCodeFenceParity = (draft: string, rewrite: string): boolean => {
+  const fences = (s: string) => (s.match(/```/g) ?? []).length;
+  return fences(rewrite) >= fences(draft);
+};
+
 export const extractAssistantText = (message: AssistantMessage): string => {
   const textParts = message.content
     .filter((content): content is Extract<typeof content, { type: 'text' }> => content.type === 'text')
