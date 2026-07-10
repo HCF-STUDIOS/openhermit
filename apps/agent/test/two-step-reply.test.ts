@@ -137,6 +137,16 @@ const createTwoStepFixture = async (t: TestContext) => {
     backlog() {
       return runner.events.getBacklog(sessionId).map((entry) => entry.event);
     },
+    /** Scripts the next raw streamFn call — used to drive generateStyledReply directly. */
+    scriptReply(responder: () => ReturnType<typeof createAssistantMessageEventStream>): void {
+      responders.push(responder);
+    },
+    /** Test-only accessor for the private reply-pass method (TS `private` is compile-time only). */
+    generateStyledReplyForTest(session: RunnerSession, draftText: string): Promise<string | null> {
+      return (runner as unknown as {
+        generateStyledReply(session: RunnerSession, draftText: string): Promise<string | null>;
+      }).generateStyledReply(session, draftText);
+    },
   };
 };
 
@@ -243,4 +253,18 @@ test('flag off: thinking-only promotion behavior is unchanged', async (t) => {
   for (const final of finals) {
     assert.match((final as { text: string }).text, /internal reasoning/);
   }
+});
+
+test('generateStyledReply returns rewrite on success, null on failure', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+
+  fx.scriptReply(() => createTextResponseStream('styled reply'));
+  const ok = await fx.generateStyledReplyForTest(fx.session, 'raw draft');
+  assert.equal(typeof ok, 'string');
+  assert.equal(ok, 'styled reply');
+
+  fx.scriptReply(() => { throw new Error('provider down'); });
+  const bad = await fx.generateStyledReplyForTest(fx.session, 'raw draft');
+  assert.equal(bad, null);
 });

@@ -2894,6 +2894,65 @@ export class AgentRunner implements SessionRuntime {
     });
   }
 
+  /**
+   * Reply pass (PROD-66): rewrites the tool loop's draft answer in the twin's
+   * voice, gated behind `config.experiments.two_step`. Never lets a failure
+   * lose the answer — returns null on throw / timeout / empty output / missing
+   * provider key, and the caller falls back to publishing the draft.
+   */
+  private async generateStyledReply(session: RunnerSession, draftText: string): Promise<string | null> {
+    const config = await this.options.security.readConfig();
+    const twoStep = config.experiments?.two_step;
+    if (!twoStep?.enabled) return null;
+
+    // Reply pass never thinks: thinking blocks on some providers (e.g.
+    // MiniMax-M3 via anthropic-messages) 400 on a no-tools no-history turn.
+    const replyConfig: AgentConfig = {
+      ...config,
+      model: { ...(twoStep.reply_model ?? config.model), thinking: 'off' },
+    };
+
+    try {
+      this.ensureProviderApiKey(replyConfig.model.provider);
+    } catch {
+      return null;
+    }
+
+    const timeoutMs = twoStep.reply_timeout_ms ?? 8000;
+    let agent: Agent | undefined;
+    const timer = setTimeout(() => agent?.abort(), timeoutMs);
+    try {
+      agent = await this.createConfiguredAgent({
+        config: replyConfig,
+        agentSessionId: `${session.spec.sessionId}:reply`,
+        contextSessionId: session.spec.sessionId,
+        tools: [],
+        extraSystemPrompt: [
+          'Below is a DRAFT answer produced by your reasoning pass.',
+          'Rewrite it as your final user-facing reply in your own voice and tone.',
+          'Preserve all facts, links, and code verbatim. Output only the reply.',
+        ].join('\n'),
+      });
+      await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
+      await agent.waitForIdle();
+      const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
+      const rewrite = lastAssistant ? extractAssistantText(lastAssistant).trim() : '';
+      return rewrite ? rewrite : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private buildReplyInput(lastUserMessageText: string | undefined, draftText: string): AgentMessage {
+    const parts = [
+      ...(lastUserMessageText ? [`User: ${lastUserMessageText}`] : []),
+      `Draft: ${draftText}`,
+    ];
+    return { role: 'user', content: [{ type: 'text', text: parts.join('\n\n') }], timestamp: Date.now() };
+  }
+
   private resolveWebProvider(config: AgentConfig): WebProvider | undefined {
     const providerName = config.web?.provider ?? 'defuddle';
 
