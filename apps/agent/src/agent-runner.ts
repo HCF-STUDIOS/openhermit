@@ -3223,19 +3223,24 @@ export class AgentRunner implements SessionRuntime {
           if (u.cacheWrite) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'cache_write' }, u.cacheWrite);
         }
 
-        void this.queueSideEffect(session, async () => {
-          await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
-            ts,
-            role: 'assistant',
-            content: cleanedText,
-            ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
-            ...(effectiveThinking && thinkingSignature ? { thinkingSignature } : {}),
-            provider: assistantMessage.provider,
-            model: assistantMessage.model,
-            usage: assistantMessage.usage,
-            stopReason: assistantMessage.stopReason,
+        // Two-step: the draft's user-facing row is folded into the reply's
+        // `thinking` field at agent_end instead, so it isn't persisted here
+        // (avoids a duplicate assistant row per turn).
+        if (!session.twoStepActive) {
+          void this.queueSideEffect(session, async () => {
+            await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+              ts,
+              role: 'assistant',
+              content: cleanedText,
+              ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
+              ...(effectiveThinking && thinkingSignature ? { thinkingSignature } : {}),
+              provider: assistantMessage.provider,
+              model: assistantMessage.model,
+              usage: assistantMessage.usage,
+              stopReason: assistantMessage.stopReason,
+            });
           });
-        });
+        }
         break;
       }
 
@@ -3299,6 +3304,11 @@ export class AgentRunner implements SessionRuntime {
       case 'agent_end': {
         const ts = new Date().toISOString();
         let finalText = session.latestAssistantText;
+        const draftText = finalText;
+        // Capture two-step-ness synchronously: twoStepActive is re-stamped
+        // per turn, and the reply pass below is un-awaited relative to the
+        // rest of this handler.
+        const isTwoStepTurn = session.twoStepActive;
         // Capture the roster synchronously: the emit below runs in a detached,
         // un-awaited async IIFE, so the next queued turn could overwrite
         // session.turnGroupParticipants before extractMentionRefs runs.
@@ -3336,10 +3346,9 @@ export class AgentRunner implements SessionRuntime {
         const turnCorrelationId = session.currentTurnCorrelationId;
         delete session.currentTurnCorrelationId;
         void (async () => {
-          if (session.twoStepActive && finalText && finalText.trim() !== '<NO_REPLY>') {
-            const draft = finalText;
-            const rewrite = await this.generateStyledReply(session, draft);
-            finalText = this.acceptRewrite(draft, rewrite) ? (rewrite as string) : draft;
+          if (isTwoStepTurn && finalText && finalText.trim() !== '<NO_REPLY>') {
+            const rewrite = await this.generateStyledReply(session, draftText!);
+            finalText = this.acceptRewrite(draftText!, rewrite) ? (rewrite as string) : draftText;
           }
 
           // For channel-bound sessions, run the channel.message.out@v1
@@ -3372,6 +3381,19 @@ export class AgentRunner implements SessionRuntime {
               text: finalText,
               ...(finalMentions.length ? { mentions: finalMentions } : {}),
               ...(turnCorrelationId !== undefined ? { correlationId: turnCorrelationId } : {}),
+            });
+          }
+
+          // Single-entry persistence: the draft's assistant row is suppressed
+          // at message_end (see the `!isTwoStepTurn` gate there) so the reply
+          // pass never produces a duplicate assistant row -- one entry per
+          // two-step turn, content = reply, thinking = draft.
+          if (isTwoStepTurn && finalText) {
+            await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+              ts,
+              role: 'assistant',
+              content: finalText,
+              thinking: draftText,
             });
           }
 

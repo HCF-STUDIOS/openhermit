@@ -316,6 +316,17 @@ test('two-step: one text_final carrying the reply', async (t) => {
   assert.equal((finals[0] as { text: string }).text, 'styled reply');
 });
 
+test('two-step persists one assistant entry: content=reply, thinking=draft', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true);
+  await fx.postAndIdle('hi', { responders: [draftTurn('raw draft'), replyTurn('styled reply')] });
+  const entries = (await fx.runner.listSessionLogEntries(fx.session.spec.sessionId))
+    .filter((e) => e.role === 'assistant');
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.content, 'styled reply');
+  assert.equal(entries[0]!.thinking, 'raw draft');
+});
+
 test('two-step: reply failure falls back to draft in text_final', async (t) => {
   const fx = await createTwoStepFixture(t);
   await fx.setFlag(true);
