@@ -1,4 +1,5 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
+import type { StopReason, Usage } from '@mariozechner/pi-ai';
 import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
 import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
 
@@ -15,6 +16,16 @@ export interface RunnerSession extends SessionDescriptor {
   checkpointInProgress: boolean;
   idleSummaryTimer: ReturnType<typeof setTimeout> | undefined;
   latestAssistantText: string | undefined;
+  /** Draft assistant message's provider/model/usage/stopReason (+ thinkingSignature),
+   *  captured at message_end so a two-step agent_end can persist the single
+   *  assistant row with the same shape as a normal turn. */
+  latestAssistantMeta?: {
+    provider: string;
+    model: string;
+    usage: Usage;
+    stopReason: StopReason;
+    thinkingSignature?: string;
+  };
   lastUserMessageText?: string;
   // Sender names for stripping a copied `[Name]` tag from the reply. Group only.
   groupSenderNames?: Set<string>;

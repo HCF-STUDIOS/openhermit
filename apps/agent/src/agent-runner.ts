@@ -3225,8 +3225,18 @@ export class AgentRunner implements SessionRuntime {
 
         // Two-step: the draft's user-facing row is folded into the reply's
         // `thinking` field at agent_end instead, so it isn't persisted here
-        // (avoids a duplicate assistant row per turn).
-        if (!session.twoStepActive) {
+        // (avoids a duplicate assistant row per turn). Stash the draft's
+        // provider/model/usage/stopReason so agent_end can reuse them on
+        // that single row.
+        if (session.twoStepActive) {
+          session.latestAssistantMeta = {
+            provider: assistantMessage.provider,
+            model: assistantMessage.model,
+            usage: assistantMessage.usage,
+            stopReason: assistantMessage.stopReason,
+            ...(thinkingSignature ? { thinkingSignature } : {}),
+          };
+        } else {
           void this.queueSideEffect(session, async () => {
             await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
               ts,
@@ -3309,6 +3319,10 @@ export class AgentRunner implements SessionRuntime {
         // per turn, and the reply pass below is un-awaited relative to the
         // rest of this handler.
         const isTwoStepTurn = session.twoStepActive;
+        // Snapshot the draft's provider/model/usage/stopReason captured at
+        // message_end, so the single persisted row below matches the shape
+        // of every other assistant appendLogEntry call.
+        const draftAssistantMeta = session.latestAssistantMeta;
         // Capture the roster synchronously: the emit below runs in a detached,
         // un-awaited async IIFE, so the next queued turn could overwrite
         // session.turnGroupParticipants before extractMentionRefs runs.
@@ -3394,6 +3408,11 @@ export class AgentRunner implements SessionRuntime {
               role: 'assistant',
               content: finalText,
               thinking: draftText,
+              ...(draftAssistantMeta?.thinkingSignature ? { thinkingSignature: draftAssistantMeta.thinkingSignature } : {}),
+              provider: draftAssistantMeta?.provider ?? 'anthropic',
+              model: draftAssistantMeta?.model ?? 'unknown',
+              usage: draftAssistantMeta?.usage,
+              stopReason: draftAssistantMeta?.stopReason ?? 'stop',
             });
           }
 
@@ -3410,6 +3429,7 @@ export class AgentRunner implements SessionRuntime {
         }
 
         session.latestAssistantText = undefined;
+        delete session.latestAssistantMeta;
         void this.queueSideEffect(session, async () => {
           await this.store.messages.appendLogEntry(this.scope,session.spec.sessionId, {
             ts,
