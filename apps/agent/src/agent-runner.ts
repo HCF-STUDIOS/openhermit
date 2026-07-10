@@ -2380,6 +2380,7 @@ export class AgentRunner implements SessionRuntime {
     await this.options.security.load();
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
+    session.twoStepActive = config.experiments?.two_step?.enabled === true;
 
     const isOwnerInteractive = session.spec.source.interactive && session.resolvedUserRole === 'owner';
     const approvalCallback = isOwnerInteractive

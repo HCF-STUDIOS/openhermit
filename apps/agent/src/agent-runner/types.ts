@@ -43,6 +43,10 @@ export interface RunnerSession extends SessionDescriptor {
   resolvedChannelUserId?: string;
   langfuseTurnContext?: LangfuseTurnContext;
   turnStartMs?: number;
+  /** Stamped fresh at the top of every turn from `config.experiments.two_step.enabled`. */
+  twoStepActive?: boolean;
+  /** In-flight reply pass for the current turn; the turn queue awaits this when set. */
+  pendingReplyPass?: Promise<void>;
   /** Consecutive failed tool results in the current turn. Resets at turn
    *  start and on any successful tool result. The agent aborts the turn
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
