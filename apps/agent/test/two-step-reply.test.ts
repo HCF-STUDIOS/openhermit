@@ -12,7 +12,34 @@ import {
 import { AgentRunner } from '../src/agent-runner.js';
 import type { RunnerSession } from '../src/agent-runner/types.js';
 import { parseAgentRuntimeConfig } from '../src/core/security.js';
+import type { LangfuseClientLike } from '../src/langfuse.js';
 import { createSecurityFixture } from './helpers.js';
+
+/** Mirrors agent-runner.test.ts's FakeLangfuseClient — records trace()/update() calls. */
+class FakeLangfuseTrace {
+  readonly updates: Array<Record<string, unknown>> = [];
+
+  generation() {
+    return { end: () => undefined };
+  }
+
+  update(body: Record<string, unknown>) {
+    this.updates.push(body);
+    return this;
+  }
+}
+
+class FakeLangfuseClient implements LangfuseClientLike {
+  readonly traces: Array<{ body: Record<string, unknown>; client: FakeLangfuseTrace }> = [];
+
+  async flushAsync(): Promise<void> {}
+
+  trace(body: Record<string, unknown>) {
+    const client = new FakeLangfuseTrace();
+    this.traces.push({ body, client });
+    return client;
+  }
+}
 
 const zeroUsage: Usage = {
   input: 0,
@@ -91,7 +118,7 @@ type Responder = () =>
   | ReturnType<typeof createAssistantMessageEventStream>
   | Promise<ReturnType<typeof createAssistantMessageEventStream>>;
 
-const createTwoStepFixture = async (t: TestContext) => {
+const createTwoStepFixture = async (t: TestContext, options?: { langfuse?: LangfuseClientLike }) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
   });
@@ -108,7 +135,12 @@ const createTwoStepFixture = async (t: TestContext) => {
     return responder();
   };
 
-  const runner = await AgentRunner.create({ workspace, security, streamFn });
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn,
+    ...(options?.langfuse ? { langfuse: options.langfuse } : {}),
+  });
 
   const sessionId = `cli:two-step-${randomBytes(4).toString('hex')}`;
   await runner.openSession({
@@ -505,4 +537,30 @@ test('two-step: reply pass is awaited at teardown, not orphaned', async (t) => {
     .map((entry) => entry.event);
   assert.equal(finals.length, 1);
   assert.equal((finals[0] as { text: string }).text, 'teardown reply');
+});
+
+test('two-step: reply pass traces to langfuse under <sid>:reply with twoStep metadata', async (t) => {
+  const langfuse = new FakeLangfuseClient();
+  const fx = await createTwoStepFixture(t, { langfuse });
+  await fx.setFlag(true);
+  await fx.postAndIdle('hi', { responders: [draftTurn('raw draft'), replyTurn('styled reply')] });
+
+  const replyTrace = langfuse.traces.find((tr) => tr.body.name === 'openhermit.two_step_reply');
+  assert.ok(replyTrace, 'expected a openhermit.two_step_reply trace');
+  assert.equal(replyTrace!.body.sessionId, `${fx.sessionId}:reply`);
+
+  const metadata = replyTrace!.client.updates.at(-1)?.metadata as Record<string, unknown> | undefined;
+  assert.equal(metadata?.twoStep, true);
+  assert.equal(metadata?.draftText, 'raw draft');
+  assert.equal(metadata?.replyText, 'styled reply');
+  assert.equal(typeof metadata?.rewriteLatencyMs, 'number');
+});
+
+test('flag off: no reply-pass trace is created', async (t) => {
+  const langfuse = new FakeLangfuseClient();
+  const fx = await createTwoStepFixture(t, { langfuse });
+  await fx.setFlag(false);
+  await fx.postAndIdle('hi', { responders: [draftTurn('raw draft')] });
+
+  assert.equal(langfuse.traces.filter((tr) => tr.body.name === 'openhermit.two_step_reply').length, 0);
 });

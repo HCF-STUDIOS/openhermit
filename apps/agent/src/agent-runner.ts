@@ -2927,13 +2927,26 @@ export class AgentRunner implements SessionRuntime {
       return null;
     }
 
+    const replySessionId = `${session.spec.sessionId}:reply`;
+    const langfuseTurnContext: LangfuseTurnContext | undefined = this.options.langfuse
+      ? {
+          currentTrace: this.options.langfuse.trace({
+            name: 'openhermit.two_step_reply',
+            sessionId: replySessionId,
+          }),
+        }
+      : undefined;
+    const startedAt = Date.now();
+
     const timeoutMs = twoStep.reply_timeout_ms ?? 8000;
     let agent: Agent | undefined;
     const timer = setTimeout(() => agent?.abort(), timeoutMs);
+    let replyText: string | null = null;
+    let replyTokens: number | undefined;
     try {
       agent = await this.createConfiguredAgent({
         config: replyConfig,
-        agentSessionId: `${session.spec.sessionId}:reply`,
+        agentSessionId: replySessionId,
         contextSessionId: session.spec.sessionId,
         tools: [],
         extraSystemPrompt: [
@@ -2941,16 +2954,35 @@ export class AgentRunner implements SessionRuntime {
           'Rewrite it as your final user-facing reply in your own voice and tone.',
           'Preserve all facts, links, and code verbatim. Output only the reply.',
         ].join('\n'),
+        ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
       });
       await agent.prompt(this.buildReplyInput(session.lastUserMessageText, draftText));
       await agent.waitForIdle();
       const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
       const rewrite = lastAssistant ? extractAssistantText(lastAssistant).trim() : '';
-      return rewrite ? rewrite : null;
+      replyText = rewrite ? rewrite : null;
+      replyTokens = lastAssistant?.usage?.totalTokens;
+      return replyText;
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
+      if (this.options.langfuse && langfuseTurnContext?.currentTrace) {
+        langfuseTurnContext.currentTrace.update({
+          metadata: {
+            twoStep: true,
+            draftText,
+            replyText,
+            ...(replyTokens !== undefined ? { replyTokens } : {}),
+            rewriteLatencyMs: Date.now() - startedAt,
+          },
+        });
+        try {
+          await this.options.langfuse.flushAsync?.();
+        } catch {
+          // Best-effort telemetry should never affect request execution.
+        }
+      }
     }
   }
 
