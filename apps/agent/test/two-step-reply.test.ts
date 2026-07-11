@@ -156,9 +156,9 @@ const createTwoStepFixture = async (t: TestContext, options?: { langfuse?: Langf
     get session(): RunnerSession {
       return (runner as unknown as { sessions: Map<string, RunnerSession> }).sessions.get(sessionId)!;
     },
-    async setFlag(enabled: boolean): Promise<void> {
+    async setFlag(enabled: boolean, extra?: { reply_timeout_ms?: number }): Promise<void> {
       const config = await security.readConfig();
-      await security.writeConfig({ ...config, experiments: { two_step: { enabled } } });
+      await security.writeConfig({ ...config, experiments: { two_step: { enabled, ...extra } } });
     },
     async postAndIdle(
       text: string,
@@ -597,4 +597,69 @@ test('flag off: exact baseline event sequence and call count', async (t) => {
   assert.ok(kinds.includes('text_delta'));
   assert.equal(kinds.filter((k) => k === 'text_final').length, 1);
   assert.ok(!kinds.includes('thinking_delta')); // no gating when off
+});
+
+test('two-step: reply pass that overruns the deadline falls back to the draft', async (t) => {
+  const fx = await createTwoStepFixture(t);
+  await fx.setFlag(true, { reply_timeout_ms: 50 });
+  // The reply responder never resolves, so agent.prompt/waitForIdle hangs past
+  // the 50ms deadline. generateStyledReply must abort and return null, and the
+  // turn must publish the draft rather than stall forever or lose the answer.
+  const neverResolves: Responder = () => new Promise(() => {});
+  await fx.postAndIdle('hi', { responders: [draftTurn('raw draft'), neverResolves] });
+  const finals = fx.backlog().filter((e) => e.type === 'text_final');
+  assert.equal(finals.length, 1);
+  assert.equal((finals[0] as { text: string }).text, 'raw draft');
+});
+
+test('two-step: reply pass honors reply_model and threads the user text + draft into its prompt', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+  const config = await security.readConfig();
+  await security.writeConfig({
+    ...config,
+    experiments: {
+      two_step: {
+        enabled: true,
+        // Default model is openrouter; the reply pass must route through this
+        // anthropic override instead (and its ANTHROPIC_API_KEY resolves).
+        reply_model: { provider: 'anthropic', model: 'claude-opus-4-5', max_tokens: 4096 },
+      },
+    },
+  });
+
+  // Capture (model, context) of every streamFn call so we can inspect the
+  // second (reply) call: draft = call #1, styled reply = call #2.
+  const calls: Array<{ model: { provider?: string }; contextText: string }> = [];
+  let callIndex = 0;
+  const streamFn: StreamFn = async (model, context) => {
+    callIndex += 1;
+    const contextText = JSON.stringify(context);
+    calls.push({ model: model as { provider?: string }, contextText });
+    return callIndex === 1
+      ? createTextResponseStream('raw draft')
+      : createTextResponseStream('styled reply');
+  };
+
+  const runner = await AgentRunner.create({ workspace, security, streamFn });
+  const sessionId = `cli:reply-model-${randomBytes(4).toString('hex')}`;
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'what is up' });
+  await runner.waitForSessionIdle(sessionId);
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (runner.events.getBacklog(sessionId).some((e) => e.event.type === 'agent_end')) break;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(calls.length, 2, 'expected a draft call and a reply call');
+  const draftCall = calls[0]!;
+  const replyCall = calls[1]!;
+  assert.equal(draftCall.model.provider, 'openrouter', 'draft uses the base model');
+  assert.equal(replyCall.model.provider, 'anthropic', 'reply pass uses reply_model override');
+  // buildReplyInput folds the last user message and the draft into the prompt.
+  assert.match(replyCall.contextText, /User: what is up/);
+  assert.match(replyCall.contextText, /Draft: raw draft/);
 });
