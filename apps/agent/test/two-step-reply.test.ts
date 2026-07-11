@@ -632,12 +632,12 @@ test('two-step: reply pass honors reply_model and threads the user text + draft 
 
   // Capture (model, context) of every streamFn call so we can inspect the
   // second (reply) call: draft = call #1, styled reply = call #2.
-  const calls: Array<{ model: { provider?: string }; contextText: string }> = [];
+  const calls: Array<{ model: { provider?: string; id?: string }; contextText: string }> = [];
   let callIndex = 0;
   const streamFn: StreamFn = async (model, context) => {
     callIndex += 1;
     const contextText = JSON.stringify(context);
-    calls.push({ model: model as { provider?: string }, contextText });
+    calls.push({ model: model as { provider?: string; id?: string }, contextText });
     return callIndex === 1
       ? createTextResponseStream('raw draft')
       : createTextResponseStream('styled reply');
@@ -658,7 +658,9 @@ test('two-step: reply pass honors reply_model and threads the user text + draft 
   const draftCall = calls[0]!;
   const replyCall = calls[1]!;
   assert.equal(draftCall.model.provider, 'openrouter', 'draft uses the base model');
+  assert.equal(draftCall.model.id, 'google/gemini-3-flash-preview', 'draft uses the base model id');
   assert.equal(replyCall.model.provider, 'anthropic', 'reply pass uses reply_model override');
+  assert.equal(replyCall.model.id, 'claude-opus-4-5', 'reply pass uses the configured reply_model id');
   // buildReplyInput folds the last user message and the draft into the prompt.
   assert.match(replyCall.contextText, /User: what is up/);
   assert.match(replyCall.contextText, /Draft: raw draft/);
