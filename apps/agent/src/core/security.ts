@@ -146,6 +146,13 @@ const VoiceConfigSchema = z.object({
   tts: TtsConfigSchema.optional(),
 });
 
+// Opt-in rolling context window (default-off). Absent `context` is fine;
+// only exact true enables the window. See AgentRuntimeConfig.context.
+const ContextConfigSchema = z.object({
+  rolling_window_enabled: z.boolean().optional(),
+  rolling_window_messages: z.number().int().positive().optional(),
+});
+
 const AgentRuntimeConfigSchema = z.object({
   workspace_root: z.string(),
   model: ModelConfigSchema,
@@ -154,6 +161,7 @@ const AgentRuntimeConfigSchema = z.object({
   web: WebConfigSchema.optional(),
   channels: ChannelsConfigSchema.optional(),
   voice: VoiceConfigSchema.optional(),
+  context: ContextConfigSchema.optional(),
 });
 
 function validateConfig(config: unknown, filePath: string): asserts config is AgentRuntimeConfig {
