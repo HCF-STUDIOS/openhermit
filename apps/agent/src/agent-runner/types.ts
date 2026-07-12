@@ -1,4 +1,5 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
+import type { StopReason, Usage } from '@mariozechner/pi-ai';
 import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
 import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
 
@@ -15,6 +16,16 @@ export interface RunnerSession extends SessionDescriptor {
   checkpointInProgress: boolean;
   idleSummaryTimer: ReturnType<typeof setTimeout> | undefined;
   latestAssistantText: string | undefined;
+  /** Draft assistant message's provider/model/usage/stopReason (+ thinkingSignature),
+   *  captured at message_end so a two-step agent_end can persist the single
+   *  assistant row with the same shape as a normal turn. */
+  latestAssistantMeta?: {
+    provider: string;
+    model: string;
+    usage: Usage;
+    stopReason: StopReason;
+    thinkingSignature?: string;
+  };
   lastUserMessageText?: string;
   // Sender names for stripping a copied `[Name]` tag from the reply. Group only.
   groupSenderNames?: Set<string>;
@@ -45,6 +56,10 @@ export interface RunnerSession extends SessionDescriptor {
   resolvedChannelUserId?: string;
   langfuseTurnContext?: LangfuseTurnContext;
   turnStartMs?: number;
+  /** Stamped fresh at the top of every turn from `config.experiments.two_step.enabled`. */
+  twoStepActive?: boolean;
+  /** In-flight reply pass for the current turn; the turn queue awaits this when set. */
+  pendingReplyPass?: Promise<void>;
   /** Consecutive failed tool results in the current turn. Resets at turn
    *  start and on any successful tool result. The agent aborts the turn
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the

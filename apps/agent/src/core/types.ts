@@ -48,6 +48,12 @@ export const DEFAULT_INTROSPECTION_CONFIG: IntrospectionConfig = {
   model: null,
 };
 
+export interface TwoStepConfig {
+  enabled: boolean;
+  reply_model?: AgentModelConfig | undefined;
+  reply_timeout_ms?: number | undefined;
+}
+
 export interface MemoryConfig {
   context_entry_limit?: number | undefined;
   introspection?: IntrospectionConfig | undefined;
@@ -154,6 +160,7 @@ export interface AgentRuntimeConfig {
     /** Number of trailing messages to keep when the window is on. Default 40. */
     rolling_window_messages?: number;
   };
+  experiments?: { two_step?: TwoStepConfig | undefined } | undefined;
 }
 
 export type AgentConfig = AgentRuntimeConfig;

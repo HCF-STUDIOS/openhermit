@@ -54,6 +54,9 @@ import {
   prepareAttachmentContent,
   extractToolResultDetails,
   extractToolResultText,
+  hasCodeFenceParity,
+  hasVisibleReply,
+  preservesLinks,
   isAssistantMessage,
   isEmptyAssistantTurn,
   stripEmptyAssistantTurns,
@@ -1218,6 +1221,13 @@ export class AgentRunner implements SessionRuntime {
 
     const run = async (): Promise<void> => {
       try {
+        if (session.pendingReplyPass) {
+          // Two-step turns publish text_final from a queue-chained but
+          // un-awaited-by-run() reply pass; wait for it here so this turn's
+          // events can never interleave ahead of the prior turn's final.
+          await session.pendingReplyPass.catch(() => undefined);
+          delete session.pendingReplyPass;
+        }
         await this.refreshAgentConfiguration(session);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
@@ -2386,6 +2396,7 @@ export class AgentRunner implements SessionRuntime {
     await this.options.security.load();
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
+    session.twoStepActive = config.experiments?.two_step?.enabled === true;
 
     const isOwnerInteractive = session.spec.source.interactive && session.resolvedUserRole === 'owner';
     const approvalCallback = isOwnerInteractive
@@ -2925,6 +2936,128 @@ export class AgentRunner implements SessionRuntime {
     });
   }
 
+  /**
+   * Reply pass (PROD-66): rewrites the tool loop's draft answer in the twin's
+   * voice, gated behind `config.experiments.two_step`. Never lets a failure
+   * lose the answer — returns null on throw / timeout / empty output / missing
+   * provider key, and the caller falls back to publishing the draft.
+   */
+  private async generateStyledReply(
+    session: RunnerSession,
+    draftText: string,
+    lastUserMessageText: string | undefined,
+  ): Promise<string | null> {
+    const config = await this.options.security.readConfig();
+    const twoStep = config.experiments?.two_step;
+    if (!twoStep?.enabled) return null;
+
+    // Reply pass never thinks: thinking blocks on some providers (e.g.
+    // MiniMax-M3 via anthropic-messages) 400 on a no-tools no-history turn.
+    const replyConfig: AgentConfig = {
+      ...config,
+      model: { ...(twoStep.reply_model ?? config.model), thinking: 'off' },
+    };
+
+    try {
+      this.ensureProviderApiKey(replyConfig.model.provider);
+    } catch {
+      return null;
+    }
+
+    const replySessionId = `${session.spec.sessionId}:reply`;
+    const langfuseTurnContext: LangfuseTurnContext | undefined = this.options.langfuse
+      ? {
+          currentTrace: this.options.langfuse.trace({
+            name: 'openhermit.two_step_reply',
+            sessionId: replySessionId,
+          }),
+        }
+      : undefined;
+    const startedAt = Date.now();
+
+    const timeoutMs = twoStep.reply_timeout_ms ?? 8000;
+    let agent: Agent | undefined;
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A true deadline over the WHOLE pass: agent construction can hang and the
+    // prompt/waitForIdle can overrun, so race everything against the timeout.
+    // When the deadline wins we return null (draft fallback) and abort the
+    // in-flight agent; any output that lands after timedOut is also rejected.
+    const deadline = new Promise<null>((resolve) => {
+      timer = setTimeout(() => { timedOut = true; agent?.abort(); resolve(null); }, timeoutMs);
+    });
+    let replyText: string | null = null;
+    let replyTokens: number | undefined;
+    try {
+      const work = (async (): Promise<string | null> => {
+        agent = await this.createConfiguredAgent({
+          config: replyConfig,
+          agentSessionId: replySessionId,
+          contextSessionId: session.spec.sessionId,
+          tools: [],
+          extraSystemPrompt: [
+            'Below is a DRAFT answer produced by your reasoning pass.',
+            'Rewrite it as your final user-facing reply in your own voice and tone.',
+            'Preserve all facts, links, and code verbatim. Output only the reply.',
+          ].join('\n'),
+          ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
+        });
+        if (timedOut) return null;
+        await agent.prompt(this.buildReplyInput(lastUserMessageText, draftText));
+        await agent.waitForIdle();
+        if (timedOut) return null;
+        const lastAssistant = [...agent.state.messages].reverse().find(isAssistantMessage);
+        const rewrite = lastAssistant ? extractAssistantText(lastAssistant).trim() : '';
+        replyText = rewrite ? rewrite : null;
+        replyTokens = lastAssistant?.usage?.totalTokens;
+        return replyText;
+      })();
+      return await Promise.race([work, deadline]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      if (this.options.langfuse && langfuseTurnContext?.currentTrace) {
+        langfuseTurnContext.currentTrace.update({
+          metadata: {
+            twoStep: true,
+            draftText,
+            replyText,
+            ...(replyTokens !== undefined ? { replyTokens } : {}),
+            rewriteLatencyMs: Date.now() - startedAt,
+          },
+        });
+        try {
+          await this.options.langfuse.flushAsync?.();
+        } catch {
+          // Best-effort telemetry should never affect request execution.
+        }
+      }
+    }
+  }
+
+  /**
+   * Fidelity guard: reject the rewrite (keep the draft) when it's empty, when
+   * it dropped code fences the draft had, or when the draft itself was
+   * `<NO_REPLY>` (the pass is skipped entirely in that case).
+   */
+  private acceptRewrite(draft: string, rewrite: string | null): boolean {
+    if (draft.trim() === '<NO_REPLY>') return false;
+    // Reject empty and reasoning-only rewrites: stripReasoningTags falls back
+    // to the original text when stripping empties it, so a `<think>…</think>`
+    // rewrite would otherwise be published as the reply.
+    if (!rewrite || !hasVisibleReply(rewrite)) return false;
+    return hasCodeFenceParity(draft, rewrite) && preservesLinks(draft, rewrite);
+  }
+
+  private buildReplyInput(lastUserMessageText: string | undefined, draftText: string): AgentMessage {
+    const parts = [
+      ...(lastUserMessageText ? [`User: ${lastUserMessageText}`] : []),
+      `Draft: ${draftText}`,
+    ];
+    return { role: 'user', content: [{ type: 'text', text: parts.join('\n\n') }], timestamp: Date.now() };
+  }
+
   private resolveWebProvider(config: AgentConfig): WebProvider | undefined {
     const providerName = config.web?.provider ?? 'defuddle';
 
@@ -3033,7 +3166,7 @@ export class AgentRunner implements SessionRuntime {
           }
           if (outText.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: outText,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
@@ -3057,7 +3190,7 @@ export class AgentRunner implements SessionRuntime {
           }
           if (tail.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: tail,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
@@ -3092,7 +3225,7 @@ export class AgentRunner implements SessionRuntime {
           }
           if (tail.length > 0) {
             void this.events.publish({
-              type: 'text_delta',
+              type: session.twoStepActive ? 'thinking_delta' : 'text_delta',
               sessionId: session.spec.sessionId,
               text: tail,
               ...(session.currentTurnCorrelationId ? { correlationId: session.currentTurnCorrelationId } : {}),
@@ -3168,11 +3301,12 @@ export class AgentRunner implements SessionRuntime {
         // agent loop won't dispatch anything (no toolCall blocks), so without this rescue
         // the turn would persist with empty content and the channel adapter would never see
         // a text_final event, producing a phantom "interrupted reply".
-        const isFinalThinkingOnly =
+        const isThinkingOnly =
           !hasText
           && hasThinking
           && (assistantMessage.stopReason !== 'toolUse' || toolCallCount === 0);
-        const effectiveText = isFinalThinkingOnly ? thinkingText : (assistantText || '');
+        const isFinalThinkingOnly = !session.twoStepActive && isThinkingOnly;
+        const effectiveText = isThinkingOnly ? thinkingText : (assistantText || '');
         const effectiveThinking = isFinalThinkingOnly ? undefined : (hasThinking ? thinkingText : undefined);
 
         if (!hasText && !hasThinking) {
@@ -3207,19 +3341,34 @@ export class AgentRunner implements SessionRuntime {
           if (u.cacheWrite) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'cache_write' }, u.cacheWrite);
         }
 
-        void this.queueSideEffect(session, async () => {
-          await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
-            ts,
-            role: 'assistant',
-            content: cleanedText,
-            ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
-            ...(effectiveThinking && thinkingSignature ? { thinkingSignature } : {}),
+        // Two-step: the draft's user-facing row is folded into the reply's
+        // `thinking` field at agent_end instead, so it isn't persisted here
+        // (avoids a duplicate assistant row per turn). Stash the draft's
+        // provider/model/usage/stopReason so agent_end can reuse them on
+        // that single row.
+        if (session.twoStepActive) {
+          session.latestAssistantMeta = {
             provider: assistantMessage.provider,
             model: assistantMessage.model,
             usage: assistantMessage.usage,
             stopReason: assistantMessage.stopReason,
+            ...(thinkingSignature ? { thinkingSignature } : {}),
+          };
+        } else {
+          void this.queueSideEffect(session, async () => {
+            await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+              ts,
+              role: 'assistant',
+              content: cleanedText,
+              ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
+              ...(effectiveThinking && thinkingSignature ? { thinkingSignature } : {}),
+              provider: assistantMessage.provider,
+              model: assistantMessage.model,
+              usage: assistantMessage.usage,
+              stopReason: assistantMessage.stopReason,
+            });
           });
-        });
+        }
         break;
       }
 
@@ -3283,6 +3432,15 @@ export class AgentRunner implements SessionRuntime {
       case 'agent_end': {
         const ts = new Date().toISOString();
         let finalText = session.latestAssistantText;
+        const draftText = finalText;
+        // Capture two-step-ness synchronously: twoStepActive is re-stamped
+        // per turn, and the reply pass below is un-awaited relative to the
+        // rest of this handler.
+        const isTwoStepTurn = session.twoStepActive;
+        // Snapshot the draft's provider/model/usage/stopReason captured at
+        // message_end, so the single persisted row below matches the shape
+        // of every other assistant appendLogEntry call.
+        const draftAssistantMeta = session.latestAssistantMeta;
         // Capture the roster synchronously: the emit below runs in a detached,
         // un-awaited async IIFE, so the next queued turn could overwrite
         // session.turnGroupParticipants before extractMentionRefs runs.
@@ -3319,7 +3477,15 @@ export class AgentRunner implements SessionRuntime {
 
         const turnCorrelationId = session.currentTurnCorrelationId;
         delete session.currentTurnCorrelationId;
-        void (async () => {
+        const replyPass = (async () => {
+          if (isTwoStepTurn && finalText && finalText.trim() !== '<NO_REPLY>') {
+            // Use the user-text snapshot captured before this pass was queued;
+            // a later postMessage can overwrite session.lastUserMessageText
+            // before the queued reply pass builds its prompt.
+            const rewrite = await this.generateStyledReply(session, draftText!, lastUserMessageText);
+            finalText = this.acceptRewrite(draftText!, rewrite) ? (rewrite as string) : draftText;
+          }
+
           // For channel-bound sessions, run the channel.message.out@v1
           // transform so plugins can scrub/rewrite outbound text (e.g.
           // PII unmasking, brand-voice enforcement) before adapters
@@ -3353,19 +3519,65 @@ export class AgentRunner implements SessionRuntime {
             });
           }
 
+          // Single-entry persistence: the draft's assistant row is suppressed
+          // at message_end (see the `!isTwoStepTurn` gate there) so the reply
+          // pass never produces a duplicate assistant row -- one entry per
+          // two-step turn, content = reply, thinking = draft. Fall back to the
+          // draft as content when channel.message.out@v1 stripped finalText to
+          // empty, so the turn never loses its assistant history row.
+          const persistedContent = finalText || draftText;
+          if (isTwoStepTurn && persistedContent && persistedContent.trim() !== '<NO_REPLY>') {
+            await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+              ts,
+              role: 'assistant',
+              content: persistedContent,
+              // `thinking` is the draft reply TEXT, not signed provider
+              // reasoning, so the draft's thinkingSignature is deliberately
+              // dropped: buildResumptionMessages would otherwise replay the
+              // draft as signed reasoning and signature-validating providers
+              // would reject the next turn.
+              thinking: draftText,
+              provider: draftAssistantMeta?.provider ?? 'anthropic',
+              model: draftAssistantMeta?.model ?? 'unknown',
+              usage: draftAssistantMeta?.usage,
+              stopReason: draftAssistantMeta?.stopReason ?? 'stop',
+            });
+          }
+
           await this.events.publish({
             type: 'agent_end',
             sessionId: session.spec.sessionId,
           });
+
+          // For two-step turns finalText is only settled here (after the reply
+          // pass overwrote the draft), so trace inside the pass to record the
+          // reply the user actually received, not the draft.
+          if (isTwoStepTurn && this.options.langfuse && session.langfuseTurnContext) {
+            await endTurnTrace(this.options.langfuse, session.langfuseTurnContext, {
+              ...(finalText ? { text: finalText } : {}),
+            });
+          }
         })();
 
-        if (this.options.langfuse && session.langfuseTurnContext) {
+        if (isTwoStepTurn) {
+          // The next queued turn's run() awaits this before starting, so
+          // turn ordering holds even though the pass itself is not awaited
+          // here. Also chain it through session.sideEffects so teardown's
+          // `await session.sideEffects` never orphans it fire-and-forget.
+          session.pendingReplyPass = replyPass;
+          void this.queueSideEffect(session, () => replyPass);
+        } else {
+          void replyPass;
+        }
+
+        if (!isTwoStepTurn && this.options.langfuse && session.langfuseTurnContext) {
           void endTurnTrace(this.options.langfuse, session.langfuseTurnContext, {
             ...(finalText ? { text: finalText } : {}),
           });
         }
 
         session.latestAssistantText = undefined;
+        delete session.latestAssistantMeta;
         void this.queueSideEffect(session, async () => {
           await this.store.messages.appendLogEntry(this.scope,session.spec.sessionId, {
             ts,

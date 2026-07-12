@@ -188,6 +188,40 @@ export const pushReasoningTagDelta = (
 export const flushReasoningTagStream = (state: ReasoningTagStreamState): string =>
   drainReasoningTagBuffer(state, true);
 
+const REASONING_TAG_RE = /<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi;
+
+/**
+ * The reply pass must never silently drop a code block the draft had. Counts
+ * ``` fence markers rather than parsing markdown, and rejects a rewrite with
+ * fewer fences than the draft (a dropped block) or an odd fence count (an
+ * unclosed block the rewrite introduced).
+ */
+export const hasCodeFenceParity = (draft: string, rewrite: string): boolean => {
+  const fences = (s: string) => (s.match(/```/g) ?? []).length;
+  return fences(rewrite) >= fences(draft) && fences(rewrite) % 2 === 0;
+};
+
+/** True if the text still has user-facing content once reasoning tags are removed. */
+export const hasVisibleReply = (text: string): boolean =>
+  text
+    .replace(REASONING_TAG_RE, '')
+    // An unclosed reasoning block (truncated output) leaks reasoning too, so
+    // treat everything from an unmatched opening tag onward as reasoning.
+    .replace(/<(think|thinking|reasoning)>[\s\S]*$/i, '')
+    .trim().length > 0;
+
+/** Every http(s) URL in the draft must survive verbatim in the rewrite. */
+export const preservesLinks = (draft: string, rewrite: string): boolean => {
+  // Trailing sentence punctuation is not part of the URL; keep it out of the
+  // comparison so a preserved link that is re-punctuated isn't false-rejected.
+  const extractUrls = (text: string): string[] =>
+    (text.match(/https?:\/\/[^\s)\]]+/gi) ?? []).map((url) => url.replace(/[.,!?;:]+$/, ''));
+  // Compare whole URLs, not substrings: `includes` would accept a rewrite that
+  // redirected `https://trusted.example` to `https://trusted.example.evil`.
+  const rewriteUrls = new Set(extractUrls(rewrite));
+  return extractUrls(draft).every((url) => rewriteUrls.has(url));
+};
+
 export const extractAssistantText = (message: AssistantMessage): string => {
   const textParts = message.content
     .filter((content): content is Extract<typeof content, { type: 'text' }> => content.type === 'text')
