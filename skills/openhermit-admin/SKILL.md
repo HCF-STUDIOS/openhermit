@@ -74,7 +74,7 @@ Model:
 {
   "model": {
     "provider": "openrouter",
-    "model": "google/gemini-3-flash-preview",
+    "model": "google/gemini-3.5-flash",
     "max_tokens": 8192
   }
 }

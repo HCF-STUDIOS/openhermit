@@ -168,7 +168,7 @@ export const buildDefaultAgentConfig = (workspaceRoot: string): AgentRuntimeConf
   workspace_root: workspaceRoot,
   model: {
     provider: 'openrouter',
-    model: 'google/gemini-3-flash-preview',
+    model: 'google/gemini-3.5-flash',
     max_tokens: 8192,
   },
   exec: {
