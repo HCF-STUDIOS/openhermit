@@ -15,7 +15,8 @@ import type {
   ChannelOutboundResult,
   OutboundSession,
 } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import type { SseFrame } from '@openhermit/shared';
 
 import { sendMessage } from './ilink/api.js';
 import {
@@ -111,8 +112,6 @@ interface AttachmentEvent {
 interface TurnResult {
   text: string | undefined;
   error: string | undefined;
-  /** Attachments the agent emitted, delivered after the text reply. */
-  attachments: AttachmentEvent[];
 }
 
 /** Outcome of resolving an inbound message's media. */
@@ -139,6 +138,10 @@ export class WechatBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
+  /** Out-of-turn subscriptions by sessionId; sole owner of attachment delivery (per-turn loop no longer delivers, so no double-delivery). */
+  private readonly subscriptions = new Map<string, AbortController>();
+  /** Highest out-of-turn id delivered per sessionId. Survives idle-close/reopen so a reopened subscription doesn't redeliver the replayed backlog. */
+  private readonly subscriptionCursors = new Map<string, number>();
   /** sessionId per peer (DM peer id or group id). */
   private readonly peerSessions = new Map<string, string>();
   /** Per-peer message queue to serialize handling. */
@@ -542,6 +545,11 @@ export class WechatBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, msg, isGroup),
       () => {
+        // Drop cursor/state and stop polling the abandoned session (same as other channels' /new).
+        this.lastEventIds.delete(sessionId);
+        this.subscriptionCursors.delete(sessionId);
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = WechatBridge.generateSessionId();
         this.peerSessions.set(peer, fresh);
         return fresh;
@@ -606,12 +614,6 @@ export class WechatBridge implements ChannelOutbound {
         }
       }
     }
-
-    // Deliver any attachments the agent emitted (image/video/file) after the
-    // text reply. Each is isolated so one failure doesn't affect the others.
-    for (const att of result.attachments) {
-      await this.deliverAttachment(peer, att, turnContextToken);
-    }
   }
 
   private static generateSessionId(): string {
@@ -666,6 +668,76 @@ export class WechatBridge implements ChannelOutbound {
       },
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     }, openOpts);
+
+    const peer = msg.group_id?.trim() || msg.from_user_id?.trim();
+    if (peer) this.startAttachmentSubscription(sessionId, peer);
+  }
+
+  /**
+   * Start the out-of-turn subscription delivering `attachment` events pushed
+   * after a turn. Idempotent per sessionId. The exactly-once boundary:
+   * attachment delivery happens only here, never in the per-turn loop.
+   */
+  private startAttachmentSubscription(sessionId: string, peer: string, idleTimeoutMs?: number): void {
+    if (this.subscriptions.has(sessionId)) return;
+
+    const abortController = new AbortController();
+    this.subscriptions.set(sessionId, abortController);
+    // Drop map entry as soon as idle decides to end (onEnding) and again in
+    // finally for abort/other ends. Identity guard so a concurrent reopen
+    // that already replaced this controller is never evicted.
+    const release = (): void => {
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
+    };
+
+    void startPersistentSubscription({
+      eventsUrl: this.client.buildEventsUrl(sessionId),
+      headers: { authorization: `Bearer ${this.clientToken}` },
+      abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
+      onEnding: release,
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      onEvent: (frame: SseFrame) => {
+        if (frame.event !== 'attachment') return;
+        try {
+          const payload = frame.data.length > 0
+            ? (JSON.parse(frame.data) as Record<string, unknown>)
+            : {};
+          const attachmentId = String(payload.attachmentId ?? '');
+          if (!attachmentId) return;
+          const att: AttachmentEvent = {
+            sessionId: String(payload.sessionId ?? sessionId),
+            attachmentId,
+            ...(payload.kind ? { kind: String(payload.kind) } : {}),
+            ...(payload.name ? { name: String(payload.name) } : {}),
+            ...(typeof payload.caption === 'string' && payload.caption ? { caption: payload.caption } : {}),
+          };
+          void this.deliverAttachment(peer, att).catch((err) => {
+            this.log(`out-of-turn attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } catch (err) {
+          this.log(`failed to parse out-of-turn attachment event: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    }).catch((err) => {
+      this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(release);
+  }
+
+  /** Number of live persistent subscriptions. Exposed for tests. */
+  get subscriptionCount(): number {
+    return this.subscriptions.size;
+  }
+
+  /** Stop all persistent subscriptions. Called on bridge/adapter shutdown. */
+  stop(): void {
+    for (const controller of this.subscriptions.values()) {
+      controller.abort();
+    }
+    this.subscriptions.clear();
   }
 
   private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
@@ -680,7 +752,6 @@ export class WechatBridge implements ChannelOutbound {
       return {
         text: undefined,
         error: `Failed to open event stream (${response.status})`,
-        attachments: [],
       };
     }
 
@@ -692,7 +763,6 @@ export class WechatBridge implements ChannelOutbound {
     let accumulatedText = '';
     let finalText: string | undefined;
     let error: string | undefined;
-    const attachments: AttachmentEvent[] = [];
 
     try {
       while (true) {
@@ -740,21 +810,8 @@ export class WechatBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
-          if (frame.event === 'attachment') {
-            const attachmentId = String(payload.attachmentId ?? '');
-            if (attachmentId) {
-              attachments.push({
-                sessionId: String(payload.sessionId ?? sessionId),
-                attachmentId,
-                ...(payload.kind ? { kind: String(payload.kind) } : {}),
-                ...(payload.name ? { name: String(payload.name) } : {}),
-                ...(typeof payload.caption === 'string' && payload.caption
-                  ? { caption: payload.caption }
-                  : {}),
-              });
-            }
-            continue;
-          }
+          // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
+
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
             continue;
@@ -768,7 +825,7 @@ export class WechatBridge implements ChannelOutbound {
 
     this.lastEventIds.set(sessionId, nextLastEventId);
     const text = finalText ?? (accumulatedText.trim() || undefined);
-    return { text, error, attachments };
+    return { text, error };
   }
 
   /**

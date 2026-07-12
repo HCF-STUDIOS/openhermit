@@ -11,10 +11,10 @@ import type { McpServerRecord } from '@openhermit/store';
 import { McpClientManager } from '../src/mcp-client.js';
 
 /**
- * Spins up a real MCP server over Streamable HTTP, backed by a `flaky_tool`
- * whose behavior is controlled at runtime via `behavior.mode`. This exercises
- * the actual `StreamableHTTPClientTransport` code path in McpClientManager
- * rather than mocking the transport away.
+ * Spins up a real MCP server over Streamable HTTP backed by a flaky_tool
+ * whose behavior is controlled at runtime via behavior.mode. Exercises the
+ * actual StreamableHTTPClientTransport code path in McpClientManager rather
+ * than mocking the transport away.
  */
 async function startFlakyMcpServer(): Promise<{
   url: string;
@@ -23,11 +23,11 @@ async function startFlakyMcpServer(): Promise<{
 }> {
   const behavior: { mode: 'ok' | 'fail' } = { mode: 'ok' };
 
-  // Each reconnect from the client sends a fresh `initialize` request, which
-  // a real MCP server treats as a new session. To exercise that faithfully
-  // (rather than a single pinned transport that would reject a second
-  // initialize), route requests to a transport-per-session-id, mirroring how
-  // a real stateful MCP HTTP server is typically wired.
+  // Each reconnect from the client sends a fresh initialize request which a
+  // real MCP server treats as a new session. To exercise that faithfully we
+  // route requests to a transport-per-session-id. A single pinned transport
+  // would reject a second initialize. This mirrors how a real stateful MCP
+  // HTTP server is typically wired.
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 
   const createSession = (): StreamableHTTPServerTransport => {
@@ -45,11 +45,11 @@ async function startFlakyMcpServer(): Promise<{
     return transport;
   };
 
-  // `behavior.mode = 'fail'` simulates a dead/expired upstream session at the
-  // transport level (connection reset), which is what actually causes
-  // McpClientManager's callTool() promise to reject — as opposed to a tool
-  // handler returning `isError: true`, which is a normal in-band result and
-  // correctly does NOT tear down the connection.
+  // behavior.mode = 'fail' simulates a dead or expired upstream session at
+  // the transport level via connection reset. That is what makes
+  // McpClientManager's callTool promise reject. A tool handler returning
+  // isError true is instead a normal in-band result and correctly does not
+  // tear down the connection.
   const httpServer = http.createServer((req, res) => {
     if (behavior.mode === 'fail') {
       req.destroy();
@@ -97,18 +97,17 @@ test('[BUG REPRO] MCP client never recovers after a tool call fails mid-session'
     const tool = toolset?.tools.find((t) => t.name === 'mcp__flaky__flaky_tool');
     assert.ok(tool, 'expected flaky_tool to be present after connecting');
 
-    // First call succeeds.
     const first = await tool.execute('call-1', {});
     assert.equal((first.content[0] as { text: string }).text, 'ok');
 
-    // Upstream now fails (simulating an expired/dead session on the server side).
+    // Upstream now fails simulating an expired or dead server-side session.
     behavior.mode = 'fail';
     const second = await tool.execute('call-2', {});
     assert.match((second.content[0] as { text: string }).text, /MCP tool call failed/);
     assert.equal(manager.getStatus()[0]?.status, 'error');
 
-    // Upstream recovers, but a healthy client should reconnect and let the
-    // twin keep using the tool instead of being stuck in 'error' forever.
+    // Upstream recovers. A healthy client should reconnect and let the twin
+    // keep using the tool instead of being stuck in 'error' forever.
     behavior.mode = 'ok';
     const third = await tool.execute('call-3', {});
     assert.equal(
@@ -122,4 +121,86 @@ test('[BUG REPRO] MCP client never recovers after a tool call fails mid-session'
   } finally {
     await close();
   }
+});
+
+interface CallToolCall {
+  name: string;
+  arguments?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+/**
+ * Injects a fake "connected" MCP server state directly into the manager's
+ * private connections map bypassing real network connect and listTools. Lets
+ * us exercise adaptTool and getToolsets without a live MCP server.
+ */
+function injectConnectedServer(
+  manager: McpClientManager,
+  serverId: string,
+  toolName: string,
+  callTool: (params: CallToolCall) => Promise<unknown>,
+): void {
+  const connections = (manager as unknown as { connections: Map<string, unknown> }).connections;
+  connections.set(serverId, {
+    serverId,
+    serverName: `${serverId}-name`,
+    status: 'connected',
+    client: { callTool },
+    tools: [{ name: toolName, description: 'a tool', inputSchema: { type: 'object' } }],
+  });
+}
+
+test('getToolsets forwards agentId/sessionId as _meta on callTool', async () => {
+  const manager = new McpClientManager();
+  const calls: CallToolCall[] = [];
+  injectConnectedServer(manager, 'srv1', 'do_thing', async (params) => {
+    calls.push(params);
+    return { content: [{ type: 'text', text: 'ok' }] };
+  });
+
+  const [toolset] = manager.getToolsets({ agentId: 'a', sessionId: 's' });
+  const tool = toolset!.tools[0]!;
+
+  await tool.execute('call-1', { foo: 'bar' });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.arguments, { foo: 'bar' });
+  assert.deepEqual(calls[0]!._meta, { agentId: 'a', sessionId: 's' });
+  assert.ok(!('agentId' in (calls[0]!.arguments ?? {})));
+  assert.ok(!('sessionId' in (calls[0]!.arguments ?? {})));
+});
+
+test('getToolsets omits _meta when no ctx is given', async () => {
+  const manager = new McpClientManager();
+  const calls: CallToolCall[] = [];
+  injectConnectedServer(manager, 'srv2', 'do_thing', async (params) => {
+    calls.push(params);
+    return { content: [{ type: 'text', text: 'ok' }] };
+  });
+
+  const [toolset] = manager.getToolsets();
+  const tool = toolset!.tools[0]!;
+
+  await tool.execute('call-1', { foo: 'bar' });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.arguments, { foo: 'bar' });
+  assert.equal(calls[0]!._meta, undefined);
+});
+
+test('getToolsets omits _meta when ctx has no ids', async () => {
+  const manager = new McpClientManager();
+  const calls: CallToolCall[] = [];
+  injectConnectedServer(manager, 'srv3', 'do_thing', async (params) => {
+    calls.push(params);
+    return { content: [{ type: 'text', text: 'ok' }] };
+  });
+
+  const [toolset] = manager.getToolsets({});
+  const tool = toolset!.tools[0]!;
+
+  await tool.execute('call-1', {});
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!._meta, undefined);
 });

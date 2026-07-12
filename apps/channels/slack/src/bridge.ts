@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import type { SseFrame } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
 import { formatAgentResponse, markdownToSlackMrkdwn } from './formatting.js';
@@ -28,6 +29,10 @@ export class SlackBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
+  /** Out-of-turn subscriptions by sessionId; sole owner of attachment delivery (per-turn loop no longer delivers, so no double-delivery). */
+  private readonly subscriptions = new Map<string, AbortController>();
+  /** Highest out-of-turn id delivered per sessionId. Survives idle-close/reopen so a reopened subscription doesn't redeliver the replayed backlog. */
+  private readonly subscriptionCursors = new Map<string, number>();
   private readonly channelSessions = new Map<string, string>();
 
   constructor(
@@ -178,6 +183,10 @@ export class SlackBridge implements ChannelOutbound {
         await this.client.checkpointSession(oldSessionId, { reason: 'new_session' });
       } catch { /* ignore */ }
       this.lastEventIds.delete(oldSessionId);
+      this.subscriptionCursors.delete(oldSessionId);
+      // Stop the orphaned subscription so it doesn't poll the dead session until idle timeout.
+      this.subscriptions.get(oldSessionId)?.abort();
+      this.subscriptions.delete(oldSessionId);
     }
 
     const newSessionId = SlackBridge.generateSessionId();
@@ -201,6 +210,11 @@ export class SlackBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, event, isDm, threadTs),
       () => {
+        // Match handleNewSession: drop cursor/state and stop polling the abandoned session.
+        this.lastEventIds.delete(sessionId);
+        this.subscriptionCursors.delete(sessionId);
+        this.subscriptions.get(sessionId)?.abort();
+        this.subscriptions.delete(sessionId);
         const fresh = SlackBridge.generateSessionId();
         this.channelSessions.set(this.sessionKey(channelId, threadTs), fresh);
         return fresh;
@@ -296,6 +310,72 @@ export class SlackBridge implements ChannelOutbound {
       },
       metadata,
     });
+
+    this.startAttachmentSubscription(sessionId, event.channel, threadTs);
+  }
+
+  /**
+   * Start the out-of-turn subscription delivering `attachment` events pushed
+   * after a turn. Idempotent per sessionId. Sole owner of attachment delivery.
+   * Cursor advances before the upload finishes, so delivery is at-most-once
+   * (a failed upload is not retried), not a durability guarantee.
+   */
+  private startAttachmentSubscription(
+    sessionId: string,
+    channelId: string,
+    threadTs?: string,
+    idleTimeoutMs?: number,
+  ): void {
+    if (this.subscriptions.has(sessionId)) return;
+
+    const abortController = new AbortController();
+    this.subscriptions.set(sessionId, abortController);
+    // Drop map entry as soon as idle decides to end (onEnding) and again in
+    // finally for abort/other ends. Identity guard so a concurrent reopen
+    // that already replaced this controller is never evicted.
+    const release = (): void => {
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
+    };
+
+    void startPersistentSubscription({
+      eventsUrl: this.client.buildEventsUrl(sessionId),
+      headers: { authorization: `Bearer ${this.clientToken}` },
+      abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
+      onEnding: release,
+      ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      onEvent: (frame: SseFrame) => {
+        if (frame.event !== 'attachment') return;
+        try {
+          const payload = frame.data.length > 0
+            ? (JSON.parse(frame.data) as Record<string, unknown>)
+            : {};
+          void this.deliverAttachment(channelId, payload, threadTs).catch((err) => {
+            this.log(`out-of-turn attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } catch (err) {
+          this.log(`failed to parse out-of-turn attachment event: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    }).catch((err) => {
+      this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(release);
+  }
+
+  /** Number of live persistent subscriptions. Exposed for tests. */
+  get subscriptionCount(): number {
+    return this.subscriptions.size;
+  }
+
+  /** Stop all persistent subscriptions. Called on bridge/adapter shutdown. */
+  stop(): void {
+    for (const controller of this.subscriptions.values()) {
+      controller.abort();
+    }
+    this.subscriptions.clear();
   }
 
   private async waitForAgentResponse(
@@ -398,16 +478,7 @@ export class SlackBridge implements ChannelOutbound {
             continue;
           }
 
-          if (frame.event === 'attachment') {
-            try {
-              await this.deliverAttachment(channelId, payload, threadTs);
-            } catch (err) {
-              this.log(
-                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-            continue;
-          }
+          // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;

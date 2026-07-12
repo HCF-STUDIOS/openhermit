@@ -31,6 +31,7 @@ export const main = async (): Promise<void> => {
   const shutdown = async (): Promise<void> => {
     log('shutting down...');
     await bot.stop();
+    bridge.stop();
     process.exit(0);
   };
 
