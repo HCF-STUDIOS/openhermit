@@ -1,0 +1,62 @@
+{
+  "name": "@openhermit/channel-lark",
+  "version": "0.1.0",
+  "description": "OpenHermit channel plugin for Lark / Feishu (飞书). WebSocket long-connection event subscription — no public URL required. Text and media in both directions; group @mention gating; supports both open.feishu.cn and open.larksuite.com tenants.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/index.js",
+    "dist/index.js.map",
+    "dist/index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HCF-STUDIOS/openhermit.git",
+    "directory": "apps/channels/lark"
+  },
+  "homepage": "https://github.com/HCF-STUDIOS/openhermit/tree/main/apps/channels/lark",
+  "bugs": "https://github.com/HCF-STUDIOS/openhermit/issues",
+  "keywords": [
+    "openhermit",
+    "channel",
+    "lark",
+    "feishu",
+    "飞书",
+    "chatbot"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.typecheck.json --pretty false",
+    "test": "node --import tsx --test test/*.test.ts",
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build",
+    "prepack": "node scripts/strip-dev-condition.mjs",
+    "postpack": "node scripts/restore-package-json.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.70.0",
+    "@openhermit/sdk": "^0.7.0"
+  },
+  "devDependencies": {
+    "@openhermit/protocol": "0.2.0",
+    "@openhermit/shared": "0.2.0",
+    "tsup": "^8.5.1"
+  }
+}

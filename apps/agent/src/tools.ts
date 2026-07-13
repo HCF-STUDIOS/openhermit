@@ -12,6 +12,7 @@ import type {
 import { createInstructionToolset } from './tools/instruction.js';
 import { createWebToolset } from './tools/web.js';
 import { createSessionToolset } from './tools/session.js';
+import { createHistoryToolset } from './tools/history.js';
 import { createIdentityToolset, createUserToolset } from './tools/user.js';
 import { createExecToolset } from './tools/sandbox-exec.js';
 import { createFileToolset } from './tools/file.js';
@@ -65,6 +66,9 @@ export const createBuiltInToolsets = (
   }
   if (context.sessionStore) {
     toolsets.push(createSessionToolset(context));
+  }
+  if (context.messageStore && context.storeScope && context.sessionId) {
+    toolsets.push(createHistoryToolset(context));
   }
   if (context.scheduleStore) {
     toolsets.push(createScheduleToolset(context));
