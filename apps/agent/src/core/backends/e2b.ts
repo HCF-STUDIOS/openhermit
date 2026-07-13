@@ -32,6 +32,24 @@ const uploadDirToE2B = async (
   }
 };
 
+/** Single-quote a string for safe interpolation into a shell command. */
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+
+/** Require AMIKO_STAGING_CLI_URL to be a valid http(s) URL; warn and skip otherwise. */
+const validateStagingCliUrl = (raw: string | undefined): string | undefined => {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(`unsupported protocol: ${url.protocol}`);
+    return raw;
+  } catch (err) {
+    console.warn(
+      `[e2b] ignoring invalid AMIKO_STAGING_CLI_URL: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
+  }
+};
+
 interface E2BBackendPersisted {
   sandboxId: string;
   template: string;
@@ -180,11 +198,11 @@ class E2BExecBackend implements ExecBackend {
     // sandbox user can't `npm i -g` (EACCES), so install into $HOME and shadow
     // the template's binary via PATH. Best-effort: a failed install never
     // blocks sandbox provisioning.
-    const stagingCliUrl = process.env['AMIKO_STAGING_CLI_URL'];
+    const stagingCliUrl = validateStagingCliUrl(process.env['AMIKO_STAGING_CLI_URL']);
     if (stagingCliUrl) {
       try {
         await this.sandbox.commands.run(
-          `cd $HOME && npm install ${stagingCliUrl} && mkdir -p $HOME/bin && ` +
+          `cd $HOME && npm install ${shellQuote(stagingCliUrl)} && mkdir -p $HOME/bin && ` +
             `ln -sf $HOME/node_modules/.bin/amiko $HOME/bin/amiko && ` +
             `(grep -q 'HOME/bin' $HOME/.profile 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> $HOME/.profile)`,
           { timeoutMs: 120_000 },
