@@ -175,6 +175,28 @@ class E2BExecBackend implements ExecBackend {
 
     await this.sandbox.commands.run(`mkdir -p ${this.agentHome}`);
 
+    // Env-gated (set only on staging): preinstall the branch build of the amiko
+    // CLI into every fresh sandbox so all twins test the same version. The
+    // sandbox user can't `npm i -g` (EACCES), so install into $HOME and shadow
+    // the template's binary via PATH. Best-effort: a failed install never
+    // blocks sandbox provisioning.
+    const stagingCliUrl = process.env['AMIKO_STAGING_CLI_URL'];
+    if (stagingCliUrl) {
+      try {
+        await this.sandbox.commands.run(
+          `cd $HOME && npm install ${stagingCliUrl} && mkdir -p $HOME/bin && ` +
+            `ln -sf $HOME/node_modules/.bin/amiko $HOME/bin/amiko && ` +
+            `(grep -q 'HOME/bin' $HOME/.profile 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> $HOME/.profile)`,
+          { timeoutMs: 120_000 },
+        );
+        console.log('[e2b] staging amiko CLI installed into fresh sandbox');
+      } catch (err) {
+        console.warn(
+          `[e2b] staging amiko CLI install failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     await this.saveState({
       sandboxId: this.sandbox.sandboxId,
       template: this.template,
