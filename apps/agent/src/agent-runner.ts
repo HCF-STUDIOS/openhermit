@@ -120,6 +120,12 @@ import {
  *  cost of a model that keeps re-calling a permanently broken tool. */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 15;
 
+/** Mid-turn steering: fold user messages that arrive while a turn is
+ *  running into that turn at the next tool boundary instead of queueing
+ *  them as separate turns. Default off. */
+const isMidTurnSteeringEnabled = (): boolean =>
+  process.env.OPENHERMIT_MID_TURN_STEERING === '1';
+
 const addUserIdToList = (existing: string[], userId: string | undefined): string[] => {
   if (!userId) return existing;
   return existing.includes(userId) ? existing : [...existing, userId];
@@ -699,6 +705,7 @@ export class AgentRunner implements SessionRuntime {
         } else {
           session.consecutiveToolFailures = 0;
         }
+        await this.foldMidTurnMessages(session);
         return undefined;
       },
     );
@@ -1214,6 +1221,11 @@ export class AgentRunner implements SessionRuntime {
     const promptMessage = { ...message, text: promptText };
 
     const run = async (): Promise<void> => {
+      // Mid-turn steering: a message folded into an earlier in-flight turn
+      // was already sent to the model there — its queued turn is a no-op.
+      if (message.messageId && session.foldedMessageIds?.delete(message.messageId)) {
+        return;
+      }
       try {
         await this.refreshAgentConfiguration(session);
         // Snapshot this turn's roster
@@ -1252,6 +1264,14 @@ export class AgentRunner implements SessionRuntime {
           },
           { supportsImageInput, log: (m) => console.warn(`[agent-runner] ${m}`) },
         );
+        if (isMidTurnSteeringEnabled()) {
+          // Cursor for foldMidTurnMessages: user rows appended to the
+          // transcript after this id arrived while this turn was running.
+          session.midTurnCursor = await this.store.messages.getLatestEventId(
+            this.scope,
+            session.spec.sessionId,
+          );
+        }
         await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
       } catch (error) {
         await this.handleRunError(session, error);
@@ -1353,6 +1373,55 @@ export class AgentRunner implements SessionRuntime {
     }
 
     return { appended: true };
+  }
+
+  /**
+   * Mid-turn steering, behind `OPENHERMIT_MID_TURN_STEERING=1`. Called from
+   * the session agent's afterToolCall hook — after each tool result, before
+   * the next model call. Folds user messages appended to the transcript
+   * after the turn-start cursor into the running turn via pi-agent-core's
+   * `steer()`, which injects queued messages at the next tool boundary.
+   *
+   * Rows without a messageId are skipped: the dedupe that turns a folded
+   * message's queued postMessage turn into a no-op is keyed by messageId.
+   * Messages stored via appendMessage never queue a turn of their own, so
+   * folding is their only path into a live turn. Must not throw — the
+   * afterToolCall contract requires a settled result.
+   */
+  private async foldMidTurnMessages(session: RunnerSession): Promise<void> {
+    if (!isMidTurnSteeringEnabled()) return;
+    const cursor = session.midTurnCursor;
+    if (cursor === undefined) return;
+    try {
+      const rows = await this.store.messages.listMessagesSinceEvent(
+        this.scope,
+        session.spec.sessionId,
+        cursor,
+      );
+      let maxEventId = cursor;
+      for (const row of rows) {
+        if (row.eventId !== undefined && row.eventId > maxEventId) {
+          maxEventId = row.eventId;
+        }
+        if (row.role !== 'user' || !row.messageId) continue;
+        const folded = (session.foldedMessageIds ??= new Set());
+        if (folded.has(row.messageId)) continue;
+        folded.add(row.messageId);
+        const text = session.spec.source.type === 'group' && row.userName
+          ? `[${row.userName}] ${row.content}`
+          : row.content;
+        session.agent.steer(createUserMessage({ text }));
+        this.logRuntime(
+          `session ${session.spec.sessionId}: folded mid-turn message ${row.messageId} into the running turn`,
+        );
+      }
+      session.midTurnCursor = maxEventId;
+    } catch (error) {
+      console.error(
+        `[openhermit-agent] mid-turn fold failed for ${session.spec.sessionId}`,
+        getErrorMessage(error),
+      );
+    }
   }
 
   private makeApprovalCallback(

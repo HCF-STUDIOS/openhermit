@@ -1690,3 +1690,89 @@ test('AgentRunner emits no mentions when a group reply addresses nobody', async 
   assert.equal(final.text, 'no idea, ask someone else');
   assert.equal(final.mentions, undefined);
 });
+
+test('AgentRunner folds mid-turn user messages into the running turn behind OPENHERMIT_MID_TURN_STEERING', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let secondCallMessages: Context['messages'] = [];
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        // Arrives while the first turn is streaming: postMessage appends it
+        // to the transcript and queues its own turn, then the fold at the
+        // memory_get tool boundary steers it into the running turn instead.
+        await runner.postMessage('cli:steer-session', {
+          messageId: 'steer-1',
+          text: 'also include the units',
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: {
+            key: 'fact',
+          },
+        });
+      }
+      secondCallMessages = context.messages;
+      return createTextResponseStream('42 units');
+    },
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:steer-session',
+    source: {
+      kind: 'cli',
+      interactive: true,
+    },
+  });
+  await runner.postMessage('cli:steer-session', {
+    messageId: 'msg-1',
+    text: 'What is the fact?',
+  });
+  await runner.waitForSessionIdle('cli:steer-session');
+
+  // Two model calls total: the folded message rode the first turn instead
+  // of triggering a third call as its own turn.
+  assert.equal(streamCalls, 2);
+
+  const foldedIndex = secondCallMessages.findIndex(
+    (message) =>
+      message.role === 'user'
+      && JSON.stringify(message.content).includes('also include the units'),
+  );
+  const toolResultIndex = secondCallMessages.findIndex(
+    (message) => message.role === 'toolResult',
+  );
+  assert.notEqual(foldedIndex, -1, 'folded message missing from second model call');
+  assert.notEqual(toolResultIndex, -1, 'tool result missing from second model call');
+  assert.ok(
+    foldedIndex > toolResultIndex,
+    'folded message should be injected after the tool result',
+  );
+
+  // Persisted exactly once — the steering injection must not re-append it.
+  const entries = await readSessionLog(runner, 'cli:steer-session');
+  const foldedEntries = entries.filter(
+    (entry) => entry.role === 'user' && entry.content === 'also include the units',
+  );
+  assert.equal(foldedEntries.length, 1);
+});
