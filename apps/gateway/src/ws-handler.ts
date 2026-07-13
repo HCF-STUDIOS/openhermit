@@ -279,8 +279,19 @@ const handleRequest = async (
           sendError(ws, id, 'INVALID_PARAMS', 'Missing sessionId.');
           return;
         }
-        // Verify caller is a participant before subscribing to events
-        await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        // Channel-token connections may subscribe to sessions inside their
+        // own namespace (mirrors the SSE events route, which enforces the
+        // namespace instead of participant membership — a channel bridge has
+        // no single channelUserId across its conversations). User JWTs keep
+        // the participant check.
+        const channelScoped =
+          conn.auth?.mode === 'channel' &&
+          !!conn.auth.channelNamespace &&
+          sessionId.startsWith(`${conn.auth.channelNamespace}:`);
+        if (!channelScoped) {
+          // Verify caller is a participant before subscribing to events
+          await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        }
         conn.subscriptions.get(sessionId)?.();
         const afterEventId = typeof p.lastEventId === 'number' ? p.lastEventId : 0;
         const unsubscribe = runtime.events.subscribeFrom(
