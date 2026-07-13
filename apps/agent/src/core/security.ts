@@ -156,6 +156,13 @@ const ExperimentsConfigSchema = z.object({
   two_step: TwoStepConfigSchema.optional(),
 });
 
+// Opt-in rolling context window (default-off). Absent `context` is fine;
+// only exact true enables the window. See AgentRuntimeConfig.context.
+const ContextConfigSchema = z.object({
+  rolling_window_enabled: z.boolean().optional(),
+  rolling_window_messages: z.number().int().positive().optional(),
+});
+
 const AgentRuntimeConfigSchema = z.object({
   workspace_root: z.string(),
   model: ModelConfigSchema,
@@ -165,6 +172,7 @@ const AgentRuntimeConfigSchema = z.object({
   channels: ChannelsConfigSchema.optional(),
   voice: VoiceConfigSchema.optional(),
   experiments: ExperimentsConfigSchema.optional(),
+  context: ContextConfigSchema.optional(),
 });
 
 /** Schema-boundary parse for tests; validates known fields without requiring the full config. */

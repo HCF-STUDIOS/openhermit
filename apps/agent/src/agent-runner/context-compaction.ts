@@ -223,6 +223,26 @@ export const getCompactionRetainedStartIndex = (
   return startIndex;
 };
 
+/**
+ * Rolling context window (request-only). Returns the last `maxMessages`
+ * messages, but if that raw cut point would start inside a
+ * toolCall→toolResult pair, the boundary is pulled back to keep the pair
+ * intact (reusing `getCompactionRetainedStartIndex`). Returns the input
+ * unchanged when `maxMessages <= 0` or the list already fits. Pure — never
+ * mutates its input and does no I/O.
+ */
+export const applyRollingWindow = (
+  messages: AgentMessage[],
+  maxMessages: number,
+): AgentMessage[] => {
+  if (maxMessages <= 0 || messages.length <= maxMessages) {
+    return messages;
+  }
+
+  const startIndex = getCompactionRetainedStartIndex(messages, maxMessages);
+  return messages.slice(startIndex);
+};
+
 export const summarizeMessageForCompaction = (message: AgentMessage): string | undefined => {
   if (!message || typeof message !== 'object' || !('role' in message)) {
     return undefined;

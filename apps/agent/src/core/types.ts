@@ -148,6 +148,19 @@ export interface AgentRuntimeConfig {
    */
   voice?: import('@openhermit/voice').VoiceConfig;
   experiments?: { two_step?: TwoStepConfig | undefined } | undefined;
+  /**
+   * Opt-in rolling context window. Default-off: when
+   * `rolling_window_enabled` is not exactly `true`, per-turn context
+   * assembly is byte-identical to today. When enabled, the messages handed
+   * to the model for a generation are truncated to the last N (plus
+   * system/context blocks); older turns remain fetchable via
+   * `fetch_full_history`. Request-only — never written back into live state.
+   */
+  context?: {
+    rolling_window_enabled?: boolean;
+    /** Number of trailing messages to keep when the window is on. Default 40. */
+    rolling_window_messages?: number;
+  };
 }
 
 export type AgentConfig = AgentRuntimeConfig;
