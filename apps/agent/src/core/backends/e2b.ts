@@ -33,10 +33,10 @@ const uploadDirToE2B = async (
 };
 
 /** Single-quote a string for safe interpolation into a shell command. */
-const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+export const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 /** Require AMIKO_STAGING_CLI_URL to be a valid http(s) URL; warn and skip otherwise. */
-const validateStagingCliUrl = (raw: string | undefined): string | undefined => {
+export const validateStagingCliUrl = (raw: string | undefined): string | undefined => {
   if (!raw) return undefined;
   try {
     const url = new URL(raw);
