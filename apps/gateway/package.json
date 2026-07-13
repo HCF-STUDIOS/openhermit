@@ -26,7 +26,8 @@
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "@supabase/supabase-js": "^2.47.0"
   },
   "devDependencies": {
     "@types/mime-types": "^2.1.4",
