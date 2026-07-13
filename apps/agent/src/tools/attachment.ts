@@ -340,6 +340,13 @@ export const createAttachmentUploadTool = (
         correlationId: result.id,
         kind: skeletonKind,
       });
+      if (process.env.AMIKO_TRACE === '1') {
+        console.log('[trace:attachment_upload] pending_media emitted', {
+          correlationId: result.id,
+          kind: skeletonKind,
+          sessionId: context.sessionId,
+        });
+      }
     }
 
     return {
@@ -475,6 +482,14 @@ export const createAttachmentSendTool = (
     }
 
     context.publishEvent(event);
+    if (process.env.AMIKO_TRACE === '1') {
+      console.log('[trace:attachment_send] attachment emitted', {
+        attachmentId: row.id,
+        kind,
+        mimeType: row.mimeType,
+        sessionId,
+      });
+    }
 
     // Persist an assistant log entry so the attachment shows up in history
     // and conversation replay. Channels stream the bytes via the bytes

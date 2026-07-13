@@ -163,7 +163,10 @@ class DaytonaExecBackend implements ExecBackend {
     const startedAt = Date.now();
     try {
       const timeoutSec = Math.max(1, Math.ceil(this.timeoutMs / 1000));
-      const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
+      const passEnv = {
+        ...((await this.context.passThroughEnvProvider?.()) ?? {}),
+        ...(opts?.env ?? {}),
+      };
       const response = await this.sandbox!.process.executeCommand(
         command,
         opts?.cwd ?? this.agentHome,

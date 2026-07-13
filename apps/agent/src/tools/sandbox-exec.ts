@@ -76,7 +76,20 @@ export const createSandboxExecTool = (
 
     await backend.ensure();
     context.onExec?.();
-    const result = await backend.exec(args.command, args.cwd ? { cwd: args.cwd } : undefined);
+    // Expose the calling session to sandbox CLIs (e.g. `amiko create ...`) so
+    // async media jobs can publish their skeleton + result back into THIS chat
+    // session instead of returning a bare URL.
+    const sessionEnv: Record<string, string> = {
+      ...(context.sessionId ? { AMIKO_SESSION_ID: context.sessionId } : {}),
+      ...(context.agentId ? { AMIKO_AGENT_ID: context.agentId } : {}),
+    };
+    if (process.env.AMIKO_TRACE === '1' && Object.keys(sessionEnv).length > 0) {
+      console.log('[trace:exec] session env injected', sessionEnv);
+    }
+    const result = await backend.exec(args.command, {
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(Object.keys(sessionEnv).length > 0 ? { env: sessionEnv } : {}),
+    });
 
     const details = {
       stdout: result.stdout,

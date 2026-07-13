@@ -65,7 +65,7 @@ class HostExecBackend implements ExecBackend {
     return new Promise<ExecResult>((resolve, reject) => {
       const child = spawn(this.shell, ['-lc', command], {
         cwd,
-        env: { ...process.env, ...passEnv, ...(this.env ?? {}) },
+        env: { ...process.env, ...passEnv, ...(this.env ?? {}), ...(opts?.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
