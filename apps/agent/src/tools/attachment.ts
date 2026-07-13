@@ -344,18 +344,10 @@ const AttachmentSendParams = Type.Object({
     }),
   ),
   kind: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal('image'),
-        Type.Literal('audio'),
-        Type.Literal('video'),
-        Type.Literal('document'),
-      ],
-      {
-        description:
-          "Override the rendering hint for channels. By default it is inferred from the MIME type (image/* → image, audio/* → audio, video/* → video, anything else → document).",
-      },
-    ),
+    Type.String({
+      description:
+        "Optional rendering hint (e.g. 'image', 'audio', 'video', 'document'). Model-speak aliases like 'photo'/'picture' are accepted; anything unrecognized falls back to the attachment's MIME type.",
+    }),
   ),
 });
 
@@ -406,15 +398,41 @@ export const createAttachmentSendTool = (
       );
     }
 
-    const kind: 'image' | 'audio' | 'video' | 'document' =
-      args.kind ??
-      (row.mimeType.startsWith('image/')
+    // `kind` is only a soft rendering hint (the MIME type is authoritative).
+    // Models pass wildly varying values ("photo", "picture", "img", ...), so map
+    // common aliases and fall back to the MIME type for anything unrecognized
+    // instead of rejecting the whole send.
+    const inferredKind: 'image' | 'audio' | 'video' | 'document' =
+      row.mimeType.startsWith('image/')
         ? 'image'
         : row.mimeType.startsWith('audio/')
           ? 'audio'
           : row.mimeType.startsWith('video/')
             ? 'video'
-            : 'document');
+            : 'document';
+    const KIND_ALIASES: Record<
+      string,
+      'image' | 'audio' | 'video' | 'document'
+    > = {
+      image: 'image',
+      photo: 'image',
+      picture: 'image',
+      img: 'image',
+      pic: 'image',
+      audio: 'audio',
+      voice: 'audio',
+      sound: 'audio',
+      video: 'video',
+      movie: 'video',
+      clip: 'video',
+      document: 'document',
+      doc: 'document',
+      file: 'document',
+      pdf: 'document',
+    };
+    const kind: 'image' | 'audio' | 'video' | 'document' =
+      (args.kind && KIND_ALIASES[args.kind.trim().toLowerCase()]) ||
+      inferredKind;
 
     const event: Record<string, unknown> = {
       type: 'attachment',
