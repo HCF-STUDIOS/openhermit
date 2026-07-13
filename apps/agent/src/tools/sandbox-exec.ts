@@ -82,6 +82,11 @@ export const createSandboxExecTool = (
     const sessionEnv: Record<string, string> = {
       ...(context.sessionId ? { AMIKO_SESSION_ID: context.sessionId } : {}),
       ...(context.agentId ? { AMIKO_AGENT_ID: context.agentId } : {}),
+      // Spend autonomy: lets the amiko CLI auto-approve create jobs whose
+      // quoted cost is under this limit (gateway-level env, deploy-scoped).
+      ...(process.env.AMIKO_AUTO_APPROVE_LIMIT
+        ? { AMIKO_AUTO_APPROVE_LIMIT: process.env.AMIKO_AUTO_APPROVE_LIMIT }
+        : {}),
     };
     if (process.env.AMIKO_TRACE === '1' && Object.keys(sessionEnv).length > 0) {
       console.log('[trace:exec] session env injected', sessionEnv);
