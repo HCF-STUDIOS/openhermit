@@ -48,6 +48,15 @@ export interface RunnerSession extends SessionDescriptor {
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
    *  model from looping forever against a broken tool. */
   consecutiveToolFailures: number;
+  /** Mid-turn steering (`OPENHERMIT_MID_TURN_STEERING=1`): highest
+   *  session_events id already visible to the in-flight turn. User rows
+   *  appended after this id get folded into the running turn at the next
+   *  tool boundary. Recaptured at every turn start. */
+  midTurnCursor?: number;
+  /** messageIds already folded into an in-flight turn via steer(). The
+   *  queued postMessage turn for these ids becomes a no-op so a folded
+   *  message is never processed twice. */
+  foldedMessageIds?: Set<string>;
 }
 
 export interface AgentRunnerOptions {
