@@ -387,6 +387,14 @@ export const attachGatewayWs = (
       return;
     }
 
+    // Channel tokens are scoped to a single agent — reject upgrades where the
+    // token's agent doesn't match the agent in the URL.
+    if (auth.mode === 'channel' && auth.agentId !== agentId) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     let runner;
     try {
       runner = await instances.getOrHydrate(agentId);
