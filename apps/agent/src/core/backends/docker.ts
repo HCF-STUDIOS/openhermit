@@ -56,7 +56,7 @@ class DockerExecBackend implements ExecBackend {
   }
 
   async exec(command: string, opts?: ExecOpts): Promise<ExecResult> {
-    return this.containerManager.execInWorkspace(this.agentId, command, opts?.cwd);
+    return this.containerManager.execInWorkspace(this.agentId, command, opts?.cwd, opts?.env);
   }
 
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
