@@ -126,4 +126,20 @@ describe('reasoning tag stream', () => {
     const full = '<think>plan</think>Final.';
     assert.equal(runReasoningStream([...full]), 'Final.');
   });
+
+  test('nested same-name tags stay suppressed until the outermost close', () => {
+    const full = '<think>outer <think>inner</think> still</think>Answer';
+    assert.equal(runReasoningStream([full]), 'Answer');
+    assert.equal(runReasoningStream([...full]), 'Answer');
+    assert.equal(
+      runReasoningStream(['<think>outer <thi', 'nk>inner</think> still</thi', 'nk>Answer']),
+      'Answer',
+    );
+  });
+
+  test('flush of an unclosed nested tag surfaces the full remainder', () => {
+    const state = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(state, '<think>outer <think>inner'), '');
+    assert.equal(flushReasoningTagStream(state), '<think>outer <think>inner');
+  });
 });

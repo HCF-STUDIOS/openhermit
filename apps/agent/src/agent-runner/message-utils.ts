@@ -100,6 +100,10 @@ export interface ReasoningTagStreamState {
   openName: string | null;
   /** Exact open-tag text as received (e.g. `<Think>`), re-emitted on unclosed flush. */
   openRaw: string | null;
+  /** Same-name nesting depth; suppression only ends when the outermost tag closes. */
+  depth: number;
+  /** Body consumed while suppressed, re-emitted after `openRaw` on unclosed flush. */
+  suppressed: string;
 }
 
 export const newReasoningTagStream = (): ReasoningTagStreamState => ({
@@ -107,6 +111,8 @@ export const newReasoningTagStream = (): ReasoningTagStreamState => ({
   inReasoning: false,
   openName: null,
   openRaw: null,
+  depth: 0,
+  suppressed: '',
 });
 
 const couldBeReasoningOpenPrefix = (s: string): boolean => {
@@ -123,22 +129,36 @@ const drainReasoningTagBuffer = (
   while (state.buf.length > 0) {
     if (state.inReasoning) {
       const name = state.openName ?? 'think';
-      const closeRe = new RegExp(`</${name}>`, 'i');
-      const match = closeRe.exec(state.buf);
+      // Track nested same-name opens so suppression only ends at the
+      // outermost close — mirrors stripReasoningTags' innermost peeling.
+      const tagRe = new RegExp(`<(/?)${name}>`, 'i');
+      const match = tagRe.exec(state.buf);
       if (match) {
-        state.buf = state.buf.slice(match.index + match[0].length);
-        state.inReasoning = false;
-        state.openName = null;
-        state.openRaw = null;
+        const end = match.index + match[0].length;
+        const isClose = match[1] === '/';
+        if (isClose && state.depth <= 1) {
+          state.buf = state.buf.slice(end);
+          state.inReasoning = false;
+          state.openName = null;
+          state.openRaw = null;
+          state.depth = 0;
+          state.suppressed = '';
+          continue;
+        }
+        state.depth += isClose ? -1 : 1;
+        state.suppressed += state.buf.slice(0, end);
+        state.buf = state.buf.slice(end);
         continue;
       }
       if (flush) {
         // Unclosed: surface the remainder (including the open tag) unchanged.
-        out += (state.openRaw ?? '') + state.buf;
+        out += (state.openRaw ?? '') + state.suppressed + state.buf;
         state.buf = '';
         state.inReasoning = false;
         state.openName = null;
         state.openRaw = null;
+        state.depth = 0;
+        state.suppressed = '';
         break;
       }
       // Still inside a paired block; hold everything until the close arrives.
@@ -161,6 +181,8 @@ const drainReasoningTagBuffer = (
       state.inReasoning = true;
       state.openName = openMatch[1]!.toLowerCase();
       state.openRaw = openMatch[0];
+      state.depth = 1;
+      state.suppressed = '';
       state.buf = state.buf.slice(openMatch[0].length);
       continue;
     }
