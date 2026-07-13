@@ -320,6 +320,28 @@ export const createAttachmentUploadTool = (
       path,
       ...(args.name !== undefined ? { name: args.name } : {}),
     });
+
+    // Show a "generating" skeleton immediately, keyed by the new attachment id.
+    // `attachment_send` carries the same id as correlationId and swaps the real
+    // media into this placeholder row. Only renderable media gets a skeleton so
+    // an upload that is never sent (e.g. a document read) can't strand one.
+    const skeletonMime = result.mimeType ?? '';
+    const skeletonKind = skeletonMime.startsWith('image/')
+      ? 'image'
+      : skeletonMime.startsWith('audio/')
+        ? 'audio'
+        : skeletonMime.startsWith('video/')
+          ? 'video'
+          : null;
+    if (skeletonKind && context.publishEvent && context.sessionId) {
+      context.publishEvent({
+        type: 'pending_media',
+        sessionId: context.sessionId,
+        correlationId: result.id,
+        kind: skeletonKind,
+      });
+    }
+
     return {
       content: asTextContent(formatJson(result)),
       details: {
@@ -438,6 +460,10 @@ export const createAttachmentSendTool = (
       type: 'attachment',
       sessionId,
       attachmentId: row.id,
+      // Same id `attachment_upload` used for its pending_media skeleton, so the
+      // consumer resolves that placeholder into this media instead of appending
+      // a second bubble.
+      correlationId: row.id,
       mimeType: row.mimeType,
       kind,
       name: row.originalName,
