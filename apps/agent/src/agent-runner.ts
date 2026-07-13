@@ -2861,13 +2861,12 @@ export class AgentRunner implements SessionRuntime {
     // 71 markers in one hour for one session. Writing the compacted core back
     // drops the session under budget so the next genuine compaction is far off.
     //
-    // Details:
-    // - Only the main session agent may do this (side agents share
-    //   contextSessionId but must not mutate the main state).
-    // - Exclude the per-generation contextBlocks (working memory): they are
-    //   freshly prepended on every generation and would otherwise stack up.
-    // - Mutate in place to preserve the array reference pi-ai holds, so the
-    //   in-flight generation's appends land on the compacted list.
+    // Only the main session agent may do this. Side agents share
+    // contextSessionId but must not mutate the main state.
+    // Exclude the per-generation contextBlocks for working memory. They are
+    // freshly prepended on every generation and would otherwise stack up.
+    // Mutate in place to preserve the array reference pi-ai holds so the
+    // in-flight generation's appends land on the compacted list.
     const didCompact = finalMessages.length !== contextBlocks.length + windowedMessages.length;
     // The rolling window is request-only: when it is active we never persist
     // the truncated view back into live state (that would drop older turns
