@@ -197,7 +197,10 @@ class E2BExecBackend implements ExecBackend {
 
     const startedAt = Date.now();
     try {
-      const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
+      const passEnv = {
+        ...((await this.context.passThroughEnvProvider?.()) ?? {}),
+        ...(opts?.env ?? {}),
+      };
       const result = await this.sandbox!.commands.run(command, {
         cwd: opts?.cwd ?? this.agentHome,
         timeoutMs: this.timeoutMs,
