@@ -358,6 +358,7 @@ export class DockerContainerManager {
     agentId: string,
     command: string,
     cwd?: string,
+    env?: Record<string, string>,
   ): Promise<ContainerProcessResult> {
     const name = this.containerName('workspace');
 
@@ -383,9 +384,10 @@ export class DockerContainerManager {
       }
     }
 
+    const envArgs = Object.entries(env ?? {}).flatMap(([key, value]) => ['--env', `${key}=${value}`]);
     const execArgs = cwd
-      ? ['exec', '-w', cwd, name, 'sh', '-lc', command]
-      : ['exec', name, 'sh', '-lc', command];
+      ? ['exec', ...envArgs, '-w', cwd, name, 'sh', '-lc', command]
+      : ['exec', ...envArgs, name, 'sh', '-lc', command];
     const result = await this.docker.run(execArgs, 300_000);
     const parsedOutput = parseStructuredOutput(result.stdout);
 

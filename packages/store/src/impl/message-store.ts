@@ -198,12 +198,18 @@ export class DbMessageStore implements MessageStore {
       ))
       .orderBy(asc(sessionEvents.id));
 
-    return rows.map((row) => ({
-      ts: row.ts,
-      role: row.eventType as 'user' | 'assistant' | 'error',
-      content: row.content ?? '',
-      ...(row.userId ? { userId: row.userId } : {}),
-    }));
+    return rows.map((row) => {
+      const payload = row.payload as { messageId?: unknown; userName?: unknown } | null;
+      return {
+        ts: row.ts,
+        role: row.eventType as 'user' | 'assistant' | 'error',
+        content: row.content ?? '',
+        eventId: row.id,
+        ...(row.userId ? { userId: row.userId } : {}),
+        ...(typeof payload?.messageId === 'string' ? { messageId: payload.messageId } : {}),
+        ...(typeof payload?.userName === 'string' ? { userName: payload.userName } : {}),
+      };
+    });
   }
 
   async getLatestEventId(scope: StoreScope, sessionId: string): Promise<number> {

@@ -238,6 +238,11 @@ export type MessageRow = {
   content: string;
   ts: string;
   userId?: string;
+  /** session_events row id. Set by listMessagesSinceEvent so callers can
+   *  advance a cursor to the highest id actually returned. */
+  eventId?: number;
+  messageId?: string;
+  userName?: string;
 };
 
 export interface InstructionEntry {
