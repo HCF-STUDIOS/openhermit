@@ -35,6 +35,9 @@ export interface SyncSkillEntry {
 
 export interface ExecOpts {
   cwd?: string;
+  /** Extra env for this single exec (e.g. the calling session's id so
+   *  sandbox CLIs can route async results back into the right session). */
+  env?: Record<string, string>;
 }
 
 export interface ExecBackend {
