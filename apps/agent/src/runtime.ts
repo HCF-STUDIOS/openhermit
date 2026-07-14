@@ -85,7 +85,7 @@ export class SessionEventBroker {
   // and are delivered to concurrently, so a slow one never blocks another.
   private readonly deliveryChains = new WeakMap<
     SessionSubscriber,
-    { tail: Promise<void>; depth: number }
+    { tail: Promise<void>; depth: number; inFlight: number }
   >();
 
   private nextEventId = 1;
@@ -102,7 +102,7 @@ export class SessionEventBroker {
     this.subscribers.set(sessionId, sessionSubscribers);
 
     if (!this.deliveryChains.has(subscriber)) {
-      this.deliveryChains.set(subscriber, { tail: Promise.resolve(), depth: 0 });
+      this.deliveryChains.set(subscriber, { tail: Promise.resolve(), depth: 0, inFlight: 0 });
     }
 
     return () => this.removeSubscriber(sessionId, subscriber);
@@ -214,19 +214,29 @@ export class SessionEventBroker {
     envelope: SessionEventEnvelope,
   ): Promise<void> {
     const chain =
-      this.deliveryChains.get(subscriber) ?? { tail: Promise.resolve(), depth: 0 };
+      this.deliveryChains.get(subscriber) ?? { tail: Promise.resolve(), depth: 0, inFlight: 0 };
     this.deliveryChains.set(subscriber, chain);
-    if (chain.depth >= this.maxPendingDeliveries) {
+    // Drop a subscriber only when its backlog is at the cap AND a delivery has
+    // actually started but not settled, i.e. it is genuinely not keeping up.
+    // `depth` counts deliveries queued via `.then()` before their callbacks run,
+    // so a synchronous burst to a fast subscriber reaches the cap in one tick,
+    // before the microtask queue turns (`inFlight` still 0); gating the drop on
+    // `inFlight` lets that burst drain instead of dropping a healthy consumer. A
+    // genuinely stuck head keeps `inFlight` > 0 across turns and is still
+    // dropped, and the per-delivery timeout remains the ultimate backstop.
+    if (chain.depth >= this.maxPendingDeliveries && chain.inFlight > 0) {
       this.removeSubscriber(sessionId, subscriber);
       return Promise.resolve();
     }
     chain.depth += 1;
-    const delivery = chain.tail.then(() =>
-      this.deliverToSubscriber(sessionId, subscriber, envelope),
-    );
+    const delivery = chain.tail.then(() => {
+      chain.inFlight += 1;
+      return this.deliverToSubscriber(sessionId, subscriber, envelope);
+    });
     chain.tail = delivery;
     void delivery.finally(() => {
       chain.depth -= 1;
+      chain.inFlight -= 1;
     });
     return delivery;
   }

@@ -231,7 +231,19 @@ export const registerSessionPublishRoute = (
     }
 
     const runner = await resolveRunner(instances, agentId);
-    await runner.events.publish(eventBody as OutboundEventBody);
+    // An error injected through this out-of-band route names a media/job id, not
+    // a turn trigger. Stamp a reliable out-of-band marker so a consumer never
+    // has to infer it from a collision-prone set of seen media ids (and so a
+    // turn id colliding with the job id cannot make a turn error read as media).
+    let outboundEvent = eventBody as OutboundEventBody;
+    if (
+      outboundEvent.type === 'error'
+      && outboundEvent.correlationId !== undefined
+      && outboundEvent.reason === undefined
+    ) {
+      outboundEvent = { ...outboundEvent, reason: 'media_error' };
+    }
+    await runner.events.publish(outboundEvent);
 
     log(`published ${eventType} event into session ${sessionId}`);
     return c.json({ published: true }, 202);

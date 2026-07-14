@@ -73,7 +73,7 @@ For persisted sessions, non-owner users must already be participants. Owners can
 7. emits model/tool events
 8. schedules introspection when appropriate
 
-`appendMessage()` stores the message and emits `user_message` without triggering the model.
+`appendMessage()` stores the message and emits `user_message` without queuing a turn of its own. With mid-turn steering enabled, an appended user message can still fold into a turn that is already running (it is injected at the next tool boundary and answered on that turn), so it may reach the model that way even though it never triggers a turn directly. Its sender is resolved through the same per-message principal path as `postMessage()`, so a denied (non-member) sender is not attributed to the session owner and cannot fold into the owner's turn.
 
 ## Group Routing
 

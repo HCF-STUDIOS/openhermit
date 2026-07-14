@@ -324,7 +324,18 @@ export type OutboundEventBody =
        *  its id appears here. Absent on older runners (fall back to messageId). */
       answeredMessageIds?: string[];
     }
-  | { type: 'error'; sessionId: string; message: string; correlationId?: string; reason?: 'reconcile_cancel' }
+  | {
+      type: 'error';
+      sessionId: string;
+      message: string;
+      correlationId?: string;
+      /** Marks an out-of-band error whose `correlationId` names a media/job id,
+       *  not a turn trigger: `reconcile_cancel` is an internal placeholder
+       *  teardown, `media_error` a genuine out-of-band create failure. Both are
+       *  forwarded session-wide and never counted as a turn's error, so a caller
+       *  cannot make a turn error be misread as media by colliding ids. */
+      reason?: 'reconcile_cancel' | 'media_error';
+    }
   | {
       /**
        * In-flight media placeholder from a media-generation tool; channels/UIs

@@ -1125,14 +1125,35 @@ export class AgentRunner implements SessionRuntime {
   ): Promise<{ sessionId: string; messageId?: string; triggered: boolean }> {
     const session = this.getRequiredSession(sessionId);
 
+    // Resolve THIS message's sender to a per-message principal BEFORE any plugin
+    // transform sees it, so a role-sensitive transform is handed the actual
+    // current sender (guest/undefined on deny) and never the prior/owner
+    // principal still named by session.resolvedUser*. Track the current sender's
+    // raw channel identity so caller-scoped tools reflect who sent this message,
+    // and adopt a resolved member as the session's current user.
+    const principalNow = new Date().toISOString();
+    const principal = await this.derivePerMessagePrincipal(message.sender, session, principalNow);
+    if (message.sender) {
+      if (message.sender.channel) session.resolvedChannel = message.sender.channel;
+      if (message.sender.channelUserId) session.resolvedChannelUserId = message.sender.channelUserId;
+      if (principal.resolvedMember && principal.principalUserId) {
+        session.resolvedUserId = principal.principalUserId;
+        if (principal.principalRole) session.resolvedUserRole = principal.principalRole;
+        if (principal.principalUserName) session.resolvedUserName = principal.principalUserName;
+        session.userIds = addUserIdToList(session.userIds, principal.principalUserId);
+      }
+    }
+    const messageUserId = principal.messageUserId;
+    const messageUserName = principal.messageUserName;
+
     // Plugin transform hook — plugins may rewrite (or scrub) the
     // incoming text before it lands in the session log.
     const transformed = await this.bus.transform('session.message.received@v1', {
       agentId: this.scope.agentId,
       sessionId,
       text: message.text,
-      ...(session.resolvedUserId ? { senderUserId: session.resolvedUserId } : {}),
-      ...(session.resolvedUserRole ? { senderRole: session.resolvedUserRole } : {}),
+      ...(principal.principalUserId ? { senderUserId: principal.principalUserId } : {}),
+      ...(principal.principalRole ? { senderRole: principal.principalRole } : {}),
       ...(message.sender?.channel ? { senderChannel: message.sender.channel } : {}),
       ...(message.metadata ? { metadata: message.metadata } : {}),
     });
@@ -1178,65 +1199,17 @@ export class AgentRunner implements SessionRuntime {
     }
     session.lastMessagePreview = message.text;
 
-    // Per-message sender resolution (for group sessions or any message with sender info)
-    let messageUserId = session.resolvedUserId;
-    let messageUserName = session.resolvedUserName;
-    // Authorization principal for THIS turn. A message that carries a sender
-    // must be authorized as that sender's resolved identity — never the prior
-    // sender's. When resolveMessageSender denies (a known user with no
-    // membership on a protected/private agent) or fails to resolve, the turn
-    // runs as an unprivileged guest (empty principal) and inherits nothing from
-    // whoever `session.resolvedUser*` currently names. Only a message with no
-    // sender at all falls back to the session principal (DMs).
-    let principalUserId = session.resolvedUserId;
-    let principalRole = session.resolvedUserRole;
-    let principalUserName = session.resolvedUserName;
-    if (message.sender) {
-      const now = new Date().toISOString();
-      // Track the raw channel identity of THIS message's sender. The toolset
-      // is rebuilt every turn (refreshAgentConfiguration) from these fields,
-      // so caller-scoped tools (e.g. identity_link_*) must reflect who sent
-      // the current message — not whoever opened the session. Matters in
-      // group sessions where a later, different sender joins, and for external
-      // channels (e.g. amiko) whose per-session id can't be derived.
-      if (message.sender.channel) session.resolvedChannel = message.sender.channel;
-      if (message.sender.channelUserId) session.resolvedChannelUserId = message.sender.channelUserId;
-      const resolved = await this.resolveMessageSender(message.sender, now);
-      if (resolved.userId) {
-        messageUserId = resolved.userId;
-        messageUserName = resolved.userName;
-        principalUserId = resolved.userId;
-        principalRole = resolved.role;
-        principalUserName = resolved.userName;
-        // Update session's current user so system prompt reflects the latest sender
-        session.resolvedUserId = resolved.userId;
-        if (resolved.role) session.resolvedUserRole = resolved.role;
-        if (resolved.userName) session.resolvedUserName = resolved.userName;
-        session.userIds = addUserIdToList(session.userIds, resolved.userId);
-      } else {
-        // Denied/unknown sender: run as guest. Drop the inherited principal so
-        // authorization is unprivileged, and drop the inherited userId so the
-        // persisted row is not attributed to (and cannot fold into the turn of)
-        // the prior sender. Keep the raw channel display name for attribution.
-        messageUserId = undefined;
-        messageUserName = message.sender.displayName;
-        principalUserId = undefined;
-        principalRole = undefined;
-        principalUserName = message.sender.displayName;
-      }
-    }
-
-    // Bind this message's principal now, synchronously, and carry it with the
-    // queued turn. Tool authorization must run as the sender of THIS message,
-    // not whoever `session.resolvedUser*` names when the queued turn later
-    // executes. A queued guest turn reading the shared field could otherwise
-    // snapshot a subsequent owner post and run at owner privilege.
+    // Bind this message's principal (derived above) and carry it with the queued
+    // turn. Tool authorization must run as the sender of THIS message, not
+    // whoever `session.resolvedUser*` names when the queued turn later executes.
+    // A queued guest turn reading the shared field could otherwise snapshot a
+    // subsequent owner post and run at owner privilege.
     const turnPrincipal: TurnPrincipal = {
-      ...(principalUserId ? { userId: principalUserId } : {}),
-      ...(principalRole ? { role: principalRole } : {}),
-      ...(principalUserName ? { userName: principalUserName } : {}),
-      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
-      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+      ...(principal.principalUserId ? { userId: principal.principalUserId } : {}),
+      ...(principal.principalRole ? { role: principal.principalRole } : {}),
+      ...(principal.principalUserName ? { userName: principal.principalUserName } : {}),
+      ...(principal.channel ? { channel: principal.channel } : {}),
+      ...(principal.channelUserId ? { channelUserId: principal.channelUserId } : {}),
     };
 
     await this.persistSessionIndex(session);
@@ -1419,14 +1392,17 @@ export class AgentRunner implements SessionRuntime {
     const ts = message.occurredAt ?? new Date().toISOString();
     const displayName = message.sender?.displayName;
 
-    // User role backfill
+    // User role backfill. Route through the SAME per-message principal
+    // derivation as postMessage so a denied sender is not attributed to the
+    // session owner: on deny messageUserId is undefined, so the appended row is
+    // not owner-attributed and cannot later fold into the owner's live turn.
     let messageUserId = session.resolvedUserId;
-    if (role === 'user' && message.sender) {
+    if (role === 'user') {
       const now = new Date().toISOString();
-      const resolved = await this.resolveMessageSender(message.sender, now);
-      if (resolved.userId) {
-        messageUserId = resolved.userId;
-        session.userIds = addUserIdToList(session.userIds, resolved.userId);
+      const principal = await this.derivePerMessagePrincipal(message.sender, session, now);
+      messageUserId = principal.messageUserId;
+      if (principal.resolvedMember && principal.principalUserId) {
+        session.userIds = addUserIdToList(session.userIds, principal.principalUserId);
       }
     }
 
@@ -2052,6 +2028,71 @@ export class AgentRunner implements SessionRuntime {
     const existing = await this.store.users.get(base);
     if (!existing) return base;
     return `${base}-${randomBytes(3).toString('hex')}`;
+  }
+
+  /**
+   * Derive THIS message's authorization principal. Centralized so every entry
+   * path (postMessage, appendMessage) applies identical semantics and no path
+   * can inherit a prior sender's principal on denial:
+   *  - a sender that resolves to a member is the principal, and the row is
+   *    attributed to it (`messageUserId`);
+   *  - a sender that DENIES (a known user with no membership on a
+   *    protected/private agent) or fails to resolve runs as an unprivileged
+   *    guest: no principal userId/role and no `messageUserId`, so the row is not
+   *    owner-attributed and cannot fold into the owner's turn. The raw display
+   *    name is kept for attribution only;
+   *  - no sender (DM / unattributed) falls back to the session principal.
+   * `resolvedMember` is true only in the first case, so a caller can update its
+   * session's current-sender state without re-resolving.
+   */
+  private async derivePerMessagePrincipal(
+    sender: MessageSender | undefined,
+    session: RunnerSession,
+    now: string,
+  ): Promise<{
+    messageUserId?: string;
+    messageUserName?: string;
+    principalUserId?: string;
+    principalRole?: UserRole;
+    principalUserName?: string;
+    channel?: string;
+    channelUserId?: string;
+    resolvedMember: boolean;
+  }> {
+    if (!sender) {
+      return {
+        resolvedMember: false,
+        ...(session.resolvedUserId ? { messageUserId: session.resolvedUserId } : {}),
+        ...(session.resolvedUserName ? { messageUserName: session.resolvedUserName } : {}),
+        ...(session.resolvedUserId ? { principalUserId: session.resolvedUserId } : {}),
+        ...(session.resolvedUserRole ? { principalRole: session.resolvedUserRole } : {}),
+        ...(session.resolvedUserName ? { principalUserName: session.resolvedUserName } : {}),
+        ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
+        ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+      };
+    }
+    const channel = sender.channel ?? session.resolvedChannel;
+    const channelUserId = sender.channelUserId ?? session.resolvedChannelUserId;
+    const resolved = await this.resolveMessageSender(sender, now);
+    if (resolved.userId) {
+      return {
+        resolvedMember: true,
+        messageUserId: resolved.userId,
+        ...(resolved.userName ? { messageUserName: resolved.userName } : {}),
+        principalUserId: resolved.userId,
+        ...(resolved.role ? { principalRole: resolved.role } : {}),
+        ...(resolved.userName ? { principalUserName: resolved.userName } : {}),
+        ...(channel ? { channel } : {}),
+        ...(channelUserId ? { channelUserId } : {}),
+      };
+    }
+    return {
+      resolvedMember: false,
+      ...(sender.displayName ? { messageUserName: sender.displayName } : {}),
+      ...(sender.displayName ? { principalUserName: sender.displayName } : {}),
+      ...(channel ? { channel } : {}),
+      ...(channelUserId ? { channelUserId } : {}),
+    };
   }
 
   private async resolveMessageSender(

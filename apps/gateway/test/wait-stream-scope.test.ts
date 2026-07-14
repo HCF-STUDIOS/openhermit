@@ -19,6 +19,8 @@ const errorEvent = (message: string, correlationId?: string) =>
   ({ type: 'error', sessionId: 's', eventId: 'e', message, ...(correlationId ? { correlationId } : {}) }) as never;
 const reconcileCancelError = (correlationId: string) =>
   ({ type: 'error', sessionId: 's', eventId: 'e', message: 'Media was prepared but not sent.', correlationId, reason: 'reconcile_cancel' }) as never;
+const mediaError = (correlationId: string) =>
+  ({ type: 'error', sessionId: 's', eventId: 'e', message: 'media create failed', correlationId, reason: 'media_error' }) as never;
 const pendingMedia = (correlationId: string) =>
   ({ type: 'pending_media', sessionId: 's', eventId: 'e', correlationId }) as never;
 const attachment = (correlationId?: string) =>
@@ -94,13 +96,18 @@ test('stream: a reconcile_cancel media error is forwarded session-wide even for 
   assert.equal(streamEventInScope(reconcileCancelError('media-1'), 'B'), true);
 });
 
-test('stream: a create-failure error whose correlationId is a known media id is forwarded', () => {
-  const rendered = new Set(['media-1']);
-  const isMedia = (id: string) => rendered.has(id);
-  // No reconcile_cancel reason, but the consumer saw pending_media for this id.
-  assert.equal(streamEventInScope(errorEvent('create failed', 'media-1'), 'B', isMedia), true);
-  // An error whose id was never a media event stays scoped to its turn.
-  assert.equal(streamEventInScope(errorEvent('turn boom', 'A'), 'B', isMedia), false);
+test('stream: an out-of-band media_error is forwarded session-wide even for another correlationId', () => {
+  assert.equal(streamEventInScope(mediaError('media-1'), 'B'), true);
+});
+
+test('stream: a turn error whose correlationId collides with a seen media id is NOT leaked cross-stream', () => {
+  // A caller controls messageId, so a turn trigger can equal a media/job id a
+  // consumer saw. A plain turn error (no out-of-band reason) must be classified
+  // by scope alone: it belongs to turn 'media-1', so a request opened for 'B'
+  // never receives it. The old set-membership inference leaked it here.
+  assert.equal(streamEventInScope(errorEvent('turn boom', 'media-1'), 'B'), false);
+  // The same error is delivered to its own turn's request, as turn content.
+  assert.equal(streamEventInScope(errorEvent('turn boom', 'media-1'), 'media-1'), true);
 });
 
 test('stream: pending_media itself stays session-wide (out-of-band)', () => {
@@ -135,6 +142,19 @@ test('wait: an error is scoped to its turn', () => {
   acc.record(textFinal('B-text', 'B'));
   assert.equal(acc.get('B').error, undefined);
   assert.equal(acc.get('A').error, 'A-boom');
+});
+
+test('wait: an out-of-band media error is not recorded as the turn error, even on id collision', () => {
+  const acc = new WaitTurnAccumulator();
+  // The media job id collides with request B's turn trigger.
+  acc.record(mediaError('B'));
+  acc.record(textFinal('B-text', 'B'));
+  assert.equal(acc.get('B').error, undefined, 'a media error must not become the turn error');
+  assert.equal(acc.get('B').text, 'B-text');
+  // A reconcile_cancel is likewise never a turn error.
+  const acc2 = new WaitTurnAccumulator();
+  acc2.record(reconcileCancelError('B'));
+  assert.equal(acc2.get('B').error, undefined);
 });
 
 test('wait: a legacy id-less turn buckets under the empty key', () => {
