@@ -4,24 +4,30 @@ import { test } from 'node:test';
 
 import { startPersistentSubscription, outboundErrorText, type SseFrame } from '../src/persistent-subscription.js';
 
-test('outboundErrorText drops a non-correlated turn error (the in-turn reader delivers it)', () => {
-  // A turn-failure error carries no correlationId. Delivering it here too would
-  // double it, since the in-turn reader already posts it.
+test('outboundErrorText drops a turn error, classified by reason not correlationId', () => {
+  // A turn error carries no reason (its correlationId, when present, is the turn
+  // trigger). The in-turn reader owns it; delivering it here too would double
+  // it, and a correlationId collision must NOT make it read as media.
   assert.equal(outboundErrorText(JSON.stringify({ message: 'twin out of credits' })), null);
+  assert.equal(
+    outboundErrorText(JSON.stringify({ message: 'twin out of credits', correlationId: 'B' })),
+    null,
+  );
 });
 
-test('outboundErrorText delivers a correlated out-of-band media-job failure exactly once', () => {
-  // Correlated, no reason marker: a genuine out-of-band create-job failure that
-  // the in-turn reader skips, so the persistent subscription must deliver it.
+test('outboundErrorText delivers a media-job failure marked media_error exactly once', () => {
+  // reason: 'media_error' is stamped by the gateway on the out-of-band route; it
+  // is a genuine create-job failure the in-turn reader skips, so the persistent
+  // subscription must deliver it.
   assert.equal(
-    outboundErrorText(JSON.stringify({ message: 'image generation failed', correlationId: 'att_1' })),
+    outboundErrorText(JSON.stringify({ message: 'image generation failed', correlationId: 'att_1', reason: 'media_error' })),
     'Error: image generation failed',
   );
 });
 
-test('outboundErrorText falls back to a generic media message for a correlated failure with no message', () => {
+test('outboundErrorText falls back to a generic media message for a media_error with no message', () => {
   assert.equal(
-    outboundErrorText(JSON.stringify({ correlationId: 'att_1' })),
+    outboundErrorText(JSON.stringify({ correlationId: 'att_1', reason: 'media_error' })),
     'Error: Media generation failed',
   );
 });

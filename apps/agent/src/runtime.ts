@@ -68,11 +68,21 @@ export type SessionSubscriber = (
 /** Default cap on how long a single subscriber may take to accept one event. */
 const DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS = 30_000;
 
-/** Default cap on how many events may be queued for one subscriber at once. A
- *  subscriber this far behind (delivering near the timeout while events arrive
- *  faster) is effectively dead; dropping it bounds the chain and the pending
- *  publish() calls it holds rather than letting them grow without limit. */
+/** Default soft cap on how many events may be queued for one subscriber at once.
+ *  A subscriber this far behind WITH a delivery in flight (delivering near the
+ *  timeout while events arrive faster) is effectively dead; dropping it bounds
+ *  the chain and the pending publish() calls it holds. Gated on `inFlight` so a
+ *  healthy synchronous burst that momentarily exceeds it is not dropped. */
 const DEFAULT_MAX_PENDING_DELIVERIES = 500;
+
+/** Absolute hard cap on a subscriber's pending chain depth, enforced regardless
+ *  of `inFlight`. The soft cap only trips once a delivery is in flight, so a
+ *  pathological SYNCHRONOUS burst (a publisher enqueuing far more events in one
+ *  tick than any consumer could drain, before a single delivery callback runs
+ *  and `inFlight` leaves 0) would otherwise grow the chain without bound in that
+ *  tick. Set well above the soft cap so a healthy burst (e.g. 600 events) is
+ *  never affected while a runaway burst is still bounded. */
+const DEFAULT_MAX_PENDING_HARD_CAP = 5000;
 
 export class SessionEventBroker {
   private readonly subscribers = new Map<string, Set<SessionSubscriber>>();
@@ -93,6 +103,7 @@ export class SessionEventBroker {
   constructor(
     private readonly deliveryTimeoutMs = DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS,
     private readonly maxPendingDeliveries = DEFAULT_MAX_PENDING_DELIVERIES,
+    private readonly maxPendingHardCap = DEFAULT_MAX_PENDING_HARD_CAP,
   ) {}
 
   subscribe(sessionId: string, subscriber: SessionSubscriber): () => void {
@@ -224,6 +235,13 @@ export class SessionEventBroker {
     // `inFlight` lets that burst drain instead of dropping a healthy consumer. A
     // genuinely stuck head keeps `inFlight` > 0 across turns and is still
     // dropped, and the per-delivery timeout remains the ultimate backstop.
+    // Hard cap first: a synchronous burst never lets `inFlight` leave 0 within
+    // the tick, so the soft cap below can't bound it. Past the hard cap drop the
+    // subscriber regardless of `inFlight` so the chain can't grow without limit.
+    if (chain.depth >= this.maxPendingHardCap) {
+      this.removeSubscriber(sessionId, subscriber);
+      return Promise.resolve();
+    }
     if (chain.depth >= this.maxPendingDeliveries && chain.inFlight > 0) {
       this.removeSubscriber(sessionId, subscriber);
       return Promise.resolve();

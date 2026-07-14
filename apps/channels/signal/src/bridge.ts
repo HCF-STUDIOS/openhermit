@@ -7,7 +7,7 @@ import type {
   ChannelOutboundResult,
   OutboundSession,
 } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn, turnContentInScope, isOutOfBandErrorFrame } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { SendOptions, SignalApi, SignalIncomingMessage } from './signal-api.js';
@@ -512,9 +512,13 @@ export class SignalBridge implements ChannelOutbound {
             continue;
           }
           if (frame.event === 'error') {
-            // A correlationId marks a media-placeholder resolver, not a turn
-            // failure; text channels have no placeholder, so skip it.
-            if (typeof payload.correlationId === 'string' && payload.correlationId) continue;
+            // Out-of-band errors (media/reconcile) carry a `reason` and are
+            // delivered by the persistent subscription; skip them here. A turn
+            // error carries no reason and the turn trigger as correlationId;
+            // scope it to THIS turn so a concurrent turn's failure isn't
+            // misattributed to this reader.
+            if (isOutOfBandErrorFrame(payload)) continue;
+            if (!turnContentInScope(payload, ownMessageId)) continue;
             error = String(payload.message ?? 'Unknown error');
             continue;
           }

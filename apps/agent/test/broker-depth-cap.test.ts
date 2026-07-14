@@ -83,6 +83,48 @@ test('a synchronous burst to a fast subscriber is not dropped by the depth cap',
   assert.equal(seen, 601, 'the subscriber remains subscribed after the burst');
 });
 
+// A pathological synchronous burst larger than the hard cap is bounded: the
+// soft cap only trips once a delivery is in flight, but a burst enqueued in one
+// tick keeps inFlight at 0, so an absolute hard cap must drop the subscriber
+// regardless of inFlight. Without it the chain (and the retained envelopes)
+// grow without bound in that tick.
+test('a synchronous burst past the hard cap is bounded and drops the subscriber', async () => {
+  // soft cap 3 (inFlight-gated), hard cap 5 (absolute). Large per-delivery
+  // timeout so a bound, not the timeout, is what unblocks.
+  const broker = new SessionEventBroker(10_000, 3, 5);
+  const originalError = console.error;
+  console.error = () => {};
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    let invoked = 0;
+    broker.subscribe('s', () => {
+      invoked += 1;
+      return gate;
+    });
+
+    // Enqueue far more than the hard cap synchronously, before any delivery
+    // callback runs (inFlight stays 0, so only the hard cap can bound it). All
+    // settle promptly rather than accreting 100 pending deliveries.
+    const pending: Promise<void>[] = [];
+    const start = Date.now();
+    for (let i = 0; i < 100; i += 1) {
+      pending.push(broker.publish(textFinal('s')));
+    }
+    await Promise.all(pending);
+    assert.ok(Date.now() - start < 1000, 'hard-cap burst must not wait on the delivery timeout');
+
+    // Dropped once past the hard cap: a later publish returns immediately and is
+    // never delivered, and the chain never grew to 100 (the drop happened before
+    // the gated head could drain).
+    await broker.publish(agentEnd('s'));
+    assert.ok(invoked <= 1, `chain bounded by the hard cap, not accumulated; invoked=${invoked}`);
+  } finally {
+    release();
+    console.error = originalError;
+  }
+});
+
 // E6: backlog replay routes through the same per-subscriber FIFO chain as live
 // publish, so replayed events keep publish order.
 test('backlog replay preserves per-subscriber order via the FIFO chain', async () => {

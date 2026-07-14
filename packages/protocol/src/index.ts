@@ -1290,6 +1290,16 @@ export const isPublishableOutboundEvent = (
   if (value.type === 'error') {
     if (typeof value.message !== 'string' || !value.message) return false;
     if (!isOptionalString(value.correlationId)) return false;
+    // `reason` is the out-of-band marker consumers classify on; a null or
+    // unknown value must not slip through and be read as a turn error. Only the
+    // known out-of-band reasons, or absent, are valid.
+    if (
+      value.reason !== undefined
+      && value.reason !== 'reconcile_cancel'
+      && value.reason !== 'media_error'
+    ) {
+      return false;
+    }
     return true;
   }
 

@@ -43,3 +43,18 @@ export const turnContentInScope = (
   const correlationId = payload.correlationId;
   return correlationId === undefined || correlationId === ownMessageId;
 };
+
+/**
+ * Whether a decoded `error` frame is out-of-band (a media-job failure or an
+ * internal reconcile-cancel) rather than a turn failure. Mirrors the protocol's
+ * `isOutOfBandError` but operates on a raw frame record. The invariant is the
+ * `reason` field, never the presence of `correlationId`: a turn error carries
+ * the turn trigger as `correlationId` and no `reason`, so classifying by
+ * `correlationId` would misread it as media. Out-of-band errors are delivered
+ * session-wide by the persistent subscription; a turn error stays with its own
+ * in-turn reader.
+ */
+export const isOutOfBandErrorFrame = (
+  payload: Record<string, unknown>,
+): boolean =>
+  payload.reason === 'reconcile_cancel' || payload.reason === 'media_error';

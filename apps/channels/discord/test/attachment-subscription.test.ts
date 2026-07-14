@@ -180,7 +180,7 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
 });
 
-test('delivers an out-of-turn media-job failure (correlated, no reason) as a text message', async () => {
+test('delivers an out-of-turn media-job failure (reason media_error) as a text message', async () => {
   const sends: Array<[string, string]> = [];
   const discord = {
     startTyping: async () => undefined,
@@ -188,7 +188,7 @@ test('delivers an out-of-turn media-job failure (correlated, no reason) as a tex
   } as unknown as ConstructorParameters<typeof DiscordBridge>[0];
   const bridge = new DiscordBridge(discord, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
 
-  const body = frameText(1, 'error', { sessionId: 'sess-e1', message: 'image generation failed', correlationId: 'att_9' });
+  const body = frameText(1, 'error', { sessionId: 'sess-e1', message: 'image generation failed', correlationId: 'att_9', reason: 'media_error' });
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
@@ -203,7 +203,7 @@ test('delivers an out-of-turn media-job failure (correlated, no reason) as a tex
   assert.deepEqual(sends[0], ['chan-err', 'Error: image generation failed']);
 });
 
-test('out-of-turn subscription drops non-correlated turn errors and reconcile-cancels, delivering only a real media failure', async () => {
+test('out-of-turn subscription drops turn errors (correlated or not) and reconcile-cancels, delivering only a media_error', async () => {
   const sends: Array<[string, string]> = [];
   const discord = {
     startTyping: async () => undefined,
@@ -214,10 +214,13 @@ test('out-of-turn subscription drops non-correlated turn errors and reconcile-ca
   const body =
     // Non-correlated turn failure: the in-turn reader owns it, not this path.
     frameText(1, 'error', { sessionId: 'sess-e2', message: 'twin ran out of credits' }) +
+    // Correlated turn failure (correlationId is the turn trigger, no reason): a
+    // turn error, classified by reason not correlationId, so still not shown here.
+    frameText(2, 'error', { sessionId: 'sess-e2', message: 'model stream failed', correlationId: 'turn_7' }) +
     // Internal reconcile-cancel: never shown in a text channel.
-    frameText(2, 'error', { sessionId: 'sess-e2', message: 'Media was prepared but not sent.', correlationId: 'att_1', reason: 'reconcile_cancel' }) +
-    // Genuine out-of-band media-job failure: delivered exactly once.
-    frameText(3, 'error', { sessionId: 'sess-e2', message: 'real media failure', correlationId: 'att_2' });
+    frameText(3, 'error', { sessionId: 'sess-e2', message: 'Media was prepared but not sent.', correlationId: 'att_1', reason: 'reconcile_cancel' }) +
+    // Genuine out-of-band media-job failure (reason media_error): delivered once.
+    frameText(4, 'error', { sessionId: 'sess-e2', message: 'real media failure', correlationId: 'att_2', reason: 'media_error' });
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
