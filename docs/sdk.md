@@ -138,6 +138,13 @@ For talking to a running agent over HTTP/SSE/WS as a user.
 - `postMessage(...)` / `appendMessage(...)` — non-streaming.
 - `postMessageSync(...)` — wait for the assistant turn to complete.
 - `postMessageStream(...)` — async iterable of session events (SSE under the hood).
+  - Folded-message limitation: with mid-turn steering, a message posted while a
+    turn is already running can be folded into that live turn and answered on
+    its stream. A raw stream opened for the folded message alone then closes on
+    the terminal `agent_end` (which names the message in `answeredMessageIds`)
+    with no text of its own, because the reply streamed under the folding turn's
+    `correlationId`. `postMessageSync` is unaffected (it buckets by the
+    answering turn), so it still returns the reply.
 - `submitApproval(...)` / `checkpointSession(...)`.
 - `reviewApprovalRequest(...)` / `reviewApprovalRequestByShortId(...)`.
 
@@ -173,7 +180,7 @@ style. Prioritised by the hole they represent:
 
 **Sessions / events**
 - `DELETE /api/agents/:agentId/sessions/:sessionId` — delete a session.
-- `GET /api/agents/:agentId/sessions/:sessionId/events` — raw SSE event stream (`AgentClient.postMessageStream` covers the message-driven case but not arbitrary subscription).
+- `GET /api/agents/:agentId/sessions/:sessionId/events` — raw SSE event stream (`AgentClient.postMessageStream` covers the message-driven case but not arbitrary subscription). Turn content is scoped to the request's `correlationId`, so a message folded mid-turn into another turn is answered on the folding turn's stream, not this one (see the folded-message limitation above).
 
 **Channels**
 - `POST /api/agents/:agentId/channels/:namespace/webhook` — inbound webhook

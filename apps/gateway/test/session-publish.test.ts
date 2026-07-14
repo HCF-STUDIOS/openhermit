@@ -129,7 +129,7 @@ test('POST session events: valid token + valid pending_media publishes and retur
   assert.deepEqual(publishCalls[0], event);
 });
 
-test('POST session events: valid token + valid error event with correlationId publishes as-is and returns 202', async () => {
+test('POST session events: a correlationId-bearing error is stamped media_error (reliable out-of-band marker) and returns 202', async () => {
   const ingestCalls: unknown[] = [];
   const { app, publishCalls } = buildApp({
     ingestAttachment: async (input) => {
@@ -152,7 +152,9 @@ test('POST session events: valid token + valid error event with correlationId pu
   assert.equal(res.status, 202);
   assert.equal(ingestCalls.length, 0);
   assert.equal(publishCalls.length, 1);
-  assert.deepEqual(publishCalls[0], event);
+  // The out-of-band route stamps a reliable media marker so the gateway consumer
+  // never has to infer media-vs-turn from a collision-prone id set.
+  assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
 });
 
 test('POST session events: disallowed event type returns 400', async () => {
@@ -485,7 +487,7 @@ test('POST session events: error and pending_media skip attachment-ownership ver
 
   assert.equal(res.status, 202);
   assert.equal(verifyCalls.length, 0);
-  assert.deepEqual(publishCalls[0], event);
+  assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
 });
 
 test('POST session events: attachment with attachmentId (no assetUrl) still publishes as-is', async () => {

@@ -57,6 +57,32 @@ test('a subscriber past the pending-depth cap is dropped, not accumulated', asyn
   }
 });
 
+// A synchronous burst larger than the cap must not drop a subscriber that
+// drains instantly: the cap counts deliveries queued before their callbacks
+// run, so a fast subscriber reaches it in one tick (inFlight still 0) yet keeps
+// up. Only a genuinely stuck head (inFlight > 0 across turns) is dropped.
+test('a synchronous burst to a fast subscriber is not dropped by the depth cap', async () => {
+  // Default cap is 500; publish 600 synchronously to an instantly-resolving
+  // subscriber. Each delivery drains as soon as the event loop turns.
+  const broker = new SessionEventBroker();
+  let seen = 0;
+  broker.subscribe('s', () => {
+    seen += 1;
+  });
+
+  const pending: Promise<void>[] = [];
+  for (let i = 0; i < 600; i += 1) {
+    pending.push(broker.publish(textFinal('s')));
+  }
+  await Promise.all(pending);
+
+  assert.equal(seen, 600, 'a fast subscriber handling a synchronous burst must receive every event');
+
+  // Still subscribed: a later publish is delivered too, not dropped.
+  await broker.publish(agentEnd('s'));
+  assert.equal(seen, 601, 'the subscriber remains subscribed after the burst');
+});
+
 // E6: backlog replay routes through the same per-subscriber FIFO chain as live
 // publish, so replayed events keep publish order.
 test('backlog replay preserves per-subscriber order via the FIFO chain', async () => {

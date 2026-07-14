@@ -252,28 +252,24 @@ const SCOPED_TURN_CONTENT_TYPES: ReadonlySet<string> = new Set([
  * media-clearing error is out-of-band: it carries a media/job id, not a turn
  * trigger, and must be forwarded session-wide like `pending_media`, or the
  * consumer that rendered the skeleton (forwarded session-wide) never receives
- * the event that clears it and is left with a stuck skeleton. Such errors are a
- * `reconcile_cancel`, or a create-failure whose `correlationId` names a media
- * event this consumer already saw (via `isMediaCorrelation`).
+ * the event that clears it and is left with a stuck skeleton. Out-of-band
+ * errors are identified by their own `reason` (`reconcile_cancel` or
+ * `media_error`), never by whether their `correlationId` happens to appear in a
+ * set of seen media ids, which a caller-chosen turn id could collide with.
  */
+export const isOutOfBandError = (event: OutboundEvent): boolean =>
+  event.type === 'error'
+  && (event.reason === 'reconcile_cancel' || event.reason === 'media_error');
+
 export const streamEventInScope = (
   event: OutboundEvent,
   requestMessageId: string | undefined,
-  isMediaCorrelation?: (correlationId: string) => boolean,
 ): boolean => {
   if (requestMessageId === undefined) return true;
   if (!SCOPED_TURN_CONTENT_TYPES.has(event.type)) return true;
   const correlationId = (event as { correlationId?: string }).correlationId;
   if (correlationId === undefined) return true;
-  if (
-    event.type === 'error'
-    && (
-      (event as { reason?: string }).reason === 'reconcile_cancel'
-      || isMediaCorrelation?.(correlationId) === true
-    )
-  ) {
-    return true;
-  }
+  if (isOutOfBandError(event)) return true;
   return correlationId === requestMessageId;
 };
 
@@ -319,6 +315,10 @@ export class WaitTurnAccumulator {
         this.bucket(event.correlationId).text = event.text;
         break;
       case 'error':
+        // An out-of-band media/job error is not this turn's error; recording it
+        // would surface a media failure as the request's error whenever the
+        // caller-chosen turn id collides with the media id.
+        if (isOutOfBandError(event)) break;
         this.bucket(event.correlationId).error = event.message;
         break;
       default:
@@ -1662,12 +1662,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const buffered: SessionEventEnvelope[] = [];
       let streamReady = false;
       let streamApi: SSEStreamingApi | undefined;
-      // correlationIds of media skeletons this consumer has rendered
-      // (`pending_media`/`attachment`, both forwarded session-wide). An `error`
-      // bearing one of these ids is a media-clearing event, not turn content, so
-      // it is forwarded regardless of turn scope and never leaves a stuck
-      // skeleton.
-      const renderedMediaIds = new Set<string>();
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
@@ -1704,13 +1698,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const closesThisStream = (event: OutboundEvent): boolean =>
         agentEndClosesStream(event, result.messageId);
 
-      const forwardToStream = (event: OutboundEvent): boolean => {
-        if (event.type === 'pending_media' || event.type === 'attachment') {
-          const mediaCorrelationId = (event as { correlationId?: string }).correlationId;
-          if (mediaCorrelationId !== undefined) renderedMediaIds.add(mediaCorrelationId);
-        }
-        return streamEventInScope(event, result.messageId, (id) => renderedMediaIds.has(id));
-      };
+      const forwardToStream = (event: OutboundEvent): boolean =>
+        streamEventInScope(event, result.messageId);
 
       if (!result.triggered) {
         unsubscribe();
