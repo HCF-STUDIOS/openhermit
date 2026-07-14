@@ -1,0 +1,215 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { SlackBridge } from '../src/bridge.js';
+
+// Slack has no per-chat serialization, so turns overlap. The per-turn reader
+// must close only on the agent_end that answered its own message, not a
+// concurrent turn's.
+
+function frameText(id: number | undefined, event: string, data: unknown): string {
+  const lines: string[] = [];
+  if (id !== undefined) lines.push(`id: ${id}`);
+  lines.push(`event: ${event}`);
+  lines.push(`data: ${JSON.stringify(data)}`);
+  return `${lines.join('\n')}\n\n`;
+}
+
+function makeStream(text: string): ReadableStream<Uint8Array> {
+  let delivered = false;
+  return new ReadableStream({
+    pull(controller) {
+      if (!delivered) {
+        delivered = true;
+        controller.enqueue(new TextEncoder().encode(text));
+        return;
+      }
+      controller.close();
+    },
+  });
+}
+
+async function withFetch(impl: typeof fetch, fn: () => Promise<void>): Promise<void> {
+  const original = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+const fakeSlackApi = {} as unknown as ConstructorParameters<typeof SlackBridge>[0];
+
+function newBridge(): SlackBridge {
+  return new SlackBridge(fakeSlackApi, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+}
+
+type Reader = (
+  sessionId: string,
+  channelId: string,
+  threadTs?: string,
+  ownMessageId?: string,
+) => Promise<{ text?: string; error?: string }>;
+
+test('slack reader ignores a concurrent turn agent_end and closes on its own (messageId)', async () => {
+  const bridge = newBridge();
+  const body =
+    // A's session-wide end arrives first; it did not answer B.
+    frameText(1, 'agent_end', { messageId: 'A' }) +
+    frameText(2, 'text_final', { text: 'B-reply' }) +
+    frameText(3, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply', 'reader must return its own reply, not close on A\'s end');
+});
+
+test('slack reader closes on its own end named via answeredMessageIds', async () => {
+  const bridge = newBridge();
+  const body =
+    frameText(1, 'agent_end', { messageId: 'A', answeredMessageIds: ['A'] }) +
+    frameText(2, 'text_final', { text: 'B-reply' }) +
+    // B was folded into a turn whose end names it in answeredMessageIds.
+    frameText(3, 'agent_end', { messageId: 'C', answeredMessageIds: ['C', 'B'] });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply');
+});
+
+test('slack reader stops at its own agent_end and ignores a following turn frames in the same chunk', async () => {
+  const bridge = newBridge();
+  // One chunk carries B's terminal frames then C's; the reader must stop at B's agent_end.
+  const body =
+    frameText(1, 'text_final', { text: 'B-reply' }) +
+    frameText(2, 'agent_end', { messageId: 'B' }) +
+    frameText(3, 'text_final', { text: 'C-reply' }) +
+    frameText(4, 'agent_end', { messageId: 'C' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply', 'reader must not process C\'s frames after its own agent_end');
+});
+
+test('slack reader ignores a concurrent turn text and returns only its own (content scoping)', async () => {
+  const bridge = newBridge();
+  // Turn A interleaves its text while B's reader is open; B must not accumulate A's text.
+  const body =
+    frameText(1, 'text_final', { text: 'A-reply', correlationId: 'A' }) +
+    frameText(2, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
+    frameText(3, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply', 'reader must ignore the concurrent turn A text and return only its own');
+});
+
+test('slack reader accepts its own content whether tagged with its correlationId or untagged', async () => {
+  const bridge = newBridge();
+  // A's tagged delta is dropped; B's own frames, tagged or untagged (legacy runner), are kept.
+  const body =
+    frameText(1, 'text_delta', { text: 'ignore-A', correlationId: 'A' }) +
+    frameText(2, 'text_delta', { text: 'hello ', correlationId: 'B' }) +
+    frameText(3, 'text_final', { text: 'hello world' }) +
+    frameText(4, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'hello world', 'B keeps its own tagged and untagged content, drops A');
+});
+
+test('slack reader delivers its own turn error (correlationId is the turn trigger, no reason)', async () => {
+  const bridge = newBridge();
+  // A turn failure has the trigger as correlationId and no reason; the reader must return it, not skip it as media.
+  const body =
+    frameText(1, 'error', { message: 'model stream failed', correlationId: 'B' }) +
+    frameText(2, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.error, 'model stream failed', 'a turn error must reach its own reader');
+});
+
+test('slack reader ignores a concurrent turn error and a media_error, keeping only its own', async () => {
+  const bridge = newBridge();
+  const body =
+    // Concurrent turn A's failure (correlationId A): out of THIS reader's scope.
+    frameText(1, 'error', { message: 'A failed', correlationId: 'A' }) +
+    // Genuine media failure (reason media_error): out-of-band, skipped here.
+    frameText(2, 'error', { message: 'image failed', correlationId: 'att_1', reason: 'media_error' }) +
+    frameText(3, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
+    frameText(4, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.error, undefined, 'neither the concurrent turn error nor the media error is this turn\'s error');
+  assert.equal(result?.text, 'B-reply');
+});
+
+test('slack reader with no own messageId keeps closing on any agent_end (backward-compat)', async () => {
+  const bridge = newBridge();
+  const body =
+    frameText(1, 'text_final', { text: 'first' }) +
+    frameText(2, 'agent_end', { messageId: 'whatever' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, undefined);
+    },
+  );
+
+  assert.equal(result?.text, 'first');
+});

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn, turnContentInScope, isOutOfBandErrorFrame } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
@@ -239,6 +239,9 @@ export class DiscordBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sessionId, {
       text: resolved.text,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(event.messageId ? { messageId: event.messageId } : {}),
       mentioned: event.mentioned,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       sender: {
@@ -252,7 +255,7 @@ export class DiscordBridge implements ChannelOutbound {
 
     void this.discord.startTyping(event.channelId);
 
-    const result = await this.waitForAgentResponse(sessionId, event.channelId);
+    const result = await this.waitForAgentResponse(sessionId, event.channelId, postResult.messageId ?? event.messageId);
 
     if (result.error && !result.text) {
       await this.discord.sendMessage(event.channelId, `Error: ${result.error}`);
@@ -343,6 +346,16 @@ export class DiscordBridge implements ChannelOutbound {
       onEnding: release,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
+        if (frame.event === 'error') {
+          const text = outboundErrorText(frame.data);
+          if (text) {
+            void this.discord.sendMessage(channelId, text).catch((err) => {
+              this.log(`out-of-turn error delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        // pending_media has nothing to render in a text channel; ignore it.
         if (frame.event !== 'attachment') return;
         try {
           const payload = frame.data.length > 0
@@ -376,6 +389,7 @@ export class DiscordBridge implements ChannelOutbound {
   private async waitForAgentResponse(
     sessionId: string,
     channelId: string,
+    ownMessageId?: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -471,6 +485,13 @@ export class DiscordBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'error') {
+            // Out-of-band errors (media/reconcile) carry a `reason` and are
+            // delivered by the persistent subscription; skip them here. A turn
+            // error carries no reason and the turn trigger as correlationId;
+            // scope it to THIS turn so a concurrent turn's failure isn't
+            // misattributed to this reader.
+            if (isOutOfBandErrorFrame(payload)) continue;
+            if (!turnContentInScope(payload, ownMessageId)) continue;
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
@@ -478,7 +499,14 @@ export class DiscordBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
         }

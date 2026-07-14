@@ -323,8 +323,9 @@ export const createAttachmentUploadTool = (
 
     // Show a "generating" skeleton immediately, keyed by the new attachment id.
     // `attachment_send` carries the same id as correlationId and swaps the real
-    // media into this placeholder row. Only renderable media gets a skeleton so
-    // an upload that is never sent (e.g. a document read) can't strand one.
+    // media into this placeholder row. Only renderable media gets a skeleton
+    // (a document read never emits one); a renderable upload that is never sent
+    // is cancelled at turn end by the runtime so it can't strand permanently.
     const skeletonMime = result.mimeType ?? '';
     const skeletonKind = skeletonMime.startsWith('image/')
       ? 'image'
@@ -340,6 +341,9 @@ export const createAttachmentUploadTool = (
         correlationId: result.id,
         kind: skeletonKind,
       });
+      // Track the skeleton so the turn can cancel it if no attachment_send
+      // ever resolves it, preventing a permanent "generating" placeholder.
+      if (result.id) context.pendingMediaCorrelationIds?.add(result.id);
       if (process.env.AMIKO_TRACE === '1') {
         console.log('[trace:attachment_upload] pending_media emitted', {
           correlationId: result.id,
@@ -482,6 +486,9 @@ export const createAttachmentSendTool = (
     }
 
     context.publishEvent(event);
+    // Resolve the upload's pending_media skeleton so the turn-end sweep won't
+    // cancel a placeholder this send is fulfilling.
+    context.pendingMediaCorrelationIds?.delete(row.id);
     if (process.env.AMIKO_TRACE === '1') {
       console.log('[trace:attachment_send] attachment emitted', {
         attachmentId: row.id,

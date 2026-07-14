@@ -18,6 +18,8 @@ import {
   type ChannelSetup,
   type ChannelSetupContext,
   type CreateAgentRequest,
+  type MessageSender,
+  type OutboundEvent,
   type SessionListQuery,
   type SyncResponse,
   type SyncToolCall,
@@ -85,9 +87,249 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SSE_PING_INTERVAL_MS = 15_000;
+// Max live events buffered during backlog replay before the connection is
+// dropped, bounding per-connection memory when a reader stalls.
+const SSE_PENDING_LIVE_CAP = 512;
 const SYNC_DEFAULT_TIMEOUT_MS = 300_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Drain buffered live events while new arrivals keep buffering, so a concurrent
+ * publish can't race a higher id ahead of a lower leftover one. Repeats until
+ * the buffer is empty; the caller flips to the live path synchronously right
+ * after this returns, with no await in between. Skips ids already covered by
+ * the replayed backlog (id <= maxBacklogId). `shouldContinue` lets the caller
+ * bail early (e.g. on buffer overflow).
+ */
+export const drainBufferedLive = async (
+  pendingLive: SessionEventEnvelope[],
+  maxBacklogId: number,
+  write: (envelope: SessionEventEnvelope) => Promise<void>,
+  shouldContinue: () => boolean = () => true,
+  onDrained: () => void = () => {},
+): Promise<void> => {
+  while (shouldContinue()) {
+    if (pendingLive.length === 0) {
+      // Buffer observed empty: go live synchronously here, with no statement
+      // boundary (no await) between the emptiness check and the flip, so a
+      // concurrent publish is either already drained above or now writes
+      // straight to the stream — it can never be stranded in the buffer.
+      onDrained();
+      return;
+    }
+    const batch = pendingLive.splice(0, pendingLive.length);
+    for (const envelope of batch) {
+      if (envelope.id > maxBacklogId) {
+        await write(envelope);
+      }
+    }
+  }
+  // Exited without draining (shouldContinue() went false, i.e. overflow): the
+  // caller tears the connection down, so the live flip is intentionally skipped.
+};
+
+/**
+ * Single choke point for the effective sender on every inbound message, across
+ * all transports (HTTP post/append, WS session.message). Two security-critical
+ * rules applied together so no entry point can skip either:
+ *
+ *   1. Channel-namespace enforcement — a channel token may only declare a sender
+ *      within its own namespace; a cross-namespace claim throws.
+ *   2. User-mode identity binding — a user JWT authenticates exactly one
+ *      identity, so the sender is overridden to the authenticated caller (display
+ *      name preserved). This stops an authenticated guest from claiming another
+ *      user's identity (e.g. the owner's) and running the turn at that user's
+ *      tools, and closes the omitted-sender fallback to shared session state.
+ *
+ * Channel (after rule 1) and admin senders pass through: a channel token is a
+ * trusted service secret governed by the namespace check, and admin is fully
+ * trusted.
+ */
+export const bindSenderIdentity = (
+  auth: Pick<AuthContext, 'mode' | 'channel' | 'channelUserId' | 'channelNamespace'>,
+  sender: MessageSender | undefined,
+): MessageSender | undefined => {
+  if (
+    auth.mode === 'channel' &&
+    auth.channelNamespace &&
+    sender &&
+    sender.channel !== auth.channelNamespace
+  ) {
+    throw new ValidationError(
+      `Channel namespace violation: channel "${auth.channelNamespace}" cannot declare sender identity for "${sender.channel}".`,
+    );
+  }
+  if (auth.mode !== 'user') return sender;
+  return {
+    channel: auth.channel,
+    channelUserId: auth.channelUserId,
+    ...(sender?.displayName ? { displayName: sender.displayName } : {}),
+  };
+};
+
+/**
+ * Whether an agent_end should close a stream/request opened for
+ * `requestMessageId`. A concurrent turn (e.g. mid-turn steering opens a second
+ * stream) emits its own session-wide agent_end; only the end for this request's
+ * message may close it. `answeredMessageIds` is the authoritative set (the
+ * trigger plus every message folded into the turn), so a request opened for a
+ * message that was folded into another turn closes on that turn's end. Falls
+ * back to the single `messageId`, then to closing on any agent_end, for older
+ * runners that don't carry the set (or a message with no id).
+ */
+export const agentEndClosesStream = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+): boolean => {
+  if (event.type !== 'agent_end') return false;
+  if (requestMessageId === undefined) return true;
+  if (event.answeredMessageIds !== undefined) {
+    return event.answeredMessageIds.includes(requestMessageId);
+  }
+  return event.messageId === undefined || event.messageId === requestMessageId;
+};
+
+/**
+ * Whether an agent_end may resolve a wait-mode request. Until postMessage
+ * returns this request's messageId, `agentEndClosesStream(ev, undefined)` matches
+ * ANY end. The request's own turn is queued and cannot have ended before
+ * postMessage returned, so any end seen in that window belongs to a concurrent
+ * turn and must be ignored, otherwise B's wait would resolve on A's response.
+ */
+export const agentEndResolvesWait = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+  postSettled: boolean,
+): boolean => postSettled && agentEndClosesStream(event, requestMessageId);
+
+/**
+ * Whether a buffered event (replayed when a stream goes live) is eligible to
+ * close the stream. Events buffered before postMessage returned (index below the
+ * settle boundary) belong to concurrent turns; with no requestMessageId the
+ * fallback-to-any close would fire on one of those. When a requestMessageId is
+ * present, scoped matching already prevents a wrong close, so any index is fine.
+ */
+export const bufferedEndEligibleToClose = (
+  requestMessageId: string | undefined,
+  bufferIndex: number,
+  settleBoundary: number,
+): boolean => requestMessageId !== undefined || bufferIndex >= settleBoundary;
+
+/** Per-turn content event types (as opposed to session-wide out-of-band events
+ *  like `attachment`/`pending_media` or lifecycle/approval events). These carry
+ *  the turn's trigger as `correlationId` and must be scoped to the request's
+ *  turn so a concurrent turn's text/tools never bleed into another request.
+ *
+ *  Known limitation (folded messages): when message B is folded mid-turn into
+ *  another turn A, B's answer streams under A's correlationId. A stream opened
+ *  for B alone scopes to B and so closes on the terminal end (which names B in
+ *  `answeredMessageIds`) with no answer text — the reply is delivered on A's
+ *  stream. Wait mode is unaffected: it buckets by the answering turn. This is
+ *  inherent to the raw per-request stream contract, not worked around here; the
+ *  only fold-capable stream consumer (amiko-chat) keeps a single in-flight
+ *  stream per session and folds via appendMessage rather than opening a B
+ *  stream, so it never hits this. */
+const SCOPED_TURN_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'thinking_delta',
+  'thinking_final',
+  'text_delta',
+  'text_final',
+  'tool_call',
+  'tool_result',
+  'error',
+]);
+
+/**
+ * Whether a stream-mode subscriber should forward `event` to a request opened
+ * for `requestMessageId`. Turn-content events are scoped to this request's turn
+ * (matched on `correlationId`, which every event of a turn shares); out-of-band
+ * media and lifecycle events stay session-wide so media delivery is unaffected.
+ * A request with no id of its own (`requestMessageId` undefined) is an older
+ * caller and receives everything, unscoped.
+ *
+ * An `error` is turn content only when its `correlationId` is a turn trigger. A
+ * media-clearing error is out-of-band: it carries a media/job id, not a turn
+ * trigger, and must be forwarded session-wide like `pending_media`, or the
+ * consumer that rendered the skeleton (forwarded session-wide) never receives
+ * the event that clears it and is left with a stuck skeleton. Out-of-band
+ * errors are identified by their own `reason` (`reconcile_cancel` or
+ * `media_error`), never by whether their `correlationId` happens to appear in a
+ * set of seen media ids, which a caller-chosen turn id could collide with.
+ */
+export const isOutOfBandError = (event: OutboundEvent): boolean =>
+  event.type === 'error'
+  && (event.reason === 'reconcile_cancel' || event.reason === 'media_error');
+
+export const streamEventInScope = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+): boolean => {
+  if (requestMessageId === undefined) return true;
+  if (!SCOPED_TURN_CONTENT_TYPES.has(event.type)) return true;
+  const correlationId = (event as { correlationId?: string }).correlationId;
+  if (correlationId === undefined) return true;
+  if (isOutOfBandError(event)) return true;
+  return correlationId === requestMessageId;
+};
+
+/** One turn's accumulated wait-mode content. */
+export interface WaitTurnContent {
+  toolCalls: SyncToolCall[];
+  text: string | null;
+  error?: string;
+}
+
+/**
+ * Accumulates wait-mode content per turn, keyed by the turn's trigger
+ * (`correlationId` on content events). The resolving `agent_end` names the
+ * answering turn's trigger in `messageId` — the same value — so `get(ev.messageId)`
+ * returns exactly the content of the turn that answered this request and never a
+ * concurrent turn's. A message folded mid-turn into another turn thus still
+ * returns that turn's reply; a legacy id-less turn buckets under `''`.
+ */
+export class WaitTurnAccumulator {
+  private readonly turns = new Map<string, WaitTurnContent>();
+
+  private bucket(correlationId: string | undefined): WaitTurnContent {
+    const key = correlationId ?? '';
+    let content = this.turns.get(key);
+    if (!content) {
+      content = { toolCalls: [], text: null };
+      this.turns.set(key, content);
+    }
+    return content;
+  }
+
+  record(event: OutboundEvent): void {
+    switch (event.type) {
+      case 'tool_result':
+        this.bucket(event.correlationId).toolCalls.push({
+          tool: event.tool,
+          isError: event.isError,
+          ...(event.text !== undefined ? { text: event.text } : {}),
+          ...(event.details !== undefined ? { details: event.details } : {}),
+        });
+        break;
+      case 'text_final':
+        this.bucket(event.correlationId).text = event.text;
+        break;
+      case 'error':
+        // An out-of-band media/job error is not this turn's error; recording it
+        // would surface a media failure as the request's error whenever the
+        // caller-chosen turn id collides with the media id.
+        if (isOutOfBandError(event)) break;
+        this.bucket(event.correlationId).error = event.message;
+        break;
+      default:
+        break;
+    }
+  }
+
+  get(triggerMessageId: string | undefined): WaitTurnContent {
+    return this.turns.get(triggerMessageId ?? '') ?? { toolCalls: [], text: null };
+  }
+}
 
 const writeEvent = async (
   stream: SSEStreamingApi,
@@ -654,7 +896,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       if (!userId) return c.json([]);
       const memberships = await userStore.listAgentRoles(userId);
 
-      // Enrich with agent display info from agentStore.
       const records = agentStore ? await agentStore.list() : [];
       const byId = new Map(records.map((r) => [r.agentId, r]));
       // `status` reflects the agent's persistent availability, not whether
@@ -1044,7 +1285,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Seed default instructions
     const agentName = record.name ?? record.agentId;
     await agentStore.seedInstructions(record.agentId, [
       {
@@ -1077,7 +1317,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       },
     ], now);
 
-    // Assign owner if specified
     if (body.ownerUserId && typeof body.ownerUserId === 'string') {
       await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
       log(`agent created: ${record.agentId} (owner: ${body.ownerUserId})`);
@@ -1284,14 +1523,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Channel namespace enforcement
-    if (auth.mode === 'channel' && auth.channelNamespace && payload.sender) {
-      if (payload.sender.channel !== auth.channelNamespace) {
-        throw new ValidationError(
-          `Channel namespace violation: channel "${auth.channelNamespace}" cannot declare sender identity for "${payload.sender.channel}".`,
-        );
-      }
-    }
+    // Enforce channel namespace and bind the effective sender to the
+    // authenticated caller (user mode) so the request body cannot claim another
+    // user's identity. Applies to both the postMessage and appendMessage paths.
+    const boundSender = bindSenderIdentity(auth, payload.sender);
+    if (boundSender) payload.sender = boundSender;
+    else delete payload.sender;
 
     const url = new URL(c.req.url);
     const appendMode = url.searchParams.get('append') === 'true' || url.searchParams.get('inject') === 'true';
@@ -1337,20 +1574,25 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         'timeout',
       ) ?? SYNC_DEFAULT_TIMEOUT_MS;
 
-      const toolCalls: SyncToolCall[] = [];
-      let text: string | null = null;
-      let error: string | undefined;
+      // Accumulate content per turn (keyed by correlationId) so this request
+      // returns only the content of the turn that answered it, never a
+      // concurrent turn's.
+      const turns = new WaitTurnAccumulator();
+      let resolved: WaitTurnContent | undefined;
       let messageId: string | undefined;
       let done = false;
+      let postSettled = false;
       let resolvePromise: ((response: Response) => void) | undefined;
 
       const timer = setTimeout(() => {
         cleanup();
+        // No end arrived: return this request's own turn's partial content.
+        const partial = turns.get(messageId);
         const response: SyncResponse = {
           sessionId,
           ...(messageId ? { messageId } : {}),
-          text,
-          toolCalls,
+          text: partial.text,
+          toolCalls: partial.toolCalls,
           error: 'Timeout waiting for agent response.',
         };
         resolvePromise?.(c.json(response, 504));
@@ -1363,37 +1605,31 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const unsubscribe = runtime.events.subscribe(sessionId, (envelope) => {
         const ev = envelope.event;
-        switch (ev.type) {
-          case 'tool_result':
-            toolCalls.push({
-              tool: ev.tool,
-              isError: ev.isError,
-              ...(ev.text !== undefined ? { text: ev.text } : {}),
-              ...(ev.details !== undefined ? { details: ev.details } : {}),
-            });
-            break;
-          case 'text_final':
-            text = ev.text;
-            break;
-          case 'error':
-            error = ev.message;
-            break;
-          case 'agent_end':
-            done = true;
-            cleanup();
-            resolvePromise?.(c.json({
-              sessionId,
-              ...(messageId ? { messageId } : {}),
-              text,
-              toolCalls,
-              ...(error !== undefined ? { error } : {}),
-            } satisfies SyncResponse));
-            break;
+        if (ev.type === 'agent_end') {
+          // Ignore ends until postMessage settles this request's messageId
+          // (an end seen earlier is a concurrent turn's), then resolve only on
+          // the end for this request's message.
+          if (!agentEndResolvesWait(ev, messageId, postSettled)) {
+            return;
+          }
+          done = true;
+          resolved = turns.get(ev.messageId);
+          cleanup();
+          resolvePromise?.(c.json({
+            sessionId,
+            ...(messageId ? { messageId } : {}),
+            text: resolved.text,
+            toolCalls: resolved.toolCalls,
+            ...(resolved.error !== undefined ? { error: resolved.error } : {}),
+          } satisfies SyncResponse));
+          return;
         }
+        turns.record(ev);
       });
 
       const result = await runtime.postMessage(sessionId, payload);
       messageId = result.messageId;
+      postSettled = true;
 
       if (!result.triggered) {
         cleanup();
@@ -1402,12 +1638,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       if (done) {
         cleanup();
+        const content = resolved ?? turns.get(messageId);
         return c.json({
           sessionId,
           ...(messageId ? { messageId } : {}),
-          text,
-          toolCalls,
-          ...(error !== undefined ? { error } : {}),
+          text: content.text,
+          toolCalls: content.toolCalls,
+          ...(content.error !== undefined ? { error: content.error } : {}),
         } satisfies SyncResponse);
       }
 
@@ -1423,8 +1660,21 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
-          await writeEvent(streamApi, envelope);
-          if (envelope.event.type === 'agent_end') {
+          // Scope per-turn content to this request's turn; a concurrent turn's
+          // text/tools must not bleed into this stream. Out-of-band media stays
+          // session-wide.
+          if (!forwardToStream(envelope.event)) return;
+          try {
+            await writeEvent(streamApi, envelope);
+          } catch {
+            // Client is gone; stop delivering to a dead stream. The broker
+            // isolates this rejection, but an un-removed subscriber would keep
+            // trying to write on every future event.
+            unsubscribe();
+            void streamApi.close();
+            return;
+          }
+          if (closesThisStream(envelope.event)) {
             unsubscribe();
             void streamApi.close();
           }
@@ -1434,6 +1684,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       });
 
       const result = await runtime.postMessage(sessionId, payload);
+      // Events buffered before postMessage returned belong to concurrent turns
+      // (our own turn is queued and cannot have ended yet). With no requestMessageId
+      // the fallback-to-any close would fire on one of those; only ends at or after
+      // this boundary are eligible to close a no-messageId stream.
+      const settleBoundary = buffered.length;
+
+      const closesThisStream = (event: OutboundEvent): boolean =>
+        agentEndClosesStream(event, result.messageId);
+
+      const forwardToStream = (event: OutboundEvent): boolean =>
+        streamEventInScope(event, result.messageId);
 
       if (!result.triggered) {
         unsubscribe();
@@ -1442,28 +1703,32 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       return streamSSE(c, async (stream) => {
         streamApi = stream;
-
-        if (result.messageId) {
-          await stream.writeSSE({
-            event: 'message_ack',
-            data: JSON.stringify({ sessionId, messageId: result.messageId }),
-          });
-        }
-
-        let closed = false;
-        for (const envelope of buffered) {
-          await writeEvent(stream, envelope);
-          if (envelope.event.type === 'agent_end') {
-            unsubscribe();
-            closed = true;
-            break;
+        try {
+          if (result.messageId) {
+            await stream.writeSSE({
+              event: 'message_ack',
+              data: JSON.stringify({ sessionId, messageId: result.messageId }),
+            });
           }
-        }
-        buffered.length = 0;
-        streamReady = true;
 
-        if (!closed) {
-          await waitForAbort(c.req.raw.signal);
+          let closed = false;
+          for (let i = 0; i < buffered.length; i += 1) {
+            const envelope = buffered[i]!;
+            if (!forwardToStream(envelope.event)) continue;
+            await writeEvent(stream, envelope);
+            const eligibleToClose = bufferedEndEligibleToClose(result.messageId, i, settleBoundary);
+            if (eligibleToClose && closesThisStream(envelope.event)) {
+              closed = true;
+              break;
+            }
+          }
+          buffered.length = 0;
+          streamReady = true;
+
+          if (!closed) {
+            await waitForAbort(c.req.raw.signal);
+          }
+        } finally {
           unsubscribe();
         }
       });
@@ -1605,8 +1870,22 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       // while the backlog is still writing, then drain with id dedupe.
       const pendingLive: SessionEventEnvelope[] = [];
       let replayingBacklog = true;
+      let overflowed = false;
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (replayingBacklog) {
+          // A slow reader backpressures the backlog drain while live events
+          // pile up here. Cap the buffer and drop the connection on overflow
+          // rather than growing memory without bound; the client reconnects
+          // with its cursor and replays cleanly.
+          if (pendingLive.length >= SSE_PENDING_LIVE_CAP) {
+            if (!overflowed) {
+              overflowed = true;
+              log(`SSE live buffer overflow for session ${sessionId} (cap ${SSE_PENDING_LIVE_CAP}); closing connection`);
+              pendingLive.length = 0;
+              stream.abort();
+            }
+            return;
+          }
           pendingLive.push(envelope);
           return;
         }
@@ -1616,17 +1895,25 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const backlog = runtime.events.getBacklog(sessionId);
       let maxBacklogId = 0;
       for (const envelope of backlog) {
+        if (overflowed) break;
         maxBacklogId = Math.max(maxBacklogId, envelope.id);
         await writeEvent(stream, envelope);
       }
-      // Flip before splicing so any concurrent publish is handled by the live
-      // path rather than a second push into pendingLive that we would drop.
-      replayingBacklog = false;
-      const leftoverLive = pendingLive.splice(0, pendingLive.length);
-      for (const envelope of leftoverLive) {
-        if (envelope.id > maxBacklogId) {
-          await writeEvent(stream, envelope);
-        }
+      // Drain buffered live events while still buffering new arrivals, so a
+      // concurrent publish can't race a higher id ahead of a lower leftover
+      // one, then flip synchronously, with no await between the last
+      // emptiness check and the flip.
+      await drainBufferedLive(
+        pendingLive,
+        maxBacklogId,
+        (envelope) => writeEvent(stream, envelope),
+        () => !overflowed,
+        () => { replayingBacklog = false; },
+      );
+
+      if (overflowed) {
+        unsubscribe();
+        return;
       }
 
       const heartbeat = setInterval(() => {
@@ -1676,6 +1963,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
             };
           }
         : undefined,
+    verifyAttachment: options.attachmentStore
+      ? async (attachmentId) => {
+          const record = await options.attachmentStore!.get(attachmentId);
+          return record ? { agentId: record.agentId, sessionId: record.sessionId } : undefined;
+        }
+      : undefined,
   });
 
   // --- admin API ---
@@ -1740,7 +2033,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
     const rows = await store.listAll();
 
-    // Resolve agent display names.
     const nameByAgent = new Map<string, string | undefined>();
     if (agentStore) {
       const records = await agentStore.list();
@@ -3494,7 +3786,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return options.scheduleStore;
   };
 
-  // List all schedules across all agents
   app.get('/api/admin/schedules', async (c) => {
     requireAdmin(c.req.header('authorization'));
     const store = requireScheduleStore();

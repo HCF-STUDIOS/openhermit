@@ -16,6 +16,8 @@ interface BuildAppOptions {
   runnerMissing?: boolean;
   /** Mock for the injected asset-ingest helper. Omit to leave ingest unconfigured. */
   ingestAttachment?: SessionPublishDeps['ingestAttachment'];
+  /** Mock for attachment-ownership lookup. Omit to skip ownership checks. */
+  verifyAttachment?: SessionPublishDeps['verifyAttachment'];
 }
 
 function buildApp(opts: BuildAppOptions = {}): {
@@ -55,6 +57,7 @@ function buildApp(opts: BuildAppOptions = {}): {
       return runner as any;
     },
     ingestAttachment: opts.ingestAttachment,
+    verifyAttachment: opts.verifyAttachment,
   };
 
   registerSessionPublishRoute(app, deps);
@@ -89,8 +92,8 @@ test('POST session events: missing/invalid token returns 401', async () => {
 });
 
 test('POST session events: valid token + valid attachment publishes and returns 202', async () => {
-  const { app, publishCalls } = buildApp();
   const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({ verifyAttachment: async () => ({ agentId, sessionId }) });
 
   const event = { type: 'attachment', sessionId, attachmentId: 'att_1', mimeType: 'image/png', kind: 'image' };
   const res = await app.request(eventsUrl(agentId, sessionId), {
@@ -126,7 +129,7 @@ test('POST session events: valid token + valid pending_media publishes and retur
   assert.deepEqual(publishCalls[0], event);
 });
 
-test('POST session events: valid token + valid error event with correlationId publishes as-is and returns 202', async () => {
+test('POST session events: a correlationId-bearing error is stamped media_error (reliable out-of-band marker) and returns 202', async () => {
   const ingestCalls: unknown[] = [];
   const { app, publishCalls } = buildApp({
     ingestAttachment: async (input) => {
@@ -149,7 +152,40 @@ test('POST session events: valid token + valid error event with correlationId pu
   assert.equal(res.status, 202);
   assert.equal(ingestCalls.length, 0);
   assert.equal(publishCalls.length, 1);
+  // Reliable media marker so the consumer never infers media-vs-turn from a collision-prone id.
+  assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
+});
+
+test('POST session events: an error already marked reconcile_cancel is preserved, not re-stamped media_error', async () => {
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const event = { type: 'error', sessionId, message: 'Media was prepared but not sent.', correlationId: 'corr_1', reason: 'reconcile_cancel' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(publishCalls.length, 1);
+  // A valid out-of-band reason is left intact so it stays classifiable as itself.
   assert.deepEqual(publishCalls[0], event);
+});
+
+test('POST session events: an error with a null/unknown reason is rejected 400 and never published (cannot be misread as a turn error)', async () => {
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  for (const reason of [null, 'invalid']) {
+    const res = await app.request(eventsUrl(agentId, sessionId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ event: { type: 'error', sessionId, message: 'boom', correlationId: 'corr_1', reason } }),
+    });
+    assert.equal(res.status, 400, `reason ${String(reason)} must be rejected`);
+  }
+  assert.equal(publishCalls.length, 0);
 });
 
 test('POST session events: disallowed event type returns 400', async () => {
@@ -187,8 +223,11 @@ test('POST session events: malformed body returns 400', async () => {
 });
 
 test('POST session events: unknown/evicted runner returns 404', async () => {
-  const { app, publishCalls } = buildApp({ runnerMissing: true });
   const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({
+    runnerMissing: true,
+    verifyAttachment: async () => ({ agentId, sessionId }),
+  });
 
   const event = { type: 'attachment', sessionId, attachmentId: 'att_1', mimeType: 'image/png', kind: 'image' };
   const res = await app.request(eventsUrl(agentId, sessionId), {
@@ -254,8 +293,7 @@ test('POST session events: attachment with assetUrl ingests then publishes with 
 test('POST session events: published attachment uses the sniffed mimeType/kind, not a mismatched caller hint', async () => {
   const { app, publishCalls } = buildApp({
     ingestAttachment: async () => {
-      // The fetch sniffed and persisted a PDF regardless of the caller hint
-      // below.
+      // The fetch sniffed and persisted a PDF regardless of the caller hint.
       return { attachmentId: 'att_ingested_2', mimeType: 'application/pdf' };
     },
   });
@@ -386,15 +424,111 @@ test('POST session events: attachment with assetUrl but no ingest helper configu
   assert.equal(publishCalls.length, 0);
 });
 
+test('POST session events: direct attachment owned by the target agent+session publishes 202', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const verifyCalls: string[] = [];
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async (id) => {
+      verifyCalls.push(id);
+      return { agentId, sessionId };
+    },
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_owned', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.deepEqual(verifyCalls, ['att_owned']);
+  assert.equal(publishCalls.length, 1);
+  assert.deepEqual(publishCalls[0], event);
+});
+
+test('POST session events: direct attachment referencing a foreign agent/session is rejected 404 and not published', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async () => ({ agentId: 'other-agent', sessionId: 'other-session' }),
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_foreign', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 404);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: direct attachment referencing an unknown id is rejected 404 and not published', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async () => undefined,
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_missing', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 404);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: direct attachment with no ownership verifier is rejected (fail closed)', async () => {
+  // No verifyAttachment wired: a direct attachment publish must fail closed, not publish unverified.
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_unverifiable', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 403);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: error and pending_media skip attachment-ownership verification', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const verifyCalls: string[] = [];
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async (id) => {
+      verifyCalls.push(id);
+      return undefined;
+    },
+  });
+
+  const event = { type: 'error', sessionId, message: 'boom', correlationId: 'corr_x' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(verifyCalls.length, 0);
+  assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
+});
+
 test('POST session events: attachment with attachmentId (no assetUrl) still publishes as-is', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
   const ingestCalls: unknown[] = [];
   const { app, publishCalls } = buildApp({
     ingestAttachment: async (input) => {
       ingestCalls.push(input);
       return { attachmentId: 'unexpected', mimeType: 'image/png' };
     },
+    verifyAttachment: async () => ({ agentId, sessionId }),
   });
-  const { agentId, sessionId } = uniqueAgentSession();
 
   const event = { type: 'attachment', sessionId, attachmentId: 'att_existing', mimeType: 'image/png', kind: 'image' };
   const res = await app.request(eventsUrl(agentId, sessionId), {

@@ -8,6 +8,19 @@ import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
 import type { ReasoningTagStreamState, SpeakerTagStreamState } from './message-utils.js';
 
+/** Principal bound to a single turn at post time and carried with its queued
+ *  turn, so a turn always runs as the sender of ITS OWN triggering message,
+ *  not whoever last posted into the shared session. Resolving tool
+ *  authorization from shared session fields at run time let a queued guest turn
+ *  snapshot a later owner post and run at owner privilege. */
+export interface TurnPrincipal {
+  userId?: string | undefined;
+  role?: UserRole | undefined;
+  userName?: string | undefined;
+  channel?: string | undefined;
+  channelUserId?: string | undefined;
+}
+
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
   queue: Promise<void>;
@@ -74,6 +87,39 @@ export interface RunnerSession extends SessionDescriptor {
    *  queued postMessage turn for these ids becomes a no-op so a folded
    *  message is never processed twice. */
   foldedMessageIds?: Set<string>;
+  /** messageIds of posted messages whose queued turn has not started yet.
+   *  A posted-then-folded message self-cleans its `foldedMessageIds` entry
+   *  when its queued turn runs (the no-op path); an append-only folded
+   *  message has no queued turn, so its entry would leak. Turn completion
+   *  uses this set to tell the two apart and evict only the append-only ids. */
+  pendingTurnMessageIds?: Set<string>;
+  /** messageIds folded during the current turn. Reset at turn start. If the
+   *  turn fails before answering, these are removed from `foldedMessageIds`
+   *  so their suppressed queued turns proceed rather than stranding the
+   *  user with no response. */
+  currentTurnFoldedIds?: Set<string>;
+  /** Resolved userId of the message that started the in-flight turn, snapshotted
+   *  when its tool principal is built. Mid-turn folding compares each candidate
+   *  row's persisted userId against this: a message from a different principal
+   *  must never fold into this turn (it would execute tools at this turn's
+   *  privilege) and instead falls through to its own turn. */
+  currentTurnPrincipalUserId?: string | undefined;
+  /** Resolved role of the in-flight turn's principal, snapshotted alongside
+   *  currentTurnPrincipalUserId when the tool principal is built. Mid-turn
+   *  folding compares each candidate's CURRENT role against this: the same
+   *  userId can be downgraded (owner to guest) between the turn start and a
+   *  later post, and a role that no longer matches must not fold into a turn
+   *  running at the old privilege. */
+  currentTurnPrincipalRole?: UserRole | undefined;
+  /** messageId that started the in-flight turn. Excluded from mid-turn folding
+   *  so the turn's own trigger is never re-injected when the fold cursor is
+   *  captured before it is persisted. */
+  currentTurnTriggerMessageId?: string | undefined;
+  /** correlationIds of `pending_media` skeletons emitted this turn that a
+   *  matching `attachment` has not yet resolved. At turn end each survivor is
+   *  cancelled so an uploaded-but-never-sent media never strands a permanent
+   *  "generating" placeholder in consumers. */
+  pendingMediaCorrelationIds?: Set<string>;
 }
 
 export interface AgentRunnerOptions {

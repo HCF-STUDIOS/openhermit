@@ -45,7 +45,6 @@ export const main = async (): Promise<void> => {
   await bot.start();
 };
 
-// Re-export for programmatic use.
 export { TelegramApi } from './telegram-api.js';
 export { TelegramBridge } from './bridge.js';
 export { TelegramBot } from './bot.js';

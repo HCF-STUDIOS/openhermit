@@ -2,7 +2,49 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 
-import { startPersistentSubscription, type SseFrame } from '../src/persistent-subscription.js';
+import { startPersistentSubscription, outboundErrorText, type SseFrame } from '../src/persistent-subscription.js';
+
+test('outboundErrorText drops a turn error, classified by reason not correlationId', () => {
+  // A turn error carries no reason; the in-turn reader owns it, and a correlationId collision must not make it read as media.
+  assert.equal(outboundErrorText(JSON.stringify({ message: 'twin out of credits' })), null);
+  assert.equal(
+    outboundErrorText(JSON.stringify({ message: 'twin out of credits', correlationId: 'B' })),
+    null,
+  );
+});
+
+test('outboundErrorText delivers a media-job failure marked media_error exactly once', () => {
+  // media_error is a genuine create-job failure the in-turn reader skips, so this subscription must deliver it.
+  assert.equal(
+    outboundErrorText(JSON.stringify({ message: 'image generation failed', correlationId: 'att_1', reason: 'media_error' })),
+    'Error: image generation failed',
+  );
+});
+
+test('outboundErrorText falls back to a generic media message for a media_error with no message', () => {
+  assert.equal(
+    outboundErrorText(JSON.stringify({ correlationId: 'att_1', reason: 'media_error' })),
+    'Error: Media generation failed',
+  );
+});
+
+test('outboundErrorText stays silent for an internal reconcile-cancel', () => {
+  // A media-placeholder teardown, never shown in a text channel; rich clients clear the skeleton off correlationId.
+  assert.equal(
+    outboundErrorText(JSON.stringify({
+      message: 'Media was prepared but not sent.',
+      correlationId: 'att_1',
+      reason: 'reconcile_cancel',
+    })),
+    null,
+  );
+});
+
+test('outboundErrorText drops empty, non-correlated, and malformed frames', () => {
+  assert.equal(outboundErrorText(''), null);
+  assert.equal(outboundErrorText(JSON.stringify({})), null);
+  assert.equal(outboundErrorText('{not json'), null);
+});
 
 function frameText(id: number | undefined, event: string, data: unknown): string {
   const lines: string[] = [];
@@ -138,17 +180,14 @@ test('closes and resolves after idleTimeoutMs with no frames, without reconnecti
       const received: SseFrame[] = [];
       const start = Date.now();
 
-      // The idle timer is unref'd in production so it never blocks process
-      // exit. Keep a ref'd interval alive here so the test's own event loop
-      // doesn't end before that timer gets a chance to fire.
+      // The idle timer is unref'd in production; keep a ref'd interval alive so the test loop doesn't exit first.
       const keepAlive = setInterval(() => {}, 1000);
       try {
         await startPersistentSubscription({
           eventsUrl: 'https://example/events',
           onEvent: (frame) => received.push(frame),
           idleTimeoutMs: 60,
-          // A short reconnect delay would let a bug reconnect quickly. Keep it
-          // large so a wrongful reconnect would hang the test instead of hiding.
+          // Large reconnect delay so a wrongful reconnect hangs the test instead of hiding.
           reconnectDelayMs: 10_000,
         });
       } finally {
@@ -164,18 +203,12 @@ test('closes and resolves after idleTimeoutMs with no frames, without reconnecti
 });
 
 test('onCursorAdvance reports the cursor so a caller can resume after idle-close without redelivering the backlog', async () => {
-  // Models the real bug. An attachment id 1 arrives. The connection then
-  // idle-closes and the caller drops the map entry. A NEW subscription opens
-  // later. The gateway always replays its recent backlog on a fresh
-  // connection so the second stream re-serves id 1 alongside a genuinely
-  // new id 2. A caller that persisted the cursor via `onCursorAdvance` and
-  // passes it back as `lastEventId` must skip the already-delivered id 1 and
-  // still deliver the new id 2 exactly once.
+  // Models the real bug: the gateway replays its backlog on reconnect, so a persisted cursor passed
+  // back as `lastEventId` must dedupe the already-delivered id 1 while still delivering the new id 2.
   let persistedCursor = 0;
   const received: number[] = [];
 
-  // First connection delivers id 1 then goes idle forever. Only the idle
-  // timer ends it with no reconnect.
+  // First connection delivers id 1 then goes idle forever; only the idle timer ends it, no reconnect.
   const keepAlive = setInterval(() => {}, 1000);
   try {
     await withFetch(
@@ -200,10 +233,7 @@ test('onCursorAdvance reports the cursor so a caller can resume after idle-close
   assert.deepEqual(received, [1]);
   assert.equal(persistedCursor, 1, 'cursor should have advanced to the delivered id');
 
-  // Second reopen. A fresh call as a bridge would make after reopening a
-  // session's subscription. The gateway replays its backlog of ids 1 and 2
-  // because it honors no resume header itself. Only the client-side cursor
-  // dedupes. Passing the persisted cursor must skip id 1 and deliver id 2.
+  // Second reopen: the gateway replays ids 1 and 2 (no server-side resume), so only the persisted cursor dedupes id 1.
   const abortController = new AbortController();
   await withFetch(
     async () => new Response(
@@ -228,16 +258,11 @@ test('onCursorAdvance reports the cursor so a caller can resume after idle-close
     },
   );
 
-  // The already-delivered attachment id 1 must NOT be redelivered. The new
-  // one id 2 must be delivered. Exactly one delivery per id.
   assert.deepEqual(received, [1, 2]);
 });
 
 test('does not leak an abort listener per reconnect once the retry timer wins', async () => {
-  // Each `!response.ok` reconnect sleeps before retrying. When the sleep
-  // timer resolves on its own with no abort it must detach the abort listener
-  // it registered. Otherwise one listener accumulates per retry for the
-  // life of the subscription.
+  // The retry sleep must detach its abort listener when it resolves on its own, else one leaks per retry.
   let calls = 0;
   await withFetch(
     async () => {
@@ -271,10 +296,8 @@ test('does not leak an abort listener per reconnect once the retry timer wins', 
 });
 
 test('onEnding fires when idle closes, before the subscription promise settles', async () => {
-  // Bridges gate reopens on a map entry held until teardown finishes. If
-  // that entry is only cleared in a finally after cancel settles, a
-  // concurrent start no-ops during the window. onEnding must fire as soon
-  // as idle decides to end, while the promise is still pending.
+  // onEnding must fire as soon as idle decides to end, while the promise is still pending, so a
+  // concurrent reopen doesn't no-op on a map entry held until teardown settles.
   let onEndingCalls = 0;
   let promiseSettled = false;
   let onEndingWhilePending = false;
@@ -311,9 +334,7 @@ test('a frame within idleTimeoutMs resets the idle timer so an active stream is 
   await withFetch(
     async () => {
       calls += 1;
-      // Four frames 25ms apart. Each gap is under the 60ms idle window. Then
-      // the stream goes quiet. If the timer did NOT reset per frame it would
-      // close ~60ms in and miss the later frames.
+      // Four frames 25ms apart (under the 60ms idle window); without a per-frame reset the timer would close ~60ms in.
       return new Response(
         makeTimedStream([
           { delayMs: 25, text: frameText(1, 'attachment', { n: 1 }) },
@@ -327,8 +348,7 @@ test('a frame within idleTimeoutMs resets the idle timer so an active stream is 
     async () => {
       const received: number[] = [];
 
-      // See the previous test. The idle timer is unref'd in production so
-      // keep the test's event loop alive independently of it.
+      // The idle timer is unref'd in production; keep the test's event loop alive independently of it.
       const keepAlive = setInterval(() => {}, 1000);
       try {
         await startPersistentSubscription({
@@ -343,8 +363,7 @@ test('a frame within idleTimeoutMs resets the idle timer so an active stream is 
         clearInterval(keepAlive);
       }
 
-      // All four in-flight frames delivered because each reset the timer.
-      // The stream only idle-closed after the last one without reconnecting.
+      // All four delivered because each frame reset the idle timer.
       assert.deepEqual(received, [1, 2, 3, 4]);
       assert.equal(calls, 1);
     },

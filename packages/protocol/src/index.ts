@@ -312,8 +312,30 @@ export type OutboundEventBody =
       correlationId?: string;
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
-  | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string; correlationId?: string }
+  | {
+      type: 'agent_end';
+      sessionId: string;
+      /** The turn's own trigger messageId. Kept for backward compatibility;
+       *  `answeredMessageIds` is the authoritative set and includes this id. */
+      messageId?: string;
+      /** Every messageId this turn answered: the trigger plus every message
+       *  mid-turn-folded into it. A folded message's own queued turn no-ops and
+       *  emits no agent_end, so a gateway stream/wait opened for it closes when
+       *  its id appears here. Absent on older runners (fall back to messageId). */
+      answeredMessageIds?: string[];
+    }
+  | {
+      type: 'error';
+      sessionId: string;
+      message: string;
+      correlationId?: string;
+      /** Marks an out-of-band error whose `correlationId` names a media/job id,
+       *  not a turn trigger: `reconcile_cancel` is an internal placeholder
+       *  teardown, `media_error` a genuine out-of-band create failure. Both are
+       *  forwarded session-wide and never counted as a turn's error, so a caller
+       *  cannot make a turn error be misread as media by colliding ids. */
+      reason?: 'reconcile_cancel' | 'media_error';
+    }
   | {
       /**
        * In-flight media placeholder from a media-generation tool; channels/UIs
@@ -1203,9 +1225,13 @@ export const createTextFinalEvent = (
   text,
 });
 
-export const createAgentEndEvent = (sessionId: string): OutboundEventBody => ({
+export const createAgentEndEvent = (
+  sessionId: string,
+  messageId?: string,
+): OutboundEventBody => ({
   type: 'agent_end',
   sessionId,
+  ...(messageId !== undefined ? { messageId } : {}),
 });
 
 export const isToolApprovalRequest = (
@@ -1264,6 +1290,16 @@ export const isPublishableOutboundEvent = (
   if (value.type === 'error') {
     if (typeof value.message !== 'string' || !value.message) return false;
     if (!isOptionalString(value.correlationId)) return false;
+    // `reason` is the out-of-band marker consumers classify on; a null or
+    // unknown value must not slip through and be read as a turn error. Only the
+    // known out-of-band reasons, or absent, are valid.
+    if (
+      value.reason !== undefined
+      && value.reason !== 'reconcile_cancel'
+      && value.reason !== 'media_error'
+    ) {
+      return false;
+    }
     return true;
   }
 

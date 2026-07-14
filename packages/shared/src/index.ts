@@ -19,6 +19,8 @@ export {
 } from './silence-tokens.js';
 export type { StripSilenceResult } from './silence-tokens.js';
 
+export { agentEndClosesTurn, turnContentInScope, isOutOfBandErrorFrame } from './turn-scope.js';
+
 export interface JsonErrorBody {
   error: {
     code: string;
@@ -121,7 +123,7 @@ export {
   openSessionWithFreshFallback,
 } from './session-recovery.js';
 
-export { startPersistentSubscription } from './persistent-subscription.js';
+export { startPersistentSubscription, outboundErrorText } from './persistent-subscription.js';
 export type {
   PersistentSubscriptionOptions,
   SseFrame,

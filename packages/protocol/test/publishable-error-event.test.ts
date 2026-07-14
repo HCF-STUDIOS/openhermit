@@ -33,6 +33,27 @@ test('isPublishableOutboundEvent rejects an error event missing a message', () =
   );
 });
 
+test('isPublishableOutboundEvent accepts the known out-of-band reasons and no reason', () => {
+  for (const reason of ['reconcile_cancel', 'media_error', undefined]) {
+    assert.equal(
+      isPublishableOutboundEvent({ type: 'error', sessionId: 's1', message: 'failed', correlationId: 'c1', ...(reason !== undefined ? { reason } : {}) }),
+      true,
+      `reason ${String(reason)} should be accepted`,
+    );
+  }
+});
+
+test('isPublishableOutboundEvent rejects an error with a null or unknown reason (cannot slip through and be read as a turn error)', () => {
+  assert.equal(
+    isPublishableOutboundEvent({ type: 'error', sessionId: 's1', message: 'failed', correlationId: 'c1', reason: null }),
+    false,
+  );
+  assert.equal(
+    isPublishableOutboundEvent({ type: 'error', sessionId: 's1', message: 'failed', correlationId: 'c1', reason: 'invalid' }),
+    false,
+  );
+});
+
 test('isPublishableOutboundEvent still rejects a runtime-internal type like text_delta', () => {
   assert.equal(
     isPublishableOutboundEvent({ type: 'text_delta', sessionId: 's1', text: 'hi' }),

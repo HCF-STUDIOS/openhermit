@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn, turnContentInScope, isOutOfBandErrorFrame } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramMessageEntity, TelegramUser } from './telegram-api.js';
@@ -68,10 +68,8 @@ export function pickMediaFile(message: TelegramMessage): TelegramMediaFile | und
 }
 
 /**
- * Decide whether a reply is fit for voice delivery. We refuse anything
- * containing code blocks, command-style markup, or huge volumes of
- * text — those are awkward to listen to and consume API quota for no
- * reader benefit.
+ * Whether a reply is fit for voice delivery. Refuses code blocks and
+ * very long text (awkward to listen to, wastes TTS quota).
  */
 const shouldSpeak = (text: string): boolean => {
   const trimmed = text.trim();
@@ -131,7 +129,6 @@ export class TelegramBridge implements ChannelOutbound {
   private async isMentioned(message: TelegramMessage): Promise<boolean> {
     const bot = await this.getBotInfo();
 
-    // Reply to the bot's message
     if (message.reply_to_message?.from?.id === bot.id) {
       return true;
     }
@@ -383,7 +380,6 @@ export class TelegramBridge implements ChannelOutbound {
   ): Promise<void> {
     const oldSessionId = await this.getSessionId(chatId);
 
-    // Checkpoint the current session before starting a new one.
     try {
       await this.client.checkpointSession(oldSessionId, { reason: 'new_session' });
     } catch {
@@ -395,7 +391,6 @@ export class TelegramBridge implements ChannelOutbound {
     this.subscriptions.get(oldSessionId)?.abort();
     this.subscriptions.delete(oldSessionId);
 
-    // Generate a fresh sessionId for this chat.
     const newSessionId = TelegramBridge.generateSessionId();
     this.chatSessions.set(chatId, newSessionId);
 
@@ -453,6 +448,9 @@ export class TelegramBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sid, {
       text,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(message.message_id !== undefined ? { messageId: String(message.message_id) } : {}),
       mentioned,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...senderPayload,
@@ -462,7 +460,13 @@ export class TelegramBridge implements ChannelOutbound {
 
     void this.telegram.sendChatAction(chatId).catch(() => undefined);
 
-    const result = await this.waitForAgentResponse(sid, chatId, inboundWasVoice);
+    const result = await this.waitForAgentResponse(
+      sid,
+      chatId,
+      inboundWasVoice,
+      postResult.messageId ??
+        (message.message_id !== undefined ? String(message.message_id) : undefined),
+    );
 
     if (result.error && !result.text) {
       await this.telegram.sendMessage(chatId, `Error: ${result.error}`);
@@ -630,6 +634,16 @@ export class TelegramBridge implements ChannelOutbound {
       onEnding: release,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
+        if (frame.event === 'error') {
+          const text = outboundErrorText(frame.data);
+          if (text) {
+            void this.telegram.sendMessage(chatId, text).catch((err) => {
+              this.log(`out-of-turn error delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        // pending_media has nothing to render in a text channel; ignore it.
         if (frame.event !== 'attachment') return;
         try {
           const payload = frame.data.length > 0
@@ -669,6 +683,7 @@ export class TelegramBridge implements ChannelOutbound {
     sessionId: string,
     chatId: number,
     suppressStreamingDisplay = false,
+    ownMessageId?: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -693,7 +708,6 @@ export class TelegramBridge implements ChannelOutbound {
     let finalText: string | undefined;
     let error: string | undefined;
 
-    // Streaming edit state.
     let sentMessageId: number | undefined;
     let lastEditTime = 0;
     const EDIT_THROTTLE_MS = 1500;
@@ -722,10 +736,8 @@ export class TelegramBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'ready') {
-            // Detect sequence reset: a new runner restarts ids at 1, so
-            // a stored cursor from a previous runner would skip every
-            // event. Reset the cursor when the server's next id is
-            // behind ours.
+            // Sequence reset: a new runner restarts ids at 1, so reset the
+            // cursor when the server's next id is behind ours (else we skip every event).
             if (!sequenceResetChecked) {
               sequenceResetChecked = true;
               try {
@@ -759,7 +771,6 @@ export class TelegramBridge implements ChannelOutbound {
             // chat.
             if (suppressStreamingDisplay) continue;
 
-            // Streaming edit: send initial message or throttled edits.
             const now = Date.now();
             if (!sentMessageId && displayText.length > 0) {
               try {
@@ -793,6 +804,13 @@ export class TelegramBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'error') {
+            // Out-of-band errors (media/reconcile) carry a `reason` and are
+            // delivered by the persistent subscription; skip them here. A turn
+            // error carries no reason and the turn trigger as correlationId;
+            // scope it to THIS turn so a concurrent turn's failure isn't
+            // misattributed to this reader.
+            if (isOutOfBandErrorFrame(payload)) continue;
+            if (!turnContentInScope(payload, ownMessageId)) continue;
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
@@ -808,7 +826,14 @@ export class TelegramBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
 
@@ -831,7 +856,6 @@ export class TelegramBridge implements ChannelOutbound {
     // Agent chose not to reply (group chat, not mentioned).
     if (stripped?.isSilent) {
       if (sentMessageId) {
-        // Delete the partially-streamed message.
         void this.telegram.deleteMessage(chatId, sentMessageId).catch(() => undefined);
       }
       return { text: undefined, error: undefined };

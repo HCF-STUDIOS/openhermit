@@ -48,6 +48,36 @@ const parseSseFrames = (
   return { frames, remainder };
 };
 
+/**
+ * User-facing text for an out-of-band `error` event frame delivered by the
+ * persistent subscription, or null when it should not be shown here. Classified
+ * by `reason`, not by the presence of `correlationId` (a turn error carries the
+ * turn trigger as `correlationId` and no reason; keying on correlationId would
+ * misread it as media). Single owner per error:
+ *  - `reason: 'media_error'` -> a genuine out-of-band media-job failure;
+ *    delivered here exactly once (the in-turn reader skips out-of-band errors).
+ *  - `reason: 'reconcile_cancel'` -> an internal media placeholder teardown;
+ *    never shown in a text channel.
+ *  - no reason -> a turn failure; the in-turn reader already delivers it, so the
+ *    persistent subscription stays silent to avoid a double message.
+ * Malformed/empty frames yield null.
+ */
+export const outboundErrorText = (frameData: string): string | null => {
+  try {
+    const payload = frameData.length > 0
+      ? (JSON.parse(frameData) as Record<string, unknown>)
+      : {};
+    if (payload.reason !== 'media_error') return null;
+    const message =
+      typeof payload.message === 'string' && payload.message.length > 0
+        ? payload.message
+        : 'Media generation failed';
+    return `Error: ${message}`;
+  } catch {
+    return null;
+  }
+};
+
 export interface PersistentSubscriptionOptions {
   eventsUrl: string;
   /** Cursor to resume from. Frames with id <= this are skipped. */
