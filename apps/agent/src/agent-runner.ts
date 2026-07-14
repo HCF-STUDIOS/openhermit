@@ -147,29 +147,10 @@ export const resolveWithinMs = async <T>(
   }
 };
 
-/** Mid-turn steering: fold user messages that arrive while a turn is
- *  running into that turn at the next tool boundary instead of queueing
- *  them as separate turns. Default off. */
-const isMidTurnSteeringEnabled = (): boolean =>
-  process.env.OPENHERMIT_MID_TURN_STEERING === '1';
-
 const addUserIdToList = (existing: string[], userId: string | undefined): string[] => {
   if (!userId) return existing;
   return existing.includes(userId) ? existing : [...existing, userId];
 };
-
-/**
- * Whether a candidate message may fold into an in-flight turn: its principal
- * must match the turn's in every authorization-relevant field. userId equality
- * is not sufficient because a user's role can change between the turn start and
- * a later post, so a downgraded user must not run at the turn's old privilege.
- */
-export const principalMayFold = (
-  candidateUserId: string | undefined,
-  candidateRole: UserRole | undefined,
-  turnUserId: string | undefined,
-  turnRole: UserRole | undefined,
-): boolean => candidateUserId === turnUserId && candidateRole === turnRole;
 
 export class AgentRunner implements SessionRuntime {
   readonly events = new SessionEventBroker();
@@ -745,7 +726,6 @@ export class AgentRunner implements SessionRuntime {
         } else {
           session.consecutiveToolFailures = 0;
         }
-        await this.foldMidTurnMessages(session);
         return undefined;
       },
     );
@@ -1225,11 +1205,6 @@ export class AgentRunner implements SessionRuntime {
     // message (e.g. a steered row whose capturing turn died) to start a fresh
     // turn against the existing row rather than appending a duplicate.
     let alreadyPersisted = false;
-    // The trigger row's session_events id. Captured here (this side effect is
-    // awaited before the turn is queued) so the turn can set its fold cursor to
-    // this exact id synchronously, without a racy getLatestEventId() read that
-    // could advance past a message appended after the turn starts and drop it.
-    let triggerEventId: number | undefined;
     await this.queueSideEffect(session, async () => {
       if (message.messageId) {
         const existing = await this.store.messages.findEntryIdByMessageId(
@@ -1237,11 +1212,10 @@ export class AgentRunner implements SessionRuntime {
         );
         if (existing !== null) {
           alreadyPersisted = true;
-          triggerEventId = existing;
           return;
         }
       }
-      triggerEventId = await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+      await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
         ts: receivedAt,
         role: 'user',
         messageId: message.messageId,
@@ -1304,33 +1278,16 @@ export class AgentRunner implements SessionRuntime {
     const promptMessage = { ...message, text: promptText };
 
     const run = async (): Promise<void> => {
-      // This queued turn is starting: it can no longer self-clean via the
-      // fold no-op below, so drop it from the pending set.
-      if (message.messageId) session.pendingTurnMessageIds?.delete(message.messageId);
-      // Mid-turn steering: a message folded into an earlier in-flight turn
-      // was already sent to the model there — its queued turn is a no-op.
-      if (message.messageId && session.foldedMessageIds?.delete(message.messageId)) {
-        return;
-      }
       try {
-        // Set the fold cursor to this turn's own trigger row id, captured at
-        // post time. Message appends serialize on session.sideEffects, so their
-        // session_events ids are monotonic: everything appended after the
-        // trigger has a higher id and folds in, nothing before it re-folds. The
-        // trigger itself is excluded by the strict `>` in listMessagesSinceEvent.
-        // Set synchronously here (no await) so a message appended after the turn
-        // starts can't slip below an advancing cursor and be dropped.
+        // The turn's trigger messageId, stamped onto its terminal agent_end so
+        // gateway streams and channel readers can scope the end to this turn.
         session.currentTurnTriggerMessageId = message.messageId;
-        if (isMidTurnSteeringEnabled() && triggerEventId !== undefined) {
-          session.midTurnCursor = triggerEventId;
-        }
         await this.refreshAgentConfiguration(session, turnPrincipal);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
         session.consecutiveToolFailures = 0;
-        session.currentTurnFoldedIds = new Set();
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
         } else {
@@ -1368,12 +1325,6 @@ export class AgentRunner implements SessionRuntime {
       }
     };
 
-    // Mark this message as having a pending queued turn so a later turn that
-    // folds it can distinguish it (self-cleans below) from an append-only
-    // folded message (no queued turn) when it evicts fold ids at completion.
-    if (message.messageId) {
-      (session.pendingTurnMessageIds ??= new Set()).add(message.messageId);
-    }
     session.queue = session.queue.then(run, run);
 
     return {
@@ -1473,102 +1424,6 @@ export class AgentRunner implements SessionRuntime {
     }
 
     return { appended: true };
-  }
-
-  /**
-   * Mid-turn steering, behind `OPENHERMIT_MID_TURN_STEERING=1`. Called from
-   * the session agent's afterToolCall hook — after each tool result, before
-   * the next model call. Folds user messages appended to the transcript
-   * after the turn-start cursor into the running turn via pi-agent-core's
-   * `steer()`, which injects queued messages at the next tool boundary.
-   *
-   * Rows without a messageId are skipped: the dedupe that turns a folded
-   * message's queued postMessage turn into a no-op is keyed by messageId.
-   * Messages stored via appendMessage never queue a turn of their own, so
-   * folding is their only path into a live turn. Must not throw — the
-   * afterToolCall contract requires a settled result.
-   */
-  private async foldMidTurnMessages(session: RunnerSession): Promise<void> {
-    if (!isMidTurnSteeringEnabled()) return;
-    const cursor = session.midTurnCursor;
-    if (cursor === undefined) return;
-    const isGroup = session.spec.source.type === 'group';
-    try {
-      const rows = await this.store.messages.listMessagesSinceEvent(
-        this.scope,
-        session.spec.sessionId,
-        cursor,
-      );
-      let maxEventId = cursor;
-      for (const row of rows) {
-        if (row.eventId !== undefined && row.eventId > maxEventId) {
-          maxEventId = row.eventId;
-        }
-        if (row.role !== 'user' || !row.messageId) continue;
-        // The turn's own trigger is not a mid-turn message: with the cursor
-        // captured before it was persisted it can appear here, but folding it
-        // would re-inject the message that started the turn.
-        if (row.messageId === session.currentTurnTriggerMessageId) continue;
-        // Apply the trigger path's gate: a group message that was stored
-        // only (not directed at the agent) must not steer a live turn.
-        if (isGroup && row.mentioned === false) continue;
-        // Auth boundary: only fold a message whose principal matches the turn's
-        // in every authorization-relevant field. userId alone is not enough: a
-        // different sender would execute at this turn's privilege (a guest's
-        // @-mention folded into an owner turn), and the SAME user can be
-        // downgraded (owner turn, then demoted to guest, then a new post) and
-        // must not ride the old turn's tools. The candidate's CURRENT role is
-        // resolved live since it can drift after the message was persisted. Any
-        // mismatch falls through to the message's own queued turn.
-        const candidateUserId = row.userId ?? undefined;
-        const candidateRole = candidateUserId
-          ? ((await this.store.users.getAgentRole(this.scope, candidateUserId)) ?? 'guest')
-          : undefined;
-        if (
-          !principalMayFold(
-            candidateUserId,
-            candidateRole,
-            session.currentTurnPrincipalUserId,
-            session.currentTurnPrincipalRole,
-          )
-        ) {
-          continue;
-        }
-        const folded = (session.foldedMessageIds ??= new Set());
-        if (folded.has(row.messageId)) continue;
-        folded.add(row.messageId);
-        (session.currentTurnFoldedIds ??= new Set()).add(row.messageId);
-        const text = session.spec.source.type === 'group' && row.userName
-          ? `[${row.userName}] ${row.content}`
-          : row.content;
-        session.agent.steer(createUserMessage({ text }));
-        this.logRuntime(
-          `session ${session.spec.sessionId}: folded mid-turn message ${row.messageId} into the running turn`,
-        );
-      }
-      session.midTurnCursor = maxEventId;
-    } catch (error) {
-      console.error(
-        `[openhermit-agent] mid-turn fold failed for ${session.spec.sessionId}`,
-        getErrorMessage(error),
-      );
-    }
-  }
-
-  /**
-   * A turn failed (thrown error, or a final response with stopReason
-   * error/aborted) before answering. Messages folded into it via steer()
-   * had their own queued turns suppressed, so without this they would never
-   * get a response. Un-suppress them so the queued turns proceed, and drop
-   * any steer that never drained so it can't bleed into a later turn. We
-   * prefer answering a folded message twice over never answering it.
-   */
-  private releaseFoldedTurnMessages(session: RunnerSession): void {
-    const ids = session.currentTurnFoldedIds;
-    if (!ids || ids.size === 0) return;
-    for (const id of ids) session.foldedMessageIds?.delete(id);
-    ids.clear();
-    session.agent.clearSteeringQueue();
   }
 
   /**
@@ -3405,20 +3260,6 @@ export class AgentRunner implements SessionRuntime {
         const thinkingText = extractThinkingText(event.message);
         const thinkingSignature = extractThinkingSignature(event.message);
         const assistantMessage = event.message;
-
-        // A final response that errored or aborted WITHOUT producing answer
-        // text never answered anything folded into this turn: release those
-        // messages so their suppressed queued turns proceed. But an aborted
-        // turn can still carry a complete answer that agent_end publishes —
-        // treat that like success and leave the folds suppressed, or the
-        // released queued turn would re-answer the same message.
-        if (
-          (assistantMessage.stopReason === 'error' || assistantMessage.stopReason === 'aborted')
-          && !(assistantText ?? '').trim()
-        ) {
-          this.releaseFoldedTurnMessages(session);
-        }
-
         // Snapshot the turn's roster + sender names synchronously: cleanGroupText
         // is also called from a queued side effect on the error path, by which
         // time a later turn could have overwritten the live session fields.
@@ -3591,25 +3432,6 @@ export class AgentRunner implements SessionRuntime {
       }
 
       case 'agent_end': {
-        // The turn completed; any messages folded into it were answered here.
-        // Snapshot those ids before clearing so agent_end can carry the full
-        // answered set: a folded message's own queued turn no-ops and emits no
-        // agent_end, so a gateway stream/wait opened for it would hang unless
-        // this turn's end names it. Drop the tracking so their queued turns
-        // stay suppressed.
-        const foldedAnswered = session.currentTurnFoldedIds
-          ? [...session.currentTurnFoldedIds]
-          : [];
-        // Evict append-only folded ids from foldedMessageIds now: they have no
-        // queued turn to self-clean via the run() no-op, so they would leak for
-        // the session lifetime. Posted folded messages (still pending a queued
-        // turn) are left for their own run() to clear, preserving the no-op.
-        for (const id of foldedAnswered) {
-          if (!session.pendingTurnMessageIds?.has(id)) {
-            session.foldedMessageIds?.delete(id);
-          }
-        }
-        session.currentTurnFoldedIds?.clear();
         // Cancel any media placeholder the turn left unresolved.
         this.reconcilePendingMedia(session);
         const ts = new Date().toISOString();
@@ -3650,10 +3472,8 @@ export class AgentRunner implements SessionRuntime {
 
         const turnCorrelationId = session.currentTurnCorrelationId;
         const turnTriggerMessageId = session.currentTurnTriggerMessageId;
-        const answeredMessageIds = [
-          ...(turnTriggerMessageId !== undefined ? [turnTriggerMessageId] : []),
-          ...foldedAnswered,
-        ];
+        const answeredMessageIds =
+          turnTriggerMessageId !== undefined ? [turnTriggerMessageId] : [];
         delete session.currentTurnCorrelationId;
         void (async () => {
           // For channel-bound sessions, run the channel.message.out@v1
@@ -3764,10 +3584,8 @@ export class AgentRunner implements SessionRuntime {
     session.updatedAt = ts;
     session.status = 'idle';
 
-    // The turn threw before answering: release any mid-turn folded messages
-    // so their suppressed queued turns still get a response, and cancel any
-    // unresolved media placeholder so it can't strand.
-    this.releaseFoldedTurnMessages(session);
+    // The turn threw before answering: cancel any unresolved media placeholder
+    // so it can't strand.
     this.reconcilePendingMedia(session);
 
     // A mid-stream failure (credit depletion, transient 5xx, …) leaves
@@ -3811,10 +3629,8 @@ export class AgentRunner implements SessionRuntime {
         type: 'agent_end',
         sessionId: session.spec.sessionId,
         ...(turnTriggerMessageId !== undefined ? { messageId: turnTriggerMessageId } : {}),
-        // Only the trigger is answered on error. Folded messages were released
-        // by releaseFoldedTurnMessages to re-run as their own turns, so each
-        // emits its own agent_end. Naming them here would close their streams
-        // prematurely.
+        // The trigger is the turn's answered message; naming it scopes the end
+        // to the gateway stream and channel reader opened for this turn.
         ...(turnTriggerMessageId !== undefined ? { answeredMessageIds: [turnTriggerMessageId] } : {}),
       });
       this.scheduleIdleSummary(session);
