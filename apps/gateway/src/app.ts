@@ -105,8 +105,17 @@ export const drainBufferedLive = async (
   maxBacklogId: number,
   write: (envelope: SessionEventEnvelope) => Promise<void>,
   shouldContinue: () => boolean = () => true,
+  onDrained: () => void = () => {},
 ): Promise<void> => {
-  while (shouldContinue() && pendingLive.length > 0) {
+  while (shouldContinue()) {
+    if (pendingLive.length === 0) {
+      // Buffer observed empty: go live synchronously here, with no statement
+      // boundary (no await) between the emptiness check and the flip, so a
+      // concurrent publish is either already drained above or now writes
+      // straight to the stream — it can never be stranded in the buffer.
+      onDrained();
+      return;
+    }
     const batch = pendingLive.splice(0, pendingLive.length);
     for (const envelope of batch) {
       if (envelope.id > maxBacklogId) {
@@ -114,6 +123,8 @@ export const drainBufferedLive = async (
       }
     }
   }
+  // Exited without draining (shouldContinue() went false, i.e. overflow): the
+  // caller tears the connection down, so the live flip is intentionally skipped.
 };
 
 const writeEvent = async (
@@ -1672,8 +1683,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         maxBacklogId,
         (envelope) => writeEvent(stream, envelope),
         () => !overflowed,
+        () => { replayingBacklog = false; },
       );
-      replayingBacklog = false;
 
       if (overflowed) {
         unsubscribe();

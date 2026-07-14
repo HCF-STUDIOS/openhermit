@@ -62,6 +62,16 @@ export interface RunnerSession extends SessionDescriptor {
    *  so their suppressed queued turns proceed rather than stranding the
    *  user with no response. */
   currentTurnFoldedIds?: Set<string>;
+  /** Resolved userId of the message that started the in-flight turn, snapshotted
+   *  when its tool principal is built. Mid-turn folding compares each candidate
+   *  row's persisted userId against this: a message from a different principal
+   *  must never fold into this turn (it would execute tools at this turn's
+   *  privilege) and instead falls through to its own turn. */
+  currentTurnPrincipalUserId?: string | undefined;
+  /** messageId that started the in-flight turn. Excluded from mid-turn folding
+   *  so the turn's own trigger is never re-injected when the fold cursor is
+   *  captured before it is persisted. */
+  currentTurnTriggerMessageId?: string | undefined;
   /** correlationIds of `pending_media` skeletons emitted this turn that a
    *  matching `attachment` has not yet resolved. At turn end each survivor is
    *  cancelled so an uploaded-but-never-sent media never strands a permanent

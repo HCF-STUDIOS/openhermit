@@ -180,7 +180,7 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
 });
 
-test('delivers an out-of-turn error event as a plain text message to the channel', async () => {
+test('delivers an out-of-turn media-job failure (correlated, no reason) as a text message', async () => {
   const sends: Array<[string, string]> = [];
   const discord = {
     startTyping: async () => undefined,
@@ -188,7 +188,7 @@ test('delivers an out-of-turn error event as a plain text message to the channel
   } as unknown as ConstructorParameters<typeof DiscordBridge>[0];
   const bridge = new DiscordBridge(discord, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
 
-  const body = frameText(1, 'error', { sessionId: 'sess-e1', message: 'twin ran out of credits' });
+  const body = frameText(1, 'error', { sessionId: 'sess-e1', message: 'image generation failed', correlationId: 'att_9' });
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
@@ -200,10 +200,10 @@ test('delivers an out-of-turn error event as a plain text message to the channel
   );
 
   assert.equal(sends.length, 1);
-  assert.deepEqual(sends[0], ['chan-err', 'Error: twin ran out of credits']);
+  assert.deepEqual(sends[0], ['chan-err', 'Error: image generation failed']);
 });
 
-test('ignores an out-of-turn error carrying a correlationId (media placeholder resolver, not a user error)', async () => {
+test('out-of-turn subscription drops non-correlated turn errors and reconcile-cancels, delivering only a real media failure', async () => {
   const sends: Array<[string, string]> = [];
   const discord = {
     startTyping: async () => undefined,
@@ -212,8 +212,12 @@ test('ignores an out-of-turn error carrying a correlationId (media placeholder r
   const bridge = new DiscordBridge(discord, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
 
   const body =
-    frameText(1, 'error', { sessionId: 'sess-e2', message: 'unsent media', correlationId: 'att_1' }) +
-    frameText(2, 'error', { sessionId: 'sess-e2', message: 'real failure' });
+    // Non-correlated turn failure: the in-turn reader owns it, not this path.
+    frameText(1, 'error', { sessionId: 'sess-e2', message: 'twin ran out of credits' }) +
+    // Internal reconcile-cancel: never shown in a text channel.
+    frameText(2, 'error', { sessionId: 'sess-e2', message: 'Media was prepared but not sent.', correlationId: 'att_1', reason: 'reconcile_cancel' }) +
+    // Genuine out-of-band media-job failure: delivered exactly once.
+    frameText(3, 'error', { sessionId: 'sess-e2', message: 'real media failure', correlationId: 'att_2' });
   await withFetch(
     async () => new Response(makeStream(body), { status: 200 }),
     async () => {
@@ -224,9 +228,8 @@ test('ignores an out-of-turn error carrying a correlationId (media placeholder r
     },
   );
 
-  // Only the correlationId-free error is surfaced.
   assert.equal(sends.length, 1);
-  assert.deepEqual(sends[0], ['chan-err2', 'Error: real failure']);
+  assert.deepEqual(sends[0], ['chan-err2', 'Error: real media failure']);
 });
 
 test('removes the session entry when its subscription ends (idle close), so it reopens lazily', async () => {

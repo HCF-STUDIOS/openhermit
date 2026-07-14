@@ -313,7 +313,7 @@ export type OutboundEventBody =
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string; correlationId?: string }
+  | { type: 'error'; sessionId: string; message: string; correlationId?: string; reason?: 'reconcile_cancel' }
   | {
       /**
        * In-flight media placeholder from a media-generation tool; channels/UIs
