@@ -144,8 +144,16 @@ export class SessionEventBroker {
       return;
     }
 
-    for (const subscriber of sessionSubscribers) {
-      await subscriber(envelope);
+    // Isolate each subscriber: one that throws or rejects (e.g. an SSE writer
+    // whose client disconnected) must not abort the fanout or the caller's
+    // publish. Snapshot first so a subscriber that unsubscribes itself during
+    // delivery cannot perturb the iteration.
+    for (const subscriber of [...sessionSubscribers]) {
+      try {
+        await subscriber(envelope);
+      } catch (error) {
+        console.error('[openhermit-agent] session event subscriber failed', error);
+      }
     }
   }
 }

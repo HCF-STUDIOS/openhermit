@@ -131,6 +131,19 @@ const addUserIdToList = (existing: string[], userId: string | undefined): string
   return existing.includes(userId) ? existing : [...existing, userId];
 };
 
+/**
+ * Whether a candidate message may fold into an in-flight turn: its principal
+ * must match the turn's in every authorization-relevant field. userId equality
+ * is not sufficient because a user's role can change between the turn start and
+ * a later post, so a downgraded user must not run at the turn's old privilege.
+ */
+export const principalMayFold = (
+  candidateUserId: string | undefined,
+  candidateRole: UserRole | undefined,
+  turnUserId: string | undefined,
+  turnRole: UserRole | undefined,
+): boolean => candidateUserId === turnUserId && candidateRole === turnRole;
+
 export class AgentRunner implements SessionRuntime {
   readonly events = new SessionEventBroker();
   /** Per-agent typed event bus — subscribed to by future plugins. */
@@ -1454,14 +1467,28 @@ export class AgentRunner implements SessionRuntime {
         // Apply the trigger path's gate: a group message that was stored
         // only (not directed at the agent) must not steer a live turn.
         if (isGroup && row.mentioned === false) continue;
-        // Auth boundary: only fold a message from the SAME principal as the
-        // turn-starter. A different sender's message would otherwise execute
-        // tools at this turn's privilege (e.g. a guest's @-mention folded into
-        // an owner turn). It falls through to its own queued turn instead,
-        // which runs at its own privilege. userId equality implies role
-        // equality (role is a property of the user on this agent), so the
-        // persisted row userId is the whole principal check.
-        if ((row.userId ?? undefined) !== session.currentTurnPrincipalUserId) continue;
+        // Auth boundary: only fold a message whose principal matches the turn's
+        // in every authorization-relevant field. userId alone is not enough: a
+        // different sender would execute at this turn's privilege (a guest's
+        // @-mention folded into an owner turn), and the SAME user can be
+        // downgraded (owner turn, then demoted to guest, then a new post) and
+        // must not ride the old turn's tools. The candidate's CURRENT role is
+        // resolved live since it can drift after the message was persisted. Any
+        // mismatch falls through to the message's own queued turn.
+        const candidateUserId = row.userId ?? undefined;
+        const candidateRole = candidateUserId
+          ? ((await this.store.users.getAgentRole(this.scope, candidateUserId)) ?? 'guest')
+          : undefined;
+        if (
+          !principalMayFold(
+            candidateUserId,
+            candidateRole,
+            session.currentTurnPrincipalUserId,
+            session.currentTurnPrincipalRole,
+          )
+        ) {
+          continue;
+        }
         const folded = (session.foldedMessageIds ??= new Set());
         if (folded.has(row.messageId)) continue;
         folded.add(row.messageId);
@@ -2574,6 +2601,7 @@ export class AgentRunner implements SessionRuntime {
     const turnUserId = principal.userId;
     const turnUserRole = principal.role;
     session.currentTurnPrincipalUserId = turnUserId;
+    session.currentTurnPrincipalRole = turnUserRole;
 
     const isOwnerInteractive = session.spec.source.interactive && turnUserRole === 'owner';
     const approvalCallback = isOwnerInteractive
@@ -3541,17 +3569,28 @@ export class AgentRunner implements SessionRuntime {
           }
 
           if (finalText) {
-            const finalMentions =
-              session.spec.source.type === 'group'
-                ? extractMentionRefs(finalText, turnRoster)
-                : [];
-            await this.events.publish({
-              type: 'text_final',
-              sessionId: session.spec.sessionId,
-              text: finalText,
-              ...(finalMentions.length ? { mentions: finalMentions } : {}),
-              ...(turnCorrelationId !== undefined ? { correlationId: turnCorrelationId } : {}),
-            });
+            // Isolated like the transform above: a failure here (mention
+            // extraction, or a subscriber the broker did not swallow) must never
+            // prevent the terminal agent_end below, which closes gateway streams
+            // for this turn and every message folded into it.
+            try {
+              const finalMentions =
+                session.spec.source.type === 'group'
+                  ? extractMentionRefs(finalText, turnRoster)
+                  : [];
+              await this.events.publish({
+                type: 'text_final',
+                sessionId: session.spec.sessionId,
+                text: finalText,
+                ...(finalMentions.length ? { mentions: finalMentions } : {}),
+                ...(turnCorrelationId !== undefined ? { correlationId: turnCorrelationId } : {}),
+              });
+            } catch (error) {
+              console.error(
+                `[openhermit-agent] text_final publish failed for ${session.spec.sessionId}`,
+                getErrorMessage(error),
+              );
+            }
           }
 
           await this.events.publish({

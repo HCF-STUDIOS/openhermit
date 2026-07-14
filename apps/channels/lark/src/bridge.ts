@@ -115,6 +115,16 @@ export class LarkBridge implements ChannelOutbound {
   }
 
   async handleNewSession(chatId: string): Promise<void> {
+    // Serialize under the same per-chat lock as handleMessage so a "/new" can
+    // never tear down a session's subscription while that chat's turn is still
+    // in flight (which would abort the running turn's reader).
+    const previous = this.chatLocks.get(chatId) ?? Promise.resolve();
+    const turn = previous.then(() => this.handleNewSessionInner(chatId));
+    this.chatLocks.set(chatId, turn.catch(() => undefined));
+    await turn;
+  }
+
+  private async handleNewSessionInner(chatId: string): Promise<void> {
     const oldSessionId = this.chatSessions.get(chatId);
     if (oldSessionId) this.teardownSubscription(oldSessionId);
     const fresh = LarkBridge.generateSessionId();

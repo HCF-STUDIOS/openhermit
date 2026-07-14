@@ -18,6 +18,7 @@ import {
   type ChannelSetup,
   type ChannelSetupContext,
   type CreateAgentRequest,
+  type MessageSender,
   type OutboundEvent,
   type SessionListQuery,
   type SyncResponse,
@@ -129,6 +130,28 @@ export const drainBufferedLive = async (
 };
 
 /**
+ * Bind the effective message sender to the authenticated caller in user mode.
+ * A user JWT authenticates exactly one identity; the request body must never be
+ * able to speak as someone else. Overriding (rather than trusting payload.sender)
+ * stops an authenticated guest from claiming another user's identity (e.g. the
+ * owner's) and having the turn run at that user's tools, and closes the
+ * omitted-sender fallback to shared session state. Channel and admin modes pass
+ * through: a channel token is a trusted service secret governed by the namespace
+ * check, and admin is fully trusted.
+ */
+export const bindSenderIdentity = (
+  auth: Pick<AuthContext, 'mode' | 'channel' | 'channelUserId'>,
+  sender: MessageSender | undefined,
+): MessageSender | undefined => {
+  if (auth.mode !== 'user') return sender;
+  return {
+    channel: auth.channel,
+    channelUserId: auth.channelUserId,
+    ...(sender?.displayName ? { displayName: sender.displayName } : {}),
+  };
+};
+
+/**
  * Whether an agent_end should close a stream/request opened for
  * `requestMessageId`. A concurrent turn (e.g. mid-turn steering opens a second
  * stream) emits its own session-wide agent_end; only the end for this request's
@@ -149,6 +172,32 @@ export const agentEndClosesStream = (
   }
   return event.messageId === undefined || event.messageId === requestMessageId;
 };
+
+/**
+ * Whether an agent_end may resolve a wait-mode request. Until postMessage
+ * returns this request's messageId, `agentEndClosesStream(ev, undefined)` matches
+ * ANY end. The request's own turn is queued and cannot have ended before
+ * postMessage returned, so any end seen in that window belongs to a concurrent
+ * turn and must be ignored, otherwise B's wait would resolve on A's response.
+ */
+export const agentEndResolvesWait = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+  postSettled: boolean,
+): boolean => postSettled && agentEndClosesStream(event, requestMessageId);
+
+/**
+ * Whether a buffered event (replayed when a stream goes live) is eligible to
+ * close the stream. Events buffered before postMessage returned (index below the
+ * settle boundary) belong to concurrent turns; with no requestMessageId the
+ * fallback-to-any close would fire on one of those. When a requestMessageId is
+ * present, scoped matching already prevents a wrong close, so any index is fine.
+ */
+export const bufferedEndEligibleToClose = (
+  requestMessageId: string | undefined,
+  bufferIndex: number,
+  settleBoundary: number,
+): boolean => requestMessageId !== undefined || bufferIndex >= settleBoundary;
 
 const writeEvent = async (
   stream: SSEStreamingApi,
@@ -1356,6 +1405,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
+    // Bind the effective sender to the authenticated caller (user mode) so the
+    // request body cannot claim another user's identity. Applies to both the
+    // postMessage and appendMessage paths below.
+    const boundSender = bindSenderIdentity(auth, payload.sender);
+    if (boundSender) payload.sender = boundSender;
+    else delete payload.sender;
+
     const url = new URL(c.req.url);
     const appendMode = url.searchParams.get('append') === 'true' || url.searchParams.get('inject') === 'true';
 
@@ -1405,6 +1461,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       let error: string | undefined;
       let messageId: string | undefined;
       let done = false;
+      let postSettled = false;
       let resolvePromise: ((response: Response) => void) | undefined;
 
       const timer = setTimeout(() => {
@@ -1442,9 +1499,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
             error = ev.message;
             break;
           case 'agent_end':
-            // Ignore a concurrent turn's session-wide agent_end; resolve only on
+            // Ignore ends until postMessage settles this request's messageId
+            // (an end seen earlier is a concurrent turn's), then resolve only on
             // the end for this request's message.
-            if (!agentEndClosesStream(ev, messageId)) {
+            if (!agentEndResolvesWait(ev, messageId, postSettled)) {
               break;
             }
             done = true;
@@ -1462,6 +1520,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const result = await runtime.postMessage(sessionId, payload);
       messageId = result.messageId;
+      postSettled = true;
 
       if (!result.triggered) {
         cleanup();
@@ -1491,7 +1550,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
-          await writeEvent(streamApi, envelope);
+          try {
+            await writeEvent(streamApi, envelope);
+          } catch {
+            // Client is gone; stop delivering to a dead stream. The broker
+            // isolates this rejection, but an un-removed subscriber would keep
+            // trying to write on every future event.
+            unsubscribe();
+            void streamApi.close();
+            return;
+          }
           if (closesThisStream(envelope.event)) {
             unsubscribe();
             void streamApi.close();
@@ -1502,6 +1570,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       });
 
       const result = await runtime.postMessage(sessionId, payload);
+      // Events buffered before postMessage returned belong to concurrent turns
+      // (our own turn is queued and cannot have ended yet). With no requestMessageId
+      // the fallback-to-any close would fire on one of those; only ends at or after
+      // this boundary are eligible to close a no-messageId stream.
+      const settleBoundary = buffered.length;
 
       const closesThisStream = (event: OutboundEvent): boolean =>
         agentEndClosesStream(event, result.messageId);
@@ -1513,28 +1586,31 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       return streamSSE(c, async (stream) => {
         streamApi = stream;
-
-        if (result.messageId) {
-          await stream.writeSSE({
-            event: 'message_ack',
-            data: JSON.stringify({ sessionId, messageId: result.messageId }),
-          });
-        }
-
-        let closed = false;
-        for (const envelope of buffered) {
-          await writeEvent(stream, envelope);
-          if (closesThisStream(envelope.event)) {
-            unsubscribe();
-            closed = true;
-            break;
+        try {
+          if (result.messageId) {
+            await stream.writeSSE({
+              event: 'message_ack',
+              data: JSON.stringify({ sessionId, messageId: result.messageId }),
+            });
           }
-        }
-        buffered.length = 0;
-        streamReady = true;
 
-        if (!closed) {
-          await waitForAbort(c.req.raw.signal);
+          let closed = false;
+          for (let i = 0; i < buffered.length; i += 1) {
+            const envelope = buffered[i]!;
+            await writeEvent(stream, envelope);
+            const eligibleToClose = bufferedEndEligibleToClose(result.messageId, i, settleBoundary);
+            if (eligibleToClose && closesThisStream(envelope.event)) {
+              closed = true;
+              break;
+            }
+          }
+          buffered.length = 0;
+          streamReady = true;
+
+          if (!closed) {
+            await waitForAbort(c.req.raw.signal);
+          }
+        } finally {
           unsubscribe();
         }
       });
