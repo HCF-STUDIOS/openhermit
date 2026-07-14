@@ -216,6 +216,92 @@ export const bufferedEndEligibleToClose = (
   settleBoundary: number,
 ): boolean => requestMessageId !== undefined || bufferIndex >= settleBoundary;
 
+/** Per-turn content event types (as opposed to session-wide out-of-band events
+ *  like `attachment`/`pending_media` or lifecycle/approval events). These carry
+ *  the turn's trigger as `correlationId` and must be scoped to the request's
+ *  turn so a concurrent turn's text/tools never bleed into another request. */
+const SCOPED_TURN_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'thinking_delta',
+  'thinking_final',
+  'text_delta',
+  'text_final',
+  'tool_call',
+  'tool_result',
+  'error',
+]);
+
+/**
+ * Whether a stream-mode subscriber should forward `event` to a request opened
+ * for `requestMessageId`. Turn-content events are scoped to this request's turn
+ * (matched on `correlationId`, which every event of a turn shares); out-of-band
+ * media and lifecycle events stay session-wide so media delivery is unaffected.
+ * A request with no id of its own (`requestMessageId` undefined) is an older
+ * caller and receives everything, unscoped.
+ */
+export const streamEventInScope = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+): boolean => {
+  if (requestMessageId === undefined) return true;
+  if (!SCOPED_TURN_CONTENT_TYPES.has(event.type)) return true;
+  const correlationId = (event as { correlationId?: string }).correlationId;
+  return correlationId === undefined || correlationId === requestMessageId;
+};
+
+/** One turn's accumulated wait-mode content. */
+export interface WaitTurnContent {
+  toolCalls: SyncToolCall[];
+  text: string | null;
+  error?: string;
+}
+
+/**
+ * Accumulates wait-mode content per turn, keyed by the turn's trigger
+ * (`correlationId` on content events). The resolving `agent_end` names the
+ * answering turn's trigger in `messageId` — the same value — so `get(ev.messageId)`
+ * returns exactly the content of the turn that answered this request and never a
+ * concurrent turn's. A message folded mid-turn into another turn thus still
+ * returns that turn's reply; a legacy id-less turn buckets under `''`.
+ */
+export class WaitTurnAccumulator {
+  private readonly turns = new Map<string, WaitTurnContent>();
+
+  private bucket(correlationId: string | undefined): WaitTurnContent {
+    const key = correlationId ?? '';
+    let content = this.turns.get(key);
+    if (!content) {
+      content = { toolCalls: [], text: null };
+      this.turns.set(key, content);
+    }
+    return content;
+  }
+
+  record(event: OutboundEvent): void {
+    switch (event.type) {
+      case 'tool_result':
+        this.bucket(event.correlationId).toolCalls.push({
+          tool: event.tool,
+          isError: event.isError,
+          ...(event.text !== undefined ? { text: event.text } : {}),
+          ...(event.details !== undefined ? { details: event.details } : {}),
+        });
+        break;
+      case 'text_final':
+        this.bucket(event.correlationId).text = event.text;
+        break;
+      case 'error':
+        this.bucket(event.correlationId).error = event.message;
+        break;
+      default:
+        break;
+    }
+  }
+
+  get(triggerMessageId: string | undefined): WaitTurnContent {
+    return this.turns.get(triggerMessageId ?? '') ?? { toolCalls: [], text: null };
+  }
+}
+
 const writeEvent = async (
   stream: SSEStreamingApi,
   envelope: SessionEventEnvelope,
@@ -1464,9 +1550,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         'timeout',
       ) ?? SYNC_DEFAULT_TIMEOUT_MS;
 
-      const toolCalls: SyncToolCall[] = [];
-      let text: string | null = null;
-      let error: string | undefined;
+      // Accumulate content per turn (keyed by correlationId) so this request
+      // returns only the content of the turn that answered it, never a
+      // concurrent turn's.
+      const turns = new WaitTurnAccumulator();
+      let resolved: WaitTurnContent | undefined;
       let messageId: string | undefined;
       let done = false;
       let postSettled = false;
@@ -1474,11 +1562,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const timer = setTimeout(() => {
         cleanup();
+        // No end arrived: return this request's own turn's partial content.
+        const partial = turns.get(messageId);
         const response: SyncResponse = {
           sessionId,
           ...(messageId ? { messageId } : {}),
-          text,
-          toolCalls,
+          text: partial.text,
+          toolCalls: partial.toolCalls,
           error: 'Timeout waiting for agent response.',
         };
         resolvePromise?.(c.json(response, 504));
@@ -1491,39 +1581,26 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const unsubscribe = runtime.events.subscribe(sessionId, (envelope) => {
         const ev = envelope.event;
-        switch (ev.type) {
-          case 'tool_result':
-            toolCalls.push({
-              tool: ev.tool,
-              isError: ev.isError,
-              ...(ev.text !== undefined ? { text: ev.text } : {}),
-              ...(ev.details !== undefined ? { details: ev.details } : {}),
-            });
-            break;
-          case 'text_final':
-            text = ev.text;
-            break;
-          case 'error':
-            error = ev.message;
-            break;
-          case 'agent_end':
-            // Ignore ends until postMessage settles this request's messageId
-            // (an end seen earlier is a concurrent turn's), then resolve only on
-            // the end for this request's message.
-            if (!agentEndResolvesWait(ev, messageId, postSettled)) {
-              break;
-            }
-            done = true;
-            cleanup();
-            resolvePromise?.(c.json({
-              sessionId,
-              ...(messageId ? { messageId } : {}),
-              text,
-              toolCalls,
-              ...(error !== undefined ? { error } : {}),
-            } satisfies SyncResponse));
-            break;
+        if (ev.type === 'agent_end') {
+          // Ignore ends until postMessage settles this request's messageId
+          // (an end seen earlier is a concurrent turn's), then resolve only on
+          // the end for this request's message.
+          if (!agentEndResolvesWait(ev, messageId, postSettled)) {
+            return;
+          }
+          done = true;
+          resolved = turns.get(ev.messageId);
+          cleanup();
+          resolvePromise?.(c.json({
+            sessionId,
+            ...(messageId ? { messageId } : {}),
+            text: resolved.text,
+            toolCalls: resolved.toolCalls,
+            ...(resolved.error !== undefined ? { error: resolved.error } : {}),
+          } satisfies SyncResponse));
+          return;
         }
+        turns.record(ev);
       });
 
       const result = await runtime.postMessage(sessionId, payload);
@@ -1537,12 +1614,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       if (done) {
         cleanup();
+        const content = resolved ?? turns.get(messageId);
         return c.json({
           sessionId,
           ...(messageId ? { messageId } : {}),
-          text,
-          toolCalls,
-          ...(error !== undefined ? { error } : {}),
+          text: content.text,
+          toolCalls: content.toolCalls,
+          ...(content.error !== undefined ? { error: content.error } : {}),
         } satisfies SyncResponse);
       }
 
@@ -1558,6 +1636,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
+          // Scope per-turn content to this request's turn; a concurrent turn's
+          // text/tools must not bleed into this stream. Out-of-band media stays
+          // session-wide.
+          if (!forwardToStream(envelope.event)) return;
           try {
             await writeEvent(streamApi, envelope);
           } catch {
@@ -1587,6 +1669,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const closesThisStream = (event: OutboundEvent): boolean =>
         agentEndClosesStream(event, result.messageId);
 
+      const forwardToStream = (event: OutboundEvent): boolean =>
+        streamEventInScope(event, result.messageId);
+
       if (!result.triggered) {
         unsubscribe();
         return c.json(result);
@@ -1605,6 +1690,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
           let closed = false;
           for (let i = 0; i < buffered.length; i += 1) {
             const envelope = buffered[i]!;
+            if (!forwardToStream(envelope.event)) continue;
             await writeEvent(stream, envelope);
             const eligibleToClose = bufferedEndEligibleToClose(result.messageId, i, settleBoundary);
             if (eligibleToClose && closesThisStream(envelope.event)) {
