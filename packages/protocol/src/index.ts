@@ -312,7 +312,7 @@ export type OutboundEventBody =
       correlationId?: string;
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
-  | { type: 'agent_end'; sessionId: string }
+  | { type: 'agent_end'; sessionId: string; messageId?: string }
   | { type: 'error'; sessionId: string; message: string; correlationId?: string; reason?: 'reconcile_cancel' }
   | {
       /**
@@ -1203,9 +1203,13 @@ export const createTextFinalEvent = (
   text,
 });
 
-export const createAgentEndEvent = (sessionId: string): OutboundEventBody => ({
+export const createAgentEndEvent = (
+  sessionId: string,
+  messageId?: string,
+): OutboundEventBody => ({
   type: 'agent_end',
   sessionId,
+  ...(messageId !== undefined ? { messageId } : {}),
 });
 
 export const isToolApprovalRequest = (
