@@ -1245,6 +1245,17 @@ export class AgentRunner implements SessionRuntime {
         return;
       }
       try {
+        // Capture the fold cursor BEFORE the setup awaits below, so a message
+        // appended while refreshAgentConfiguration / attachment prep run still
+        // lands inside the fold window instead of being stranded as pre-turn.
+        // The turn's own trigger is excluded by id in foldMidTurnMessages.
+        session.currentTurnTriggerMessageId = message.messageId;
+        if (isMidTurnSteeringEnabled()) {
+          session.midTurnCursor = await this.store.messages.getLatestEventId(
+            this.scope,
+            session.spec.sessionId,
+          );
+        }
         await this.refreshAgentConfiguration(session);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
@@ -1283,14 +1294,6 @@ export class AgentRunner implements SessionRuntime {
           },
           { supportsImageInput, log: (m) => console.warn(`[agent-runner] ${m}`) },
         );
-        if (isMidTurnSteeringEnabled()) {
-          // Cursor for foldMidTurnMessages: user rows appended to the
-          // transcript after this id arrived while this turn was running.
-          session.midTurnCursor = await this.store.messages.getLatestEventId(
-            this.scope,
-            session.spec.sessionId,
-          );
-        }
         await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
       } catch (error) {
         await this.handleRunError(session, error);
@@ -1425,9 +1428,21 @@ export class AgentRunner implements SessionRuntime {
           maxEventId = row.eventId;
         }
         if (row.role !== 'user' || !row.messageId) continue;
+        // The turn's own trigger is not a mid-turn message: with the cursor
+        // captured before it was persisted it can appear here, but folding it
+        // would re-inject the message that started the turn.
+        if (row.messageId === session.currentTurnTriggerMessageId) continue;
         // Apply the trigger path's gate: a group message that was stored
         // only (not directed at the agent) must not steer a live turn.
         if (isGroup && row.mentioned === false) continue;
+        // Auth boundary: only fold a message from the SAME principal as the
+        // turn-starter. A different sender's message would otherwise execute
+        // tools at this turn's privilege (e.g. a guest's @-mention folded into
+        // an owner turn). It falls through to its own queued turn instead,
+        // which runs at its own privilege. userId equality implies role
+        // equality (role is a property of the user on this agent), so the
+        // persisted row userId is the whole principal check.
+        if ((row.userId ?? undefined) !== session.currentTurnPrincipalUserId) continue;
         const folded = (session.foldedMessageIds ??= new Set());
         if (folded.has(row.messageId)) continue;
         folded.add(row.messageId);
@@ -1492,6 +1507,11 @@ export class AgentRunner implements SessionRuntime {
         sessionId: session.spec.sessionId,
         message: 'Media was prepared but not sent.',
         correlationId,
+        // Marks this as an internal placeholder teardown, not a real media-job
+        // failure, so text channels stay silent while rich clients still clear
+        // the skeleton. Distinguishes (c) reconcile-cancel from (b) a genuine
+        // out-of-band create failure, which carries no reason.
+        reason: 'reconcile_cancel',
       });
     }
     ids.clear();
@@ -2526,7 +2546,15 @@ export class AgentRunner implements SessionRuntime {
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
 
-    const isOwnerInteractive = session.spec.source.interactive && session.resolvedUserRole === 'owner';
+    // Snapshot the principal synchronously so the tool authorization built
+    // here and the mid-turn fold gate agree on exactly who this turn runs as,
+    // even if a concurrent postMessage mutates session.resolvedUser* during
+    // the awaits below.
+    const turnUserId = session.resolvedUserId;
+    const turnUserRole = session.resolvedUserRole;
+    session.currentTurnPrincipalUserId = turnUserId;
+
+    const isOwnerInteractive = session.spec.source.interactive && turnUserRole === 'owner';
     const approvalCallback = isOwnerInteractive
       ? this.makeApprovalCallback(session.spec.sessionId, session.approvalGate)
       : undefined;
@@ -2537,8 +2565,8 @@ export class AgentRunner implements SessionRuntime {
       contextSessionId: session.spec.sessionId,
       ...(approvalCallback ? { approvalCallback } : {}),
       onToolCall: this.makeToolCallCallback(session),
-      ...(session.resolvedUserRole ? { userRole: session.resolvedUserRole } : {}),
-      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
+      ...(turnUserRole ? { userRole: turnUserRole } : {}),
+      ...(turnUserId ? { userId: turnUserId } : {}),
       ...(session.resolvedUserName ? { userName: session.resolvedUserName } : {}),
       ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
       ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
@@ -3221,10 +3249,16 @@ export class AgentRunner implements SessionRuntime {
         const thinkingSignature = extractThinkingSignature(event.message);
         const assistantMessage = event.message;
 
-        // A final response that errored or aborted never answered anything
-        // folded into this turn: release those messages so their suppressed
-        // queued turns proceed instead of stranding the user.
-        if (assistantMessage.stopReason === 'error' || assistantMessage.stopReason === 'aborted') {
+        // A final response that errored or aborted WITHOUT producing answer
+        // text never answered anything folded into this turn: release those
+        // messages so their suppressed queued turns proceed. But an aborted
+        // turn can still carry a complete answer that agent_end publishes —
+        // treat that like success and leave the folds suppressed, or the
+        // released queued turn would re-answer the same message.
+        if (
+          (assistantMessage.stopReason === 'error' || assistantMessage.stopReason === 'aborted')
+          && !(assistantText ?? '').trim()
+        ) {
           this.releaseFoldedTurnMessages(session);
         }
 

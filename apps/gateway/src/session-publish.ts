@@ -210,7 +210,19 @@ export const registerSessionPublishRoute = (
     // the row exists and belongs to this agent and session, else every
     // consumer's byte fetch 404s on a foreign id. pending_media/error carry
     // no attachment row and skip this.
-    if (eventType === 'attachment' && verifyAttachment) {
+    if (eventType === 'attachment') {
+      if (!verifyAttachment) {
+        // Fail closed: with no ownership verifier wired (e.g. gateway started
+        // without a store) we cannot confirm the row belongs here, so refuse
+        // rather than publish a possibly-foreign attachmentId.
+        return c.json(
+          {
+            error: 'Attachment ownership cannot be verified on this gateway.',
+            code: 'attachment_verification_unavailable',
+          },
+          403,
+        );
+      }
       const attachmentId = typeof record.attachmentId === 'string' ? record.attachmentId : '';
       const owner = attachmentId ? await verifyAttachment(attachmentId) : undefined;
       if (!owner || owner.agentId !== agentId || owner.sessionId !== sessionId) {

@@ -197,6 +197,21 @@ const createErrorResponseStream = (errorMessage: string) => {
   return stream;
 };
 
+/**
+ * Stream that emits a complete text answer but reports `aborted` as the stop
+ * reason — the shape of a turn cancelled after the model already produced its
+ * reply. agent_end still publishes the text, so folds must NOT be released.
+ */
+const createAbortedWithTextStream = (text: string) => {
+  const stream = createAssistantMessageEventStream();
+  // An aborted turn's final AssistantMessage arrives via the `error` stream
+  // event (reason "aborted"), carrying whatever text the model produced first.
+  const message = createAssistantMessage([{ type: 'text', text }], 'aborted');
+  stream.push({ type: 'start', partial: createAssistantMessage([], 'aborted') });
+  stream.push({ type: 'error', reason: 'aborted', error: message });
+  return stream;
+};
+
 const createSequentialStreamFn = (
   responders: Array<(context: Context) => ReturnType<typeof createAssistantMessageEventStream>>,
 ): StreamFn => {
@@ -1813,21 +1828,23 @@ test('AgentRunner mid-turn fold respects the group trigger gate: mentioned folds
     streamFn: async (_model, context) => {
       streamCalls += 1;
       if (streamCalls === 1) {
-        // A non-mentioned guest message: the normal path stores it only
-        // (triggered:false) and it must never be folded into this turn.
+        // A non-mentioned message from the turn-starter: stored only
+        // (triggered:false) and must never be folded into this turn.
         await runner.postMessage('group:fold-gate-session', {
           messageId: 'guest-1',
           text: 'guest sneaky instruction',
           mentioned: false,
-          sender: { channel: 'web', channelUserId: 'u-guest', displayName: 'Guest' },
+          sender: { channel: 'web', channelUserId: 'u-owner', displayName: 'Owner' },
         });
-        // A mentioned member message: the normal path would trigger, so it
-        // is eligible to fold.
+        // A mentioned follow-up from the same sender that started the turn:
+        // same principal + mentioned, so it is eligible to fold. (A different
+        // sender would be gated out by the principal check; see the
+        // cross-principal test below.)
         await runner.postMessage('group:fold-gate-session', {
           messageId: 'member-1',
           text: 'member follow-up',
           mentioned: true,
-          sender: { channel: 'web', channelUserId: 'u-member', displayName: 'Member' },
+          sender: { channel: 'web', channelUserId: 'u-owner', displayName: 'Owner' },
         });
         return createToolCallResponseStream({
           type: 'toolCall',
@@ -1865,6 +1882,229 @@ test('AgentRunner mid-turn fold respects the group trigger gate: mentioned folds
   assert.ok(
     !serialized.includes('guest sneaky instruction'),
     'non-mentioned mid-turn message must not fold into the running turn',
+  );
+});
+
+test('AgentRunner mid-turn fold rejects a different-principal message and gives it its own guest-privilege turn', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let ownerTurnMessages: Context['messages'] = [];
+  let guestTurnMessages: Context['messages'] = [];
+  let guestTurnTools: string[] = [];
+  const sessionId = 'cli:cross-principal-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        // Same principal as the owner turn-starter (no sender -> inherits it):
+        // eligible to fold.
+        await runner.postMessage(sessionId, {
+          messageId: 'owner-follow-1',
+          text: 'also mention the units',
+        });
+        // A different principal (a web guest) sends a message mid-turn. It must
+        // NOT fold into the owner's tool-using turn — that would run the guest's
+        // instruction at owner privilege — and instead gets its own turn.
+        await runner.postMessage(sessionId, {
+          messageId: 'guest-1',
+          text: 'guest injected instruction',
+          sender: { channel: 'web', channelUserId: 'u-guest', displayName: 'Guest' },
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      if (streamCalls === 2) {
+        ownerTurnMessages = context.messages;
+        return createTextResponseStream('42 units');
+      }
+      guestTurnMessages = context.messages;
+      guestTurnTools = (context as { tools?: { name: string }[] }).tools?.map((tool) => tool.name) ?? [];
+      return createTextResponseStream('guest handled separately');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'What is the fact?' });
+  await runner.waitForSessionIdle(sessionId);
+  // The owner turn folded the same-principal follow-up and finished; the
+  // un-folded guest message then runs as its own turn.
+  const deadline = Date.now() + 5000;
+  while (streamCalls < 3 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(streamCalls, 3, 'the different-principal message must run as its own turn');
+
+  const ownerSerialized = JSON.stringify(ownerTurnMessages);
+  assert.ok(
+    ownerSerialized.includes('also mention the units'),
+    'same-principal follow-up should fold into the owner turn',
+  );
+  assert.ok(
+    !ownerSerialized.includes('guest injected instruction'),
+    'different-principal message must not fold into the owner turn',
+  );
+
+  assert.ok(
+    JSON.stringify(guestTurnMessages).includes('guest injected instruction'),
+    'the guest message should drive its own turn',
+  );
+  assert.ok(
+    !guestTurnTools.includes('memory_add'),
+    'the guest turn must run at guest privilege (no owner/user memory tools)',
+  );
+});
+
+test('AgentRunner does not release folds when an aborted turn still produced an answer', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  const sessionId = 'cli:aborted-with-answer-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        await runner.postMessage(sessionId, {
+          messageId: 'steer-1',
+          text: 'also include the units',
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      // The post-fold model call aborts but still carries a complete answer.
+      return createAbortedWithTextStream('42 units (answered before abort)');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'What is the fact?' });
+  await runner.waitForSessionIdle(sessionId);
+  // Give any wrongly-released queued turn a chance to run.
+  await new Promise((r) => setTimeout(r, 200));
+  await runner.waitForSessionIdle(sessionId);
+
+  // Exactly two model calls: the aborted turn carried the answer, so the folded
+  // message's queued turn stays suppressed instead of re-answering it.
+  assert.equal(streamCalls, 2, 'a complete answer must not be re-answered by a released fold');
+});
+
+test('AgentRunner folds a message appended during turn setup (fold cursor captured before setup awaits)', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let secondCallMessages: Context['messages'] = [];
+  const sessionId = 'cli:setup-window-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      secondCallMessages = context.messages;
+      return createTextResponseStream('42');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  // Inject a message during the turn's setup window. refreshAgentConfiguration
+  // awaits security.load() before any model call, and the fold cursor is now
+  // captured before that runs. A message appended here must land inside the
+  // fold window (the pre-fix code captured the cursor after setup and stranded
+  // such a message).
+  const originalLoad = security.load.bind(security);
+  let injected = false;
+  (security as unknown as { load: () => Promise<void> }).load = async () => {
+    await originalLoad();
+    if (!injected) {
+      injected = true;
+      await runner.appendMessage(sessionId, {
+        messageId: 'setup-1',
+        text: 'appended during setup',
+        appendAs: 'user',
+      });
+    }
+  };
+
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'What is the fact?' });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(streamCalls, 2);
+  assert.ok(
+    JSON.stringify(secondCallMessages).includes('appended during setup'),
+    'a message appended during turn setup should fold into the running turn',
   );
 });
 

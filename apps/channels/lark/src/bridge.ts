@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import type { SseFrame } from '@openhermit/shared';
 
 import type { LarkApi } from './lark-api.js';
 import { chunkText } from './parse.js';
@@ -44,6 +45,10 @@ export class LarkBridge implements ChannelOutbound {
   private readonly chatSessions = new Map<string, string>();
   /** Serialize turns per chat so one SSE watcher runs at a time. */
   private readonly chatLocks = new Map<string, Promise<void>>();
+  /** Live out-of-turn subscriptions, one per session (see startAttachmentSubscription). */
+  private readonly subscriptions = new Map<string, AbortController>();
+  /** Persisted resume cursor per session, independent of the in-turn reader's. */
+  private readonly subscriptionCursors = new Map<string, number>();
 
   constructor(
     private readonly lark: LarkApi,
@@ -161,6 +166,10 @@ export class LarkBridge implements ChannelOutbound {
       },
     );
 
+    // Keep an out-of-turn subscription open so media/errors the server pushes
+    // after a turn are still delivered. Idempotent per session.
+    this.startAttachmentSubscription(sessionId, msg.chatId);
+
     const attachments = await this.resolveInboundMedia(sessionId, msg);
     if (!msg.text && attachments.length === 0) return;
 
@@ -181,7 +190,7 @@ export class LarkBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId, msg.chatId);
+    const result = await this.waitForAgentResponse(sessionId);
 
     if (result.error && !result.text) {
       await this.lark.sendText(msg.chatId, `Error: ${result.error}`);
@@ -217,9 +226,74 @@ export class LarkBridge implements ChannelOutbound {
     }
   }
 
+  /**
+   * Start the out-of-turn subscription delivering `attachment` and out-of-band
+   * `error` events pushed after a turn. Idempotent per sessionId. Attachment
+   * delivery happens only here, never in the per-turn loop, so it stays
+   * exactly-once. Mirrors the other channel bridges.
+   */
+  private startAttachmentSubscription(sessionId: string, chatId: string): void {
+    if (this.subscriptions.has(sessionId)) return;
+
+    const abortController = new AbortController();
+    this.subscriptions.set(sessionId, abortController);
+    const release = (): void => {
+      if (this.subscriptions.get(sessionId) === abortController) {
+        this.subscriptions.delete(sessionId);
+      }
+    };
+
+    void startPersistentSubscription({
+      eventsUrl: this.client.buildEventsUrl(sessionId),
+      headers: { authorization: `Bearer ${this.clientToken}` },
+      abortSignal: abortController.signal,
+      lastEventId: this.subscriptionCursors.get(sessionId) ?? 0,
+      onCursorAdvance: (cursor) => this.subscriptionCursors.set(sessionId, cursor),
+      onEnding: release,
+      onEvent: (frame: SseFrame) => {
+        if (frame.event === 'error') {
+          const text = outboundErrorText(frame.data);
+          if (text) {
+            void this.lark.sendText(chatId, text).catch((err) => {
+              this.log(`out-of-turn error delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        // pending_media has nothing to render in a text channel; ignore it.
+        if (frame.event !== 'attachment') return;
+        try {
+          const payload = frame.data.length > 0
+            ? (JSON.parse(frame.data) as Record<string, unknown>)
+            : {};
+          void this.deliverAttachment(chatId, payload).catch((err) => {
+            this.log(`out-of-turn attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } catch (err) {
+          this.log(`failed to parse out-of-turn attachment event: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    }).catch((err) => {
+      this.log(`persistent subscription for ${sessionId} ended: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(release);
+  }
+
+  /** Number of live persistent subscriptions. Exposed for tests. */
+  get subscriptionCount(): number {
+    return this.subscriptions.size;
+  }
+
+  /** Stop all persistent subscriptions. Called on bridge/adapter shutdown. */
+  stop(): void {
+    for (const controller of this.subscriptions.values()) {
+      controller.abort();
+    }
+    this.subscriptions.clear();
+  }
+
   // ── Turn wait (SSE) ────────────────────────────────────────────────
 
-  private async waitForAgentResponse(sessionId: string, chatId: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
 
@@ -288,16 +362,8 @@ export class LarkBridge implements ChannelOutbound {
             error = String(payload.message ?? 'Unknown error');
             continue;
           }
-          if (frame.event === 'attachment') {
-            try {
-              await this.deliverAttachment(chatId, payload);
-            } catch (err) {
-              this.log(
-                `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-            continue;
-          }
+          // Attachments are delivered only by the persistent subscription;
+          // handling them here too would double every in-turn attachment.
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
             continue;

@@ -4,26 +4,44 @@ import { test } from 'node:test';
 
 import { startPersistentSubscription, outboundErrorText, type SseFrame } from '../src/persistent-subscription.js';
 
-test('outboundErrorText formats a turn error as a plain message', () => {
+test('outboundErrorText drops a non-correlated turn error (the in-turn reader delivers it)', () => {
+  // A turn-failure error carries no correlationId. Delivering it here too would
+  // double it, since the in-turn reader already posts it.
+  assert.equal(outboundErrorText(JSON.stringify({ message: 'twin out of credits' })), null);
+});
+
+test('outboundErrorText delivers a correlated out-of-band media-job failure exactly once', () => {
+  // Correlated, no reason marker: a genuine out-of-band create-job failure that
+  // the in-turn reader skips, so the persistent subscription must deliver it.
   assert.equal(
-    outboundErrorText(JSON.stringify({ message: 'twin out of credits' })),
-    'Error: twin out of credits',
+    outboundErrorText(JSON.stringify({ message: 'image generation failed', correlationId: 'att_1' })),
+    'Error: image generation failed',
   );
 });
 
-test('outboundErrorText falls back to a generic message when none is present', () => {
-  assert.equal(outboundErrorText(JSON.stringify({})), 'Error: Unknown error');
+test('outboundErrorText falls back to a generic media message for a correlated failure with no message', () => {
+  assert.equal(
+    outboundErrorText(JSON.stringify({ correlationId: 'att_1' })),
+    'Error: Media generation failed',
+  );
 });
 
-test('outboundErrorText returns null for a correlationId-bearing error (media placeholder resolver)', () => {
+test('outboundErrorText stays silent for an internal reconcile-cancel', () => {
+  // Correlated + reason marker: a media-placeholder teardown, never shown in a
+  // text channel. Rich clients still clear the skeleton off the correlationId.
   assert.equal(
-    outboundErrorText(JSON.stringify({ message: 'unsent media', correlationId: 'att_1' })),
+    outboundErrorText(JSON.stringify({
+      message: 'Media was prepared but not sent.',
+      correlationId: 'att_1',
+      reason: 'reconcile_cancel',
+    })),
     null,
   );
 });
 
-test('outboundErrorText surfaces an empty frame generically but drops malformed JSON', () => {
-  assert.equal(outboundErrorText(''), 'Error: Unknown error');
+test('outboundErrorText drops empty, non-correlated, and malformed frames', () => {
+  assert.equal(outboundErrorText(''), null);
+  assert.equal(outboundErrorText(JSON.stringify({})), null);
   assert.equal(outboundErrorText('{not json'), null);
 });
 

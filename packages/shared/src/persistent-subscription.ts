@@ -49,23 +49,30 @@ const parseSseFrames = (
 };
 
 /**
- * User-facing text for an out-of-band `error` event frame, or null when it
- * should not be shown. An error carrying a `correlationId` resolves a media
- * placeholder in rich clients; text channels have no placeholder to clear, so
- * there is nothing to render. Malformed/empty frames also yield null.
+ * User-facing text for an out-of-band `error` event frame delivered by the
+ * persistent subscription, or null when it should not be shown here. Single
+ * owner per error:
+ *  - No correlationId -> a turn failure; the in-turn reader already delivers
+ *    it, so the persistent subscription stays silent to avoid a double message.
+ *  - correlationId + `reason: 'reconcile_cancel'` -> an internal media
+ *    placeholder teardown; never shown in a text channel.
+ *  - correlationId, no reason -> a genuine out-of-band media-job failure;
+ *    delivered here exactly once (the in-turn reader skips correlated errors).
+ * Malformed/empty frames yield null.
  */
 export const outboundErrorText = (frameData: string): string | null => {
   try {
     const payload = frameData.length > 0
       ? (JSON.parse(frameData) as Record<string, unknown>)
       : {};
-    if (typeof payload.correlationId === 'string' && payload.correlationId.length > 0) {
-      return null;
-    }
+    const hasCorrelation =
+      typeof payload.correlationId === 'string' && payload.correlationId.length > 0;
+    if (!hasCorrelation) return null;
+    if (payload.reason === 'reconcile_cancel') return null;
     const message =
       typeof payload.message === 'string' && payload.message.length > 0
         ? payload.message
-        : 'Unknown error';
+        : 'Media generation failed';
     return `Error: ${message}`;
   } catch {
     return null;
