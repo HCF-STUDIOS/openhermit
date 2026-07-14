@@ -116,6 +116,49 @@ test('slack reader stops at its own agent_end and ignores a following turn frame
   assert.equal(result?.text, 'B-reply', 'reader must not process C\'s frames after its own agent_end');
 });
 
+test('slack reader ignores a concurrent turn text and returns only its own (content scoping)', async () => {
+  const bridge = newBridge();
+  // Turn A is still running and interleaves its text on the session while B's
+  // reader is open. B must not accumulate A's text; only B's own is returned.
+  const body =
+    frameText(1, 'text_final', { text: 'A-reply', correlationId: 'A' }) +
+    frameText(2, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
+    frameText(3, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply', 'reader must ignore the concurrent turn A text and return only its own');
+});
+
+test('slack reader accepts its own content whether tagged with its correlationId or untagged', async () => {
+  const bridge = newBridge();
+  // A concurrent turn A's delta (correlationId A) must be dropped, but B's own
+  // frames — tagged B or untagged (legacy runner) — are kept and concatenated.
+  const body =
+    frameText(1, 'text_delta', { text: 'ignore-A', correlationId: 'A' }) +
+    frameText(2, 'text_delta', { text: 'hello ', correlationId: 'B' }) +
+    frameText(3, 'text_final', { text: 'hello world' }) +
+    frameText(4, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'hello world', 'B keeps its own tagged and untagged content, drops A');
+});
+
 test('slack reader with no own messageId keeps closing on any agent_end (backward-compat)', async () => {
   const bridge = newBridge();
   const body =

@@ -68,6 +68,12 @@ export type SessionSubscriber = (
 /** Default cap on how long a single subscriber may take to accept one event. */
 const DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS = 30_000;
 
+/** Default cap on how many events may be queued for one subscriber at once. A
+ *  subscriber this far behind (delivering near the timeout while events arrive
+ *  faster) is effectively dead; dropping it bounds the chain and the pending
+ *  publish() calls it holds rather than letting them grow without limit. */
+const DEFAULT_MAX_PENDING_DELIVERIES = 500;
+
 export class SessionEventBroker {
   private readonly subscribers = new Map<string, Set<SessionSubscriber>>();
 
@@ -79,13 +85,14 @@ export class SessionEventBroker {
   // and are delivered to concurrently, so a slow one never blocks another.
   private readonly deliveryChains = new WeakMap<
     SessionSubscriber,
-    { tail: Promise<void> }
+    { tail: Promise<void>; depth: number }
   >();
 
   private nextEventId = 1;
 
   constructor(
     private readonly deliveryTimeoutMs = DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS,
+    private readonly maxPendingDeliveries = DEFAULT_MAX_PENDING_DELIVERIES,
   ) {}
 
   subscribe(sessionId: string, subscriber: SessionSubscriber): () => void {
@@ -95,7 +102,7 @@ export class SessionEventBroker {
     this.subscribers.set(sessionId, sessionSubscribers);
 
     if (!this.deliveryChains.has(subscriber)) {
-      this.deliveryChains.set(subscriber, { tail: Promise.resolve() });
+      this.deliveryChains.set(subscriber, { tail: Promise.resolve(), depth: 0 });
     }
 
     return () => this.removeSubscriber(sessionId, subscriber);
@@ -145,7 +152,11 @@ export class SessionEventBroker {
     const backlog = this.backlog.get(sessionId) ?? [];
     for (const envelope of backlog) {
       if (envelope.id > effectiveAfter) {
-        void subscriber(envelope);
+        // Route replay through the same per-subscriber FIFO chain as live
+        // publish so replayed events keep publish order and a stuck replay
+        // callback is bounded by the delivery timeout and depth cap, instead
+        // of firing concurrently and unbounded.
+        void this.enqueueDelivery(sessionId, subscriber, envelope);
       }
     }
     return unsubscribe;
@@ -182,16 +193,42 @@ export class SessionEventBroker {
     // during delivery cannot perturb the fanout.
     const deliveries: Promise<void>[] = [];
     for (const subscriber of [...sessionSubscribers]) {
-      const chain =
-        this.deliveryChains.get(subscriber) ?? { tail: Promise.resolve() };
-      this.deliveryChains.set(subscriber, chain);
-      const delivery = chain.tail.then(() =>
-        this.deliverToSubscriber(fullEvent.sessionId, subscriber, envelope),
+      deliveries.push(
+        this.enqueueDelivery(fullEvent.sessionId, subscriber, envelope),
       );
-      chain.tail = delivery;
-      deliveries.push(delivery);
     }
     await Promise.allSettled(deliveries);
+  }
+
+  /**
+   * Append one event to a subscriber's serial delivery chain. Enforces both the
+   * per-delivery timeout (via deliverToSubscriber) and a per-subscriber pending
+   * depth cap: a subscriber already at the cap is dropped rather than accruing
+   * an unbounded chain of pending deliveries (and the publish() calls awaiting
+   * them). Shared by live publish and backlog replay so both preserve order and
+   * are bounded identically.
+   */
+  private enqueueDelivery(
+    sessionId: string,
+    subscriber: SessionSubscriber,
+    envelope: SessionEventEnvelope,
+  ): Promise<void> {
+    const chain =
+      this.deliveryChains.get(subscriber) ?? { tail: Promise.resolve(), depth: 0 };
+    this.deliveryChains.set(subscriber, chain);
+    if (chain.depth >= this.maxPendingDeliveries) {
+      this.removeSubscriber(sessionId, subscriber);
+      return Promise.resolve();
+    }
+    chain.depth += 1;
+    const delivery = chain.tail.then(() =>
+      this.deliverToSubscriber(sessionId, subscriber, envelope),
+    );
+    chain.tail = delivery;
+    void delivery.finally(() => {
+      chain.depth -= 1;
+    });
+    return delivery;
   }
 
   private async deliverToSubscriber(

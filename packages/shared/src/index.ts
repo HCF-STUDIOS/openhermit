@@ -19,7 +19,7 @@ export {
 } from './silence-tokens.js';
 export type { StripSilenceResult } from './silence-tokens.js';
 
-export { agentEndClosesTurn } from './turn-scope.js';
+export { agentEndClosesTurn, turnContentInScope } from './turn-scope.js';
 
 export interface JsonErrorBody {
   error: {

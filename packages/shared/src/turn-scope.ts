@@ -22,3 +22,24 @@ export const agentEndClosesTurn = (
   const messageId = agentEndPayload.messageId;
   return messageId === undefined || messageId === ownMessageId;
 };
+
+/**
+ * Whether a per-turn content frame (`text_delta`/`text_final`/`tool_result`)
+ * belongs to the turn a bridge reader opened for `ownMessageId`. Mirrors the
+ * gateway's `streamEventInScope` and the reader's own `agentEndClosesTurn`
+ * close scoping: a bridge with no per-chat serialization (readers can overlap
+ * on one session) must not accumulate a concurrent turn's text, or it posts the
+ * wrong reply. Content frames carry the turn's trigger as `correlationId`.
+ *
+ * Backward-compatible: a reader with no id of its own (`ownMessageId`
+ * undefined), or a frame from an older runner that carries no `correlationId`,
+ * is accepted so no peer regresses.
+ */
+export const turnContentInScope = (
+  payload: Record<string, unknown>,
+  ownMessageId: string | undefined,
+): boolean => {
+  if (ownMessageId === undefined) return true;
+  const correlationId = payload.correlationId;
+  return correlationId === undefined || correlationId === ownMessageId;
+};

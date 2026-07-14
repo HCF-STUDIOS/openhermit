@@ -2512,3 +2512,207 @@ test('AgentRunner re-triggers a turn for an already-persisted messageId without 
     .filter((entry) => entry.event.type === 'text_final');
   assert.equal(finals.length, 2, 'both deliveries should have triggered a turn');
 });
+
+test('AgentRunner scopes a failed turn error event to the turn correlationId', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const sessionId = 'cli:error-correlation-session';
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createErrorResponseStream('model provider is down'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, { messageId: 'err-1', text: 'hi' });
+  await runner.waitForSessionIdle(sessionId);
+
+  const errorEvent = runner.events
+    .getBacklog(sessionId)
+    .find((entry) => entry.event.type === 'error');
+  assert.ok(errorEvent, 'a failed turn must publish an error event');
+  assert.equal(
+    (errorEvent.event as { correlationId?: string }).correlationId,
+    'err-1',
+    'the turn error must carry the trigger as correlationId so wait mode buckets it under the answering turn and stream mode scopes it to that request',
+  );
+});
+
+test('AgentRunner clears an append-only folded message id after the folding turn completes', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let secondCallMessages: Context['messages'] = [];
+  const sessionId = 'cli:fold-leak-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        // An append-only message (appendMessage never queues a turn of its own)
+        // that folds into this turn at the memory_get tool boundary. Its only
+        // path into a live turn is folding, so nothing self-cleans its id.
+        await runner.appendMessage(sessionId, {
+          messageId: 'append-1',
+          text: 'also include the units',
+          appendAs: 'user',
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      secondCallMessages = context.messages;
+      return createTextResponseStream('42 units');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'What is the fact?' });
+  await runner.waitForSessionIdle(sessionId);
+
+  // Sanity: the append-only message did fold into the running turn.
+  assert.equal(streamCalls, 2, 'the appended message should have folded and driven a second model call');
+  assert.ok(
+    JSON.stringify(secondCallMessages).includes('also include the units'),
+    'the appended message should fold into the running turn',
+  );
+
+  // The fix: its id is evicted from foldedMessageIds at turn completion. Without
+  // it the id would linger for the session lifetime (unbounded growth).
+  const session = (runner as unknown as {
+    sessions: Map<string, { foldedMessageIds?: Set<string>; currentTurnFoldedIds?: Set<string> }>;
+  }).sessions.get(sessionId);
+  assert.ok(session, 'session should still be resident');
+  assert.equal(
+    session.foldedMessageIds?.has('append-1') ?? false,
+    false,
+    'an append-only folded id must be evicted at turn completion, not leaked',
+  );
+  assert.equal(session.currentTurnFoldedIds?.size ?? 0, 0, 'per-turn fold set is cleared');
+});
+
+test('AgentRunner runs a denied sender as guest without inheriting the prior owner principal', async (t) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+    security: { access: 'protected' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const scope = { agentId };
+  const now = new Date().toISOString();
+  // Owner: a member with the owner role on this agent.
+  await store.users.upsert({ userId: 'usr-owner', name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.linkIdentity({ userId: 'usr-owner', channel: 'web', channelUserId: 'chan-owner', createdAt: now });
+  await store.users.assignAgent(scope, 'usr-owner', 'owner', now);
+  // Known non-member: globally known, but no membership on this protected agent,
+  // so resolveMessageSender DENIES it (returns no userId).
+  await store.users.upsert({ userId: 'usr-known', name: 'Known', createdAt: now, updatedAt: now });
+  await store.users.linkIdentity({ userId: 'usr-known', channel: 'web', channelUserId: 'chan-known', createdAt: now });
+
+  let streamCalls = 0;
+  let deniedTurnTools: string[] = [];
+  let deniedTurnPrincipal: string | undefined = 'sentinel';
+  const sessionId = 'group:denied-principal-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    store,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        return createTextResponseStream('owner reply');
+      }
+      deniedTurnTools = (context as { tools?: { name: string }[] }).tools?.map((tool) => tool.name) ?? [];
+      deniedTurnPrincipal = (runner as unknown as {
+        sessions: Map<string, { currentTurnPrincipalUserId?: string }>;
+      }).sessions.get(sessionId)?.currentTurnPrincipalUserId;
+      return createTextResponseStream('guest reply');
+    },
+  });
+
+  await runner.openSession(
+    {
+      sessionId,
+      source: { kind: 'channel', platform: 'web', interactive: false, type: 'group' },
+    },
+    // Open as the owner so the protected agent admits the session.
+    { channel: 'web', channelUserId: 'chan-owner' },
+  );
+
+  // Owner posts first: the session principal becomes the owner.
+  await runner.postMessage(sessionId, {
+    messageId: 'owner-msg',
+    text: 'hello from owner',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'chan-owner', displayName: 'Owner' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  // A denied (non-member) sender posts behind the owner turn. Its turn must run
+  // as an unprivileged guest, never inherit the owner principal left on the
+  // shared session fields.
+  await runner.postMessage(sessionId, {
+    messageId: 'denied-msg',
+    text: 'hello from a non-member',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'chan-known', displayName: 'Known' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(streamCalls, 2, 'the denied sender should still run its own turn');
+  assert.equal(
+    deniedTurnPrincipal,
+    undefined,
+    'a denied sender must run with no principal userId, not the prior owner id',
+  );
+  assert.ok(
+    !deniedTurnTools.includes('memory_add'),
+    'the denied turn must not carry owner-only tools inherited from the prior owner principal',
+  );
+  assert.ok(
+    !deniedTurnTools.includes('instruction_update'),
+    'the denied turn must not gain any owner-only tool',
+  );
+
+  // And the denied message row is not attributed to the owner, so it can never
+  // fold into a later owner turn.
+  const entries = await readSessionLog(runner, sessionId);
+  const deniedRow = entries.find((entry) => entry.content === 'hello from a non-member');
+  assert.ok(deniedRow, 'the denied message should be persisted');
+  assert.notEqual(deniedRow.userId, 'usr-owner', 'the denied message must not be attributed to the owner');
+});

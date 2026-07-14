@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { agentEndClosesTurn } from '../src/turn-scope.js';
+import { agentEndClosesTurn, turnContentInScope } from '../src/turn-scope.js';
 
 test('closes on the end whose answeredMessageIds includes the own id', () => {
   assert.equal(agentEndClosesTurn({ answeredMessageIds: ['C', 'B'] }, 'B'), true);
@@ -22,4 +22,24 @@ test('closes on any end when the runner emits no ids (legacy)', () => {
 
 test('closes on any end when the reader has no own id (backward-compat)', () => {
   assert.equal(agentEndClosesTurn({ messageId: 'A' }, undefined), true);
+});
+
+// turnContentInScope: content frames must be scoped to the reader's own turn so
+// a bridge without per-chat serialization never accumulates a concurrent turn's
+// text and posts the wrong reply.
+
+test('content: this turn own frame is in scope', () => {
+  assert.equal(turnContentInScope({ correlationId: 'B', text: 'mine' }, 'B'), true);
+});
+
+test('content: a concurrent turn frame is out of scope', () => {
+  assert.equal(turnContentInScope({ correlationId: 'A', text: 'theirs' }, 'B'), false);
+});
+
+test('content: a frame with no correlationId is accepted (legacy runner)', () => {
+  assert.equal(turnContentInScope({ text: 'no-corr' }, 'B'), true);
+});
+
+test('content: a reader with no own id accepts everything (backward-compat)', () => {
+  assert.equal(turnContentInScope({ correlationId: 'A' }, undefined), true);
 });
