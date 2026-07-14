@@ -239,8 +239,12 @@ export const registerSessionPublishRoute = (
     if (
       outboundEvent.type === 'error'
       && outboundEvent.correlationId !== undefined
-      && outboundEvent.reason === undefined
+      && outboundEvent.reason !== 'reconcile_cancel'
+      && outboundEvent.reason !== 'media_error'
     ) {
+      // Any correlationId-bearing error that isn't already a valid out-of-band
+      // reason is a media-job failure on this route: stamp it so a null/absent
+      // reason can't later be misclassified as a turn error.
       outboundEvent = { ...outboundEvent, reason: 'media_error' };
     }
     await runner.events.publish(outboundEvent);

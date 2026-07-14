@@ -157,6 +157,38 @@ test('POST session events: a correlationId-bearing error is stamped media_error 
   assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
 });
 
+test('POST session events: an error already marked reconcile_cancel is preserved, not re-stamped media_error', async () => {
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  const event = { type: 'error', sessionId, message: 'Media was prepared but not sent.', correlationId: 'corr_1', reason: 'reconcile_cancel' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(publishCalls.length, 1);
+  // A valid out-of-band reason is left intact so it stays classifiable as itself.
+  assert.deepEqual(publishCalls[0], event);
+});
+
+test('POST session events: an error with a null/unknown reason is rejected 400 and never published (cannot be misread as a turn error)', async () => {
+  const { app, publishCalls } = buildApp();
+  const { agentId, sessionId } = uniqueAgentSession();
+
+  for (const reason of [null, 'invalid']) {
+    const res = await app.request(eventsUrl(agentId, sessionId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ event: { type: 'error', sessionId, message: 'boom', correlationId: 'corr_1', reason } }),
+    });
+    assert.equal(res.status, 400, `reason ${String(reason)} must be rejected`);
+  }
+  assert.equal(publishCalls.length, 0);
+});
+
 test('POST session events: disallowed event type returns 400', async () => {
   const { app, publishCalls } = buildApp();
   const { agentId, sessionId } = uniqueAgentSession();

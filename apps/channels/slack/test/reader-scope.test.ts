@@ -159,6 +159,51 @@ test('slack reader accepts its own content whether tagged with its correlationId
   assert.equal(result?.text, 'hello world', 'B keeps its own tagged and untagged content, drops A');
 });
 
+test('slack reader delivers its own turn error (correlationId is the turn trigger, no reason)', async () => {
+  const bridge = newBridge();
+  // A turn failure carries the turn trigger as correlationId and no reason; the
+  // in-turn reader owns it and must return it as THIS turn's error, not skip it
+  // as media.
+  const body =
+    frameText(1, 'error', { message: 'model stream failed', correlationId: 'B' }) +
+    frameText(2, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.error, 'model stream failed', 'a turn error must reach its own reader');
+});
+
+test('slack reader ignores a concurrent turn error and a media_error, keeping only its own', async () => {
+  const bridge = newBridge();
+  const body =
+    // Concurrent turn A's failure (correlationId A): out of THIS reader's scope.
+    frameText(1, 'error', { message: 'A failed', correlationId: 'A' }) +
+    // A genuine media failure (reason media_error): out-of-band, delivered by the
+    // persistent subscription, skipped here.
+    frameText(2, 'error', { message: 'image failed', correlationId: 'att_1', reason: 'media_error' }) +
+    frameText(3, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
+    frameText(4, 'agent_end', { messageId: 'B' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.error, undefined, 'neither the concurrent turn error nor the media error is this turn\'s error');
+  assert.equal(result?.text, 'B-reply');
+});
+
 test('slack reader with no own messageId keeps closing on any agent_end (backward-compat)', async () => {
   const bridge = newBridge();
   const body =

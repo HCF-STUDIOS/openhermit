@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { agentEndClosesTurn, turnContentInScope } from '../src/turn-scope.js';
+import { agentEndClosesTurn, turnContentInScope, isOutOfBandErrorFrame } from '../src/turn-scope.js';
 
 test('closes on the end whose answeredMessageIds includes the own id', () => {
   assert.equal(agentEndClosesTurn({ answeredMessageIds: ['C', 'B'] }, 'B'), true);
@@ -42,4 +42,24 @@ test('content: a frame with no correlationId is accepted (legacy runner)', () =>
 
 test('content: a reader with no own id accepts everything (backward-compat)', () => {
   assert.equal(turnContentInScope({ correlationId: 'A' }, undefined), true);
+});
+
+// isOutOfBandErrorFrame: classify media-vs-turn by `reason`, never by the
+// presence of correlationId. A turn error carries the turn trigger as
+// correlationId and no reason, so it must NOT read as out-of-band.
+
+test('out-of-band error: a media_error frame is out-of-band', () => {
+  assert.equal(isOutOfBandErrorFrame({ message: 'x', correlationId: 'att_1', reason: 'media_error' }), true);
+});
+
+test('out-of-band error: a reconcile_cancel frame is out-of-band', () => {
+  assert.equal(isOutOfBandErrorFrame({ correlationId: 'att_1', reason: 'reconcile_cancel' }), true);
+});
+
+test('out-of-band error: a turn error (correlationId, no reason) is NOT out-of-band', () => {
+  assert.equal(isOutOfBandErrorFrame({ message: 'twin out of credits', correlationId: 'B' }), false);
+});
+
+test('out-of-band error: a turn error with no correlationId is NOT out-of-band', () => {
+  assert.equal(isOutOfBandErrorFrame({ message: 'boom' }), false);
 });

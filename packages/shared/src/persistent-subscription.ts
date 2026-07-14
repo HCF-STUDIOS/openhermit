@@ -50,14 +50,16 @@ const parseSseFrames = (
 
 /**
  * User-facing text for an out-of-band `error` event frame delivered by the
- * persistent subscription, or null when it should not be shown here. Single
- * owner per error:
- *  - No correlationId -> a turn failure; the in-turn reader already delivers
- *    it, so the persistent subscription stays silent to avoid a double message.
- *  - correlationId + `reason: 'reconcile_cancel'` -> an internal media
- *    placeholder teardown; never shown in a text channel.
- *  - correlationId, no reason -> a genuine out-of-band media-job failure;
- *    delivered here exactly once (the in-turn reader skips correlated errors).
+ * persistent subscription, or null when it should not be shown here. Classified
+ * by `reason`, not by the presence of `correlationId` (a turn error carries the
+ * turn trigger as `correlationId` and no reason; keying on correlationId would
+ * misread it as media). Single owner per error:
+ *  - `reason: 'media_error'` -> a genuine out-of-band media-job failure;
+ *    delivered here exactly once (the in-turn reader skips out-of-band errors).
+ *  - `reason: 'reconcile_cancel'` -> an internal media placeholder teardown;
+ *    never shown in a text channel.
+ *  - no reason -> a turn failure; the in-turn reader already delivers it, so the
+ *    persistent subscription stays silent to avoid a double message.
  * Malformed/empty frames yield null.
  */
 export const outboundErrorText = (frameData: string): string | null => {
@@ -65,10 +67,7 @@ export const outboundErrorText = (frameData: string): string | null => {
     const payload = frameData.length > 0
       ? (JSON.parse(frameData) as Record<string, unknown>)
       : {};
-    const hasCorrelation =
-      typeof payload.correlationId === 'string' && payload.correlationId.length > 0;
-    if (!hasCorrelation) return null;
-    if (payload.reason === 'reconcile_cancel') return null;
+    if (payload.reason !== 'media_error') return null;
     const message =
       typeof payload.message === 'string' && payload.message.length > 0
         ? payload.message
