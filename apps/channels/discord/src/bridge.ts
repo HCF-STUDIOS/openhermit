@@ -239,6 +239,9 @@ export class DiscordBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sessionId, {
       text: resolved.text,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(event.messageId ? { messageId: event.messageId } : {}),
       mentioned: event.mentioned,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       sender: {

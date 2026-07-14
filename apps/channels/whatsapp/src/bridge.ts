@@ -230,6 +230,9 @@ export class WhatsAppBridge implements ChannelOutbound {
     const postOpts = event.isGroup ? undefined : { channelUserId: senderChannelUserId };
     const postResult = await this.client.postMessage(sessionId, {
       text: postText,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(event.messageId ? { messageId: event.messageId } : {}),
       mentioned: event.mentioned,
       ...(attachments ? { attachments } : {}),
       sender: {

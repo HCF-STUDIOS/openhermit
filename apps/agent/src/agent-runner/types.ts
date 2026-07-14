@@ -7,6 +7,19 @@ import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
 import type { SpeakerTagStreamState } from './message-utils.js';
 
+/** Principal bound to a single turn at post time and carried with its queued
+ *  turn, so a turn always runs as the sender of ITS OWN triggering message,
+ *  not whoever last posted into the shared session. Resolving tool
+ *  authorization from shared session fields at run time let a queued guest turn
+ *  snapshot a later owner post and run at owner privilege. */
+export interface TurnPrincipal {
+  userId?: string | undefined;
+  role?: UserRole | undefined;
+  userName?: string | undefined;
+  channel?: string | undefined;
+  channelUserId?: string | undefined;
+}
+
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
   queue: Promise<void>;

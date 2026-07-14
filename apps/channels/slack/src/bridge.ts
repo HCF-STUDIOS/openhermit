@@ -235,6 +235,10 @@ export class SlackBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sessionId, {
       text: resolved.text,
+      // Forward the inbound platform message id (Slack's per-message `ts`) so
+      // mid-turn steering can fold a follow-up into a running turn and bind its
+      // principal correctly.
+      ...(event.ts ? { messageId: event.ts } : {}),
       mentioned,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       ...(event.user ? {
