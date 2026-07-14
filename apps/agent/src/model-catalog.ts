@@ -148,19 +148,20 @@ const fetchDynamicProvider = async (
 };
 
 /**
- * Static pi-ai catalog plus any reachable dynamic providers, each inserted in
- * alphabetical provider order so the picker stays sorted. A dynamic provider
- * that is unconfigured, unreachable, or empty is simply omitted — the picker
- * never breaks because a remote catalogue is down.
+ * Static pi-ai catalog plus any reachable dynamic providers, sorted by
+ * provider name (codepoint order — getProviders() insertion order is not
+ * guaranteed alphabetical). A dynamic provider that is unreachable or empty
+ * is simply omitted — the picker never breaks because a remote catalogue is
+ * down.
  */
 export const listProviderCatalogWithDynamic = async (): Promise<ProviderCatalogEntry[]> => {
   const catalog = listProviderCatalog();
   const dynamic = await Promise.all(DYNAMIC_PROVIDER_SOURCES.map(fetchDynamicProvider));
   for (const entry of dynamic) {
     if (!entry || catalog.some((p) => p.provider === entry.provider)) continue;
-    const idx = catalog.findIndex((p) => p.provider > entry.provider);
-    if (idx === -1) catalog.push(entry);
-    else catalog.splice(idx, 0, entry);
+    catalog.push(entry);
   }
-  return catalog;
+  return catalog.sort((a, b) =>
+    a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0,
+  );
 };

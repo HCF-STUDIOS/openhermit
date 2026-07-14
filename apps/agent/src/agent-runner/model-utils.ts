@@ -41,16 +41,18 @@ export const formatMissingApiKeyMessage = (
 
 const OPENAI_COMPATIBLE_PROVIDERS: Record<
   string,
-  { api: string; baseUrl: string; priceCatalog?: string }
+  { api: string; baseUrl: () => string; priceCatalog?: string }
 > = {
-  openrouter: { api: 'openai-completions', baseUrl: 'https://openrouter.ai/api/v1' },
+  openrouter: { api: 'openai-completions', baseUrl: () => 'https://openrouter.ai/api/v1' },
   // Amiko router — OpenAI-compatible gateway whose default catalogue proxies
   // OpenRouter, so model ids (and list prices) are OpenRouter's. priceCatalog
   // tells resolveModel which registry to borrow pricing/capabilities from
-  // when synthesizing a Model for it.
+  // when synthesizing a Model for it. AMIKO_BASE_URL must be honored here
+  // exactly as in model-catalog.ts, or the picker would list models from one
+  // host while completions go to another.
   amiko: {
     api: 'openai-completions',
-    baseUrl: 'https://api.heyamiko.com/api/v1',
+    baseUrl: () => process.env.AMIKO_BASE_URL ?? 'https://api.heyamiko.com/api/v1',
     priceCatalog: 'openrouter',
   },
 };
@@ -110,7 +112,7 @@ const tryRegistry = (provider: string, modelId: string): Model<any> | undefined 
 export const resolveModel = (config: AgentConfig): Model<any> => {
   const providerDefaults = OPENAI_COMPATIBLE_PROVIDERS[config.model.provider];
   const api = config.model.api ?? providerDefaults?.api;
-  const baseUrl = config.model.base_url ?? providerDefaults?.baseUrl;
+  const baseUrl = config.model.base_url ?? providerDefaults?.baseUrl();
 
   // 1) Registry first. If pi-ai knows this (provider, modelId), trust its
   //    capability flags (reasoning, compat, etc.). Apply user overrides for

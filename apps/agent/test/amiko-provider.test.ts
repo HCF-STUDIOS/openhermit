@@ -45,6 +45,17 @@ test('amiko models unknown to OpenRouter still resolve, with zero-cost fallback'
   assert.equal(m.contextWindow, 128000);
 });
 
+test('AMIKO_BASE_URL steers resolveModel to the same host as the catalog', () => {
+  process.env.AMIKO_BASE_URL = 'http://localhost:4141/api/v1';
+  try {
+    const m = resolveModel(modelConfig('amiko', 'google/gemini-3.1-flash-lite-preview'));
+    assert.equal(m.baseUrl, 'http://localhost:4141/api/v1');
+  } finally {
+    if (originalBaseUrl === undefined) delete process.env.AMIKO_BASE_URL;
+    else process.env.AMIKO_BASE_URL = originalBaseUrl;
+  }
+});
+
 test('per-agent base_url override still wins over the amiko default', () => {
   const m = resolveModel(
     modelConfig('amiko', 'google/gemini-3.1-flash-lite-preview', 'http://localhost:9999/v1'),
