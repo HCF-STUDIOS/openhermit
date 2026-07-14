@@ -130,19 +130,36 @@ export const drainBufferedLive = async (
 };
 
 /**
- * Bind the effective message sender to the authenticated caller in user mode.
- * A user JWT authenticates exactly one identity; the request body must never be
- * able to speak as someone else. Overriding (rather than trusting payload.sender)
- * stops an authenticated guest from claiming another user's identity (e.g. the
- * owner's) and having the turn run at that user's tools, and closes the
- * omitted-sender fallback to shared session state. Channel and admin modes pass
- * through: a channel token is a trusted service secret governed by the namespace
- * check, and admin is fully trusted.
+ * Single choke point for the effective sender on every inbound message, across
+ * all transports (HTTP post/append, WS session.message). Two security-critical
+ * rules applied together so no entry point can skip either:
+ *
+ *   1. Channel-namespace enforcement — a channel token may only declare a sender
+ *      within its own namespace; a cross-namespace claim throws.
+ *   2. User-mode identity binding — a user JWT authenticates exactly one
+ *      identity, so the sender is overridden to the authenticated caller (display
+ *      name preserved). This stops an authenticated guest from claiming another
+ *      user's identity (e.g. the owner's) and running the turn at that user's
+ *      tools, and closes the omitted-sender fallback to shared session state.
+ *
+ * Channel (after rule 1) and admin senders pass through: a channel token is a
+ * trusted service secret governed by the namespace check, and admin is fully
+ * trusted.
  */
 export const bindSenderIdentity = (
-  auth: Pick<AuthContext, 'mode' | 'channel' | 'channelUserId'>,
+  auth: Pick<AuthContext, 'mode' | 'channel' | 'channelUserId' | 'channelNamespace'>,
   sender: MessageSender | undefined,
 ): MessageSender | undefined => {
+  if (
+    auth.mode === 'channel' &&
+    auth.channelNamespace &&
+    sender &&
+    sender.channel !== auth.channelNamespace
+  ) {
+    throw new ValidationError(
+      `Channel namespace violation: channel "${auth.channelNamespace}" cannot declare sender identity for "${sender.channel}".`,
+    );
+  }
   if (auth.mode !== 'user') return sender;
   return {
     channel: auth.channel,
@@ -1396,18 +1413,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Channel namespace enforcement
-    if (auth.mode === 'channel' && auth.channelNamespace && payload.sender) {
-      if (payload.sender.channel !== auth.channelNamespace) {
-        throw new ValidationError(
-          `Channel namespace violation: channel "${auth.channelNamespace}" cannot declare sender identity for "${payload.sender.channel}".`,
-        );
-      }
-    }
-
-    // Bind the effective sender to the authenticated caller (user mode) so the
-    // request body cannot claim another user's identity. Applies to both the
-    // postMessage and appendMessage paths below.
+    // Enforce channel namespace and bind the effective sender to the
+    // authenticated caller (user mode) so the request body cannot claim another
+    // user's identity. Applies to both the postMessage and appendMessage paths.
     const boundSender = bindSenderIdentity(auth, payload.sender);
     if (boundSender) payload.sender = boundSender;
     else delete payload.sender;

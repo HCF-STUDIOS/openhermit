@@ -65,6 +65,9 @@ export type SessionSubscriber = (
   envelope: SessionEventEnvelope,
 ) => void | Promise<void>;
 
+/** Default cap on how long a single subscriber may take to accept one event. */
+const DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS = 30_000;
+
 export class SessionEventBroker {
   private readonly subscribers = new Map<string, Set<SessionSubscriber>>();
 
@@ -72,25 +75,34 @@ export class SessionEventBroker {
 
   private nextEventId = 1;
 
+  constructor(
+    private readonly deliveryTimeoutMs = DEFAULT_SUBSCRIBER_DELIVERY_TIMEOUT_MS,
+  ) {}
+
   subscribe(sessionId: string, subscriber: SessionSubscriber): () => void {
     const sessionSubscribers =
       this.subscribers.get(sessionId) ?? new Set<SessionSubscriber>();
     sessionSubscribers.add(subscriber);
     this.subscribers.set(sessionId, sessionSubscribers);
 
-    return () => {
-      const currentSubscribers = this.subscribers.get(sessionId);
+    return () => this.removeSubscriber(sessionId, subscriber);
+  }
 
-      if (!currentSubscribers) {
-        return;
-      }
+  private removeSubscriber(
+    sessionId: string,
+    subscriber: SessionSubscriber,
+  ): void {
+    const currentSubscribers = this.subscribers.get(sessionId);
 
-      currentSubscribers.delete(subscriber);
+    if (!currentSubscribers) {
+      return;
+    }
 
-      if (currentSubscribers.size === 0) {
-        this.subscribers.delete(sessionId);
-      }
-    };
+    currentSubscribers.delete(subscriber);
+
+    if (currentSubscribers.size === 0) {
+      this.subscribers.delete(sessionId);
+    }
   }
 
   getBacklog(sessionId: string): SessionEventEnvelope[] {
@@ -144,16 +156,54 @@ export class SessionEventBroker {
       return;
     }
 
-    // Isolate each subscriber: one that throws or rejects (e.g. an SSE writer
-    // whose client disconnected) must not abort the fanout or the caller's
-    // publish. Snapshot first so a subscriber that unsubscribes itself during
-    // delivery cannot perturb the iteration.
-    for (const subscriber of [...sessionSubscribers]) {
-      try {
-        await subscriber(envelope);
-      } catch (error) {
-        console.error('[openhermit-agent] session event subscriber failed', error);
+    // Deliver to every subscriber concurrently. A slow or backpressured client
+    // (e.g. an SSE writer whose socket buffer is full, or a disconnected reader
+    // whose write never resolves) must not block delivery to the other
+    // subscribers, nor prevent this publish — and therefore later events such as
+    // agent_end — from completing. Each delivery is bounded by a timeout; a
+    // subscriber that exceeds it is dropped so a dead client can't hold the
+    // session. Per-subscriber ordering is preserved because a subscriber's
+    // emitter awaits this publish before publishing the next event, so event N
+    // settles for a subscriber before event N+1 is dispatched to it. Snapshot
+    // first so a subscriber removed during delivery cannot perturb the fanout.
+    await Promise.allSettled(
+      [...sessionSubscribers].map((subscriber) =>
+        this.deliverToSubscriber(fullEvent.sessionId, subscriber, envelope),
+      ),
+    );
+  }
+
+  private async deliverToSubscriber(
+    sessionId: string,
+    subscriber: SessionSubscriber,
+    envelope: SessionEventEnvelope,
+  ): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve(subscriber(envelope)),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new SubscriberDeliveryTimeoutError()),
+            this.deliveryTimeoutMs,
+          );
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof SubscriberDeliveryTimeoutError) {
+        // Stuck/backpressured client: drop it so it cannot delay future events.
+        this.removeSubscriber(sessionId, subscriber);
       }
+      console.error('[openhermit-agent] session event subscriber failed', error);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
+  }
+}
+
+class SubscriberDeliveryTimeoutError extends Error {
+  constructor() {
+    super('session event subscriber delivery timed out');
+    this.name = 'SubscriberDeliveryTimeoutError';
   }
 }

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { DiscordApi, DiscordMessageEvent } from './discord-api.js';
@@ -255,7 +255,7 @@ export class DiscordBridge implements ChannelOutbound {
 
     void this.discord.startTyping(event.channelId);
 
-    const result = await this.waitForAgentResponse(sessionId, event.channelId);
+    const result = await this.waitForAgentResponse(sessionId, event.channelId, event.messageId);
 
     if (result.error && !result.text) {
       await this.discord.sendMessage(event.channelId, `Error: ${result.error}`);
@@ -389,6 +389,7 @@ export class DiscordBridge implements ChannelOutbound {
   private async waitForAgentResponse(
     sessionId: string,
     channelId: string,
+    ownMessageId?: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -494,7 +495,9 @@ export class DiscordBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
             continue;
           }
         }

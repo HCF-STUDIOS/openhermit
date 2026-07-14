@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
@@ -252,7 +252,7 @@ export class SlackBridge implements ChannelOutbound {
 
     if (!(postResult as any).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId, channelId, threadTs);
+    const result = await this.waitForAgentResponse(sessionId, channelId, threadTs, event.ts);
 
     if (result.error && !result.text) {
       await this.slack.sendMessage(channelId, `Error: ${result.error}`, ...(threadTs ? [{ threadTs }] : []));
@@ -396,6 +396,7 @@ export class SlackBridge implements ChannelOutbound {
     sessionId: string,
     channelId: string,
     threadTs?: string,
+    ownMessageId?: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -498,7 +499,9 @@ export class SlackBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
             continue;
           }
         }

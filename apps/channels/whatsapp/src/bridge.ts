@@ -5,7 +5,7 @@ import type {
   ChannelOutboundResult,
   OutboundSession,
 } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import { formatAgentResponse } from './formatting.js';
@@ -249,7 +249,7 @@ export class WhatsAppBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId);
+    const result = await this.waitForAgentResponse(sessionId, event.messageId);
     if (result.error && !result.text) {
       await this.send({ sessionId, to: event.chatJid, text: `Error: ${result.error}` });
     } else if (result.text) {
@@ -461,7 +461,7 @@ export class WhatsAppBridge implements ChannelOutbound {
     this.subscriptions.clear();
   }
 
-  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string, ownMessageId?: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
     const controller = new AbortController();
@@ -547,7 +547,9 @@ export class WhatsAppBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
             continue;
           }
         }

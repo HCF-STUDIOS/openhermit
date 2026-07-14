@@ -379,6 +379,48 @@ test('AgentRunner tags agent_end with the triggering messageId', async (t) => {
   );
 });
 
+test('AgentRunner assigns a messageId to a triggered turn when the caller omits one', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('done'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:assigned-id',
+    source: { kind: 'cli', interactive: true },
+  });
+  // No caller messageId: the runner must still assign one so a gateway wait/
+  // stream can scope its close to THIS turn's agent_end instead of falling back
+  // to accept-any and resolving on a concurrent turn's end.
+  const result = await runner.postMessage('cli:assigned-id', { text: 'hi' });
+  assert.ok(result.triggered, 'expected the turn to trigger');
+  assert.ok(
+    typeof result.messageId === 'string' && result.messageId.length > 0,
+    'postMessage must assign a messageId when the caller omits one',
+  );
+
+  await runner.waitForSessionIdle('cli:assigned-id');
+
+  const backlog = runner.events.getBacklog('cli:assigned-id');
+  const agentEnd = backlog.find((entry) => entry.event.type === 'agent_end');
+  assert.ok(agentEnd, 'expected an agent_end event');
+  assert.equal(
+    agentEnd.event.type === 'agent_end' ? agentEnd.event.messageId : undefined,
+    result.messageId,
+    'agent_end must carry the server-assigned id',
+  );
+});
+
 test('AgentRunner builds dynamic system prompt based on available tools', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
