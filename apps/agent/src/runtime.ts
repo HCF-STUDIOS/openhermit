@@ -73,6 +73,15 @@ export class SessionEventBroker {
 
   private readonly backlog = new Map<string, SessionEventEnvelope[]>();
 
+  // Per-subscriber serial delivery queue. Each subscriber's events are chained
+  // so event N settles before event N+1 is dispatched to that same subscriber,
+  // preserving publish order per subscriber. Subscribers keep independent chains
+  // and are delivered to concurrently, so a slow one never blocks another.
+  private readonly deliveryChains = new WeakMap<
+    SessionSubscriber,
+    { tail: Promise<void> }
+  >();
+
   private nextEventId = 1;
 
   constructor(
@@ -84,6 +93,10 @@ export class SessionEventBroker {
       this.subscribers.get(sessionId) ?? new Set<SessionSubscriber>();
     sessionSubscribers.add(subscriber);
     this.subscribers.set(sessionId, sessionSubscribers);
+
+    if (!this.deliveryChains.has(subscriber)) {
+      this.deliveryChains.set(subscriber, { tail: Promise.resolve() });
+    }
 
     return () => this.removeSubscriber(sessionId, subscriber);
   }
@@ -156,21 +169,29 @@ export class SessionEventBroker {
       return;
     }
 
-    // Deliver to every subscriber concurrently. A slow or backpressured client
-    // (e.g. an SSE writer whose socket buffer is full, or a disconnected reader
-    // whose write never resolves) must not block delivery to the other
-    // subscribers, nor prevent this publish — and therefore later events such as
-    // agent_end — from completing. Each delivery is bounded by a timeout; a
-    // subscriber that exceeds it is dropped so a dead client can't hold the
-    // session. Per-subscriber ordering is preserved because a subscriber's
-    // emitter awaits this publish before publishing the next event, so event N
-    // settles for a subscriber before event N+1 is dispatched to it. Snapshot
-    // first so a subscriber removed during delivery cannot perturb the fanout.
-    await Promise.allSettled(
-      [...sessionSubscribers].map((subscriber) =>
+    // Deliver to every subscriber concurrently, but strictly in order per
+    // subscriber. A slow or backpressured client (e.g. an SSE writer whose
+    // socket buffer is full, or a disconnected reader whose write never
+    // resolves) must not block delivery to the other subscribers. Each
+    // delivery is bounded by a timeout; a subscriber that exceeds it is dropped
+    // so a dead client can't hold the session. Ordering is enforced here rather
+    // than at the call site: emitters fire events without awaiting publish, so
+    // chaining each subscriber's delivery onto its previous one is what keeps
+    // event N settling before N+1 for that subscriber (e.g. agent_end can never
+    // overtake the preceding text_final). Snapshot first so a subscriber removed
+    // during delivery cannot perturb the fanout.
+    const deliveries: Promise<void>[] = [];
+    for (const subscriber of [...sessionSubscribers]) {
+      const chain =
+        this.deliveryChains.get(subscriber) ?? { tail: Promise.resolve() };
+      this.deliveryChains.set(subscriber, chain);
+      const delivery = chain.tail.then(() =>
         this.deliverToSubscriber(fullEvent.sessionId, subscriber, envelope),
-      ),
-    );
+      );
+      chain.tail = delivery;
+      deliveries.push(delivery);
+    }
+    await Promise.allSettled(deliveries);
   }
 
   private async deliverToSubscriber(
@@ -178,6 +199,10 @@ export class SessionEventBroker {
     subscriber: SessionSubscriber,
     envelope: SessionEventEnvelope,
   ): Promise<void> {
+    // A subscriber dropped (timed out) or unsubscribed before this queued
+    // delivery ran must not receive further events.
+    if (!this.subscribers.get(sessionId)?.has(subscriber)) return;
+
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([

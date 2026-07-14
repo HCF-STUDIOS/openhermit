@@ -596,7 +596,8 @@ export class WechatBridge implements ChannelOutbound {
 
     const result = await this.waitForAgentResponse(
       sessionId,
-      msg.message_id !== undefined ? String(msg.message_id) : undefined,
+      postResult.messageId ??
+        (msg.message_id !== undefined ? String(msg.message_id) : undefined),
     );
     const replyText = result.text;
     if (result.error && !replyText) {
@@ -834,7 +835,12 @@ export class WechatBridge implements ChannelOutbound {
           if (frame.event === 'agent_end') {
             // Close only on the end that answered THIS message; ignore a
             // concurrent same-chat turn's session-wide end.
-            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
         }

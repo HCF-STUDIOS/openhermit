@@ -252,7 +252,7 @@ export class SlackBridge implements ChannelOutbound {
 
     if (!(postResult as any).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId, channelId, threadTs, event.ts);
+    const result = await this.waitForAgentResponse(sessionId, channelId, threadTs, postResult.messageId ?? event.ts);
 
     if (result.error && !result.text) {
       await this.slack.sendMessage(channelId, `Error: ${result.error}`, ...(threadTs ? [{ threadTs }] : []));
@@ -501,7 +501,12 @@ export class SlackBridge implements ChannelOutbound {
           if (frame.event === 'agent_end') {
             // Close only on the end that answered THIS message; ignore a
             // concurrent same-chat turn's session-wide end.
-            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
         }

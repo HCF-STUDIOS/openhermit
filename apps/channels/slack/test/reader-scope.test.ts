@@ -94,6 +94,28 @@ test('slack reader closes on its own end named via answeredMessageIds', async ()
   assert.equal(result?.text, 'B-reply');
 });
 
+test('slack reader stops at its own agent_end and ignores a following turn frames in the same chunk', async () => {
+  const bridge = newBridge();
+  // A single decoded chunk carries B's terminal frames followed by C's. The
+  // reader must return B's text and not read past its own agent_end into C.
+  const body =
+    frameText(1, 'text_final', { text: 'B-reply' }) +
+    frameText(2, 'agent_end', { messageId: 'B' }) +
+    frameText(3, 'text_final', { text: 'C-reply' }) +
+    frameText(4, 'agent_end', { messageId: 'C' });
+
+  let result: { text?: string; error?: string } | undefined;
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      result = await (bridge as unknown as { waitForAgentResponse: Reader })
+        .waitForAgentResponse('sess', 'chan', undefined, 'B');
+    },
+  );
+
+  assert.equal(result?.text, 'B-reply', 'reader must not process C\'s frames after its own agent_end');
+});
+
 test('slack reader with no own messageId keeps closing on any agent_end (backward-compat)', async () => {
   const bridge = newBridge();
   const body =

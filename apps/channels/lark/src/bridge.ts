@@ -221,7 +221,7 @@ export class LarkBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId, msg.messageId);
+    const result = await this.waitForAgentResponse(sessionId, postResult.messageId ?? msg.messageId);
 
     if (result.error && !result.text) {
       await this.lark.sendText(msg.chatId, `Error: ${result.error}`);
@@ -398,7 +398,12 @@ export class LarkBridge implements ChannelOutbound {
           if (frame.event === 'agent_end') {
             // Close only on the end that answered THIS message; ignore a
             // concurrent same-chat turn's session-wide end.
-            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
         }

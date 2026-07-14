@@ -469,7 +469,8 @@ export class TelegramBridge implements ChannelOutbound {
       sid,
       chatId,
       inboundWasVoice,
-      message.message_id !== undefined ? String(message.message_id) : undefined,
+      postResult.messageId ??
+        (message.message_id !== undefined ? String(message.message_id) : undefined),
     );
 
     if (result.error && !result.text) {
@@ -832,7 +833,12 @@ export class TelegramBridge implements ChannelOutbound {
           if (frame.event === 'agent_end') {
             // Close only on the end that answered THIS message; ignore a
             // concurrent same-chat turn's session-wide end.
-            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
+            if (agentEndClosesTurn(payload, ownMessageId)) {
+              // Stop before any later frame in this chunk (e.g. a following
+              // turn's frames) can overwrite this turn's result.
+              sawAgentEnd = true;
+              break;
+            }
             continue;
           }
 
