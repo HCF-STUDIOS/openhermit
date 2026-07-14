@@ -2014,10 +2014,6 @@ export class AgentRunner implements SessionRuntime {
   }
 
   /**
-   * Resolve a per-message sender to a user identity.
-   * Used in group sessions where each message may come from a different user.
-   */
-  /**
    * Generate a userId for a newly auto-created guest. Prefers the bare
    * ms timestamp (clean, sortable) and only appends 24 random bits
    * when that id already exists — covering the same-millisecond
@@ -3437,7 +3433,6 @@ export class AgentRunner implements SessionRuntime {
               )
             : text;
 
-        // Handle error responses from the model provider.
         if (assistantMessage.stopReason === 'error') {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
           const ts = new Date().toISOString();

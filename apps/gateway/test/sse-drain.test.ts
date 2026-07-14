@@ -14,9 +14,7 @@ test('drainBufferedLive keeps a concurrent publish from racing ahead of a lower 
 
   const write = async (e: Envelope) => {
     written.push(e.id);
-    // A broker publish lands while id 3 is being written. The old code had
-    // already flipped to the live path and would have written id 5 ahead of
-    // the leftover id 4. Here it must buffer and drain in order.
+    // A publish landing mid-write must buffer and drain in order, not race ahead of leftover id 4.
     if (e.id === 3) pendingLive.push(env(5));
   };
 
@@ -54,8 +52,7 @@ test('drainBufferedLive flips to live synchronously exactly when the buffer is o
   let bufferLenAtFlip = -1;
   const write = async (e: Envelope) => {
     written.push(e.id);
-    // A late publish lands while id 3 is being written. The flip must not
-    // happen until this drains, and must be synchronous with the empty check.
+    // A late publish must drain before the flip, and the flip must be synchronous with the empty check.
     if (e.id === 3) pendingLive.push(env(4));
   };
 

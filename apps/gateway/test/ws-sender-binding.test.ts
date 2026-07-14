@@ -23,8 +23,7 @@ interface PostCapture {
   sender?: { channel: string; channelUserId: string; displayName?: string };
 }
 
-// Records the sender the WS handler forwards to postMessage so a test can
-// assert what identity the turn would run as.
+// Records the sender the WS handler forwards to postMessage.
 const makeRuntimeStub = (capture: PostCapture): AgentRunner =>
   ({
     resolveCallerUserId: async () => 'user-internal-id',
@@ -59,8 +58,7 @@ const listen = async (server: Server): Promise<number> => {
   return address.port;
 };
 
-// Open a ws with the given bearer token, send one session.message, resolve with
-// the server's response frame.
+// Open a ws, send one session.message, resolve with the response frame.
 const postOverWs = (
   port: number,
   agentId: string,

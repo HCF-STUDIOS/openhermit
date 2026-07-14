@@ -57,8 +57,7 @@ const connect = (
       resolve({ opened: false, statusCode: res.statusCode });
     });
     ws.on('error', (err) => {
-      // 'unexpected-response' already resolved for HTTP rejections; anything
-      // else (socket destroyed without a response) counts as not opened.
+      // HTTP rejections resolved via 'unexpected-response'; anything else counts as not opened.
       if (err.message.includes('Unexpected server response')) return;
       resolve({ opened: false });
     });

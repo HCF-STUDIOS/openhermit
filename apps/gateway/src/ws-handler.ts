@@ -372,7 +372,6 @@ export const attachGatewayWs = (
   httpServer.on('upgrade', async (request: IncomingMessage, socket, head) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
 
-    // Match /api/agents/:agentId/ws
     const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/ws$/);
     if (!match) {
       socket.destroy();

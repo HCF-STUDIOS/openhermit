@@ -3,10 +3,9 @@ import { test } from 'node:test';
 
 import { SlackBridge } from '../src/bridge.js';
 
-// The per-turn reader (waitForAgentResponse) must close only on the agent_end
-// that answered ITS OWN message. Slack has no per-chat serialization, so two
-// same-thread messages overlap: message B, posted behind a still-running turn
-// A, must ignore A's session-wide agent_end and return B's own reply.
+// Slack has no per-chat serialization, so turns overlap. The per-turn reader
+// must close only on the agent_end that answered its own message, not a
+// concurrent turn's.
 
 function frameText(id: number | undefined, event: string, data: unknown): string {
   const lines: string[] = [];
@@ -59,7 +58,6 @@ test('slack reader ignores a concurrent turn agent_end and closes on its own (me
     // A's session-wide end arrives first; it did not answer B.
     frameText(1, 'agent_end', { messageId: 'A' }) +
     frameText(2, 'text_final', { text: 'B-reply' }) +
-    // B's own end.
     frameText(3, 'agent_end', { messageId: 'B' });
 
   let result: { text?: string; error?: string } | undefined;
@@ -96,8 +94,7 @@ test('slack reader closes on its own end named via answeredMessageIds', async ()
 
 test('slack reader stops at its own agent_end and ignores a following turn frames in the same chunk', async () => {
   const bridge = newBridge();
-  // A single decoded chunk carries B's terminal frames followed by C's. The
-  // reader must return B's text and not read past its own agent_end into C.
+  // One chunk carries B's terminal frames then C's; the reader must stop at B's agent_end.
   const body =
     frameText(1, 'text_final', { text: 'B-reply' }) +
     frameText(2, 'agent_end', { messageId: 'B' }) +
@@ -118,8 +115,7 @@ test('slack reader stops at its own agent_end and ignores a following turn frame
 
 test('slack reader ignores a concurrent turn text and returns only its own (content scoping)', async () => {
   const bridge = newBridge();
-  // Turn A is still running and interleaves its text on the session while B's
-  // reader is open. B must not accumulate A's text; only B's own is returned.
+  // Turn A interleaves its text while B's reader is open; B must not accumulate A's text.
   const body =
     frameText(1, 'text_final', { text: 'A-reply', correlationId: 'A' }) +
     frameText(2, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
@@ -139,8 +135,7 @@ test('slack reader ignores a concurrent turn text and returns only its own (cont
 
 test('slack reader accepts its own content whether tagged with its correlationId or untagged', async () => {
   const bridge = newBridge();
-  // A concurrent turn A's delta (correlationId A) must be dropped, but B's own
-  // frames — tagged B or untagged (legacy runner) — are kept and concatenated.
+  // A's tagged delta is dropped; B's own frames, tagged or untagged (legacy runner), are kept.
   const body =
     frameText(1, 'text_delta', { text: 'ignore-A', correlationId: 'A' }) +
     frameText(2, 'text_delta', { text: 'hello ', correlationId: 'B' }) +
@@ -161,9 +156,7 @@ test('slack reader accepts its own content whether tagged with its correlationId
 
 test('slack reader delivers its own turn error (correlationId is the turn trigger, no reason)', async () => {
   const bridge = newBridge();
-  // A turn failure carries the turn trigger as correlationId and no reason; the
-  // in-turn reader owns it and must return it as THIS turn's error, not skip it
-  // as media.
+  // A turn failure has the trigger as correlationId and no reason; the reader must return it, not skip it as media.
   const body =
     frameText(1, 'error', { message: 'model stream failed', correlationId: 'B' }) +
     frameText(2, 'agent_end', { messageId: 'B' });
@@ -185,8 +178,7 @@ test('slack reader ignores a concurrent turn error and a media_error, keeping on
   const body =
     // Concurrent turn A's failure (correlationId A): out of THIS reader's scope.
     frameText(1, 'error', { message: 'A failed', correlationId: 'A' }) +
-    // A genuine media failure (reason media_error): out-of-band, delivered by the
-    // persistent subscription, skipped here.
+    // Genuine media failure (reason media_error): out-of-band, skipped here.
     frameText(2, 'error', { message: 'image failed', correlationId: 'att_1', reason: 'media_error' }) +
     frameText(3, 'text_final', { text: 'B-reply', correlationId: 'B' }) +
     frameText(4, 'agent_end', { messageId: 'B' });

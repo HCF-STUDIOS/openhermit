@@ -203,8 +203,8 @@ test('attachment_send emits an attachment event whose correlationId is the row i
   const evt = events.find((e) => e['type'] === 'attachment');
   assert.ok(evt, 'expected an attachment event');
   assert.equal(evt!['attachmentId'], id);
-  // correlationId must match the id used by attachment_upload's skeleton so
-  // the client resolves the placeholder instead of appending a new bubble.
+  // correlationId must match attachment_upload's skeleton id so the client
+  // resolves the placeholder instead of appending a new bubble.
   assert.equal(evt!['correlationId'], id);
   assert.equal(kindOf(evt!), 'image');
 });

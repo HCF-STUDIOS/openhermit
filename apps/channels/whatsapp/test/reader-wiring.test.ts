@@ -3,10 +3,9 @@ import { test } from 'node:test';
 
 import { WhatsAppBridge, type WhatsAppIncomingMessage } from '../src/bridge.js';
 
-// D2: an inbound message may carry no platform id. postMessage assigns and
-// returns one; the per-turn reader must be scoped to that server-assigned id,
-// not the absent inbound id (which would fall back to closing on any foreign
-// agent_end).
+// An inbound message may carry no platform id; postMessage assigns one, and the
+// reader must scope to that server-assigned id, not the absent inbound id (which
+// would fall back to closing on any foreign agent_end).
 
 const fakeWhatsApp = {} as unknown as ConstructorParameters<typeof WhatsAppBridge>[0];
 

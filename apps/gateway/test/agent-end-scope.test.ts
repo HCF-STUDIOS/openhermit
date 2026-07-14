@@ -31,8 +31,7 @@ test('non agent_end events never close the stream', () => {
 });
 
 test('agent_end closes a folded message stream when its id is in answeredMessageIds', () => {
-  // Trigger A folded message B into one turn; B's own queued turn no-ops and
-  // emits no agent_end, so this turn's end must close B's stream.
+  // B was folded into turn A; B's own turn emits no agent_end, so A's end closes B's stream.
   assert.equal(agentEndClosesStream(agentEndWithAnswered('A', ['A', 'B']), 'B'), true);
   assert.equal(agentEndClosesStream(agentEndWithAnswered('A', ['A', 'B']), 'A'), true);
 });
@@ -42,6 +41,5 @@ test('agent_end does not close a stream whose id is absent from answeredMessageI
 });
 
 test('answeredMessageIds is authoritative over the single messageId field', () => {
-  // messageId matches the request, but the set says this turn did not answer it.
   assert.equal(agentEndClosesStream(agentEndWithAnswered('B', ['A']), 'B'), false);
 });

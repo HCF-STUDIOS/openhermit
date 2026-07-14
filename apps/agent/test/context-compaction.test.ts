@@ -275,15 +275,12 @@ test('compactContextIfNeeded compacts when over budget', async () => {
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
-  // Should have fewer messages than original.
   assert.ok(result.length < messages.length);
-  // Should include the compaction summary block.
   assert.ok(
     result.some(
       (m) => m.role === 'user' && JSON.stringify(m.content).includes('Context compaction summary'),
     ),
   );
-  // Should preserve recent messages.
   assert.ok(
     result.some(
       (m) => m.role === 'assistant' && JSON.stringify(m.content).includes('final answer'),
@@ -342,7 +339,6 @@ test('compactContextIfNeeded falls back to text extraction when compaction summa
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
-  // Should still produce a compaction block with text extraction.
   assert.ok(
     result.some(
       (m) => m.role === 'user' && JSON.stringify(m.content).includes('Compacted earlier session history'),
@@ -532,10 +528,8 @@ test('runCompactionSummaryTurn extracts JSON summary from agent response', async
 });
 
 test('runCompactionSummaryTurn rejects a plain text (non-JSON) response', async () => {
-  // A non-JSON answer here is usually the model replying conversationally
-  // instead of summarizing. It must not be persisted as the session's
-  // authoritative summary. The caller falls back to text extraction and
-  // keeps the previous persisted summary.
+  // A non-JSON answer is the model replying conversationally, not summarizing;
+  // it must not be persisted as the authoritative summary.
   const mockAgent = {
     prompt: async () => {},
     waitForIdle: async () => {},
