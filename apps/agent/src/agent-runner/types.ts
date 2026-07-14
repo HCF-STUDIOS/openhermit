@@ -81,6 +81,13 @@ export interface RunnerSession extends SessionDescriptor {
    *  must never fold into this turn (it would execute tools at this turn's
    *  privilege) and instead falls through to its own turn. */
   currentTurnPrincipalUserId?: string | undefined;
+  /** Resolved role of the in-flight turn's principal, snapshotted alongside
+   *  currentTurnPrincipalUserId when the tool principal is built. Mid-turn
+   *  folding compares each candidate's CURRENT role against this: the same
+   *  userId can be downgraded (owner to guest) between the turn start and a
+   *  later post, and a role that no longer matches must not fold into a turn
+   *  running at the old privilege. */
+  currentTurnPrincipalRole?: UserRole | undefined;
   /** messageId that started the in-flight turn. Excluded from mid-turn folding
    *  so the turn's own trigger is never re-injected when the fold cursor is
    *  captured before it is persisted. */

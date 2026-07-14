@@ -124,7 +124,10 @@ const manifest: ChannelManifest = {
     return {
       name: 'lark',
       outbound: bridge,
-      stop: () => bot.stop(),
+      stop: async () => {
+        await bot.stop();
+        bridge.stop();
+      },
       ...(mode === 'webhook'
         ? { handleWebhook: (req: Parameters<LarkBot['handleWebhookRequest']>[0]) => bot.handleWebhookRequest(req) }
         : {}),
