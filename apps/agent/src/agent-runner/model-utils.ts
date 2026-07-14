@@ -39,8 +39,20 @@ export const formatMissingApiKeyMessage = (
   ].join(' ');
 };
 
-const OPENAI_COMPATIBLE_PROVIDERS: Record<string, { api: string; baseUrl: string }> = {
+const OPENAI_COMPATIBLE_PROVIDERS: Record<
+  string,
+  { api: string; baseUrl: string; priceCatalog?: string }
+> = {
   openrouter: { api: 'openai-completions', baseUrl: 'https://openrouter.ai/api/v1' },
+  // Amiko router — OpenAI-compatible gateway whose default catalogue proxies
+  // OpenRouter, so model ids (and list prices) are OpenRouter's. priceCatalog
+  // tells resolveModel which registry to borrow pricing/capabilities from
+  // when synthesizing a Model for it.
+  amiko: {
+    api: 'openai-completions',
+    baseUrl: 'https://api.heyamiko.com/api/v1',
+    priceCatalog: 'openrouter',
+  },
 };
 
 const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
@@ -114,21 +126,32 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
   }
 
   // 2) Custom OpenAI-compatible endpoint. The registry doesn't know this
-  //    model, so we synthesize a Model. We have no authoritative reasoning
-  //    flag here, so derive it from the user's `thinking` level (anything
-  //    other than off / unset implies reasoning capability).
+  //    model, so we synthesize a Model. Providers that proxy another
+  //    catalogue (priceCatalog) reuse its model ids, so borrow that registry
+  //    entry's list price, context window, and capability flags — otherwise
+  //    usage cost is recorded as $0 forever and image input is dropped.
+  //    List price is a safe overestimate (BYOK / cache discounts land below
+  //    it). Dated ids fall back to the undated registry entry
+  //    (…-preview-20251217 → …-preview). Without a priceRef we have no
+  //    authoritative reasoning flag, so derive it from the user's `thinking`
+  //    level (anything other than off / unset implies reasoning capability).
   if (api && baseUrl) {
+    const priceCatalog = providerDefaults?.priceCatalog;
+    const priceRef = priceCatalog
+      ? (tryRegistry(priceCatalog, config.model.model) ??
+        tryRegistry(priceCatalog, config.model.model.replace(/-\d{8}$/, '')))
+      : undefined;
     return {
       id: config.model.model,
       name: config.model.model,
       api,
       provider: config.model.provider,
       baseUrl,
-      reasoning: (config.model.thinking ?? 'off') !== 'off',
-      input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
-      maxTokens: config.model.max_tokens,
+      reasoning: priceRef?.reasoning ?? (config.model.thinking ?? 'off') !== 'off',
+      input: priceRef?.input ?? ['text'],
+      cost: priceRef?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: priceRef?.contextWindow ?? 128000,
+      maxTokens: config.model.max_tokens ?? priceRef?.maxTokens,
     } as Model<any>;
   }
 
