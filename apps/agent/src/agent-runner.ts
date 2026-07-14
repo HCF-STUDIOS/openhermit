@@ -3476,6 +3476,7 @@ export class AgentRunner implements SessionRuntime {
         });
 
         const turnCorrelationId = session.currentTurnCorrelationId;
+        const turnTriggerMessageId = session.currentTurnTriggerMessageId;
         delete session.currentTurnCorrelationId;
         void (async () => {
           // For channel-bound sessions, run the channel.message.out@v1
@@ -3514,6 +3515,7 @@ export class AgentRunner implements SessionRuntime {
           await this.events.publish({
             type: 'agent_end',
             sessionId: session.spec.sessionId,
+            ...(turnTriggerMessageId !== undefined ? { messageId: turnTriggerMessageId } : {}),
           });
         })();
 
@@ -3545,6 +3547,7 @@ export class AgentRunner implements SessionRuntime {
   ): Promise<void> {
     const message = getErrorMessage(error);
     const ts = new Date().toISOString();
+    const turnTriggerMessageId = session.currentTurnTriggerMessageId;
     this.clearIdleSummaryTimer(session);
     session.updatedAt = ts;
     session.status = 'idle';
@@ -3594,6 +3597,7 @@ export class AgentRunner implements SessionRuntime {
       await this.events.publish({
         type: 'agent_end',
         sessionId: session.spec.sessionId,
+        ...(turnTriggerMessageId !== undefined ? { messageId: turnTriggerMessageId } : {}),
       });
       this.scheduleIdleSummary(session);
       await this.queueSideEffect(session, async () => {

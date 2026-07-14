@@ -18,6 +18,7 @@ import {
   type ChannelSetup,
   type ChannelSetupContext,
   type CreateAgentRequest,
+  type OutboundEvent,
   type SessionListQuery,
   type SyncResponse,
   type SyncToolCall,
@@ -126,6 +127,22 @@ export const drainBufferedLive = async (
   // Exited without draining (shouldContinue() went false, i.e. overflow): the
   // caller tears the connection down, so the live flip is intentionally skipped.
 };
+
+/**
+ * Whether an agent_end should close a stream/request opened for
+ * `requestMessageId`. A concurrent turn (e.g. mid-turn steering opens a second
+ * stream) emits its own session-wide agent_end; only the end for this request's
+ * message may close it. Falls back to closing on any agent_end when either id is
+ * absent (older runners that don't tag agent_end, or a message with no id).
+ */
+export const agentEndClosesStream = (
+  event: OutboundEvent,
+  requestMessageId: string | undefined,
+): boolean =>
+  event.type === 'agent_end' &&
+  (requestMessageId === undefined ||
+    event.messageId === undefined ||
+    event.messageId === requestMessageId);
 
 const writeEvent = async (
   stream: SSEStreamingApi,
@@ -1417,6 +1434,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
             error = ev.message;
             break;
           case 'agent_end':
+            // Ignore a concurrent turn's session-wide agent_end; resolve only on
+            // the end for this request's message.
+            if (!agentEndClosesStream(ev, messageId)) {
+              break;
+            }
             done = true;
             cleanup();
             resolvePromise?.(c.json({
@@ -1462,7 +1484,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
           await writeEvent(streamApi, envelope);
-          if (envelope.event.type === 'agent_end') {
+          if (closesThisStream(envelope.event)) {
             unsubscribe();
             void streamApi.close();
           }
@@ -1472,6 +1494,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       });
 
       const result = await runtime.postMessage(sessionId, payload);
+
+      const closesThisStream = (event: OutboundEvent): boolean =>
+        agentEndClosesStream(event, result.messageId);
 
       if (!result.triggered) {
         unsubscribe();
@@ -1491,7 +1516,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         let closed = false;
         for (const envelope of buffered) {
           await writeEvent(stream, envelope);
-          if (envelope.event.type === 'agent_end') {
+          if (closesThisStream(envelope.event)) {
             unsubscribe();
             closed = true;
             break;

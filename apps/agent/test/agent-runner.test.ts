@@ -343,6 +343,42 @@ test('AgentRunner publishes SSE text events and writes minimal logs', async (t) 
   );
 });
 
+test('AgentRunner tags agent_end with the triggering messageId', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('done'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:agent-end-id',
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage('cli:agent-end-id', {
+    messageId: 'trigger-msg-1',
+    text: 'hi',
+  });
+  await runner.waitForSessionIdle('cli:agent-end-id');
+
+  const backlog = runner.events.getBacklog('cli:agent-end-id');
+  const agentEnd = backlog.find((entry) => entry.event.type === 'agent_end');
+  assert.ok(agentEnd, 'expected an agent_end event');
+  assert.equal(
+    agentEnd.event.type === 'agent_end' ? agentEnd.event.messageId : undefined,
+    'trigger-msg-1',
+    'agent_end must carry the id of the message that triggered the turn',
+  );
+});
+
 test('AgentRunner builds dynamic system prompt based on available tools', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
