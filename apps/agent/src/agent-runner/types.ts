@@ -61,42 +61,15 @@ export interface RunnerSession extends SessionDescriptor {
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
    *  model from looping forever against a broken tool. */
   consecutiveToolFailures: number;
-  /** Mid-turn steering (`OPENHERMIT_MID_TURN_STEERING=1`): highest
-   *  session_events id already visible to the in-flight turn. User rows
-   *  appended after this id get folded into the running turn at the next
-   *  tool boundary. Recaptured at every turn start. */
-  midTurnCursor?: number;
-  /** messageIds already folded into an in-flight turn via steer(). The
-   *  queued postMessage turn for these ids becomes a no-op so a folded
-   *  message is never processed twice. */
-  foldedMessageIds?: Set<string>;
-  /** messageIds of posted messages whose queued turn has not started yet.
-   *  A posted-then-folded message self-cleans its `foldedMessageIds` entry
-   *  when its queued turn runs (the no-op path); an append-only folded
-   *  message has no queued turn, so its entry would leak. Turn completion
-   *  uses this set to tell the two apart and evict only the append-only ids. */
-  pendingTurnMessageIds?: Set<string>;
-  /** messageIds folded during the current turn. Reset at turn start. If the
-   *  turn fails before answering, these are removed from `foldedMessageIds`
-   *  so their suppressed queued turns proceed rather than stranding the
-   *  user with no response. */
-  currentTurnFoldedIds?: Set<string>;
   /** Resolved userId of the message that started the in-flight turn, snapshotted
-   *  when its tool principal is built. Mid-turn folding compares each candidate
-   *  row's persisted userId against this: a message from a different principal
-   *  must never fold into this turn (it would execute tools at this turn's
-   *  privilege) and instead falls through to its own turn. */
+   *  when its tool principal is built. The turn's principal snapshot, so a queued
+   *  turn is authorized as its own sender, not whoever last posted. */
   currentTurnPrincipalUserId?: string | undefined;
   /** Resolved role of the in-flight turn's principal, snapshotted alongside
-   *  currentTurnPrincipalUserId when the tool principal is built. Mid-turn
-   *  folding compares each candidate's CURRENT role against this: the same
-   *  userId can be downgraded (owner to guest) between the turn start and a
-   *  later post, and a role that no longer matches must not fold into a turn
-   *  running at the old privilege. */
+   *  currentTurnPrincipalUserId when the tool principal is built. */
   currentTurnPrincipalRole?: UserRole | undefined;
-  /** messageId that started the in-flight turn. Excluded from mid-turn folding
-   *  so the turn's own trigger is never re-injected when the fold cursor is
-   *  captured before it is persisted. */
+  /** messageId that started the in-flight turn. Stamped onto the turn's terminal
+   *  agent_end so gateway streams and channel readers scope the end to it. */
   currentTurnTriggerMessageId?: string | undefined;
   /** correlationIds of `pending_media` skeletons emitted this turn that a
    *  matching `attachment` has not yet resolved. At turn end each survivor is
