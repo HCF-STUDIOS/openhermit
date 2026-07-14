@@ -1162,7 +1162,20 @@ export class AgentRunner implements SessionRuntime {
 
     const receivedAt = new Date().toISOString();
     const messageUserName = session.resolvedUserName;
+    // Dedupe by messageId: a caller can re-trigger an already-persisted
+    // message (e.g. a steered row whose capturing turn died) to start a fresh
+    // turn against the existing row rather than appending a duplicate.
+    let alreadyPersisted = false;
     await this.queueSideEffect(session, async () => {
+      if (message.messageId) {
+        const existing = await this.store.messages.findEntryIdByMessageId(
+          this.scope, session.spec.sessionId, message.messageId,
+        );
+        if (existing !== null) {
+          alreadyPersisted = true;
+          return;
+        }
+      }
       await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
         ts: receivedAt,
         role: 'user',
@@ -1176,15 +1189,17 @@ export class AgentRunner implements SessionRuntime {
       });
     });
 
-    void this.events.publish({
-      type: 'user_message',
-      sessionId,
-      text: message.text,
-      ...(messageUserName ? { name: messageUserName } : {}),
-      ...(message.attachments && message.attachments.length > 0
-        ? { attachments: message.attachments }
-        : {}),
-    });
+    if (!alreadyPersisted) {
+      void this.events.publish({
+        type: 'user_message',
+        sessionId,
+        text: message.text,
+        ...(messageUserName ? { name: messageUserName } : {}),
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
+      });
+    }
 
     agentMessagesTotal.inc({
       agent_id: this.scope.agentId,

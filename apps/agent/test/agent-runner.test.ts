@@ -1945,3 +1945,46 @@ test('AgentRunner releases a folded message when the turn errors so its queued t
     'user should receive an answer despite the mid-turn failure',
   );
 });
+
+test('AgentRunner re-triggers a turn for an already-persisted messageId without appending a duplicate row', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('first reply'),
+      () => createTextResponseStream('second reply'),
+    ]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:redeliver-session',
+    source: { kind: 'cli', interactive: true },
+  });
+
+  // First delivery appends the row and triggers a turn.
+  await runner.postMessage('cli:redeliver-session', { messageId: 'dup-1', text: 'do the thing' });
+  await runner.waitForSessionIdle('cli:redeliver-session');
+
+  // Re-delivery of the same messageId must trigger a fresh turn but not
+  // append a second transcript row.
+  await runner.postMessage('cli:redeliver-session', { messageId: 'dup-1', text: 'do the thing' });
+  await runner.waitForSessionIdle('cli:redeliver-session');
+
+  const entries = await readSessionLog(runner, 'cli:redeliver-session');
+  const userRows = entries.filter(
+    (entry) => entry.role === 'user' && entry.content === 'do the thing',
+  );
+  assert.equal(userRows.length, 1, 'the re-triggered message must not create a duplicate row');
+
+  const finals = runner.events
+    .getBacklog('cli:redeliver-session')
+    .filter((entry) => entry.event.type === 'text_final');
+  assert.equal(finals.length, 2, 'both deliveries should have triggered a turn');
+});
