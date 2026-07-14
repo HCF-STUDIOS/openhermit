@@ -46,3 +46,27 @@ test('admin mode passes the declared sender through', () => {
   const sender = { channel: 'cli', channelUserId: 'local' };
   assert.equal(bindSenderIdentity(adminAuth, sender), sender);
 });
+
+test('channel mode within its namespace passes the sender through', () => {
+  const channelAuth = {
+    mode: 'channel' as const,
+    channel: 'lark',
+    channelUserId: '',
+    channelNamespace: 'lark',
+  };
+  const sender = { channel: 'lark', channelUserId: 'ou_someone' };
+  assert.equal(bindSenderIdentity(channelAuth, sender), sender);
+});
+
+test('channel mode declaring a foreign namespace sender throws', () => {
+  const channelAuth = {
+    mode: 'channel' as const,
+    channel: 'lark',
+    channelUserId: '',
+    channelNamespace: 'lark',
+  };
+  assert.throws(
+    () => bindSenderIdentity(channelAuth, { channel: 'web', channelUserId: 'x' }),
+    /namespace violation/i,
+  );
+});

@@ -1,5 +1,5 @@
 import { userInfo } from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { posix as posixPath } from 'node:path';
 
 import {
@@ -1125,6 +1125,15 @@ export class AgentRunner implements SessionRuntime {
       if (channelTransformed.text !== message.text) {
         message = { ...message, text: channelTransformed.text };
       }
+    }
+
+    // Every triggered turn must carry a stable message id so the gateway (and
+    // channel bridges) can scope a wait/stream close to THIS turn's agent_end and
+    // never resolve on a concurrent turn's end. When the caller omits one, assign
+    // it here so postMessage's result and the turn's agent_end both carry it; the
+    // gateway's accept-any fallback then only applies to a genuinely id-less turn.
+    if (!message.messageId) {
+      message = { ...message, messageId: randomUUID() };
     }
 
     this.clearIdleSummaryTimer(session);

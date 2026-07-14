@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { LarkApi } from './lark-api.js';
@@ -221,7 +221,7 @@ export class LarkBridge implements ChannelOutbound {
 
     if (!(postResult as { triggered?: boolean }).triggered) return;
 
-    const result = await this.waitForAgentResponse(sessionId);
+    const result = await this.waitForAgentResponse(sessionId, msg.messageId);
 
     if (result.error && !result.text) {
       await this.lark.sendText(msg.chatId, `Error: ${result.error}`);
@@ -324,7 +324,7 @@ export class LarkBridge implements ChannelOutbound {
 
   // ── Turn wait (SSE) ────────────────────────────────────────────────
 
-  private async waitForAgentResponse(sessionId: string): Promise<TurnResult> {
+  private async waitForAgentResponse(sessionId: string, ownMessageId?: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
 
@@ -396,7 +396,9 @@ export class LarkBridge implements ChannelOutbound {
           // Attachments are delivered only by the persistent subscription;
           // handling them here too would double every in-turn attachment.
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
             continue;
           }
         }

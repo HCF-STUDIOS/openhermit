@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelMessageAction, ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { TelegramApi, TelegramCallbackQuery, TelegramMessage, TelegramMessageEntity, TelegramUser } from './telegram-api.js';
@@ -465,7 +465,12 @@ export class TelegramBridge implements ChannelOutbound {
 
     void this.telegram.sendChatAction(chatId).catch(() => undefined);
 
-    const result = await this.waitForAgentResponse(sid, chatId, inboundWasVoice);
+    const result = await this.waitForAgentResponse(
+      sid,
+      chatId,
+      inboundWasVoice,
+      message.message_id !== undefined ? String(message.message_id) : undefined,
+    );
 
     if (result.error && !result.text) {
       await this.telegram.sendMessage(chatId, `Error: ${result.error}`);
@@ -682,6 +687,7 @@ export class TelegramBridge implements ChannelOutbound {
     sessionId: string,
     chatId: number,
     suppressStreamingDisplay = false,
+    ownMessageId?: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
@@ -824,7 +830,9 @@ export class TelegramBridge implements ChannelOutbound {
           // Delivered only by the persistent subscription; handling it here too would double every in-turn attachment.
 
           if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
+            // Close only on the end that answered THIS message; ignore a
+            // concurrent same-chat turn's session-wide end.
+            if (agentEndClosesTurn(payload, ownMessageId)) sawAgentEnd = true;
             continue;
           }
 

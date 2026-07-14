@@ -16,11 +16,15 @@ import {
   type WsEvent,
   type WsServerMessage,
   type SessionListQuery,
+  type MessageSender,
 } from '@openhermit/protocol';
+
+import { ValidationError } from '@openhermit/shared';
 
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 
 import type { AgentInstanceManager } from './agent-instance.js';
+import { bindSenderIdentity } from './app.js';
 import type { AuthContext, AuthResolverOptions } from './auth.js';
 import { resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
@@ -156,11 +160,17 @@ const handleRequest = async (
           return;
         }
         await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        // Same sender choke point as the HTTP post/append routes: enforce the
+        // channel namespace and, in user mode, override the caller-declared
+        // sender to the authenticated identity. Without this a guest with a valid
+        // JWT could declare the owner's identity over WS and get an owner turn
+        // principal (requireSessionAccess only checks participation, not identity).
+        const boundSender = bindSenderIdentity(conn.auth, p.sender as MessageSender | undefined);
         const message = {
           text: p.text,
           ...(p.messageId !== undefined ? { messageId: p.messageId } : {}),
           ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
-          ...(p.sender !== undefined ? { sender: p.sender } : {}),
+          ...(boundSender !== undefined ? { sender: boundSender } : {}),
           ...(p.participants !== undefined ? { participants: p.participants } : {}),
           ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
         };
@@ -328,6 +338,10 @@ const handleRequest = async (
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof SessionAccessDeniedError) {
       sendError(ws, id, error.wsCode, message);
+      return;
+    }
+    if (error instanceof ValidationError) {
+      sendError(ws, id, 'INVALID_PARAMS', message);
       return;
     }
     sendError(ws, id, 'INTERNAL_ERROR', message);
