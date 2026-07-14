@@ -121,7 +121,7 @@ export {
   openSessionWithFreshFallback,
 } from './session-recovery.js';
 
-export { startPersistentSubscription } from './persistent-subscription.js';
+export { startPersistentSubscription, outboundErrorText } from './persistent-subscription.js';
 export type {
   PersistentSubscriptionOptions,
   SseFrame,

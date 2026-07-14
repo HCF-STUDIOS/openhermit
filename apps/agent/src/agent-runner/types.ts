@@ -57,6 +57,16 @@ export interface RunnerSession extends SessionDescriptor {
    *  queued postMessage turn for these ids becomes a no-op so a folded
    *  message is never processed twice. */
   foldedMessageIds?: Set<string>;
+  /** messageIds folded during the current turn. Reset at turn start. If the
+   *  turn fails before answering, these are removed from `foldedMessageIds`
+   *  so their suppressed queued turns proceed rather than stranding the
+   *  user with no response. */
+  currentTurnFoldedIds?: Set<string>;
+  /** correlationIds of `pending_media` skeletons emitted this turn that a
+   *  matching `attachment` has not yet resolved. At turn end each survivor is
+   *  cancelled so an uploaded-but-never-sent media never strands a permanent
+   *  "generating" placeholder in consumers. */
+  pendingMediaCorrelationIds?: Set<string>;
 }
 
 export interface AgentRunnerOptions {

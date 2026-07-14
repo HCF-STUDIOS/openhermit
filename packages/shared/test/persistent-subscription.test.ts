@@ -2,7 +2,30 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 
-import { startPersistentSubscription, type SseFrame } from '../src/persistent-subscription.js';
+import { startPersistentSubscription, outboundErrorText, type SseFrame } from '../src/persistent-subscription.js';
+
+test('outboundErrorText formats a turn error as a plain message', () => {
+  assert.equal(
+    outboundErrorText(JSON.stringify({ message: 'twin out of credits' })),
+    'Error: twin out of credits',
+  );
+});
+
+test('outboundErrorText falls back to a generic message when none is present', () => {
+  assert.equal(outboundErrorText(JSON.stringify({})), 'Error: Unknown error');
+});
+
+test('outboundErrorText returns null for a correlationId-bearing error (media placeholder resolver)', () => {
+  assert.equal(
+    outboundErrorText(JSON.stringify({ message: 'unsent media', correlationId: 'att_1' })),
+    null,
+  );
+});
+
+test('outboundErrorText surfaces an empty frame generically but drops malformed JSON', () => {
+  assert.equal(outboundErrorText(''), 'Error: Unknown error');
+  assert.equal(outboundErrorText('{not json'), null);
+});
 
 function frameText(id: number | undefined, event: string, data: unknown): string {
   const lines: string[] = [];

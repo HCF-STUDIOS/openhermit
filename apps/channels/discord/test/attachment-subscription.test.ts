@@ -180,6 +180,55 @@ test('does not redeliver an attachment after idle-close and reopen (exactly-once
   assert.deepEqual(calls.map((c) => c[1].attachmentId), ['a1', 'a2']);
 });
 
+test('delivers an out-of-turn error event as a plain text message to the channel', async () => {
+  const sends: Array<[string, string]> = [];
+  const discord = {
+    startTyping: async () => undefined,
+    sendMessage: async (channelId: string, text: string) => { sends.push([channelId, text]); },
+  } as unknown as ConstructorParameters<typeof DiscordBridge>[0];
+  const bridge = new DiscordBridge(discord, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+
+  const body = frameText(1, 'error', { sessionId: 'sess-e1', message: 'twin ran out of credits' });
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      (bridge as unknown as { startAttachmentSubscription: (sessionId: string, channelId: string) => void })
+        .startAttachmentSubscription('sess-e1', 'chan-err');
+      await waitFor(() => sends.length > 0);
+      (bridge as unknown as { stop: () => void }).stop();
+    },
+  );
+
+  assert.equal(sends.length, 1);
+  assert.deepEqual(sends[0], ['chan-err', 'Error: twin ran out of credits']);
+});
+
+test('ignores an out-of-turn error carrying a correlationId (media placeholder resolver, not a user error)', async () => {
+  const sends: Array<[string, string]> = [];
+  const discord = {
+    startTyping: async () => undefined,
+    sendMessage: async (channelId: string, text: string) => { sends.push([channelId, text]); },
+  } as unknown as ConstructorParameters<typeof DiscordBridge>[0];
+  const bridge = new DiscordBridge(discord, { baseUrl: 'http://test.local', token: 'tok' }, () => {});
+
+  const body =
+    frameText(1, 'error', { sessionId: 'sess-e2', message: 'unsent media', correlationId: 'att_1' }) +
+    frameText(2, 'error', { sessionId: 'sess-e2', message: 'real failure' });
+  await withFetch(
+    async () => new Response(makeStream(body), { status: 200 }),
+    async () => {
+      (bridge as unknown as { startAttachmentSubscription: (sessionId: string, channelId: string) => void })
+        .startAttachmentSubscription('sess-e2', 'chan-err2');
+      await waitFor(() => sends.length > 0);
+      (bridge as unknown as { stop: () => void }).stop();
+    },
+  );
+
+  // Only the correlationId-free error is surfaced.
+  assert.equal(sends.length, 1);
+  assert.deepEqual(sends[0], ['chan-err2', 'Error: real failure']);
+});
+
 test('removes the session entry when its subscription ends (idle close), so it reopens lazily', async () => {
   const { bridge } = newBridge();
   const body = frameText(1, 'attachment', { sessionId: 'sess-3', attachmentId: 'a', kind: 'image', name: 'x.png' });

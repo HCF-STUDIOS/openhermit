@@ -282,6 +282,9 @@ export class LarkBridge implements ChannelOutbound {
             continue;
           }
           if (frame.event === 'error') {
+            // A correlationId marks a media-placeholder resolver, not a turn
+            // failure; text channels have no placeholder, so skip it.
+            if (typeof payload.correlationId === 'string' && payload.correlationId) continue;
             error = String(payload.message ?? 'Unknown error');
             continue;
           }

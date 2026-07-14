@@ -199,7 +199,7 @@ export class DbMessageStore implements MessageStore {
       .orderBy(asc(sessionEvents.id));
 
     return rows.map((row) => {
-      const payload = row.payload as { messageId?: unknown; userName?: unknown } | null;
+      const payload = row.payload as { messageId?: unknown; userName?: unknown; mentioned?: unknown } | null;
       return {
         ts: row.ts,
         role: row.eventType as 'user' | 'assistant' | 'error',
@@ -208,6 +208,7 @@ export class DbMessageStore implements MessageStore {
         ...(row.userId ? { userId: row.userId } : {}),
         ...(typeof payload?.messageId === 'string' ? { messageId: payload.messageId } : {}),
         ...(typeof payload?.userName === 'string' ? { userName: payload.userName } : {}),
+        ...(typeof payload?.mentioned === 'boolean' ? { mentioned: payload.mentioned } : {}),
       };
     });
   }

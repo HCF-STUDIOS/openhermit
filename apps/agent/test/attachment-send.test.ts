@@ -129,6 +129,66 @@ test('attachment_upload emits no pending_media for a non-renderable mime', async
   assert.equal(events.find((e) => e['type'] === 'pending_media'), undefined);
 });
 
+test('attachment_upload records the skeleton correlationId for turn-end reconciliation', async (t) => {
+  const { baseCtx } = await setup(t);
+  const pendingMediaCorrelationIds = new Set<string>();
+  const uploaded: SessionAttachment = {
+    id: `att_${randomUUID()}`,
+    type: 'file',
+    name: 'render.png',
+    mimeType: 'image/png',
+    size: 128,
+    sha256: 'deadbeef',
+  };
+  const tool = createAttachmentUploadTool({
+    ...baseCtx,
+    pendingMediaCorrelationIds,
+    uploadSandboxAttachment: async () => uploaded,
+  });
+  await tool.execute('tc-1', { path: 'out/render.png' });
+
+  // Uploaded-but-not-yet-sent: the id is tracked so the turn can cancel it.
+  assert.deepEqual([...pendingMediaCorrelationIds], [uploaded.id]);
+});
+
+test('attachment_upload does not track a non-renderable upload (no skeleton to strand)', async (t) => {
+  const { baseCtx } = await setup(t);
+  const pendingMediaCorrelationIds = new Set<string>();
+  const uploaded: SessionAttachment = {
+    id: `att_${randomUUID()}`,
+    type: 'file',
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    size: 10,
+    sha256: 'abc123',
+  };
+  const tool = createAttachmentUploadTool({
+    ...baseCtx,
+    pendingMediaCorrelationIds,
+    uploadSandboxAttachment: async () => uploaded,
+  });
+  await tool.execute('tc-1', { path: 'notes.txt' });
+
+  assert.equal(pendingMediaCorrelationIds.size, 0);
+});
+
+test('attachment_send clears the tracked skeleton so the turn-end sweep leaves it alone', async (t) => {
+  const { store, storage, agentId, sessionId, baseCtx } = await setup(t);
+  const pendingMediaCorrelationIds = new Set<string>();
+  const id = await uploadRow({
+    store, storage, agentId, sessionId,
+    name: 'pic.png', body: Buffer.concat([PNG_HEADER, Buffer.from('x')]), mime: 'image/png',
+  });
+  // Simulate the earlier attachment_upload having recorded this skeleton.
+  pendingMediaCorrelationIds.add(id);
+
+  const tool = createAttachmentSendTool({ ...baseCtx, pendingMediaCorrelationIds });
+  await tool.execute('tc-1', { id });
+
+  assert.equal(pendingMediaCorrelationIds.has(id), false);
+  assert.equal(pendingMediaCorrelationIds.size, 0);
+});
+
 // ── attachment_send: correlationId + kind alias map ──────────────────────
 
 test('attachment_send emits an attachment event whose correlationId is the row id', async (t) => {

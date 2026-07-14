@@ -90,6 +90,12 @@ export interface ToolContext {
   notifyOwnerApproval?: (requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string, args?: unknown) => Promise<void>;
   /** Publish an SSE event to the session's event stream. */
   publishEvent?: (event: Record<string, unknown>) => void;
+  /** Per-turn set of media placeholder correlationIds awaiting an
+   *  `attachment_send`. `attachment_upload` adds the id when it emits a
+   *  `pending_media` skeleton; `attachment_send` removes it. Survivors are
+   *  cancelled at turn end so an uploaded-but-unsent media can't strand a
+   *  permanent placeholder. */
+  pendingMediaCorrelationIds?: Set<string> | undefined;
 }
 
 /** Maximum characters for a single tool result text block (~256 KB). */

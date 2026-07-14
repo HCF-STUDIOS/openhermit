@@ -1154,6 +1154,12 @@ export class AgentRunner implements SessionRuntime {
 
     await this.persistSessionIndex(session);
 
+    // Whether this message triggers a response. In a group, a non-mentioned
+    // message is stored only. Persisted so mid-turn folding can apply the
+    // same gate: a stored-only message must never fold into a live turn.
+    const isGroup = session.spec.source.type === 'group';
+    const mentioned = message.mentioned !== false;
+
     const receivedAt = new Date().toISOString();
     const messageUserName = session.resolvedUserName;
     await this.queueSideEffect(session, async () => {
@@ -1162,6 +1168,7 @@ export class AgentRunner implements SessionRuntime {
         role: 'user',
         messageId: message.messageId,
         content: message.text,
+        mentioned,
         ...(message.attachments ? { attachments: message.attachments } : {}),
         ...(messageUserId ? { userId: messageUserId } : {}),
         ...(messageUserName ? { userName: messageUserName } : {}),
@@ -1183,10 +1190,6 @@ export class AgentRunner implements SessionRuntime {
       agent_id: this.scope.agentId,
       source: session.spec.source.kind,
     });
-
-    // Determine whether to trigger an agent response
-    const isGroup = session.spec.source.type === 'group';
-    const mentioned = message.mentioned !== false;
 
     // Remember senders on every group message
     if (isGroup) {
@@ -1233,6 +1236,7 @@ export class AgentRunner implements SessionRuntime {
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
         session.consecutiveToolFailures = 0;
+        session.currentTurnFoldedIds = new Set();
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
         } else {
@@ -1326,6 +1330,7 @@ export class AgentRunner implements SessionRuntime {
           role: 'user',
           messageId: message.messageId,
           content: message.text,
+          mentioned: message.mentioned !== false,
           ...(message.attachments ? { attachments: message.attachments } : {}),
           ...(messageUserId ? { userId: messageUserId } : {}),
           ...(displayName ? { userName: displayName } : {}),
@@ -1392,6 +1397,7 @@ export class AgentRunner implements SessionRuntime {
     if (!isMidTurnSteeringEnabled()) return;
     const cursor = session.midTurnCursor;
     if (cursor === undefined) return;
+    const isGroup = session.spec.source.type === 'group';
     try {
       const rows = await this.store.messages.listMessagesSinceEvent(
         this.scope,
@@ -1404,9 +1410,13 @@ export class AgentRunner implements SessionRuntime {
           maxEventId = row.eventId;
         }
         if (row.role !== 'user' || !row.messageId) continue;
+        // Apply the trigger path's gate: a group message that was stored
+        // only (not directed at the agent) must not steer a live turn.
+        if (isGroup && row.mentioned === false) continue;
         const folded = (session.foldedMessageIds ??= new Set());
         if (folded.has(row.messageId)) continue;
         folded.add(row.messageId);
+        (session.currentTurnFoldedIds ??= new Set()).add(row.messageId);
         const text = session.spec.source.type === 'group' && row.userName
           ? `[${row.userName}] ${row.content}`
           : row.content;
@@ -1422,6 +1432,54 @@ export class AgentRunner implements SessionRuntime {
         getErrorMessage(error),
       );
     }
+  }
+
+  /**
+   * A turn failed (thrown error, or a final response with stopReason
+   * error/aborted) before answering. Messages folded into it via steer()
+   * had their own queued turns suppressed, so without this they would never
+   * get a response. Un-suppress them so the queued turns proceed, and drop
+   * any steer that never drained so it can't bleed into a later turn. We
+   * prefer answering a folded message twice over never answering it.
+   */
+  private releaseFoldedTurnMessages(session: RunnerSession): void {
+    const ids = session.currentTurnFoldedIds;
+    if (!ids || ids.size === 0) return;
+    for (const id of ids) session.foldedMessageIds?.delete(id);
+    ids.clear();
+    session.agent.clearSteeringQueue();
+  }
+
+  /**
+   * The per-session set of unresolved media placeholder correlationIds, shared
+   * into each turn's tool context. `attachment_upload` adds a correlationId
+   * when it emits a `pending_media` skeleton; `attachment_send` removes it.
+   * Survivors are cancelled at turn end by `reconcilePendingMedia`.
+   */
+  private getPendingMediaSet(sessionId: string): Set<string> | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    return (session.pendingMediaCorrelationIds ??= new Set());
+  }
+
+  /**
+   * Cancel any media placeholder still unresolved at turn end. Publishes an
+   * `error` carrying the placeholder's correlationId (the protocol's
+   * placeholder-resolution channel) so rich consumers clear the skeleton.
+   * Text channels ignore correlationId-bearing errors, so no user sees it.
+   */
+  private reconcilePendingMedia(session: RunnerSession): void {
+    const ids = session.pendingMediaCorrelationIds;
+    if (!ids || ids.size === 0) return;
+    for (const correlationId of ids) {
+      void this.events.publish({
+        type: 'error',
+        sessionId: session.spec.sessionId,
+        message: 'Media was prepared but not sent.',
+        correlationId,
+      });
+    }
+    ids.clear();
   }
 
   private makeApprovalCallback(
@@ -2131,6 +2189,7 @@ export class AgentRunner implements SessionRuntime {
         publishEvent: (event: Record<string, unknown>) => {
           void this.events.publish(event as any);
         },
+        pendingMediaCorrelationIds: this.getPendingMediaSet(input.contextSessionId),
       });
 
       const toolHookCtx = {
@@ -3148,6 +3207,13 @@ export class AgentRunner implements SessionRuntime {
         const thinkingSignature = extractThinkingSignature(event.message);
         const assistantMessage = event.message;
 
+        // A final response that errored or aborted never answered anything
+        // folded into this turn: release those messages so their suppressed
+        // queued turns proceed instead of stranding the user.
+        if (assistantMessage.stopReason === 'error' || assistantMessage.stopReason === 'aborted') {
+          this.releaseFoldedTurnMessages(session);
+        }
+
         // Snapshot the turn's roster + sender names synchronously: cleanGroupText
         // is also called from a queued side effect on the error path, by which
         // time a later turn could have overwritten the live session fields.
@@ -3320,6 +3386,11 @@ export class AgentRunner implements SessionRuntime {
       }
 
       case 'agent_end': {
+        // The turn completed; any messages folded into it were answered here.
+        // Drop the per-turn tracking so their queued turns stay suppressed.
+        session.currentTurnFoldedIds?.clear();
+        // Cancel any media placeholder the turn left unresolved.
+        this.reconcilePendingMedia(session);
         const ts = new Date().toISOString();
         let finalText = session.latestAssistantText;
         // Capture the roster synchronously: the emit below runs in a detached,
@@ -3429,6 +3500,12 @@ export class AgentRunner implements SessionRuntime {
     this.clearIdleSummaryTimer(session);
     session.updatedAt = ts;
     session.status = 'idle';
+
+    // The turn threw before answering: release any mid-turn folded messages
+    // so their suppressed queued turns still get a response, and cancel any
+    // unresolved media placeholder so it can't strand.
+    this.releaseFoldedTurnMessages(session);
+    this.reconcilePendingMedia(session);
 
     // A mid-stream failure (credit depletion, transient 5xx, …) leaves
     // pi-agent-core's empty "error" assistant placeholder at the tail of the
