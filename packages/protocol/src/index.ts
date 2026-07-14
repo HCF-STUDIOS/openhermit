@@ -312,7 +312,18 @@ export type OutboundEventBody =
       correlationId?: string;
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
-  | { type: 'agent_end'; sessionId: string; messageId?: string }
+  | {
+      type: 'agent_end';
+      sessionId: string;
+      /** The turn's own trigger messageId. Kept for backward compatibility;
+       *  `answeredMessageIds` is the authoritative set and includes this id. */
+      messageId?: string;
+      /** Every messageId this turn answered: the trigger plus every message
+       *  mid-turn-folded into it. A folded message's own queued turn no-ops and
+       *  emits no agent_end, so a gateway stream/wait opened for it closes when
+       *  its id appears here. Absent on older runners (fall back to messageId). */
+      answeredMessageIds?: string[];
+    }
   | { type: 'error'; sessionId: string; message: string; correlationId?: string; reason?: 'reconcile_cancel' }
   | {
       /**

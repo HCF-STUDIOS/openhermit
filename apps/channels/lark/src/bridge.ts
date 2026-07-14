@@ -115,9 +115,24 @@ export class LarkBridge implements ChannelOutbound {
   }
 
   async handleNewSession(chatId: string): Promise<void> {
+    const oldSessionId = this.chatSessions.get(chatId);
+    if (oldSessionId) this.teardownSubscription(oldSessionId);
     const fresh = LarkBridge.generateSessionId();
     this.chatSessions.set(chatId, fresh);
     await this.lark.sendText(chatId, 'New conversation started.');
+  }
+
+  /**
+   * Stop an abandoned session's out-of-turn subscription and drop its cursor
+   * state when a new or fresh session supersedes it. Without this a delayed
+   * attachment/error the server pushes for the old session would be delivered
+   * into the newly started conversation. Mirrors the other channel bridges.
+   */
+  private teardownSubscription(sessionId: string): void {
+    this.lastEventIds.delete(sessionId);
+    this.subscriptionCursors.delete(sessionId);
+    this.subscriptions.get(sessionId)?.abort();
+    this.subscriptions.delete(sessionId);
   }
 
   private async ensureSession(sessionId: string, msg: LarkInboundMessage): Promise<void> {
@@ -160,6 +175,9 @@ export class LarkBridge implements ChannelOutbound {
       sessionId,
       (id) => this.ensureSession(id, msg),
       () => {
+        // Stop polling the abandoned stale session so its delayed pushes can't
+        // bleed into the fresh conversation.
+        this.teardownSubscription(sessionId);
         const fresh = LarkBridge.generateSessionId();
         this.chatSessions.set(msg.chatId, fresh);
         return fresh;
@@ -175,6 +193,9 @@ export class LarkBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sessionId, {
       text: msg.text,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(msg.messageId ? { messageId: msg.messageId } : {}),
       mentioned: msg.mentioned,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(msg.senderOpenId

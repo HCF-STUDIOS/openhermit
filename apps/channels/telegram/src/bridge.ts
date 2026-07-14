@@ -453,6 +453,9 @@ export class TelegramBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sid, {
       text,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(message.message_id !== undefined ? { messageId: String(message.message_id) } : {}),
       mentioned,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...senderPayload,

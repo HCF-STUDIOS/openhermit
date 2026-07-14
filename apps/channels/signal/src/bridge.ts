@@ -202,6 +202,10 @@ export class SignalBridge implements ChannelOutbound {
     const postOpts = msg.groupId ? undefined : { channelUserId: senderChannelUserId };
     const postResult = await this.client.postMessage(sessionId, {
       text: resolved.text,
+      // Forward the inbound platform message id (Signal identifies a message by
+      // its timestamp) so mid-turn steering can fold a follow-up into a running
+      // turn and bind its principal correctly.
+      ...(msg.timestamp !== undefined ? { messageId: String(msg.timestamp) } : {}),
       mentioned: true,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       sender: {

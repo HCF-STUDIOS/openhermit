@@ -584,6 +584,9 @@ export class WechatBridge implements ChannelOutbound {
 
     const postResult = await this.client.postMessage(sessionId, {
       text: agentText,
+      // Forward the inbound platform message id so mid-turn steering can fold a
+      // follow-up into a running turn and bind its principal correctly.
+      ...(msg.message_id !== undefined ? { messageId: String(msg.message_id) } : {}),
       mentioned: !isGroup,
       ...(resolved.attachments ? { attachments: resolved.attachments } : {}),
       ...senderPayload,

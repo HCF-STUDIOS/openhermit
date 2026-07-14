@@ -132,17 +132,23 @@ export const drainBufferedLive = async (
  * Whether an agent_end should close a stream/request opened for
  * `requestMessageId`. A concurrent turn (e.g. mid-turn steering opens a second
  * stream) emits its own session-wide agent_end; only the end for this request's
- * message may close it. Falls back to closing on any agent_end when either id is
- * absent (older runners that don't tag agent_end, or a message with no id).
+ * message may close it. `answeredMessageIds` is the authoritative set (the
+ * trigger plus every message folded into the turn), so a request opened for a
+ * message that was folded into another turn closes on that turn's end. Falls
+ * back to the single `messageId`, then to closing on any agent_end, for older
+ * runners that don't carry the set (or a message with no id).
  */
 export const agentEndClosesStream = (
   event: OutboundEvent,
   requestMessageId: string | undefined,
-): boolean =>
-  event.type === 'agent_end' &&
-  (requestMessageId === undefined ||
-    event.messageId === undefined ||
-    event.messageId === requestMessageId);
+): boolean => {
+  if (event.type !== 'agent_end') return false;
+  if (requestMessageId === undefined) return true;
+  if (event.answeredMessageIds !== undefined) {
+    return event.answeredMessageIds.includes(requestMessageId);
+  }
+  return event.messageId === undefined || event.messageId === requestMessageId;
+};
 
 const writeEvent = async (
   stream: SSEStreamingApi,

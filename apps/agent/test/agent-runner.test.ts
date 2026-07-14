@@ -2016,6 +2016,212 @@ test('AgentRunner mid-turn fold rejects a different-principal message and gives 
   );
 });
 
+test('AgentRunner binds a queued turn to its own sender even after a later post flips the shared principal (privilege escalation)', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const scope = { agentId };
+  const now = new Date().toISOString();
+  await store.memories.add(scope, { id: 'fact', content: 'The answer is 42.' });
+  // An explicit owner principal so the owner turn carries owner-only tools.
+  await store.users.upsert({ userId: 'usr-o1-owner', name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.linkIdentity({ userId: 'usr-o1-owner', channel: 'web', channelUserId: 'o1-owner', createdAt: now });
+  await store.users.assignAgent(scope, 'usr-o1-owner', 'owner', now);
+
+  let streamCalls = 0;
+  let guestTurnTools: string[] = [];
+  const sessionId = 'group:o1-escalation-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        // A guest posts mid-owner-turn: a different principal, so it cannot fold
+        // and queues its own turn behind the owner turn.
+        await runner.postMessage(sessionId, {
+          messageId: 'guest-1',
+          text: 'guest injected instruction',
+          mentioned: true,
+          sender: { channel: 'web', channelUserId: 'o1-guest', displayName: 'Guest' },
+        });
+        // The owner then posts again, flipping the shared session principal back
+        // to owner BEFORE the guest's queued turn runs. A turn that read the
+        // shared field at run time would make the guest turn inherit owner
+        // privilege, the escalation this guards against.
+        await runner.postMessage(sessionId, {
+          messageId: 'owner-2',
+          text: 'owner follow-up',
+          mentioned: true,
+          sender: { channel: 'web', channelUserId: 'o1-owner', displayName: 'Owner' },
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      if (streamCalls === 2) {
+        // Owner turn, second call after folding the same-principal owner-2.
+        return createTextResponseStream('42');
+      }
+      guestTurnTools = (context as { tools?: { name: string }[] }).tools?.map((tool) => tool.name) ?? [];
+      return createTextResponseStream('guest handled separately');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+  await runner.postMessage(sessionId, {
+    messageId: 'owner-1',
+    text: 'What is the fact?',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'o1-owner', displayName: 'Owner' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+  const deadline = Date.now() + 5000;
+  while (streamCalls < 3 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(streamCalls, 3, 'the guest message must run as its own turn');
+  assert.ok(
+    !guestTurnTools.includes('memory_add'),
+    'the guest turn must stay at guest privilege even though a later owner post flipped the shared session principal',
+  );
+  assert.ok(
+    !guestTurnTools.includes('instruction_update'),
+    'the guest turn must not gain any owner-only tool',
+  );
+});
+
+test('AgentRunner agent_end carries answeredMessageIds covering the trigger and every folded message', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  const sessionId = 'cli:answered-ids-session';
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        await runner.postMessage(sessionId, {
+          messageId: 'steer-1',
+          text: 'also include the units',
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      return createTextResponseStream('42 units');
+    },
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, { messageId: 'msg-1', text: 'What is the fact?' });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(streamCalls, 2, 'the folded message rode the trigger turn');
+  const backlog = runner.events.getBacklog(sessionId);
+  const agentEnd = backlog.find((entry) => entry.event.type === 'agent_end');
+  assert.ok(agentEnd, 'expected an agent_end event');
+  const answered = agentEnd.event.type === 'agent_end'
+    ? (agentEnd.event as { answeredMessageIds?: string[] }).answeredMessageIds
+    : undefined;
+  assert.ok(answered, 'agent_end must carry answeredMessageIds');
+  assert.deepEqual(
+    [...answered].sort(),
+    ['msg-1', 'steer-1'],
+    'answeredMessageIds must include the trigger and the folded messageId',
+  );
+});
+
+test('AgentRunner still emits agent_end when the channel.message.out@v1 transform throws', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const sessionId = 'channel:out-throw-session';
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('final answer'),
+    ]),
+  });
+
+  // A plugin outbound transform that always throws must not strand the turn's
+  // terminal agent_end (streams depend on it) or drop the reply.
+  runner.bus.on('channel.message.out@v1', () => {
+    throw new Error('outbound transform boom');
+  });
+
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, platform: 'web', type: 'direct' },
+  });
+  await runner.postMessage(sessionId, {
+    messageId: 'msg-1',
+    text: 'hi',
+    sender: { channel: 'web', channelUserId: 'u-someone', displayName: 'Someone' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  const backlog = runner.events.getBacklog(sessionId);
+  const agentEnd = backlog.find((entry) => entry.event.type === 'agent_end');
+  assert.ok(agentEnd, 'a throwing outbound transform must not strand agent_end');
+  assert.equal(
+    agentEnd.event.type === 'agent_end' ? agentEnd.event.messageId : undefined,
+    'msg-1',
+  );
+  const textFinal = backlog.find((entry) => entry.event.type === 'text_final');
+  assert.ok(textFinal, 'the reply must still be delivered');
+  assert.equal(
+    textFinal.event.type === 'text_final' ? textFinal.event.text : undefined,
+    'final answer',
+    'a failed outbound transform falls back to the untransformed text',
+  );
+});
+
 test('AgentRunner does not release folds when an aborted turn still produced an answer', async (t) => {
   process.env.OPENHERMIT_MID_TURN_STEERING = '1';
   t.after(() => {

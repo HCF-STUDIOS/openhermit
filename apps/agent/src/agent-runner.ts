@@ -39,7 +39,7 @@ import { ApprovalGate } from './agent-runner/approval-gate.js';
 import { buildSystemPrompt } from './agent-runner/prompt.js';
 import { AgentEventBus } from './events.js';
 import { buildSessionSummaries, createPersistedSessionIndexEntry } from './agent-runner/session-index.js';
-import type { AgentRunnerOptions, RunnerSession } from './agent-runner/types.js';
+import type { AgentRunnerOptions, RunnerSession, TurnPrincipal } from './agent-runner/types.js';
 import {
   createProviderSecretCandidates,
   formatMissingApiKeyMessage,
@@ -1152,6 +1152,19 @@ export class AgentRunner implements SessionRuntime {
       }
     }
 
+    // Bind this message's principal now, synchronously, and carry it with the
+    // queued turn. Tool authorization must run as the sender of THIS message,
+    // not whoever `session.resolvedUser*` names when the queued turn later
+    // executes. A queued guest turn reading the shared field could otherwise
+    // snapshot a subsequent owner post and run at owner privilege.
+    const turnPrincipal: TurnPrincipal = {
+      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
+      ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
+      ...(session.resolvedUserName ? { userName: session.resolvedUserName } : {}),
+      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
+      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+    };
+
     await this.persistSessionIndex(session);
 
     // Whether this message triggers a response. In a group, a non-mentioned
@@ -1166,6 +1179,11 @@ export class AgentRunner implements SessionRuntime {
     // message (e.g. a steered row whose capturing turn died) to start a fresh
     // turn against the existing row rather than appending a duplicate.
     let alreadyPersisted = false;
+    // The trigger row's session_events id. Captured here (this side effect is
+    // awaited before the turn is queued) so the turn can set its fold cursor to
+    // this exact id synchronously, without a racy getLatestEventId() read that
+    // could advance past a message appended after the turn starts and drop it.
+    let triggerEventId: number | undefined;
     await this.queueSideEffect(session, async () => {
       if (message.messageId) {
         const existing = await this.store.messages.findEntryIdByMessageId(
@@ -1173,10 +1191,11 @@ export class AgentRunner implements SessionRuntime {
         );
         if (existing !== null) {
           alreadyPersisted = true;
+          triggerEventId = existing;
           return;
         }
       }
-      await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+      triggerEventId = await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
         ts: receivedAt,
         role: 'user',
         messageId: message.messageId,
@@ -1245,18 +1264,18 @@ export class AgentRunner implements SessionRuntime {
         return;
       }
       try {
-        // Capture the fold cursor BEFORE the setup awaits below, so a message
-        // appended while refreshAgentConfiguration / attachment prep run still
-        // lands inside the fold window instead of being stranded as pre-turn.
-        // The turn's own trigger is excluded by id in foldMidTurnMessages.
+        // Set the fold cursor to this turn's own trigger row id, captured at
+        // post time. Message appends serialize on session.sideEffects, so their
+        // session_events ids are monotonic: everything appended after the
+        // trigger has a higher id and folds in, nothing before it re-folds. The
+        // trigger itself is excluded by the strict `>` in listMessagesSinceEvent.
+        // Set synchronously here (no await) so a message appended after the turn
+        // starts can't slip below an advancing cursor and be dropped.
         session.currentTurnTriggerMessageId = message.messageId;
-        if (isMidTurnSteeringEnabled()) {
-          session.midTurnCursor = await this.store.messages.getLatestEventId(
-            this.scope,
-            session.spec.sessionId,
-          );
+        if (isMidTurnSteeringEnabled() && triggerEventId !== undefined) {
+          session.midTurnCursor = triggerEventId;
         }
-        await this.refreshAgentConfiguration(session);
+        await this.refreshAgentConfiguration(session, turnPrincipal);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
@@ -2541,17 +2560,19 @@ export class AgentRunner implements SessionRuntime {
     });
   }
 
-  private async refreshAgentConfiguration(session: RunnerSession): Promise<void> {
+  private async refreshAgentConfiguration(
+    session: RunnerSession,
+    principal: TurnPrincipal,
+  ): Promise<void> {
     await this.options.security.load();
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
 
-    // Snapshot the principal synchronously so the tool authorization built
-    // here and the mid-turn fold gate agree on exactly who this turn runs as,
-    // even if a concurrent postMessage mutates session.resolvedUser* during
-    // the awaits below.
-    const turnUserId = session.resolvedUserId;
-    const turnUserRole = session.resolvedUserRole;
+    // Authorize this turn as its own trigger message's sender, carried here from
+    // post time. Reading session.resolvedUser* instead would let a queued turn
+    // pick up a later post's principal, so a guest turn could run as owner.
+    const turnUserId = principal.userId;
+    const turnUserRole = principal.role;
     session.currentTurnPrincipalUserId = turnUserId;
 
     const isOwnerInteractive = session.spec.source.interactive && turnUserRole === 'owner';
@@ -2567,9 +2588,9 @@ export class AgentRunner implements SessionRuntime {
       onToolCall: this.makeToolCallCallback(session),
       ...(turnUserRole ? { userRole: turnUserRole } : {}),
       ...(turnUserId ? { userId: turnUserId } : {}),
-      ...(session.resolvedUserName ? { userName: session.resolvedUserName } : {}),
-      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
-      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+      ...(principal.userName ? { userName: principal.userName } : {}),
+      ...(principal.channel ? { channel: principal.channel } : {}),
+      ...(principal.channelUserId ? { channelUserId: principal.channelUserId } : {}),
       ...(session.spec.source.type ? { sessionType: session.spec.source.type } : {}),
       sourceKind: session.spec.source.kind,
       ...(session.spec.customInstruction ? { customInstruction: session.spec.customInstruction } : {}),
@@ -3435,7 +3456,14 @@ export class AgentRunner implements SessionRuntime {
 
       case 'agent_end': {
         // The turn completed; any messages folded into it were answered here.
-        // Drop the per-turn tracking so their queued turns stay suppressed.
+        // Snapshot those ids before clearing so agent_end can carry the full
+        // answered set: a folded message's own queued turn no-ops and emits no
+        // agent_end, so a gateway stream/wait opened for it would hang unless
+        // this turn's end names it. Drop the tracking so their queued turns
+        // stay suppressed.
+        const foldedAnswered = session.currentTurnFoldedIds
+          ? [...session.currentTurnFoldedIds]
+          : [];
         session.currentTurnFoldedIds?.clear();
         // Cancel any media placeholder the turn left unresolved.
         this.reconcilePendingMedia(session);
@@ -3477,25 +3505,38 @@ export class AgentRunner implements SessionRuntime {
 
         const turnCorrelationId = session.currentTurnCorrelationId;
         const turnTriggerMessageId = session.currentTurnTriggerMessageId;
+        const answeredMessageIds = [
+          ...(turnTriggerMessageId !== undefined ? [turnTriggerMessageId] : []),
+          ...foldedAnswered,
+        ];
         delete session.currentTurnCorrelationId;
         void (async () => {
           // For channel-bound sessions, run the channel.message.out@v1
           // transform so plugins can scrub/rewrite outbound text (e.g.
           // PII unmasking, brand-voice enforcement) before adapters
-          // receive it.
+          // receive it. A throwing transform must not strand the turn's
+          // terminal agent_end (which closes gateway streams), so it is
+          // isolated: on failure the untransformed text is delivered.
           if (
             finalText
             && session.spec.source.kind === 'channel'
             && session.spec.source.platform
           ) {
-            const out = await this.bus.transform('channel.message.out@v1', {
-              agentId: this.scope.agentId,
-              sessionId: session.spec.sessionId,
-              channel: session.spec.source.platform,
-              direction: 'out',
-              text: finalText,
-            });
-            finalText = out.text;
+            try {
+              const out = await this.bus.transform('channel.message.out@v1', {
+                agentId: this.scope.agentId,
+                sessionId: session.spec.sessionId,
+                channel: session.spec.source.platform,
+                direction: 'out',
+                text: finalText,
+              });
+              finalText = out.text;
+            } catch (error) {
+              console.error(
+                `[openhermit-agent] channel.message.out@v1 transform failed for ${session.spec.sessionId}`,
+                getErrorMessage(error),
+              );
+            }
           }
 
           if (finalText) {
@@ -3516,6 +3557,7 @@ export class AgentRunner implements SessionRuntime {
             type: 'agent_end',
             sessionId: session.spec.sessionId,
             ...(turnTriggerMessageId !== undefined ? { messageId: turnTriggerMessageId } : {}),
+            ...(answeredMessageIds.length ? { answeredMessageIds } : {}),
           });
         })();
 
@@ -3598,6 +3640,11 @@ export class AgentRunner implements SessionRuntime {
         type: 'agent_end',
         sessionId: session.spec.sessionId,
         ...(turnTriggerMessageId !== undefined ? { messageId: turnTriggerMessageId } : {}),
+        // Only the trigger is answered on error. Folded messages were released
+        // by releaseFoldedTurnMessages to re-run as their own turns, so each
+        // emits its own agent_end. Naming them here would close their streams
+        // prematurely.
+        ...(turnTriggerMessageId !== undefined ? { answeredMessageIds: [turnTriggerMessageId] } : {}),
       });
       this.scheduleIdleSummary(session);
       await this.queueSideEffect(session, async () => {
