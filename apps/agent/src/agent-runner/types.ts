@@ -70,6 +70,12 @@ export interface RunnerSession extends SessionDescriptor {
    *  queued postMessage turn for these ids becomes a no-op so a folded
    *  message is never processed twice. */
   foldedMessageIds?: Set<string>;
+  /** messageIds of posted messages whose queued turn has not started yet.
+   *  A posted-then-folded message self-cleans its `foldedMessageIds` entry
+   *  when its queued turn runs (the no-op path); an append-only folded
+   *  message has no queued turn, so its entry would leak. Turn completion
+   *  uses this set to tell the two apart and evict only the append-only ids. */
+  pendingTurnMessageIds?: Set<string>;
   /** messageIds folded during the current turn. Reset at turn start. If the
    *  turn fails before answering, these are removed from `foldedMessageIds`
    *  so their suppressed queued turns proceed rather than stranding the

@@ -17,6 +17,10 @@ const toolResult = (correlationId?: string) =>
   ({ type: 'tool_result', sessionId: 's', eventId: 'e', tool: 't', toolCallId: 'tc', isError: false, ...(correlationId ? { correlationId } : {}) }) as never;
 const errorEvent = (message: string, correlationId?: string) =>
   ({ type: 'error', sessionId: 's', eventId: 'e', message, ...(correlationId ? { correlationId } : {}) }) as never;
+const reconcileCancelError = (correlationId: string) =>
+  ({ type: 'error', sessionId: 's', eventId: 'e', message: 'Media was prepared but not sent.', correlationId, reason: 'reconcile_cancel' }) as never;
+const pendingMedia = (correlationId: string) =>
+  ({ type: 'pending_media', sessionId: 's', eventId: 'e', correlationId }) as never;
 const attachment = (correlationId?: string) =>
   ({ type: 'attachment', sessionId: 's', eventId: 'e', attachmentId: 'a', mimeType: 'image/png', kind: 'image', ...(correlationId ? { correlationId } : {}) }) as never;
 
@@ -78,6 +82,29 @@ test('stream: a legacy no-messageId caller receives everything unscoped', () => 
 
 test('stream: content with no correlationId is forwarded (unscoped)', () => {
   assert.equal(streamEventInScope(textFinal('no-corr'), 'B'), true);
+});
+
+test('stream: a plain turn error for another turn is scoped out', () => {
+  assert.equal(streamEventInScope(errorEvent('A-boom', 'A'), 'B'), false);
+});
+
+test('stream: a reconcile_cancel media error is forwarded session-wide even for another correlationId', () => {
+  // The media job id is not a turn trigger; without this it would be scoped
+  // out and the consumer that rendered the skeleton would never clear it.
+  assert.equal(streamEventInScope(reconcileCancelError('media-1'), 'B'), true);
+});
+
+test('stream: a create-failure error whose correlationId is a known media id is forwarded', () => {
+  const rendered = new Set(['media-1']);
+  const isMedia = (id: string) => rendered.has(id);
+  // No reconcile_cancel reason, but the consumer saw pending_media for this id.
+  assert.equal(streamEventInScope(errorEvent('create failed', 'media-1'), 'B', isMedia), true);
+  // An error whose id was never a media event stays scoped to its turn.
+  assert.equal(streamEventInScope(errorEvent('turn boom', 'A'), 'B', isMedia), false);
+});
+
+test('stream: pending_media itself stays session-wide (out-of-band)', () => {
+  assert.equal(streamEventInScope(pendingMedia('media-1'), 'B'), true);
 });
 
 // ── wait mode: WaitTurnAccumulator ──────────────────────────────────────────

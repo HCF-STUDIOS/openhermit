@@ -219,7 +219,17 @@ export const bufferedEndEligibleToClose = (
 /** Per-turn content event types (as opposed to session-wide out-of-band events
  *  like `attachment`/`pending_media` or lifecycle/approval events). These carry
  *  the turn's trigger as `correlationId` and must be scoped to the request's
- *  turn so a concurrent turn's text/tools never bleed into another request. */
+ *  turn so a concurrent turn's text/tools never bleed into another request.
+ *
+ *  Known limitation (folded messages): when message B is folded mid-turn into
+ *  another turn A, B's answer streams under A's correlationId. A stream opened
+ *  for B alone scopes to B and so closes on the terminal end (which names B in
+ *  `answeredMessageIds`) with no answer text — the reply is delivered on A's
+ *  stream. Wait mode is unaffected: it buckets by the answering turn. This is
+ *  inherent to the raw per-request stream contract, not worked around here; the
+ *  only fold-capable stream consumer (amiko-chat) keeps a single in-flight
+ *  stream per session and folds via appendMessage rather than opening a B
+ *  stream, so it never hits this. */
 const SCOPED_TURN_CONTENT_TYPES: ReadonlySet<string> = new Set([
   'thinking_delta',
   'thinking_final',
@@ -237,15 +247,34 @@ const SCOPED_TURN_CONTENT_TYPES: ReadonlySet<string> = new Set([
  * media and lifecycle events stay session-wide so media delivery is unaffected.
  * A request with no id of its own (`requestMessageId` undefined) is an older
  * caller and receives everything, unscoped.
+ *
+ * An `error` is turn content only when its `correlationId` is a turn trigger. A
+ * media-clearing error is out-of-band: it carries a media/job id, not a turn
+ * trigger, and must be forwarded session-wide like `pending_media`, or the
+ * consumer that rendered the skeleton (forwarded session-wide) never receives
+ * the event that clears it and is left with a stuck skeleton. Such errors are a
+ * `reconcile_cancel`, or a create-failure whose `correlationId` names a media
+ * event this consumer already saw (via `isMediaCorrelation`).
  */
 export const streamEventInScope = (
   event: OutboundEvent,
   requestMessageId: string | undefined,
+  isMediaCorrelation?: (correlationId: string) => boolean,
 ): boolean => {
   if (requestMessageId === undefined) return true;
   if (!SCOPED_TURN_CONTENT_TYPES.has(event.type)) return true;
   const correlationId = (event as { correlationId?: string }).correlationId;
-  return correlationId === undefined || correlationId === requestMessageId;
+  if (correlationId === undefined) return true;
+  if (
+    event.type === 'error'
+    && (
+      (event as { reason?: string }).reason === 'reconcile_cancel'
+      || isMediaCorrelation?.(correlationId) === true
+    )
+  ) {
+    return true;
+  }
+  return correlationId === requestMessageId;
 };
 
 /** One turn's accumulated wait-mode content. */
@@ -1633,6 +1662,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const buffered: SessionEventEnvelope[] = [];
       let streamReady = false;
       let streamApi: SSEStreamingApi | undefined;
+      // correlationIds of media skeletons this consumer has rendered
+      // (`pending_media`/`attachment`, both forwarded session-wide). An `error`
+      // bearing one of these ids is a media-clearing event, not turn content, so
+      // it is forwarded regardless of turn scope and never leaves a stuck
+      // skeleton.
+      const renderedMediaIds = new Set<string>();
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
@@ -1669,8 +1704,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const closesThisStream = (event: OutboundEvent): boolean =>
         agentEndClosesStream(event, result.messageId);
 
-      const forwardToStream = (event: OutboundEvent): boolean =>
-        streamEventInScope(event, result.messageId);
+      const forwardToStream = (event: OutboundEvent): boolean => {
+        if (event.type === 'pending_media' || event.type === 'attachment') {
+          const mediaCorrelationId = (event as { correlationId?: string }).correlationId;
+          if (mediaCorrelationId !== undefined) renderedMediaIds.add(mediaCorrelationId);
+        }
+        return streamEventInScope(event, result.messageId, (id) => renderedMediaIds.has(id));
+      };
 
       if (!result.triggered) {
         unsubscribe();

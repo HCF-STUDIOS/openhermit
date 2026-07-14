@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText, agentEndClosesTurn, turnContentInScope } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
@@ -455,6 +455,17 @@ export class SlackBridge implements ChannelOutbound {
           const payload = frame.data.length > 0
             ? (JSON.parse(frame.data) as Record<string, unknown>)
             : {};
+
+          // Slack has no per-chat serialization, so a concurrent turn A can
+          // interleave its content on this session while B's reader is open.
+          // Scope content frames to THIS turn (agent_end/error keep their own
+          // scoping below) so B never accumulates and posts A's reply.
+          if (
+            (frame.event === 'text_delta' || frame.event === 'text_final')
+            && !turnContentInScope(payload, ownMessageId)
+          ) {
+            continue;
+          }
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
