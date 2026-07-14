@@ -148,8 +148,8 @@ function e2bBackendWithFakeSandbox(
 ) {
   const ctx: BackendFactoryContext = { ...fakeContext, ...over };
   const backend = createExecBackend({ type: 'e2b', template: 'tpl' }, ctx);
-  // Inject a live sandbox so exec() skips ensure() and never touches the
-  // real e2b SDK. commands.run captures whatever the backend forwards.
+  // Inject a live sandbox so exec() skips ensure() and never touches the real
+  // e2b SDK; commands.run captures whatever the backend forwards.
   (backend as unknown as { sandbox: unknown }).sandbox = {
     sandboxId: 'sbx-fake',
     commands: {

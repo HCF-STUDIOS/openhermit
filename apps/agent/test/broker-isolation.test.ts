@@ -21,8 +21,8 @@ test('one rejecting subscriber does not stop delivery to others or abort publish
       received.push(envelope.event.type);
     });
 
-    // The rejecting subscriber must not prevent the healthy one from receiving,
-    // and publish itself must resolve rather than reject.
+    // A rejecting subscriber must not block the healthy one, and publish must
+    // resolve rather than reject.
     await assert.doesNotReject(() => broker.publish(textFinal('s')));
     await assert.doesNotReject(() => broker.publish(agentEnd('s')));
 

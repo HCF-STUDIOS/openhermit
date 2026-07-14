@@ -8,8 +8,7 @@ test('same userId and role folds', () => {
 });
 
 test('same userId but downgraded role does NOT fold', () => {
-  // Owner started the turn; the same user was demoted to guest, then posts
-  // again. Folding would run the guest message at the turn owner tools.
+  // Folding a demoted guest would run their message at the turn owner's tools.
   assert.equal(principalMayFold('u1', 'guest', 'u1', 'owner'), false);
 });
 

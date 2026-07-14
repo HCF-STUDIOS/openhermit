@@ -68,10 +68,8 @@ export function pickMediaFile(message: TelegramMessage): TelegramMediaFile | und
 }
 
 /**
- * Decide whether a reply is fit for voice delivery. We refuse anything
- * containing code blocks, command-style markup, or huge volumes of
- * text — those are awkward to listen to and consume API quota for no
- * reader benefit.
+ * Whether a reply is fit for voice delivery. Refuses code blocks and
+ * very long text (awkward to listen to, wastes TTS quota).
  */
 const shouldSpeak = (text: string): boolean => {
   const trimmed = text.trim();
@@ -131,7 +129,6 @@ export class TelegramBridge implements ChannelOutbound {
   private async isMentioned(message: TelegramMessage): Promise<boolean> {
     const bot = await this.getBotInfo();
 
-    // Reply to the bot's message
     if (message.reply_to_message?.from?.id === bot.id) {
       return true;
     }
@@ -383,7 +380,6 @@ export class TelegramBridge implements ChannelOutbound {
   ): Promise<void> {
     const oldSessionId = await this.getSessionId(chatId);
 
-    // Checkpoint the current session before starting a new one.
     try {
       await this.client.checkpointSession(oldSessionId, { reason: 'new_session' });
     } catch {
@@ -395,7 +391,6 @@ export class TelegramBridge implements ChannelOutbound {
     this.subscriptions.get(oldSessionId)?.abort();
     this.subscriptions.delete(oldSessionId);
 
-    // Generate a fresh sessionId for this chat.
     const newSessionId = TelegramBridge.generateSessionId();
     this.chatSessions.set(chatId, newSessionId);
 
@@ -713,7 +708,6 @@ export class TelegramBridge implements ChannelOutbound {
     let finalText: string | undefined;
     let error: string | undefined;
 
-    // Streaming edit state.
     let sentMessageId: number | undefined;
     let lastEditTime = 0;
     const EDIT_THROTTLE_MS = 1500;
@@ -742,10 +736,8 @@ export class TelegramBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'ready') {
-            // Detect sequence reset: a new runner restarts ids at 1, so
-            // a stored cursor from a previous runner would skip every
-            // event. Reset the cursor when the server's next id is
-            // behind ours.
+            // Sequence reset: a new runner restarts ids at 1, so reset the
+            // cursor when the server's next id is behind ours (else we skip every event).
             if (!sequenceResetChecked) {
               sequenceResetChecked = true;
               try {
@@ -779,7 +771,6 @@ export class TelegramBridge implements ChannelOutbound {
             // chat.
             if (suppressStreamingDisplay) continue;
 
-            // Streaming edit: send initial message or throttled edits.
             const now = Date.now();
             if (!sentMessageId && displayText.length > 0) {
               try {
@@ -865,7 +856,6 @@ export class TelegramBridge implements ChannelOutbound {
     // Agent chose not to reply (group chat, not mentioned).
     if (stripped?.isSilent) {
       if (sentMessageId) {
-        // Delete the partially-streamed message.
         void this.telegram.deleteMessage(chatId, sentMessageId).catch(() => undefined);
       }
       return { text: undefined, error: undefined };

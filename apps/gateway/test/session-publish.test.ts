@@ -152,8 +152,7 @@ test('POST session events: a correlationId-bearing error is stamped media_error 
   assert.equal(res.status, 202);
   assert.equal(ingestCalls.length, 0);
   assert.equal(publishCalls.length, 1);
-  // The out-of-band route stamps a reliable media marker so the gateway consumer
-  // never has to infer media-vs-turn from a collision-prone id set.
+  // Reliable media marker so the consumer never infers media-vs-turn from a collision-prone id.
   assert.deepEqual(publishCalls[0], { ...event, reason: 'media_error' });
 });
 
@@ -294,8 +293,7 @@ test('POST session events: attachment with assetUrl ingests then publishes with 
 test('POST session events: published attachment uses the sniffed mimeType/kind, not a mismatched caller hint', async () => {
   const { app, publishCalls } = buildApp({
     ingestAttachment: async () => {
-      // The fetch sniffed and persisted a PDF regardless of the caller hint
-      // below.
+      // The fetch sniffed and persisted a PDF regardless of the caller hint.
       return { attachmentId: 'att_ingested_2', mimeType: 'application/pdf' };
     },
   });
@@ -484,8 +482,7 @@ test('POST session events: direct attachment referencing an unknown id is reject
 });
 
 test('POST session events: direct attachment with no ownership verifier is rejected (fail closed)', async () => {
-  // No verifyAttachment wired (e.g. gateway started without a store). A direct
-  // attachment publish must be refused rather than published unverified.
+  // No verifyAttachment wired: a direct attachment publish must fail closed, not publish unverified.
   const { app, publishCalls } = buildApp();
   const { agentId, sessionId } = uniqueAgentSession();
 

@@ -24,9 +24,7 @@ test('closes on any end when the reader has no own id (backward-compat)', () => 
   assert.equal(agentEndClosesTurn({ messageId: 'A' }, undefined), true);
 });
 
-// turnContentInScope: content frames must be scoped to the reader's own turn so
-// a bridge without per-chat serialization never accumulates a concurrent turn's
-// text and posts the wrong reply.
+// Content frames must be scoped to the reader's own turn, or a bridge accumulates a concurrent turn's text and replies wrong.
 
 test('content: this turn own frame is in scope', () => {
   assert.equal(turnContentInScope({ correlationId: 'B', text: 'mine' }, 'B'), true);
@@ -44,9 +42,8 @@ test('content: a reader with no own id accepts everything (backward-compat)', ()
   assert.equal(turnContentInScope({ correlationId: 'A' }, undefined), true);
 });
 
-// isOutOfBandErrorFrame: classify media-vs-turn by `reason`, never by the
-// presence of correlationId. A turn error carries the turn trigger as
-// correlationId and no reason, so it must NOT read as out-of-band.
+// Classify media-vs-turn by `reason`, never by correlationId: a turn error carries a correlationId
+// and no reason, so it must not read as out-of-band.
 
 test('out-of-band error: a media_error frame is out-of-band', () => {
   assert.equal(isOutOfBandErrorFrame({ message: 'x', correlationId: 'att_1', reason: 'media_error' }), true);

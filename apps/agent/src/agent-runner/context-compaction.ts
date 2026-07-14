@@ -123,7 +123,7 @@ export const estimateFixedOverheadTokens = (input: {
       try {
         total += estimateTextTokens(JSON.stringify(tool));
       } catch {
-        total += 256; // fallback placeholder
+        total += 256;
       }
     }
   }
@@ -641,16 +641,13 @@ export const compactContextIfNeeded = async (
     compacted = expanded;
   }
 
-  // Determine compacted messages for LLM summary.
   const retainedStartIndex = getCompactionRetainedStartIndex(messages, retainCount);
   const compactedMessages = messages.slice(0, retainedStartIndex);
 
-  // Attempt LLM-powered summary if we have compacted messages and an agent factory.
   let llmSummary: string | undefined;
 
   if (compactedMessages.length > 0 && deps.createCompactionAgent) {
     try {
-      // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
       // Summarize the full message list not just the compacted prefix.
@@ -670,7 +667,6 @@ export const compactContextIfNeeded = async (
       });
 
       if (llmSummary) {
-        // Persist for next compaction pass.
         await deps.store.messages.setCompactionSummary(
           deps.scope,
           sessionId,
@@ -692,7 +688,6 @@ export const compactContextIfNeeded = async (
     }
   }
 
-  // Rebuild with the LLM summary (or undefined for text-extraction fallback).
   compacted = buildCandidate(retainCount, llmSummary);
 
   const beforeTokens = estimateAgentMessagesTokens(combined);

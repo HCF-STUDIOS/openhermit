@@ -896,7 +896,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       if (!userId) return c.json([]);
       const memberships = await userStore.listAgentRoles(userId);
 
-      // Enrich with agent display info from agentStore.
       const records = agentStore ? await agentStore.list() : [];
       const byId = new Map(records.map((r) => [r.agentId, r]));
       // `status` reflects the agent's persistent availability, not whether
@@ -1286,7 +1285,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
     }
 
-    // Seed default instructions
     const agentName = record.name ?? record.agentId;
     await agentStore.seedInstructions(record.agentId, [
       {
@@ -1319,7 +1317,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       },
     ], now);
 
-    // Assign owner if specified
     if (body.ownerUserId && typeof body.ownerUserId === 'string') {
       await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
       log(`agent created: ${record.agentId} (owner: ${body.ownerUserId})`);
@@ -2036,7 +2033,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
     const rows = await store.listAll();
 
-    // Resolve agent display names.
     const nameByAgent = new Map<string, string | undefined>();
     if (agentStore) {
       const records = await agentStore.list();
@@ -3790,7 +3786,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return options.scheduleStore;
   };
 
-  // List all schedules across all agents
   app.get('/api/admin/schedules', async (c) => {
     requireAdmin(c.req.header('authorization'));
     const store = requireScheduleStore();

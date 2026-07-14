@@ -29,8 +29,7 @@ const attachment = (correlationId?: string) =>
 // ── wait mode: agentEndResolvesWait ─────────────────────────────────────────
 
 test('wait: a concurrent agent_end during the post window (not settled) never resolves', () => {
-  // messageId still unknown; without the gate agentEndClosesStream(ev, undefined)
-  // would match A and resolve B with A's response.
+  // messageId still unknown; without the gate this would match A and resolve B with A's response.
   assert.equal(agentEndResolvesWait(agentEnd('A'), undefined, false), false);
 });
 
@@ -91,8 +90,7 @@ test('stream: a plain turn error for another turn is scoped out', () => {
 });
 
 test('stream: a reconcile_cancel media error is forwarded session-wide even for another correlationId', () => {
-  // The media job id is not a turn trigger; without this it would be scoped
-  // out and the consumer that rendered the skeleton would never clear it.
+  // The media job id is not a turn trigger; scoping it out would strand the consumer's skeleton.
   assert.equal(streamEventInScope(reconcileCancelError('media-1'), 'B'), true);
 });
 
@@ -101,12 +99,8 @@ test('stream: an out-of-band media_error is forwarded session-wide even for anot
 });
 
 test('stream: a turn error whose correlationId collides with a seen media id is NOT leaked cross-stream', () => {
-  // A caller controls messageId, so a turn trigger can equal a media/job id a
-  // consumer saw. A plain turn error (no out-of-band reason) must be classified
-  // by scope alone: it belongs to turn 'media-1', so a request opened for 'B'
-  // never receives it. The old set-membership inference leaked it here.
+  // A turn error's correlationId can collide with a media id; scope alone must keep it off request B.
   assert.equal(streamEventInScope(errorEvent('turn boom', 'media-1'), 'B'), false);
-  // The same error is delivered to its own turn's request, as turn content.
   assert.equal(streamEventInScope(errorEvent('turn boom', 'media-1'), 'media-1'), true);
 });
 
@@ -131,7 +125,6 @@ test('wait: a folded message returns the answering turn content (keyed by the en
   const acc = new WaitTurnAccumulator();
   // B was folded into turn A; A produced the reply (correlationId = A).
   acc.record(textFinal('A-answers-both', 'A'));
-  // The resolving end for request B names A as the trigger.
   const resolved = acc.get('A');
   assert.equal(resolved.text, 'A-answers-both');
 });

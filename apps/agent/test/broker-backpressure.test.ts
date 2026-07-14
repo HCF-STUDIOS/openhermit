@@ -26,9 +26,7 @@ test('a stuck subscriber does not block delivery to others and publish still res
     await broker.publish(textFinal('s'));
     const publishDelay = Date.now() - start;
 
-    // The healthy subscriber received right away, not after the stuck one.
     assert.ok(healthyDelay < 50, `healthy delivery was blocked (delay=${healthyDelay}ms)`);
-    // publish resolves once the stuck subscriber times out, and never hangs.
     assert.ok(publishDelay >= DELIVERY_TIMEOUT_MS - 20, `publish returned too early (delay=${publishDelay}ms)`);
   } finally {
     console.error = originalError;

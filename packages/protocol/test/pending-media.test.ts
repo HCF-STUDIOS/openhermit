@@ -31,6 +31,5 @@ test('attachment event accepts a correlationId linking it back to a pending_medi
   assert.equal(event.correlationId, 'c1');
 });
 
-// The old amiko shape with jobId and mode must no longer satisfy OutboundEventBody.
-// Asserting it inline would break this file's compilation with a real type error.
-// Verified manually. pending_media with jobId and mode fails tsc -p tsconfig.json --noEmit.
+// The old jobId/mode shape no longer satisfies OutboundEventBody; asserting it inline would be a
+// compile error (verified manually via tsc --noEmit).

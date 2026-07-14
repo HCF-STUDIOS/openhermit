@@ -10,12 +10,7 @@ import type { McpServerRecord } from '@openhermit/store';
 
 import { McpClientManager } from '../src/mcp-client.js';
 
-/**
- * Spins up a real MCP server over Streamable HTTP backed by a flaky_tool
- * whose behavior is controlled at runtime via behavior.mode. Exercises the
- * actual StreamableHTTPClientTransport code path in McpClientManager rather
- * than mocking the transport away.
- */
+/** Real MCP server over Streamable HTTP whose flaky_tool behavior is toggled via behavior.mode, so the actual transport path is exercised. */
 async function startFlakyMcpServer(): Promise<{
   url: string;
   behavior: { mode: 'ok' | 'fail' };
@@ -23,11 +18,7 @@ async function startFlakyMcpServer(): Promise<{
 }> {
   const behavior: { mode: 'ok' | 'fail' } = { mode: 'ok' };
 
-  // Each reconnect from the client sends a fresh initialize request which a
-  // real MCP server treats as a new session. To exercise that faithfully we
-  // route requests to a transport-per-session-id. A single pinned transport
-  // would reject a second initialize. This mirrors how a real stateful MCP
-  // HTTP server is typically wired.
+  // Transport-per-session-id: each reconnect sends a fresh initialize that a single pinned transport would reject.
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 
   const createSession = (): StreamableHTTPServerTransport => {
@@ -45,11 +36,7 @@ async function startFlakyMcpServer(): Promise<{
     return transport;
   };
 
-  // behavior.mode = 'fail' simulates a dead or expired upstream session at
-  // the transport level via connection reset. That is what makes
-  // McpClientManager's callTool promise reject. A tool handler returning
-  // isError true is instead a normal in-band result and correctly does not
-  // tear down the connection.
+  // 'fail' resets the connection to simulate a dead upstream session, which rejects callTool. An in-band isError result would not tear down the connection.
   const httpServer = http.createServer((req, res) => {
     if (behavior.mode === 'fail') {
       req.destroy();
@@ -100,14 +87,12 @@ test('[BUG REPRO] MCP client never recovers after a tool call fails mid-session'
     const first = await tool.execute('call-1', {});
     assert.equal((first.content[0] as { text: string }).text, 'ok');
 
-    // Upstream now fails simulating an expired or dead server-side session.
     behavior.mode = 'fail';
     const second = await tool.execute('call-2', {});
     assert.match((second.content[0] as { text: string }).text, /MCP tool call failed/);
     assert.equal(manager.getStatus()[0]?.status, 'error');
 
-    // Upstream recovers. A healthy client should reconnect and let the twin
-    // keep using the tool instead of being stuck in 'error' forever.
+    // Upstream recovers: a healthy client must self-heal, not stay stuck in 'error'.
     behavior.mode = 'ok';
     const third = await tool.execute('call-3', {});
     assert.equal(
@@ -129,11 +114,7 @@ interface CallToolCall {
   _meta?: Record<string, unknown>;
 }
 
-/**
- * Injects a fake "connected" MCP server state directly into the manager's
- * private connections map bypassing real network connect and listTools. Lets
- * us exercise adaptTool and getToolsets without a live MCP server.
- */
+/** Injects a fake "connected" server into the manager's private connections map to exercise adaptTool/getToolsets without a live server. */
 function injectConnectedServer(
   manager: McpClientManager,
   serverId: string,

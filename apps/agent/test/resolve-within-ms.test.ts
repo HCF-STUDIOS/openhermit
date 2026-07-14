@@ -9,8 +9,7 @@ test('resolves with the promise value when it settles in time', async () => {
 });
 
 test('resolves with the fallback when the promise hangs past the bound', async () => {
-  // A transform that never returns must not strand the caller: past the bound
-  // the fallback value is used and the caller proceeds.
+  // A never-returning transform must not strand the caller past the bound.
   const start = Date.now();
   const result = await resolveWithinMs(new Promise<string>(() => {}), 20, () => 'fallback');
   assert.equal(result, 'fallback');
