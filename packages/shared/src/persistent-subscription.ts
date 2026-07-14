@@ -48,6 +48,30 @@ const parseSseFrames = (
   return { frames, remainder };
 };
 
+/**
+ * User-facing text for an out-of-band `error` event frame, or null when it
+ * should not be shown. An error carrying a `correlationId` resolves a media
+ * placeholder in rich clients; text channels have no placeholder to clear, so
+ * there is nothing to render. Malformed/empty frames also yield null.
+ */
+export const outboundErrorText = (frameData: string): string | null => {
+  try {
+    const payload = frameData.length > 0
+      ? (JSON.parse(frameData) as Record<string, unknown>)
+      : {};
+    if (typeof payload.correlationId === 'string' && payload.correlationId.length > 0) {
+      return null;
+    }
+    const message =
+      typeof payload.message === 'string' && payload.message.length > 0
+        ? payload.message
+        : 'Unknown error';
+    return `Error: ${message}`;
+  } catch {
+    return null;
+  }
+};
+
 export interface PersistentSubscriptionOptions {
   eventsUrl: string;
   /** Cursor to resume from. Frames with id <= this are skipped. */

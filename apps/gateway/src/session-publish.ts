@@ -12,7 +12,7 @@ import {
   isPublishableOutboundEvent,
   type OutboundEventBody,
 } from '@openhermit/protocol';
-import { ValidationError } from '@openhermit/shared';
+import { NotFoundError, ValidationError } from '@openhermit/shared';
 import { inferAttachmentKind } from '@openhermit/agent/attachments';
 
 import type { AgentRunner } from '@openhermit/agent/agent-runner';
@@ -51,6 +51,14 @@ export interface SessionPublishDeps {
   /** Ingests an asset URL into a session_attachments row. Omit to 502 `assetUrl` pushes. */
   ingestAttachment?:
     | ((input: AttachmentIngestInput) => Promise<AttachmentIngestResult>)
+    | undefined;
+  /**
+   * Look up an attachment row by id, returning its owning agent and session.
+   * Used to reject a direct `attachment` publish that references a row from
+   * another agent/session. Omit only where no attachment store exists.
+   */
+  verifyAttachment?:
+    | ((attachmentId: string) => Promise<{ agentId: string; sessionId: string } | undefined>)
     | undefined;
 }
 
@@ -109,7 +117,7 @@ export const registerSessionPublishRoute = (
   app: Hono,
   deps: SessionPublishDeps,
 ): void => {
-  const { instances, requireAdmin, resolveRunner, logger, ingestAttachment } = deps;
+  const { instances, requireAdmin, resolveRunner, logger, ingestAttachment, verifyAttachment } = deps;
   const log = logger ?? (() => {});
 
   app.post(gatewayRoutes.agentSessionEventsPattern, async (c) => {
@@ -196,6 +204,18 @@ export const registerSessionPublishRoute = (
 
     if (!isPublishableOutboundEvent(eventBody) || eventBody.sessionId !== sessionId) {
       throw new ValidationError('Invalid event body.');
+    }
+
+    // A direct attachment publish carries an attachmentId, not bytes: verify
+    // the row exists and belongs to this agent and session, else every
+    // consumer's byte fetch 404s on a foreign id. pending_media/error carry
+    // no attachment row and skip this.
+    if (eventType === 'attachment' && verifyAttachment) {
+      const attachmentId = typeof record.attachmentId === 'string' ? record.attachmentId : '';
+      const owner = attachmentId ? await verifyAttachment(attachmentId) : undefined;
+      if (!owner || owner.agentId !== agentId || owner.sessionId !== sessionId) {
+        throw new NotFoundError(`Attachment ${attachmentId || '(missing id)'} not found for this session.`);
+      }
     }
 
     const runner = await resolveRunner(instances, agentId);

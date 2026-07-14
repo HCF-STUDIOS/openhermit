@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AgentLocalClient, parseSseFrames } from '@openhermit/sdk';
 import type { ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
-import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription } from '@openhermit/shared';
+import { stripSilenceTokens, openSessionWithFreshFallback, startPersistentSubscription, outboundErrorText } from '@openhermit/shared';
 import type { SseFrame } from '@openhermit/shared';
 
 import type { SlackApi, SlackMessageEvent } from './slack-api.js';
@@ -348,6 +348,16 @@ export class SlackBridge implements ChannelOutbound {
       onEnding: release,
       ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       onEvent: (frame: SseFrame) => {
+        if (frame.event === 'error') {
+          const text = outboundErrorText(frame.data);
+          if (text) {
+            void this.slack.sendMessage(channelId, text, ...(threadTs ? [{ threadTs }] : [])).catch((err) => {
+              this.log(`out-of-turn error delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        // pending_media has nothing to render in a text channel; ignore it.
         if (frame.event !== 'attachment') return;
         try {
           const payload = frame.data.length > 0
@@ -474,6 +484,9 @@ export class SlackBridge implements ChannelOutbound {
           }
 
           if (frame.event === 'error') {
+            // A correlationId marks a media-placeholder resolver, not a turn
+            // failure; text channels have no placeholder, so skip it.
+            if (typeof payload.correlationId === 'string' && payload.correlationId) continue;
             error = String(payload.message ?? 'Unknown error');
             continue;
           }

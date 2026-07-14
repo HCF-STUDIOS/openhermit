@@ -85,9 +85,36 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SSE_PING_INTERVAL_MS = 15_000;
+// Max live events buffered during backlog replay before the connection is
+// dropped, bounding per-connection memory when a reader stalls.
+const SSE_PENDING_LIVE_CAP = 512;
 const SYNC_DEFAULT_TIMEOUT_MS = 300_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Drain buffered live events while new arrivals keep buffering, so a concurrent
+ * publish can't race a higher id ahead of a lower leftover one. Repeats until
+ * the buffer is empty; the caller flips to the live path synchronously right
+ * after this returns, with no await in between. Skips ids already covered by
+ * the replayed backlog (id <= maxBacklogId). `shouldContinue` lets the caller
+ * bail early (e.g. on buffer overflow).
+ */
+export const drainBufferedLive = async (
+  pendingLive: SessionEventEnvelope[],
+  maxBacklogId: number,
+  write: (envelope: SessionEventEnvelope) => Promise<void>,
+  shouldContinue: () => boolean = () => true,
+): Promise<void> => {
+  while (shouldContinue() && pendingLive.length > 0) {
+    const batch = pendingLive.splice(0, pendingLive.length);
+    for (const envelope of batch) {
+      if (envelope.id > maxBacklogId) {
+        await write(envelope);
+      }
+    }
+  }
+};
 
 const writeEvent = async (
   stream: SSEStreamingApi,
@@ -1605,8 +1632,22 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       // while the backlog is still writing, then drain with id dedupe.
       const pendingLive: SessionEventEnvelope[] = [];
       let replayingBacklog = true;
+      let overflowed = false;
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (replayingBacklog) {
+          // A slow reader backpressures the backlog drain while live events
+          // pile up here. Cap the buffer and drop the connection on overflow
+          // rather than growing memory without bound; the client reconnects
+          // with its cursor and replays cleanly.
+          if (pendingLive.length >= SSE_PENDING_LIVE_CAP) {
+            if (!overflowed) {
+              overflowed = true;
+              log(`SSE live buffer overflow for session ${sessionId} (cap ${SSE_PENDING_LIVE_CAP}); closing connection`);
+              pendingLive.length = 0;
+              stream.abort();
+            }
+            return;
+          }
           pendingLive.push(envelope);
           return;
         }
@@ -1616,17 +1657,25 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const backlog = runtime.events.getBacklog(sessionId);
       let maxBacklogId = 0;
       for (const envelope of backlog) {
+        if (overflowed) break;
         maxBacklogId = Math.max(maxBacklogId, envelope.id);
         await writeEvent(stream, envelope);
       }
-      // Flip before splicing so any concurrent publish is handled by the live
-      // path rather than a second push into pendingLive that we would drop.
+      // Drain buffered live events while still buffering new arrivals, so a
+      // concurrent publish can't race a higher id ahead of a lower leftover
+      // one, then flip synchronously, with no await between the last
+      // emptiness check and the flip.
+      await drainBufferedLive(
+        pendingLive,
+        maxBacklogId,
+        (envelope) => writeEvent(stream, envelope),
+        () => !overflowed,
+      );
       replayingBacklog = false;
-      const leftoverLive = pendingLive.splice(0, pendingLive.length);
-      for (const envelope of leftoverLive) {
-        if (envelope.id > maxBacklogId) {
-          await writeEvent(stream, envelope);
-        }
+
+      if (overflowed) {
+        unsubscribe();
+        return;
       }
 
       const heartbeat = setInterval(() => {
@@ -1676,6 +1725,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
             };
           }
         : undefined,
+    verifyAttachment: options.attachmentStore
+      ? async (attachmentId) => {
+          const record = await options.attachmentStore!.get(attachmentId);
+          return record ? { agentId: record.agentId, sessionId: record.sessionId } : undefined;
+        }
+      : undefined,
   });
 
   // --- admin API ---

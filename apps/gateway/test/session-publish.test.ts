@@ -16,6 +16,8 @@ interface BuildAppOptions {
   runnerMissing?: boolean;
   /** Mock for the injected asset-ingest helper. Omit to leave ingest unconfigured. */
   ingestAttachment?: SessionPublishDeps['ingestAttachment'];
+  /** Mock for attachment-ownership lookup. Omit to skip ownership checks. */
+  verifyAttachment?: SessionPublishDeps['verifyAttachment'];
 }
 
 function buildApp(opts: BuildAppOptions = {}): {
@@ -55,6 +57,7 @@ function buildApp(opts: BuildAppOptions = {}): {
       return runner as any;
     },
     ingestAttachment: opts.ingestAttachment,
+    verifyAttachment: opts.verifyAttachment,
   };
 
   registerSessionPublishRoute(app, deps);
@@ -384,6 +387,85 @@ test('POST session events: attachment with assetUrl but no ingest helper configu
 
   assert.equal(res.status, 502);
   assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: direct attachment owned by the target agent+session publishes 202', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const verifyCalls: string[] = [];
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async (id) => {
+      verifyCalls.push(id);
+      return { agentId, sessionId };
+    },
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_owned', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.deepEqual(verifyCalls, ['att_owned']);
+  assert.equal(publishCalls.length, 1);
+  assert.deepEqual(publishCalls[0], event);
+});
+
+test('POST session events: direct attachment referencing a foreign agent/session is rejected 404 and not published', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async () => ({ agentId: 'other-agent', sessionId: 'other-session' }),
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_foreign', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 404);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: direct attachment referencing an unknown id is rejected 404 and not published', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async () => undefined,
+  });
+
+  const event = { type: 'attachment', sessionId, attachmentId: 'att_missing', mimeType: 'image/png', kind: 'image' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 404);
+  assert.equal(publishCalls.length, 0);
+});
+
+test('POST session events: error and pending_media skip attachment-ownership verification', async () => {
+  const { agentId, sessionId } = uniqueAgentSession();
+  const verifyCalls: string[] = [];
+  const { app, publishCalls } = buildApp({
+    verifyAttachment: async (id) => {
+      verifyCalls.push(id);
+      return undefined;
+    },
+  });
+
+  const event = { type: 'error', sessionId, message: 'boom', correlationId: 'corr_x' };
+  const res = await app.request(eventsUrl(agentId, sessionId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ event }),
+  });
+
+  assert.equal(res.status, 202);
+  assert.equal(verifyCalls.length, 0);
+  assert.deepEqual(publishCalls[0], event);
 });
 
 test('POST session events: attachment with attachmentId (no assetUrl) still publishes as-is', async () => {

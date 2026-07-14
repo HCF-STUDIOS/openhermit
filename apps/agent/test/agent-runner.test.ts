@@ -186,6 +186,17 @@ const createThinkingOnlyToolUseStream = (thinking: string) => {
   return stream;
 };
 
+const createErrorResponseStream = (errorMessage: string) => {
+  const stream = createAssistantMessageEventStream();
+  const message: AssistantMessage = {
+    ...createAssistantMessage([], 'error'),
+    errorMessage,
+  };
+  stream.push({ type: 'start', partial: createAssistantMessage([], 'error') });
+  stream.push({ type: 'error', reason: 'error', error: message });
+  return stream;
+};
+
 const createSequentialStreamFn = (
   responders: Array<(context: Context) => ReturnType<typeof createAssistantMessageEventStream>>,
 ): StreamFn => {
@@ -1775,4 +1786,162 @@ test('AgentRunner folds mid-turn user messages into the running turn behind OPEN
     (entry) => entry.role === 'user' && entry.content === 'also include the units',
   );
   assert.equal(foldedEntries.length, 1);
+});
+
+test('AgentRunner mid-turn fold respects the group trigger gate: mentioned folds, non-mentioned does not', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let secondCallMessages: Context['messages'] = [];
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        // A non-mentioned guest message: the normal path stores it only
+        // (triggered:false) and it must never be folded into this turn.
+        await runner.postMessage('group:fold-gate-session', {
+          messageId: 'guest-1',
+          text: 'guest sneaky instruction',
+          mentioned: false,
+          sender: { channel: 'web', channelUserId: 'u-guest', displayName: 'Guest' },
+        });
+        // A mentioned member message: the normal path would trigger, so it
+        // is eligible to fold.
+        await runner.postMessage('group:fold-gate-session', {
+          messageId: 'member-1',
+          text: 'member follow-up',
+          mentioned: true,
+          sender: { channel: 'web', channelUserId: 'u-member', displayName: 'Member' },
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      secondCallMessages = context.messages;
+      return createTextResponseStream('42');
+    },
+  });
+
+  await runner.openSession({
+    sessionId: 'group:fold-gate-session',
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+  await runner.postMessage('group:fold-gate-session', {
+    messageId: 'msg-1',
+    text: 'What is the fact?',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: 'u-owner', displayName: 'Owner' },
+  });
+  await runner.waitForSessionIdle('group:fold-gate-session');
+
+  // No third model call: the mentioned message folded into turn 1, and the
+  // non-mentioned one was stored only.
+  assert.equal(streamCalls, 2);
+
+  const serialized = JSON.stringify(secondCallMessages);
+  assert.ok(
+    serialized.includes('member follow-up'),
+    'mentioned mid-turn message should fold into the running turn',
+  );
+  assert.ok(
+    !serialized.includes('guest sneaky instruction'),
+    'non-mentioned mid-turn message must not fold into the running turn',
+  );
+});
+
+test('AgentRunner releases a folded message when the turn errors so its queued turn still answers', async (t) => {
+  process.env.OPENHERMIT_MID_TURN_STEERING = '1';
+  t.after(() => {
+    delete process.env.OPENHERMIT_MID_TURN_STEERING;
+  });
+
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  await store.memories.add({ agentId }, { id: 'fact', content: 'The answer is 42.' });
+
+  let streamCalls = 0;
+  let thirdCallMessages: Context['messages'] = [];
+  const runner: AgentRunner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        await runner.postMessage('cli:fold-error-session', {
+          messageId: 'steer-1',
+          text: 'also include the units',
+        });
+        return createToolCallResponseStream({
+          type: 'toolCall',
+          id: 'call-memory-get',
+          name: 'memory_get',
+          arguments: { key: 'fact' },
+        });
+      }
+      if (streamCalls === 2) {
+        // The post-fold model call fails: the steered content is abandoned.
+        return createErrorResponseStream('model provider error');
+      }
+      thirdCallMessages = context.messages;
+      return createTextResponseStream('42 units, recovered');
+    },
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:fold-error-session',
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage('cli:fold-error-session', {
+    messageId: 'msg-1',
+    text: 'What is the fact?',
+  });
+  // The failed turn goes idle first; the released queued turn runs after it.
+  await runner.waitForSessionIdle('cli:fold-error-session');
+  const deadline = Date.now() + 5000;
+  while (streamCalls < 3 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await runner.waitForSessionIdle('cli:fold-error-session');
+
+  // The folded message's suppressed queued turn was released after the error,
+  // so it ran as its own turn: a third model call answered it.
+  assert.equal(streamCalls, 3);
+  assert.ok(
+    JSON.stringify(thirdCallMessages).includes('also include the units'),
+    'released folded message should drive its own recovery turn',
+  );
+
+  const finals = runner.events
+    .getBacklog('cli:fold-error-session')
+    .filter((entry) => entry.event.type === 'text_final');
+  assert.ok(
+    finals.some((f) => (f.event as { text?: string }).text === '42 units, recovered'),
+    'user should receive an answer despite the mid-turn failure',
+  );
 });

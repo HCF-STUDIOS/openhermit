@@ -243,6 +243,9 @@ export type MessageRow = {
   eventId?: number;
   messageId?: string;
   userName?: string;
+  /** Whether this message was directed at the agent. Persisted by the
+   *  trigger path; absent on rows written before the flag existed. */
+  mentioned?: boolean;
 };
 
 export interface InstructionEntry {
