@@ -28,13 +28,27 @@ export const backfillSandboxes = async (
     if (backends.length === 0) continue;
 
     const defaultId = exec?.default_backend ?? (backends[0]?.['id'] as string | undefined);
-    for (const backend of backends) {
-      const type = backend['type'] as string | undefined;
-      if (!isSandboxType(type)) {
-        log(`skipping unsupported sandbox type ${String(type)} for agent ${agent.agentId}`);
-        continue;
-      }
-      const backendId = (backend['id'] as string | undefined) ?? type;
+    const candidates = backends.map((backend) => ({
+      backend,
+      type: backend['type'],
+      backendId: (backend['id'] as string | undefined) ?? backend['type'],
+    }));
+    const unsupported = candidates.find(({ type }) => !isSandboxType(type));
+    if (unsupported) {
+      log(`skipping sandbox backfill for agent ${agent.agentId}: unsupported type ${String(unsupported.type)}`);
+      continue;
+    }
+    const validated = candidates.filter(
+      (candidate): candidate is typeof candidate & { type: import('@openhermit/protocol').SandboxType; backendId: string } =>
+        isSandboxType(candidate.type) && typeof candidate.backendId === 'string',
+    );
+    if (defaultId !== undefined && !validated.some(({ backendId }) => backendId === defaultId)) {
+      log(`skipping sandbox backfill for agent ${agent.agentId}: default backend ${defaultId} was not found`);
+      continue;
+    }
+
+    let migratedBackends = 0;
+    for (const { backend, type, backendId } of validated) {
       const isDefault = defaultId === undefined ? backend === backends[0] : backendId === defaultId;
       const alias = isDefault ? 'default' : backendId;
 
@@ -50,6 +64,7 @@ export const backfillSandboxes = async (
         type,
         config: rest,
       });
+      migratedBackends += 1;
     }
 
     if (config) {
@@ -58,7 +73,7 @@ export const backfillSandboxes = async (
       await configStore.setConfig(agent.agentId, remaining);
     }
     migrated += 1;
-    log(`backfilled ${backends.length} sandbox row(s) for agent ${agent.agentId}`);
+    log(`backfilled ${migratedBackends} sandbox row(s) for agent ${agent.agentId}`);
   }
   if (migrated > 0) {
     log(`sandbox backfill complete: migrated ${migrated} agent(s)`);

@@ -64,6 +64,7 @@ export class TenkiExecBackend implements ExecBackend {
   private readonly baseUrl: string | undefined;
   private client: import('@tenkicloud/sandbox').TenkiSandbox | null = null;
   private session: import('@tenkicloud/sandbox').Session | null = null;
+  private ensureInFlight: Promise<void> | null = null;
 
   constructor(
     config: TenkiExecBackendConfig,
@@ -106,6 +107,17 @@ export class TenkiExecBackend implements ExecBackend {
   }
 
   async ensure(): Promise<void> {
+    if (this.ensureInFlight) return this.ensureInFlight;
+    const pending = this.ensureSession();
+    this.ensureInFlight = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.ensureInFlight === pending) this.ensureInFlight = null;
+    }
+  }
+
+  private async ensureSession(): Promise<void> {
     if (this.session) {
       await this.readySession(this.session);
       return;
@@ -187,11 +199,15 @@ export class TenkiExecBackend implements ExecBackend {
       });
       const timeout = Symbol('timeout');
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const outcome = await Promise.race([
-        Promise.resolve(handle),
-        new Promise<typeof timeout>((resolve) => { timer = setTimeout(() => resolve(timeout), this.timeoutMs); }),
-      ]);
-      if (timer) clearTimeout(timer);
+      let outcome: Awaited<typeof handle> | typeof timeout;
+      try {
+        outcome = await Promise.race([
+          Promise.resolve(handle),
+          new Promise<typeof timeout>((resolve) => { timer = setTimeout(() => resolve(timeout), this.timeoutMs); }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
       if (outcome === timeout) {
         await handle.kill().catch(() => undefined);
         return {
@@ -254,16 +270,23 @@ export class TenkiExecBackend implements ExecBackend {
         'sh', '-c',
         `set -eu
 mkdir -p "$1" "$3"
-[ ! -e "$1/system" ] || mv "$1/system" "$3/system"
-[ ! -e "$1/user" ] || mv "$1/user" "$3/user"
+system_backed=0
+user_backed=0
+system_installed=0
+user_installed=0
 rollback() {
-  rm -rf "$1/system" "$1/user"
-  [ ! -e "$3/system" ] || mv "$3/system" "$1/system"
-  [ ! -e "$3/user" ] || mv "$3/user" "$1/user"
+  [ "$system_installed" -eq 0 ] || rm -rf "$1/system"
+  [ "$user_installed" -eq 0 ] || rm -rf "$1/user"
+  [ "$system_backed" -eq 0 ] || mv "$3/system" "$1/system"
+  [ "$user_backed" -eq 0 ] || mv "$3/user" "$1/user"
 }
 trap rollback EXIT
+[ ! -e "$1/system" ] || { mv "$1/system" "$3/system"; system_backed=1; }
+[ ! -e "$1/user" ] || { mv "$1/user" "$3/user"; user_backed=1; }
 mv "$2/system" "$1/system"
+system_installed=1
 mv "$2/user" "$1/user"
+user_installed=1
 trap - EXIT
 rm -rf "$2" "$3"`,
         '--', skillsDir, stageDir, backupDir,

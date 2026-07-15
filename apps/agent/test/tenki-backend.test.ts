@@ -66,6 +66,50 @@ test('Tenki exec kills timed-out process and returns 137', async () => {
   assert.equal(killed, true);
 });
 
+test('Tenki ensure serializes concurrent sandbox creation', async () => {
+  let creates = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const session = {
+    id: 'session-1', state: 'RUNNING', closeIfOpen: async () => undefined,
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki', project_id: 'project-test' }, context as never,
+    { createAndWait: async () => { creates += 1; await gate; return session; } } as never,
+  );
+
+  const first = backend.ensure();
+  const second = backend.ensure();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(creates, 1);
+  release();
+  await Promise.all([first, second]);
+});
+
+test('Tenki exec clears timeout when process handle rejects', async () => {
+  let cleared = 0;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const session = {
+    id: 'session-1', state: 'RUNNING', closeIfOpen: async () => undefined,
+    run: () => processHandle(Promise.reject(new Error('transport'))),
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki', project_id: 'project-test', timeout_ms: 60_000 }, context as never,
+    { createAndWait: async () => session } as never,
+  );
+  globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
+    cleared += 1;
+    return originalClearTimeout(timer);
+  }) as typeof clearTimeout;
+  try {
+    const result = await backend.exec('true');
+    assert.equal(result.exitCode, 1);
+    assert.equal(cleared, 1);
+  } finally {
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('Tenki reconnect does not create a duplicate after auth failure', async () => {
   let created = false;
   const backend = new TenkiExecBackend(
