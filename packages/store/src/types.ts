@@ -23,7 +23,7 @@ export interface AgentRecord {
   updatedAt: string;
 }
 
-export type SandboxType = 'host' | 'docker' | 'e2b' | 'daytona';
+export type SandboxType = 'host' | 'docker' | 'e2b' | 'daytona' | 'tenki';
 
 /**
  * Lifecycle state of a sandbox row — intent, not live runtime status.

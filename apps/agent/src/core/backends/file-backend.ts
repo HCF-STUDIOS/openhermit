@@ -449,3 +449,91 @@ export class DaytonaFileBackend implements FileBackend {
     await this.sb.fs.deleteFile(filePath);
   }
 }
+
+// ── TenkiFileBackend ─────────────────────────────────────────────────────
+
+/**
+ * Delegates to the Tenki sandbox SDK: `session.readFile`/`writeFile` for byte
+ * IO and the `list`/`stat`/`remove` helpers for directory ops. The session
+ * handle is lazily provided after `ensure()`.
+ */
+export class TenkiFileBackend implements FileBackend {
+  getSession: (() => import('@tenkicloud/sandbox').Session | null) | null = null;
+  ensureSession: (() => Promise<void>) | null = null;
+  invalidate: (() => void) | null = null;
+
+  private get session(): import('@tenkicloud/sandbox').Session {
+    const s = this.getSession?.() ?? null;
+    if (!s) throw new ValidationError('Tenki session is not connected. Call ensure() first.');
+    return s;
+  }
+
+  private async ready(): Promise<void> {
+    if (!this.getSession?.() && this.ensureSession) await this.ensureSession();
+  }
+
+  async read(filePath: string): Promise<FileReadResult> {
+    requireAbsolutePath(filePath);
+    await this.ready();
+    return { data: Buffer.from(await this.session.readFile(filePath)) };
+  }
+
+  async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
+    requireAbsolutePath(filePath);
+    await this.ready();
+    if (mode === 'create' && (await this.statOrNull(filePath))) {
+      throw new ValidationError(`File already exists (mode=create): ${filePath}`);
+    }
+    if (mode === 'append') {
+      let existing = Buffer.alloc(0);
+      try {
+        existing = Buffer.from(await this.session.readFile(filePath));
+      } catch {
+        // File doesn't exist yet — append behaves like create.
+      }
+      await this.session.writeFile(filePath, Buffer.concat([existing, data]));
+      return;
+    }
+    await this.session.writeFile(filePath, data);
+  }
+
+  async list(dirPath: string): Promise<DirEntry[]> {
+    requireAbsolutePath(dirPath);
+    await this.ready();
+    const { list } = await import('@tenkicloud/sandbox');
+    const entries = await list(this.session, dirPath);
+    return entries.map((e) => ({
+      name: path.posix.basename(e.path),
+      type: e.isDir ? ('directory' as const) : ('file' as const),
+      ...(e.isDir ? {} : { size: Number(e.size) }),
+    }));
+  }
+
+  async stat(filePath: string): Promise<FileStat | null> {
+    requireAbsolutePath(filePath);
+    await this.ready();
+    return this.statOrNull(filePath);
+  }
+
+  private async statOrNull(filePath: string): Promise<FileStat | null> {
+    try {
+      const { stat } = await import('@tenkicloud/sandbox');
+      const info = await stat(this.session, filePath);
+      return {
+        type: info.isDir ? 'directory' : 'file',
+        size: Number(info.size),
+        // Tenki's FileInfo carries no mtime; report now so callers get a valid ISO stamp.
+        mtime: new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async delete(filePath: string): Promise<void> {
+    requireAbsolutePath(filePath);
+    await this.ready();
+    const { remove } = await import('@tenkicloud/sandbox');
+    await remove(this.session, filePath);
+  }
+}

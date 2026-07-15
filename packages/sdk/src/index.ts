@@ -1135,7 +1135,7 @@ export class GatewayClient {
 
   async createSandbox(agentId: string, input: {
     alias?: string;
-    type: 'host' | 'docker' | 'e2b' | 'daytona';
+    type: 'host' | 'docker' | 'e2b' | 'daytona' | 'tenki';
     config?: Record<string, unknown>;
   }): Promise<unknown> {
     return this.postJson(`/api/agents/${encodeURIComponent(agentId)}/sandboxes`, input);
