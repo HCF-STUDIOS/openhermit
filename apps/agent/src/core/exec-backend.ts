@@ -118,7 +118,6 @@ export interface TenkiExecBackendConfig {
   cpu_cores?: number;
   memory_mb?: number;
   disk_size_gb?: number;
-  username?: string;
   agent_home?: string;
   timeout_ms?: number;
   base_url?: string;

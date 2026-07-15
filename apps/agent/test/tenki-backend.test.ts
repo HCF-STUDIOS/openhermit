@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { ValidationError } from '@openhermit/shared';
+import { UnauthorizedError } from '@tenkicloud/sandbox';
+
+import { TenkiExecBackend } from '../src/core/backends/tenki.js';
+import { TenkiFileBackend } from '../src/core/backends/file-backend.js';
+
+const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+const processHandle = (
+  result: Promise<{ exitCode: number; stdout: Uint8Array; stderr: Uint8Array }>,
+  kill: () => Promise<void> = async () => undefined,
+) => Object.assign(result, { kill });
+
+const context = {
+  agentId: 'agent-test',
+  workspaceDir: '/tmp/agent-test',
+  containerManager: {} as never,
+};
+
+test('Tenki exec preserves normal non-zero command results', async () => {
+  const session = {
+    id: 'session-1', state: 'RUNNING', mkdir: async () => undefined,
+    run: () => processHandle(Promise.resolve({ exitCode: 42, stdout: bytes('out'), stderr: bytes('err') })),
+    closeIfOpen: async () => undefined,
+  };
+  const client = { createAndWait: async () => session };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki' }, context as never, client as never,
+  );
+
+  const result = await backend.exec('exit 42');
+  assert.equal(result.stdout, 'out');
+  assert.equal(result.stderr, 'err');
+  assert.equal(result.exitCode, 42);
+  assert.ok(result.durationMs >= 0);
+});
+
+test('Tenki exec kills timed-out process and returns 137', async () => {
+  let killed = false;
+  const session = {
+    id: 'session-1', state: 'RUNNING', mkdir: async () => undefined,
+    run: () => processHandle(new Promise(() => undefined), async () => { killed = true; }),
+    closeIfOpen: async () => undefined,
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki', timeout_ms: 1 }, context as never,
+    { createAndWait: async () => session } as never,
+  );
+
+  const result = await backend.exec('sleep 10');
+  assert.equal(result.exitCode, 137);
+  assert.equal(killed, true);
+});
+
+test('Tenki reconnect does not create a duplicate after auth failure', async () => {
+  let created = false;
+  const backend = new TenkiExecBackend(
+    { type: 'tenki' },
+    {
+      ...context,
+      getRuntimeState: async () => ({ tenki: { sessionId: 'old', cwd: '/home/tenki', updatedAt: 'now' } }),
+      setRuntimeState: async () => undefined,
+    } as never,
+    {
+      get: async () => { throw new UnauthorizedError('denied'); },
+      createAndWait: async () => { created = true; throw new Error('must not create'); },
+    } as never,
+  );
+
+  await assert.rejects(() => backend.ensure(), UnauthorizedError);
+  assert.equal(created, false);
+});
+
+test('Tenki sessionless skill sync executes immediately without persistence hooks', async () => {
+  let swaps = 0;
+  const session = {
+    id: 'session-1', state: 'RUNNING', mkdir: async () => undefined,
+    run: () => {
+      swaps += 1;
+      return processHandle(Promise.resolve({ exitCode: 0, stdout: bytes(''), stderr: bytes('') }));
+    },
+    closeIfOpen: async () => undefined,
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki' }, context as never,
+    { createAndWait: async () => session } as never,
+  );
+
+  await backend.syncSkills([]);
+  assert.equal(swaps, 1);
+});
+
+test('Tenki shutdown keeps live handle when pause fails', async () => {
+  let creates = 0;
+  const session = {
+    id: 'session-1', state: 'RUNNING', mkdir: async () => undefined,
+    pause: async () => { throw new Error('pause failed'); },
+    run: () => processHandle(Promise.resolve({ exitCode: 0, stdout: bytes('ok'), stderr: bytes('') })),
+    closeIfOpen: async () => undefined,
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki' }, context as never,
+    { createAndWait: async () => { creates += 1; return session; } } as never,
+  );
+  await backend.ensure();
+
+  await assert.rejects(() => backend.shutdown(), /pause failed/);
+  assert.equal((await backend.exec('true')).stdout, 'ok');
+  assert.equal(creates, 1);
+});
+
+test('Tenki stat uses SDK mtime and list includes hidden entries', async () => {
+  let listOptions: unknown;
+  const session = {
+    stat: async () => ({ path: '/x', size: 3n, mode: 0, isDir: false, modifiedUnixNs: 1_700_000_000_000_000_000n }),
+    list: async (_path: string, options: unknown) => {
+      listOptions = options;
+      return [{ path: '/dir/.hidden', size: 2n, mode: 0, isDir: false, modifiedUnixNs: 0n }];
+    },
+  };
+  const backend = new TenkiFileBackend();
+  backend.getSession = () => session as never;
+
+  assert.equal((await backend.stat('/x'))?.mtime, '2023-11-14T22:13:20.000Z');
+  assert.deepEqual(await backend.list('/dir'), [{ name: '.hidden', type: 'file', size: 2 }]);
+  assert.deepEqual(listOptions, { includeHidden: true });
+});
+
+test('Tenki delete refuses directories and transport stat errors invalidate', async () => {
+  let removed = false;
+  let invalidated = false;
+  const backend = new TenkiFileBackend();
+  backend.invalidate = () => { invalidated = true; };
+  backend.getSession = () => ({
+    stat: async () => ({ path: '/dir', size: 0n, mode: 0, isDir: true, modifiedUnixNs: 0n }),
+    run: async () => { removed = true; return { exitCode: 0, stdout: bytes(''), stderr: bytes('') }; },
+  }) as never;
+
+  await assert.rejects(() => backend.delete('/dir'), ValidationError);
+  assert.equal(removed, false);
+
+  backend.getSession = () => ({ stat: async () => { throw new Error('transport'); } }) as never;
+  await assert.rejects(() => backend.stat('/x'), /transport/);
+  assert.equal(invalidated, true);
+});

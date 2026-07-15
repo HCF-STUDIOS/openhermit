@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { isSandboxType, SANDBOX_TYPES } from '@openhermit/protocol';
 
 import { createGateway, handleError, printTable } from './shared.js';
 
@@ -42,13 +43,13 @@ export const registerSandboxCommand = (program: Command): void => {
     .command('add')
     .description('Create a sandbox for an agent')
     .requiredOption('--agent <id>', 'Agent ID')
-    .requiredOption('--type <type>', 'Sandbox type: host | docker | e2b')
+    .requiredOption('--type <type>', `Sandbox type: ${SANDBOX_TYPES.join(' | ')}`)
     .option('--alias <alias>', 'Sandbox alias (default: "default")')
     .option('--config <json>', 'JSON config blob (e.g. \'{"image":"ubuntu:24.04"}\')')
     .action(async (opts: { agent: string; type: string; alias?: string; config?: string }) => {
       try {
         const t = opts.type;
-        if (t !== 'host' && t !== 'docker' && t !== 'e2b' && t !== 'daytona') {
+        if (!isSandboxType(t)) {
           console.error(`Invalid sandbox type: ${t}`);
           process.exit(1);
         }

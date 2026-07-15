@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { ValidationError } from '@openhermit/shared';
@@ -15,16 +16,12 @@ const TENKI_DEFAULT_CPU_CORES = 2;
 const TENKI_DEFAULT_MEMORY_MB = 4096;
 const TENKI_DEFAULT_DISK_GB = 10;
 
-/** Single-quote a value for safe interpolation into a `sh -c` string. */
-const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-
 const uploadDirToTenki = async (
   session: import('@tenkicloud/sandbox').Session,
   localDir: string,
   remoteDir: string,
 ): Promise<void> => {
-  const { mkdir: tenkiMkdir } = await import('@tenkicloud/sandbox');
-  await tenkiMkdir(session, remoteDir);
+  await session.mkdir(remoteDir);
   const entries = await readdir(localDir, { withFileTypes: true });
   for (const entry of entries) {
     const localPath = path.join(localDir, entry.name);
@@ -49,7 +46,7 @@ interface TenkiPendingSkillSync {
   queuedAt: string;
 }
 
-class TenkiExecBackend implements ExecBackend {
+export class TenkiExecBackend implements ExecBackend {
   readonly id: string;
   readonly type = 'tenki';
   readonly label: string;
@@ -68,16 +65,18 @@ class TenkiExecBackend implements ExecBackend {
   constructor(
     config: TenkiExecBackendConfig,
     private readonly context: BackendFactoryContext,
+    client?: import('@tenkicloud/sandbox').TenkiSandbox,
   ) {
     this.id = config.id ?? 'tenki';
     this.label = config.label ?? 'Tenki';
-    this.username = config.username ?? TENKI_DEFAULT_USERNAME;
+    this.username = TENKI_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? TENKI_DEFAULT_AGENT_HOME;
     this.cpuCores = config.cpu_cores ?? TENKI_DEFAULT_CPU_CORES;
     this.memoryMb = config.memory_mb ?? TENKI_DEFAULT_MEMORY_MB;
     this.diskSizeGb = config.disk_size_gb ?? TENKI_DEFAULT_DISK_GB;
     this.timeoutMs = config.timeout_ms ?? TENKI_DEFAULT_TIMEOUT_MS;
     this.baseUrl = config.base_url;
+    this.client = client ?? null;
 
     this.files = new TenkiFileBackend();
     this.files.getSession = () => this.session;
@@ -102,27 +101,37 @@ class TenkiExecBackend implements ExecBackend {
   }
 
   async ensure(): Promise<void> {
-    if (this.session) return;
+    if (this.session) {
+      await this.readySession(this.session);
+      return;
+    }
     const client = await this.getClient();
 
     const persisted = await this.loadState();
     if (persisted?.sessionId) {
+      let session: import('@tenkicloud/sandbox').Session | null = null;
       try {
-        const session = await client.get(persisted.sessionId);
-        // Reconnecting to a paused session transparently resumes it; resume()
-        // is harmless on an already-active session.
-        try {
-          await session.resume();
-        } catch {
-          // Already active or nothing to resume.
+        session = await client.get(persisted.sessionId);
+      } catch (error) {
+        const { SessionExpiredError, SessionNotFoundError, SessionTerminatedError } = await import('@tenkicloud/sandbox');
+        if (!(error instanceof SessionExpiredError) &&
+            !(error instanceof SessionNotFoundError) &&
+            !(error instanceof SessionTerminatedError)) {
+          throw error;
         }
+      }
+      if (session && session.state !== 'TERMINATED' && session.state !== 'USER_SHUTDOWN') {
+        await this.readySession(session);
         this.session = session;
-        await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'active' });
-        await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
-        await this.replayPendingSkillSync();
-        return;
-      } catch {
-        // Session is gone / expired. Fall through and create a fresh one.
+        try {
+          await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'active' });
+          await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
+          await this.replayPendingSkillSync();
+          return;
+        } catch (error) {
+          this.session = null;
+          throw error;
+        }
       }
     }
 
@@ -134,17 +143,27 @@ class TenkiExecBackend implements ExecBackend {
       metadata: { agentId: this.context.agentId },
       timeoutMs: TENKI_DEFAULT_CREATE_TIMEOUT_MS,
     });
-    await session.exec('mkdir', { args: ['-p', this.agentHome] });
-
     this.session = session;
-    await this.saveState({
-      sessionId: session.id,
-      cwd: this.agentHome,
-      updatedAt: new Date().toISOString(),
-      state: 'active',
-    });
-    await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
-    await this.replayPendingSkillSync();
+    try {
+      await session.mkdir(this.agentHome);
+      await this.saveState({
+        sessionId: session.id,
+        cwd: this.agentHome,
+        updatedAt: new Date().toISOString(),
+        state: 'active',
+      });
+      await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
+      await this.replayPendingSkillSync();
+    } catch (error) {
+      this.session = null;
+      await session.closeIfOpen().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async readySession(session: import('@tenkicloud/sandbox').Session): Promise<void> {
+    if (session.state === 'PAUSED') await session.resume();
+    if (session.state !== 'RUNNING') await session.waitReady(TENKI_DEFAULT_CREATE_TIMEOUT_MS);
   }
 
   async exec(command: string, opts?: ExecOpts): Promise<ExecResult> {
@@ -154,16 +173,29 @@ class TenkiExecBackend implements ExecBackend {
 
     const startedAt = Date.now();
     const cwd = opts?.cwd ?? this.agentHome;
-    // Tenki's exec runs argv directly (execve-style), so wrap the caller's
-    // shell command in `sh -c` and honour cwd via a leading `cd`.
-    const script = `cd ${shellQuote(cwd)} && ${command}`;
     try {
       const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
-      const result = await this.session!.exec('sh', {
-        args: ['-c', script],
+      const handle = this.session!.run(['sh', '-c', command], {
+        cwd,
         ...(Object.keys(passEnv).length > 0 ? { env: passEnv } : {}),
-        timeoutMs: this.timeoutMs,
       });
+      const timeout = Symbol('timeout');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = await Promise.race([
+        Promise.resolve(handle),
+        new Promise<typeof timeout>((resolve) => { timer = setTimeout(() => resolve(timeout), this.timeoutMs); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (outcome === timeout) {
+        await handle.kill().catch(() => undefined);
+        return {
+          stdout: '',
+          stderr: `Command timed out after ${this.timeoutMs}ms`,
+          exitCode: 137,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+      const result = outcome;
       return {
         stdout: new TextDecoder().decode(result.stdout),
         stderr: new TextDecoder().decode(result.stderr),
@@ -185,6 +217,11 @@ class TenkiExecBackend implements ExecBackend {
 
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.session) {
+      if (!this.context.setRuntimeState || !this.context.getRuntimeState) {
+        await this.ensure();
+        await this.applySkillSync(skills);
+        return;
+      }
       await this.savePendingSkillSync({
         skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
         queuedAt: new Date().toISOString(),
@@ -197,14 +234,41 @@ class TenkiExecBackend implements ExecBackend {
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.session) return;
-    const systemDir = `${this.agentHome}/.openhermit/skills/system`;
-    const userDir = `${this.agentHome}/.openhermit/skills/user`;
-    await this.session.exec('sh', {
-      args: ['-c', `rm -rf ${shellQuote(systemDir)} ${shellQuote(userDir)} && mkdir -p ${shellQuote(systemDir)} ${shellQuote(userDir)}`],
-    });
-    for (const skill of skills) {
-      const baseDir = skill.source === 'user' ? userDir : systemDir;
-      await uploadDirToTenki(this.session, skill.sourcePath, `${baseDir}/${skill.id}`);
+    const skillsDir = `${this.agentHome}/.openhermit/skills`;
+    const nonce = randomUUID();
+    const stageDir = `${skillsDir}/.tenki-stage-${nonce}`;
+    const backupDir = `${skillsDir}/.tenki-backup-${nonce}`;
+    await this.session.mkdir(`${stageDir}/system`);
+    await this.session.mkdir(`${stageDir}/user`);
+    try {
+      for (const skill of skills) {
+        const baseDir = skill.source === 'user' ? `${stageDir}/user` : `${stageDir}/system`;
+        await uploadDirToTenki(this.session, skill.sourcePath, `${baseDir}/${skill.id}`);
+      }
+      const result = await this.session.run([
+        'sh', '-c',
+        `set -eu
+mkdir -p "$1" "$3"
+[ ! -e "$1/system" ] || mv "$1/system" "$3/system"
+[ ! -e "$1/user" ] || mv "$1/user" "$3/user"
+rollback() {
+  rm -rf "$1/system" "$1/user"
+  [ ! -e "$3/system" ] || mv "$3/system" "$1/system"
+  [ ! -e "$3/user" ] || mv "$3/user" "$1/user"
+}
+trap rollback EXIT
+mv "$2/system" "$1/system"
+mv "$2/user" "$1/user"
+trap - EXIT
+rm -rf "$2" "$3"`,
+        '--', skillsDir, stageDir, backupDir,
+      ]);
+      if (result.exitCode !== 0) {
+        throw new Error(`Tenki skill swap failed: ${new TextDecoder().decode(result.stderr)}`);
+      }
+    } catch (error) {
+      await this.session.run(['rm', '-rf', stageDir]).then(() => undefined, () => undefined);
+      throw error;
     }
   }
 
@@ -212,18 +276,11 @@ class TenkiExecBackend implements ExecBackend {
     if (!this.context.getRuntimeState) return;
     const state = await this.context.getRuntimeState();
     const pending = state?.['tenki_pending_skills'] as TenkiPendingSkillSync | undefined;
-    if (!pending || !pending.skills?.length) return;
-    try {
-      await this.applySkillSync(
-        pending.skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source ?? 'system' })),
-      );
-      await this.savePendingSkillSync(null);
-    } catch (error) {
-      console.warn(
-        `[exec-backend][tenki][${this.id}] failed to replay pending skill sync: ` +
-          (error instanceof Error ? error.message : String(error)),
-      );
-    }
+    if (!pending) return;
+    await this.applySkillSync(
+      pending.skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source ?? 'system' })),
+    );
+    await this.savePendingSkillSync(null);
   }
 
   private async savePendingSkillSync(pending: TenkiPendingSkillSync | null): Promise<void> {
@@ -240,20 +297,13 @@ class TenkiExecBackend implements ExecBackend {
 
   async shutdown(): Promise<void> {
     if (!this.session) return;
-    let paused = false;
-    try {
-      await this.session.pause();
-      paused = true;
-    } catch {
-      // Already paused or gone.
+    const session = this.session;
+    if (session.state !== 'PAUSED') await session.pause();
+    const persisted = await this.loadState();
+    if (persisted?.sessionId) {
+      await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'paused' });
     }
     this.session = null;
-    if (paused) {
-      const persisted = await this.loadState();
-      if (persisted?.sessionId) {
-        await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'paused' });
-      }
-    }
   }
 
   private async loadState(): Promise<TenkiBackendPersisted | null> {

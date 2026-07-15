@@ -1,5 +1,13 @@
 export type KnownSourceKind = 'cli' | 'api' | 'channel' | 'schedule';
 
+export const SANDBOX_TYPES = ['host', 'docker', 'e2b', 'daytona', 'tenki'] as const;
+export type SandboxType = (typeof SANDBOX_TYPES)[number];
+
+const SANDBOX_TYPE_SET: ReadonlySet<string> = new Set(SANDBOX_TYPES);
+
+export const isSandboxType = (value: unknown): value is SandboxType =>
+  typeof value === 'string' && SANDBOX_TYPE_SET.has(value);
+
 export type SourceKind = KnownSourceKind | (string & {});
 
 export type MetadataValue = string | number | boolean;

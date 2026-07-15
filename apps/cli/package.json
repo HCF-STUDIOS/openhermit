@@ -50,6 +50,7 @@
     "dev:chat": "tsx src/index.ts"
   },
   "dependencies": {
+    "@openhermit/protocol": "0.2.0",
     "@hono/node-server": "^1.14.0",
     "@mariozechner/pi-agent-core": "^0.70.6",
     "@mariozechner/pi-ai": "^0.70.6",

@@ -5,7 +5,10 @@ import type {
   SessionSpec,
   SessionStatus,
   SessionType,
+  SandboxType,
 } from '@openhermit/protocol';
+
+export type { SandboxType } from '@openhermit/protocol';
 
 export interface StoreScope {
   agentId: string;
@@ -22,8 +25,6 @@ export interface AgentRecord {
   createdAt: string;
   updatedAt: string;
 }
-
-export type SandboxType = 'host' | 'docker' | 'e2b' | 'daytona' | 'tenki';
 
 /**
  * Lifecycle state of a sandbox row — intent, not live runtime status.

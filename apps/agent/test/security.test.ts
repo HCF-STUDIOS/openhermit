@@ -61,6 +61,28 @@ test('AgentSecurity scaffolds and reads the default runtime config', async (t) =
   assert.equal(config.memory.introspection?.enabled, true);
 });
 
+test('AgentSecurity accepts Tenki backend config', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  const config = await security.readRawConfig();
+
+  await security.writeConfig({
+    ...config,
+    exec: {
+      backends: [{
+        type: 'tenki',
+        cpu_cores: 2,
+        memory_mb: 4096,
+        disk_size_gb: 10,
+        agent_home: '/home/tenki',
+      }],
+      default_backend: 'tenki',
+    },
+  });
+
+  const parsed = await security.readConfig();
+  assert.equal(parsed.exec?.backends[0]?.type, 'tenki');
+});
+
 test('AgentSecurity readConfig fails clearly when DB has no config', async (t) => {
   const { security } = await createSecurityFixture(t, { skipConfig: true });
   await assert.rejects(

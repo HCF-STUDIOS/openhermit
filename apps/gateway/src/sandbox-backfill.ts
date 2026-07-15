@@ -1,3 +1,4 @@
+import { isSandboxType } from '@openhermit/protocol';
 import type { AgentStore, DbAgentConfigStore, SandboxStore } from '@openhermit/store';
 
 /**
@@ -29,7 +30,10 @@ export const backfillSandboxes = async (
     const defaultId = exec?.default_backend ?? (backends[0]?.['id'] as string | undefined);
     for (const backend of backends) {
       const type = backend['type'] as string | undefined;
-      if (!type) continue;
+      if (!isSandboxType(type)) {
+        log(`skipping unsupported sandbox type ${String(type)} for agent ${agent.agentId}`);
+        continue;
+      }
       const backendId = (backend['id'] as string | undefined) ?? type;
       const isDefault = defaultId === undefined ? backend === backends[0] : backendId === defaultId;
       const alias = isDefault ? 'default' : backendId;
@@ -43,7 +47,7 @@ export const backfillSandboxes = async (
       await sandboxStore.create({
         agentId: agent.agentId,
         alias,
-        type: type as 'host' | 'docker' | 'e2b' | 'daytona',
+        type,
         config: rest,
       });
     }
