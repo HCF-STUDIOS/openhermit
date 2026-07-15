@@ -151,6 +151,44 @@ const flushLangfuse = async (langfuse: LangfuseClientLike): Promise<void> => {
   }
 };
 
+/**
+ * Langfuse only prices observations from the generation's top-level
+ * usageDetails/costDetails — usage buried in metadata is invisible to its
+ * cost accounting. costDetails is omitted when the client-side estimate is
+ * $0 (unpriced synthesized models): reporting an explicit zero would
+ * override Langfuse's own model-price inference with $0.
+ */
+const buildGenerationUsage = (usage: AssistantMessage['usage']) => {
+  if (!usage) {
+    return {};
+  }
+
+  const usageDetails = {
+    input: usage.input,
+    output: usage.output,
+    cache_read_input_tokens: usage.cacheRead,
+    cache_creation_input_tokens: usage.cacheWrite,
+    total:
+      usage.totalTokens ||
+      usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+  };
+
+  if (!(usage.cost?.total > 0)) {
+    return { usageDetails };
+  }
+
+  return {
+    usageDetails,
+    costDetails: {
+      input: usage.cost.input,
+      output: usage.cost.output,
+      cache_read_input_tokens: usage.cost.cacheRead,
+      cache_creation_input_tokens: usage.cost.cacheWrite,
+      total: usage.cost.total,
+    },
+  };
+};
+
 const recordLangfuseSuccess = async (
   langfuse: LangfuseClientLike,
   trace: LangfuseTraceLike,
@@ -168,7 +206,7 @@ const recordLangfuseSuccess = async (
     },
   };
 
-  generation.end(update);
+  generation.end({ ...update, ...buildGenerationUsage(message.usage) });
   trace.update(update);
   await flushLangfuse(langfuse);
   return message;

@@ -58,7 +58,7 @@ import {
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 import { metricsRegistry, startDefaultMetrics } from '@openhermit/agent/metrics';
 import { buildDefaultAgentConfig, listAllOpenHermitContainers } from '@openhermit/agent/core';
-import { listProviderCatalog } from '@openhermit/agent/model-catalog';
+import { listProviderCatalogWithDynamic } from '@openhermit/agent/model-catalog';
 
 import type { AgentInstanceManager } from './agent-instance.js';
 import { listSessionsForCaller } from './session-listing.js';
@@ -1121,13 +1121,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.text(body, 200, { 'content-type': metricsRegistry.contentType });
   });
 
-  // Static catalog of providers + models supported by the agent runtime
-  // (sourced from @mariozechner/pi-ai). Global, not per-agent — the
-  // catalog is identical for every agent. Any authenticated caller
-  // (admin token or user JWT) can read it.
-  app.get('/api/providers', (c) => {
+  // Catalog of providers + models supported by the agent runtime: the static
+  // pi-ai registry plus dynamic providers (e.g. the Amiko router when
+  // AMIKO_API_KEY is set — models fetched from its /models endpoint and
+  // cached ~15 min). Global, not per-agent — the catalog is identical for
+  // every agent. Any authenticated caller (admin token or user JWT) can read
+  // it.
+  app.get('/api/providers', async (c) => {
     requireAuth(c);
-    return c.json(listProviderCatalog());
+    return c.json(await listProviderCatalogWithDynamic());
   });
 
   // --- agent CRUD (admin-only) ---
