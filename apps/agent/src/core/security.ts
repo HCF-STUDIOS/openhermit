@@ -98,6 +98,8 @@ const TenkiBackendSchema = z.object({
   id: z.string().optional(),
   type: z.literal('tenki'),
   label: z.string().optional(),
+  project_id: z.string().min(1),
+  workspace_id: z.string().min(1).optional(),
   cpu_cores: z.number().int().positive().optional(),
   memory_mb: z.number().int().positive().optional(),
   disk_size_gb: z.number().int().positive().optional(),

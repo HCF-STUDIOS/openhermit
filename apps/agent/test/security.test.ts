@@ -70,6 +70,8 @@ test('AgentSecurity accepts Tenki backend config', async (t) => {
     exec: {
       backends: [{
         type: 'tenki',
+        project_id: 'project-test',
+        workspace_id: 'workspace-test',
         cpu_cores: 2,
         memory_mb: 4096,
         disk_size_gb: 10,

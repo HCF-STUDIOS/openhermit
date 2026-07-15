@@ -115,6 +115,8 @@ export interface TenkiExecBackendConfig {
   id?: string;
   type: 'tenki';
   label?: string;
+  project_id: string;
+  workspace_id?: string;
   cpu_cores?: number;
   memory_mb?: number;
   disk_size_gb?: number;

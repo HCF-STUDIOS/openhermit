@@ -5,7 +5,7 @@ import path from 'node:path';
 import { ValidationError } from '@openhermit/shared';
 
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, TenkiExecBackendConfig } from '../exec-backend.js';
-import { TenkiFileBackend } from './file-backend.js';
+import { ensureTenkiDirectories, TenkiFileBackend, toTenkiFsPath } from './file-backend.js';
 import { registerExecBackend } from '../exec-backend.js';
 
 const TENKI_DEFAULT_USERNAME = 'tenki';
@@ -20,16 +20,17 @@ const uploadDirToTenki = async (
   session: import('@tenkicloud/sandbox').Session,
   localDir: string,
   remoteDir: string,
+  agentHome: string,
 ): Promise<void> => {
-  await session.mkdir(remoteDir);
+  await ensureTenkiDirectories(session, [remoteDir]);
   const entries = await readdir(localDir, { withFileTypes: true });
   for (const entry of entries) {
     const localPath = path.join(localDir, entry.name);
     const remotePath = `${remoteDir}/${entry.name}`;
     if (entry.isDirectory()) {
-      await uploadDirToTenki(session, localPath, remotePath);
+      await uploadDirToTenki(session, localPath, remotePath, agentHome);
     } else if (entry.isFile()) {
-      await session.writeFile(remotePath, await readFile(localPath));
+      await session.writeFile(toTenkiFsPath(agentHome, remotePath), await readFile(localPath));
     }
   }
 };
@@ -55,6 +56,8 @@ export class TenkiExecBackend implements ExecBackend {
   readonly files: TenkiFileBackend;
 
   private readonly cpuCores: number;
+  private readonly projectId: string;
+  private readonly workspaceId: string | undefined;
   private readonly memoryMb: number;
   private readonly diskSizeGb: number;
   private readonly timeoutMs: number;
@@ -71,6 +74,8 @@ export class TenkiExecBackend implements ExecBackend {
     this.label = config.label ?? 'Tenki';
     this.username = TENKI_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? TENKI_DEFAULT_AGENT_HOME;
+    this.projectId = config.project_id;
+    this.workspaceId = config.workspace_id;
     this.cpuCores = config.cpu_cores ?? TENKI_DEFAULT_CPU_CORES;
     this.memoryMb = config.memory_mb ?? TENKI_DEFAULT_MEMORY_MB;
     this.diskSizeGb = config.disk_size_gb ?? TENKI_DEFAULT_DISK_GB;
@@ -78,7 +83,7 @@ export class TenkiExecBackend implements ExecBackend {
     this.baseUrl = config.base_url;
     this.client = client ?? null;
 
-    this.files = new TenkiFileBackend();
+    this.files = new TenkiFileBackend(this.agentHome);
     this.files.getSession = () => this.session;
     this.files.ensureSession = () => this.ensure();
     this.files.invalidate = () => { this.session = null; };
@@ -136,6 +141,8 @@ export class TenkiExecBackend implements ExecBackend {
     }
 
     const session = await client.createAndWait({
+      projectId: this.projectId,
+      ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
       cpuCores: this.cpuCores,
       memoryMb: this.memoryMb,
       diskSizeGb: this.diskSizeGb,
@@ -145,7 +152,6 @@ export class TenkiExecBackend implements ExecBackend {
     });
     this.session = session;
     try {
-      await session.mkdir(this.agentHome);
       await this.saveState({
         sessionId: session.id,
         cwd: this.agentHome,
@@ -238,12 +244,11 @@ export class TenkiExecBackend implements ExecBackend {
     const nonce = randomUUID();
     const stageDir = `${skillsDir}/.tenki-stage-${nonce}`;
     const backupDir = `${skillsDir}/.tenki-backup-${nonce}`;
-    await this.session.mkdir(`${stageDir}/system`);
-    await this.session.mkdir(`${stageDir}/user`);
+    await ensureTenkiDirectories(this.session, [`${stageDir}/system`, `${stageDir}/user`]);
     try {
       for (const skill of skills) {
         const baseDir = skill.source === 'user' ? `${stageDir}/user` : `${stageDir}/system`;
-        await uploadDirToTenki(this.session, skill.sourcePath, `${baseDir}/${skill.id}`);
+        await uploadDirToTenki(this.session, skill.sourcePath, `${baseDir}/${skill.id}`, this.agentHome);
       }
       const result = await this.session.run([
         'sh', '-c',
