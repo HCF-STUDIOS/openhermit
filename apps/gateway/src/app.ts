@@ -65,7 +65,11 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
-import { resolveInboundAttachments } from '@openhermit/agent/attachments';
+import {
+  registerSessionPublishRoute,
+  type AttachmentIngestResult,
+} from './session-publish.js';
+import { resolveAttachmentByUrl, resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -1596,11 +1600,26 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
 
     return streamSSE(c, async (stream) => {
-      for (const envelope of runtime.events.getBacklog(sessionId)) {
-        await writeEvent(stream, envelope);
-      }
+      // Emit ready with nextEventId before the backlog so a client holding a
+      // stale cursor resets to 0 before filtering the burst; a new runner
+      // restarts ids at 1, so sending it after would skip that burst.
+      await stream.writeSSE({
+        event: 'ready',
+        data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
+      });
 
+      // Subscribe first, then replay backlog. The old getBacklog-then-subscribe
+      // path awaited each backlog write before subscribe, so a publish in that
+      // window, including out-of-band attachments, landed in the broker backlog
+      // but never on this stream until reconnect. Buffer live events during the
+      // backlog write, then drain with id dedupe.
+      const pendingLive: SessionEventEnvelope[] = [];
+      let replayingBacklog = true;
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
+        if (replayingBacklog) {
+          pendingLive.push(envelope);
+          return;
+        }
         await writeEvent(stream, envelope);
       });
 
@@ -1612,19 +1631,64 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }, SSE_PING_INTERVAL_MS);
 
       try {
-        // Include nextEventId so clients with a stored last-event cursor
-        // can detect sequence resets after runner eviction (broker is
-        // per-runner; new runner restarts ids at 1).
-        await stream.writeSSE({
-          event: 'ready',
-          data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
-        });
+        const backlog = runtime.events.getBacklog(sessionId);
+        let maxBacklogId = 0;
+        for (const envelope of backlog) {
+          maxBacklogId = Math.max(maxBacklogId, envelope.id);
+          await writeEvent(stream, envelope);
+        }
+        // Drain buffered live events with the flag still set: an event that
+        // arrives while we await a write is re-buffered here rather than racing
+        // ahead of an older queued one on the live path. Only stop buffering
+        // once the queue is fully empty, then flip synchronously so no publish
+        // can slip in before the live path takes over.
+        while (pendingLive.length > 0) {
+          const envelope = pendingLive.shift()!;
+          if (envelope.id > maxBacklogId) {
+            await writeEvent(stream, envelope);
+          }
+        }
+        replayingBacklog = false;
+
         await waitForAbort(c.req.raw.signal);
       } finally {
         clearInterval(heartbeat);
         unsubscribe();
       }
     });
+  });
+
+  // --- publish-into-session: server to live session out of band ---
+
+  registerSessionPublishRoute(app, {
+    instances,
+    requireAdmin: (authorization) => requireAdmin(authorization),
+    resolveRunner,
+    logger: log,
+    ingestAttachment:
+      options.attachmentStore && options.attachmentStorage
+        ? async ({ agentId, sessionId, url, mimeType, name, runner }): Promise<AttachmentIngestResult> => {
+            const resolved = await resolveAttachmentByUrl({
+              agentId,
+              sessionId,
+              uploaderUserId: null,
+              url,
+              hintMimeType: mimeType,
+              hintName: name,
+              maxBytes: options.attachmentMaxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES,
+              attachmentStore: options.attachmentStore!,
+              attachmentStorage: options.attachmentStorage!,
+              runtime: runner,
+              logger: log,
+            });
+            return {
+              attachmentId: resolved.id!,
+              mimeType: resolved.mimeType!,
+              size: resolved.size,
+              sha256: resolved.sha256,
+            };
+          }
+        : undefined,
   });
 
   // --- admin API ---
