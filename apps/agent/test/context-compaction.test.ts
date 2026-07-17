@@ -88,6 +88,18 @@ const makeToolResultMessage = (toolName: string, text: string, ts = Date.now()):
   timestamp: ts,
 });
 
+const makeParallelToolCallMessage = (toolNames: string[], ts = Date.now()): AgentMessage => ({
+  role: 'assistant',
+  content: toolNames.map((toolName) => ({
+    type: 'toolCall' as const,
+    id: `call-${toolName}`,
+    name: toolName,
+    arguments: {},
+  })),
+  ...assistantDefaults,
+  timestamp: ts,
+});
+
 const stubConfig: AgentConfig = {
   workspace_root: '/workspace',
   model: { provider: 'anthropic', model: 'claude-sonnet-4-20250514', max_tokens: 4096 },
@@ -158,6 +170,18 @@ test('getCompactionRetainedStartIndex pulls back to include assistant before too
   ];
   // retainCount=2 → startIndex=2, but messages[2] is toolResult and messages[1] is assistant
   assert.equal(getCompactionRetainedStartIndex(messages, 2), 1);
+});
+
+test('getCompactionRetainedStartIndex pulls back over a run of parallel toolResults', () => {
+  const messages = [
+    makeUserMessage('a'),
+    makeParallelToolCallMessage(['search', 'fetch']),
+    makeToolResultMessage('search', 'no results'),
+    makeToolResultMessage('fetch', 'words: 0'),
+    makeUserMessage('c'),
+  ];
+  assert.equal(getCompactionRetainedStartIndex(messages, 2), 1);
+  assert.equal(getCompactionRetainedStartIndex(messages, 3), 1);
 });
 
 // ── summarizeMessageForCompaction ──────────────────────────────────────
@@ -1031,6 +1055,22 @@ test('applyRollingWindow never orphans a toolResult at the boundary', () => {
   const result = applyRollingWindow(messages, 4);
   assert.notEqual(result[0]!.role, 'toolResult');
   assert.equal(result[0]!.role, 'assistant');
+  assert.deepEqual(result, messages.slice(1));
+});
+
+test('applyRollingWindow never orphans a toolResult when the boundary lands mid parallel-call run', () => {
+  const messages = [
+    makeUserMessage('u0'),
+    makeParallelToolCallMessage(['search', 'fetch']),
+    makeToolResultMessage('search', 'no results'),
+    makeToolResultMessage('fetch', 'words: 0'),
+    makeUserMessage('u4'),
+    makeAssistantMessage('a5'),
+  ];
+
+  const result = applyRollingWindow(messages, 3);
+  assert.equal(result[0]!.role, 'assistant');
+  assert.ok(result.every((m, i) => !(i === 0 && m.role === 'toolResult')));
   assert.deepEqual(result, messages.slice(1));
 });
 

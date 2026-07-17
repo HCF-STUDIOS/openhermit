@@ -212,11 +212,7 @@ export const getCompactionRetainedStartIndex = (
 ): number => {
   let startIndex = Math.max(0, messages.length - retainCount);
 
-  if (
-    startIndex > 0
-    && messages[startIndex]?.role === 'toolResult'
-    && messages[startIndex - 1]?.role === 'assistant'
-  ) {
+  while (startIndex > 0 && messages[startIndex]?.role === 'toolResult') {
     startIndex -= 1;
   }
 
