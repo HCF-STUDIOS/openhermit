@@ -939,6 +939,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       updatedAt: now,
     });
 
+    // Assign owner immediately after the agent row exists. The rest of this
+    // handler is a long non-transactional seeding sequence; if it is cut off
+    // mid-way (deploy restart, client timeout) a retry gets a 409 and callers
+    // reasonably treat the agent as created — so ownership must never be the
+    // step that got lost. See the ownerless-agents incident (2026-07-17).
+    if (body.ownerUserId && typeof body.ownerUserId === 'string') {
+      await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
+    }
+
     // Eager-create the per-agent inbox session row so web UI subscribers
     // never race against lazy hydration. See docs/inbox-design.md.
     if (options.sessionStore) {
@@ -1075,9 +1084,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       },
     ], now);
 
-    // Assign owner if specified
     if (body.ownerUserId && typeof body.ownerUserId === 'string') {
-      await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
       log(`agent created: ${record.agentId} (owner: ${body.ownerUserId})`);
     } else {
       log(`agent created: ${record.agentId}`);
