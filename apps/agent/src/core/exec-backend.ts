@@ -111,11 +111,26 @@ export interface DaytonaExecBackendConfig {
   resources?: { cpu?: number; memory?: number };
 }
 
+export interface TenkiExecBackendConfig {
+  id?: string;
+  type: 'tenki';
+  label?: string;
+  project_id: string;
+  workspace_id?: string;
+  cpu_cores?: number;
+  memory_mb?: number;
+  disk_size_gb?: number;
+  agent_home?: string;
+  timeout_ms?: number;
+  base_url?: string;
+}
+
 export type ExecBackendConfig =
   | DockerExecBackendConfig
   | HostExecBackendConfig
   | E2BExecBackendConfig
-  | DaytonaExecBackendConfig;
+  | DaytonaExecBackendConfig
+  | TenkiExecBackendConfig;
 
 export interface ExecConfig {
   backends: ExecBackendConfig[];

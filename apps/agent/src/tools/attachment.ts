@@ -320,6 +320,27 @@ export const createAttachmentUploadTool = (
       path,
       ...(args.name !== undefined ? { name: args.name } : {}),
     });
+
+    // Skeleton keyed by the new attachment id; attachment_send reuses that id as
+    // correlationId to swap real media in. Only renderable media gets one so an
+    // unsent upload, e.g. a document read, can't strand a skeleton.
+    const skeletonMime = result.mimeType ?? '';
+    const skeletonKind = skeletonMime.startsWith('image/')
+      ? 'image'
+      : skeletonMime.startsWith('audio/')
+        ? 'audio'
+        : skeletonMime.startsWith('video/')
+          ? 'video'
+          : null;
+    if (skeletonKind && context.publishEvent && context.sessionId) {
+      context.publishEvent({
+        type: 'pending_media',
+        sessionId: context.sessionId,
+        correlationId: result.id,
+        kind: skeletonKind,
+      });
+    }
+
     return {
       content: asTextContent(formatJson(result)),
       details: {
@@ -344,18 +365,10 @@ const AttachmentSendParams = Type.Object({
     }),
   ),
   kind: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal('image'),
-        Type.Literal('audio'),
-        Type.Literal('video'),
-        Type.Literal('document'),
-      ],
-      {
-        description:
-          "Override the rendering hint for channels. By default it is inferred from the MIME type (image/* → image, audio/* → audio, video/* → video, anything else → document).",
-      },
-    ),
+    Type.String({
+      description:
+        "Optional rendering hint (e.g. 'image', 'audio', 'video', 'document'). Model-speak aliases like 'photo'/'picture' are accepted; anything unrecognized falls back to the attachment's MIME type.",
+    }),
   ),
 });
 
@@ -406,20 +419,48 @@ export const createAttachmentSendTool = (
       );
     }
 
-    const kind: 'image' | 'audio' | 'video' | 'document' =
-      args.kind ??
-      (row.mimeType.startsWith('image/')
+    // `kind` is a soft rendering hint, the MIME type is authoritative. Models pass
+    // varying values like "photo" or "img", so map common aliases and fall back to
+    // the MIME type for anything unrecognized instead of rejecting the send.
+    const inferredKind: 'image' | 'audio' | 'video' | 'document' =
+      row.mimeType.startsWith('image/')
         ? 'image'
         : row.mimeType.startsWith('audio/')
           ? 'audio'
           : row.mimeType.startsWith('video/')
             ? 'video'
-            : 'document');
+            : 'document';
+    const KIND_ALIASES: Record<
+      string,
+      'image' | 'audio' | 'video' | 'document'
+    > = {
+      image: 'image',
+      photo: 'image',
+      picture: 'image',
+      img: 'image',
+      pic: 'image',
+      audio: 'audio',
+      voice: 'audio',
+      sound: 'audio',
+      video: 'video',
+      movie: 'video',
+      clip: 'video',
+      document: 'document',
+      doc: 'document',
+      file: 'document',
+      pdf: 'document',
+    };
+    const kind: 'image' | 'audio' | 'video' | 'document' =
+      (args.kind && KIND_ALIASES[args.kind.trim().toLowerCase()]) ||
+      inferredKind;
 
     const event: Record<string, unknown> = {
       type: 'attachment',
       sessionId,
       attachmentId: row.id,
+      // Same id attachment_upload used for its pending_media skeleton, so the
+      // consumer resolves that placeholder instead of appending a second bubble.
+      correlationId: row.id,
       mimeType: row.mimeType,
       kind,
       name: row.originalName,

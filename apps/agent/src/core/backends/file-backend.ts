@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   appendFile,
   mkdir,
@@ -447,5 +448,169 @@ export class DaytonaFileBackend implements FileBackend {
     requireAbsolutePath(filePath);
     await this.ready();
     await this.sb.fs.deleteFile(filePath);
+  }
+}
+
+// ── TenkiFileBackend ─────────────────────────────────────────────────────
+
+export const toTenkiFsPath = (agentHome: string, filePath: string): string => {
+  const absolute = requireAbsolutePath(filePath);
+  const root = path.posix.normalize(agentHome);
+  if (absolute === root) return '.';
+  if (!absolute.startsWith(`${root}/`)) {
+    throw new ValidationError(`path "${absolute}" is outside the Tenki workdir "${root}".`);
+  }
+  return absolute.slice(root.length + 1);
+};
+
+export const ensureTenkiDirectories = async (
+  session: import('@tenkicloud/sandbox').Session,
+  directories: string[],
+): Promise<void> => {
+  let stderr = '';
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await session.run(['mkdir', '-p', '--', ...directories]);
+    if (result.exitCode === 0) return;
+    stderr = new TextDecoder().decode(result.stderr);
+    if (attempt < 4) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200 * 2 ** attempt));
+    }
+  }
+  throw new Error(`Tenki mkdir failed after readiness retries: ${stderr}`);
+};
+
+const isTenkiFileNotFound = async (error: unknown): Promise<boolean> => {
+  const { FileNotFoundError } = await import('@tenkicloud/sandbox');
+  return error instanceof FileNotFoundError ||
+    (error instanceof Error && error.name === 'FileNotFoundError');
+};
+
+/**
+ * Delegates to the Tenki sandbox SDK: `session.readFile`/`writeFile` for byte
+ * IO and the `list`/`stat`/`remove` helpers for directory ops. The session
+ * handle is lazily provided after `ensure()`.
+ */
+export class TenkiFileBackend implements FileBackend {
+  getSession: (() => import('@tenkicloud/sandbox').Session | null) | null = null;
+  ensureSession: (() => Promise<void>) | null = null;
+  invalidate: (() => void) | null = null;
+
+  constructor(private readonly agentHome = '/home/tenki') {}
+
+  private get session(): import('@tenkicloud/sandbox').Session {
+    const s = this.getSession?.() ?? null;
+    if (!s) throw new ValidationError('Tenki session is not connected. Call ensure() first.');
+    return s;
+  }
+
+  private async ready(): Promise<void> {
+    if (!this.getSession?.() && this.ensureSession) await this.ensureSession();
+  }
+
+  private async withInvalidate<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(await isTenkiFileNotFound(error)) && !(error instanceof ValidationError)) {
+        this.invalidate?.();
+      }
+      throw error;
+    }
+  }
+
+  private static input(data: Buffer): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    });
+  }
+
+  async read(filePath: string): Promise<FileReadResult> {
+    const sdkPath = toTenkiFsPath(this.agentHome, filePath);
+    await this.ready();
+    return this.withInvalidate(async () => ({ data: Buffer.from(await this.session.readFile(sdkPath)) }));
+  }
+
+  async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
+    const sdkPath = toTenkiFsPath(this.agentHome, filePath);
+    await this.ready();
+    await this.withInvalidate(async () => {
+      await ensureTenkiDirectories(this.session, [path.posix.dirname(filePath)]);
+      if (mode === 'append') {
+        const result = await this.session.run(
+          ['sh', '-c', 'cat >> "$1"', '--', filePath],
+          { stdin: TenkiFileBackend.input(data) },
+        );
+        if (result.exitCode !== 0) throw new Error(`Tenki append failed: ${new TextDecoder().decode(result.stderr)}`);
+        return;
+      }
+      if (mode === 'create') {
+        const tempSdkPath = `${path.posix.dirname(sdkPath)}/.openhermit-create-${randomUUID()}`;
+        const tempGuestPath = `${this.agentHome}/${tempSdkPath}`;
+        try {
+          await this.session.writeFile(tempSdkPath, data);
+          const result = await this.session.run([
+            'sh', '-c',
+            'if ln "$1" "$2" 2>/dev/null; then exit 0; fi; [ -e "$2" ] && exit 73; exit 74',
+            '--', tempGuestPath, filePath,
+          ]);
+          if (result.exitCode === 73) throw new ValidationError(`File already exists (mode=create): ${filePath}`);
+          if (result.exitCode !== 0) throw new Error(`Tenki create failed for ${filePath}`);
+        } finally {
+          await this.session.run(['rm', '-f', '--', tempGuestPath]).then(() => undefined, () => undefined);
+        }
+        return;
+      }
+      await this.session.writeFile(sdkPath, data);
+    });
+  }
+
+  async list(dirPath: string): Promise<DirEntry[]> {
+    const sdkPath = toTenkiFsPath(this.agentHome, dirPath);
+    await this.ready();
+    const entries = await this.withInvalidate(() => this.session.list(sdkPath, { includeHidden: true }));
+    return entries.map((e) => ({
+      name: path.posix.basename(e.path),
+      type: e.isDir ? ('directory' as const) : ('file' as const),
+      ...(e.isDir ? {} : { size: Number(e.size) }),
+    }));
+  }
+
+  async stat(filePath: string): Promise<FileStat | null> {
+    const sdkPath = toTenkiFsPath(this.agentHome, filePath);
+    await this.ready();
+    return this.statOrNull(sdkPath);
+  }
+
+  private async statOrNull(filePath: string): Promise<FileStat | null> {
+    try {
+      const info = await this.session.stat(filePath);
+      return {
+        type: info.isDir ? 'directory' : 'file',
+        size: Number(info.size),
+        mtime: new Date(Number(info.modifiedUnixNs / 1_000_000n)).toISOString(),
+      };
+    } catch (error) {
+      if (await isTenkiFileNotFound(error)) return null;
+      this.invalidate?.();
+      throw error;
+    }
+  }
+
+  async delete(filePath: string): Promise<void> {
+    const sdkPath = toTenkiFsPath(this.agentHome, filePath);
+    await this.ready();
+    await this.withInvalidate(async () => {
+      const info = await this.session.stat(sdkPath);
+      if (info.isDir) {
+        throw new ValidationError(`Refusing to delete a directory (file_delete is single-file only): ${filePath}`);
+      }
+      const result = await this.session.run(['rm', '--', filePath]);
+      if (result.exitCode !== 0) {
+        throw new Error(`Tenki delete failed: ${new TextDecoder().decode(result.stderr)}`);
+      }
+    });
   }
 }

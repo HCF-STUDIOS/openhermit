@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { SandboxType } from '@openhermit/protocol';
 import { api } from '../api';
 import { Pagination, usePagination } from './Pagination';
 
@@ -9,7 +10,7 @@ interface SandboxInfo {
   agentId: string;
   agentName?: string;
   alias: string;
-  type: 'host' | 'docker' | 'e2b' | 'daytona';
+  type: SandboxType;
   status: 'pending' | 'provisioned' | 'deleted';
   externalId: string | null;
   lastSeenAt: string | null;

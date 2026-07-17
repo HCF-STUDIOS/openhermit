@@ -9,6 +9,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 
 import {
   gatewayRoutes,
+  isSandboxType,
   isSessionSpec,
   isSessionMessage,
   isToolApprovalRequest,
@@ -56,7 +57,7 @@ import {
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 import { metricsRegistry, startDefaultMetrics } from '@openhermit/agent/metrics';
 import { buildDefaultAgentConfig, listAllOpenHermitContainers } from '@openhermit/agent/core';
-import { listProviderCatalog } from '@openhermit/agent/model-catalog';
+import { listProviderCatalogWithDynamic } from '@openhermit/agent/model-catalog';
 
 import type { AgentInstanceManager } from './agent-instance.js';
 import { listSessionsForCaller } from './session-listing.js';
@@ -64,7 +65,11 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
-import { resolveInboundAttachments } from '@openhermit/agent/attachments';
+import {
+  registerSessionPublishRoute,
+  type AttachmentIngestResult,
+} from './session-publish.js';
+import { resolveAttachmentByUrl, resolveInboundAttachments } from '@openhermit/agent/attachments';
 import type { LogBuffer } from './log-buffer.js';
 import {
   type AuthContext,
@@ -876,13 +881,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     return c.text(body, 200, { 'content-type': metricsRegistry.contentType });
   });
 
-  // Static catalog of providers + models supported by the agent runtime
-  // (sourced from @mariozechner/pi-ai). Global, not per-agent — the
-  // catalog is identical for every agent. Any authenticated caller
-  // (admin token or user JWT) can read it.
-  app.get('/api/providers', (c) => {
+  // Catalog of providers + models supported by the agent runtime: the static
+  // pi-ai registry plus dynamic providers (e.g. the Amiko router when
+  // AMIKO_API_KEY is set — models fetched from its /models endpoint and
+  // cached ~15 min). Global, not per-agent — the catalog is identical for
+  // every agent. Any authenticated caller (admin token or user JWT) can read
+  // it.
+  app.get('/api/providers', async (c) => {
     requireAuth(c);
-    return c.json(listProviderCatalog());
+    return c.json(await listProviderCatalogWithDynamic());
   });
 
   // --- agent CRUD (admin-only) ---
@@ -936,6 +943,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       createdAt: now,
       updatedAt: now,
     });
+
+    // Assign owner immediately after the agent row exists. The rest of this
+    // handler is a long non-transactional seeding sequence; if it is cut off
+    // mid-way (deploy restart, client timeout) a retry gets a 409 and callers
+    // reasonably treat the agent as created — so ownership must never be the
+    // step that got lost. See the ownerless-agents incident (2026-07-17).
+    if (body.ownerUserId && typeof body.ownerUserId === 'string') {
+      await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
+    }
 
     // Eager-create the per-agent inbox session row so web UI subscribers
     // never race against lazy hydration. See docs/inbox-design.md.
@@ -1073,9 +1089,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       },
     ], now);
 
-    // Assign owner if specified
     if (body.ownerUserId && typeof body.ownerUserId === 'string') {
-      await agentStore.assignOwner(record.agentId, body.ownerUserId, now);
       log(`agent created: ${record.agentId} (owner: ${body.ownerUserId})`);
     } else {
       log(`agent created: ${record.agentId}`);
@@ -1586,11 +1600,26 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
 
     return streamSSE(c, async (stream) => {
-      for (const envelope of runtime.events.getBacklog(sessionId)) {
-        await writeEvent(stream, envelope);
-      }
+      // Emit ready with nextEventId before the backlog so a client holding a
+      // stale cursor resets to 0 before filtering the burst; a new runner
+      // restarts ids at 1, so sending it after would skip that burst.
+      await stream.writeSSE({
+        event: 'ready',
+        data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
+      });
 
+      // Subscribe first, then replay backlog. The old getBacklog-then-subscribe
+      // path awaited each backlog write before subscribe, so a publish in that
+      // window, including out-of-band attachments, landed in the broker backlog
+      // but never on this stream until reconnect. Buffer live events during the
+      // backlog write, then drain with id dedupe.
+      const pendingLive: SessionEventEnvelope[] = [];
+      let replayingBacklog = true;
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
+        if (replayingBacklog) {
+          pendingLive.push(envelope);
+          return;
+        }
         await writeEvent(stream, envelope);
       });
 
@@ -1602,19 +1631,64 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }, SSE_PING_INTERVAL_MS);
 
       try {
-        // Include nextEventId so clients with a stored last-event cursor
-        // can detect sequence resets after runner eviction (broker is
-        // per-runner; new runner restarts ids at 1).
-        await stream.writeSSE({
-          event: 'ready',
-          data: JSON.stringify({ sessionId, nextEventId: runtime.events.getNextEventId() }),
-        });
+        const backlog = runtime.events.getBacklog(sessionId);
+        let maxBacklogId = 0;
+        for (const envelope of backlog) {
+          maxBacklogId = Math.max(maxBacklogId, envelope.id);
+          await writeEvent(stream, envelope);
+        }
+        // Drain buffered live events with the flag still set: an event that
+        // arrives while we await a write is re-buffered here rather than racing
+        // ahead of an older queued one on the live path. Only stop buffering
+        // once the queue is fully empty, then flip synchronously so no publish
+        // can slip in before the live path takes over.
+        while (pendingLive.length > 0) {
+          const envelope = pendingLive.shift()!;
+          if (envelope.id > maxBacklogId) {
+            await writeEvent(stream, envelope);
+          }
+        }
+        replayingBacklog = false;
+
         await waitForAbort(c.req.raw.signal);
       } finally {
         clearInterval(heartbeat);
         unsubscribe();
       }
     });
+  });
+
+  // --- publish-into-session: server to live session out of band ---
+
+  registerSessionPublishRoute(app, {
+    instances,
+    requireAdmin: (authorization) => requireAdmin(authorization),
+    resolveRunner,
+    logger: log,
+    ingestAttachment:
+      options.attachmentStore && options.attachmentStorage
+        ? async ({ agentId, sessionId, url, mimeType, name, runner }): Promise<AttachmentIngestResult> => {
+            const resolved = await resolveAttachmentByUrl({
+              agentId,
+              sessionId,
+              uploaderUserId: null,
+              url,
+              hintMimeType: mimeType,
+              hintName: name,
+              maxBytes: options.attachmentMaxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES,
+              attachmentStore: options.attachmentStore!,
+              attachmentStorage: options.attachmentStorage!,
+              runtime: runner,
+              logger: log,
+            });
+            return {
+              attachmentId: resolved.id!,
+              mimeType: resolved.mimeType!,
+              size: resolved.size,
+              sha256: resolved.sha256,
+            };
+          }
+        : undefined,
   });
 
   // --- admin API ---
@@ -3497,7 +3571,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       type = body.type;
       config = body.config;
     }
-    if (type !== 'host' && type !== 'docker' && type !== 'e2b' && type !== 'daytona') {
+    if (!isSandboxType(type)) {
       throw new ValidationError(`Invalid sandbox type: ${type}`);
     }
     const store = requireSandboxStore();

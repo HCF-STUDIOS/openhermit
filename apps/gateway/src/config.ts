@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 
+import { isSandboxType, type SandboxType } from '@openhermit/protocol';
 import type { DbMetaStore } from '@openhermit/store';
 
 export interface SandboxPreset {
-  type: 'host' | 'docker' | 'e2b' | 'daytona';
+  type: SandboxType;
   /** Backend-specific config (image/snapshot/template, agent_home, etc.). */
   config: Record<string, unknown>;
 }
@@ -84,8 +85,6 @@ const DEFAULT_CONFIG: GatewayConfig = {
 export const defaultGatewayConfig = (): GatewayConfig =>
   JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as GatewayConfig;
 
-const SUPPORTED_TYPES = new Set(['host', 'docker', 'e2b', 'daytona']);
-
 const getCorsOrigin = (raw: Record<string, unknown>): string | undefined => {
   if (raw.cors && typeof raw.cors === 'object') {
     const origin = (raw.cors as Record<string, unknown>).origin;
@@ -103,13 +102,13 @@ const parsePresets = (raw: unknown): Record<string, SandboxPreset> | undefined =
     }
     const v = val as Record<string, unknown>;
     const type = v['type'];
-    if (typeof type !== 'string' || !SUPPORTED_TYPES.has(type)) {
+    if (!isSandboxType(type)) {
       throw new Error(`Invalid sandboxPresets["${name}"].type: ${String(type)}`);
     }
     const config = v['config'] && typeof v['config'] === 'object' && !Array.isArray(v['config'])
       ? (v['config'] as Record<string, unknown>)
       : {};
-    out[name] = { type: type as SandboxPreset['type'], config };
+    out[name] = { type, config };
   }
   return out;
 };

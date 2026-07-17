@@ -80,10 +80,40 @@ const E2BBackendSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const DaytonaBackendSchema = z.object({
+  id: z.string().optional(),
+  type: z.literal('daytona'),
+  label: z.string().optional(),
+  snapshot: z.string().optional(),
+  image: z.string().optional(),
+  username: z.string().optional(),
+  agent_home: z.string().optional(),
+  timeout_ms: z.number().optional(),
+  auto_stop_interval_minutes: z.number().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  resources: z.object({ cpu: z.number().optional(), memory: z.number().optional() }).optional(),
+});
+
+const TenkiBackendSchema = z.object({
+  id: z.string().optional(),
+  type: z.literal('tenki'),
+  label: z.string().optional(),
+  project_id: z.string().min(1),
+  workspace_id: z.string().min(1).optional(),
+  cpu_cores: z.number().int().positive().optional(),
+  memory_mb: z.number().int().positive().optional(),
+  disk_size_gb: z.number().int().positive().optional(),
+  agent_home: z.string().optional(),
+  timeout_ms: z.number().int().positive().optional(),
+  base_url: z.string().url().optional(),
+});
+
 const ExecBackendConfigSchema = z.discriminatedUnion('type', [
   DockerBackendSchema,
   HostBackendSchema,
   E2BBackendSchema,
+  DaytonaBackendSchema,
+  TenkiBackendSchema,
 ]);
 
 const ExecConfigSchema = z.object({

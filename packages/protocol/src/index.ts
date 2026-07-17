@@ -1,5 +1,13 @@
 export type KnownSourceKind = 'cli' | 'api' | 'channel' | 'schedule';
 
+export const SANDBOX_TYPES = ['host', 'docker', 'e2b', 'daytona', 'tenki'] as const;
+export type SandboxType = (typeof SANDBOX_TYPES)[number];
+
+const SANDBOX_TYPE_SET: ReadonlySet<string> = new Set(SANDBOX_TYPES);
+
+export const isSandboxType = (value: unknown): value is SandboxType =>
+  typeof value === 'string' && SANDBOX_TYPE_SET.has(value);
+
 export type SourceKind = KnownSourceKind | (string & {});
 
 export type MetadataValue = string | number | boolean;
@@ -313,7 +321,18 @@ export type OutboundEventBody =
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string };
+  | { type: 'error'; sessionId: string; message: string; correlationId?: string }
+  | {
+      /**
+       * In-flight media placeholder from a media-generation tool; channels/UIs
+       * render a pending state until it resolves, typically to an `attachment`
+       * with the same `correlationId`.
+       */
+      type: 'pending_media';
+      sessionId: string;
+      correlationId: string;
+      kind: 'image' | 'audio' | 'video' | 'document';
+    };
 
 export type OutboundEvent = OutboundEventBody & { eventId: string };
 
@@ -1208,6 +1227,57 @@ export const isToolApprovalRequest = (
     typeof value.toolCallId === 'string' &&
     typeof value.approved === 'boolean'
   );
+};
+
+const OUTBOUND_MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
+
+/**
+ * Subset of OutboundEventBody a trusted server may publish into a live session
+ * via the publish-into-session route; everything else stays runtime-internal.
+ */
+export type PublishableOutboundEvent = Extract<
+  OutboundEventBody,
+  { type: 'attachment' | 'pending_media' | 'error' }
+>;
+
+export const isPublishableOutboundEvent = (
+  value: unknown,
+): value is PublishableOutboundEvent => {
+  if (!isRecord(value)) return false;
+  if (typeof value.sessionId !== 'string' || !value.sessionId) return false;
+
+  if (value.type === 'attachment') {
+    if (typeof value.attachmentId !== 'string' || !value.attachmentId) return false;
+    if (typeof value.mimeType !== 'string' || !value.mimeType) return false;
+    if (typeof value.kind !== 'string' || !OUTBOUND_MEDIA_KINDS.has(value.kind)) return false;
+    if (!isOptionalString(value.name)) return false;
+    if (!isOptionalString(value.sha256)) return false;
+    if (!isOptionalString(value.caption)) return false;
+    if (!isOptionalString(value.correlationId)) return false;
+    if (
+      value.size !== undefined &&
+      (typeof value.size !== 'number' ||
+        !Number.isInteger(value.size) ||
+        value.size < 0)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  if (value.type === 'pending_media') {
+    if (typeof value.correlationId !== 'string' || !value.correlationId) return false;
+    if (typeof value.kind !== 'string' || !OUTBOUND_MEDIA_KINDS.has(value.kind)) return false;
+    return true;
+  }
+
+  if (value.type === 'error') {
+    if (typeof value.message !== 'string' || !value.message) return false;
+    if (!isOptionalString(value.correlationId)) return false;
+    return true;
+  }
+
+  return false;
 };
 
 // ---------------------------------------------------------------------------

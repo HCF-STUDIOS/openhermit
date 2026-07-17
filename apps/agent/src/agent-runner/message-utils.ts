@@ -49,6 +49,11 @@ export const isEmptyAssistantTurn = (message: AgentMessage): boolean => {
 export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage[] =>
   messages.filter((message) => !isEmptyAssistantTurn(message));
 
+// Innermost pair only: body may not contain another reasoning open tag. Used
+// iteratively so nested same-name tags do not leave residual close markup.
+const REASONING_INNERMOST_RE =
+  /<(think|thinking|reasoning)>((?:(?!<(?:think|thinking|reasoning)>)[\s\S])*?)<\/\1>/gi;
+
 /**
  * Remove inline reasoning tags a provider may emit inside a normal text block
  * (`<think>…</think>`, `<thinking>…</thinking>`, `<reasoning>…</reasoning>`),
@@ -56,14 +61,27 @@ export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage
  * `thinking` blocks are handled separately and are unaffected. Only paired tags
  * are stripped; an unclosed tag is left as-is to avoid blanking a truncated
  * real reply. If stripping empties the text entirely (a pathological
- * reasoning-only text block), the original is returned unchanged.
+ * reasoning-only text block), return the tag interiors without wrappers so the
+ * reply is not blanked and raw markup does not leak.
  */
 export const stripReasoningTags = (text: string): string => {
-  const stripped = text
-    .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return stripped.length > 0 ? stripped : text.trim();
+  const interiors: string[] = [];
+  let working = text;
+  // Peel innermost pairs first so nested same-name tags collapse cleanly.
+  for (;;) {
+    let progressed = false;
+    working = working.replace(REASONING_INNERMOST_RE, (_match, _name, body: string) => {
+      progressed = true;
+      const inner = body.trim();
+      if (inner.length > 0) interiors.push(inner);
+      return '';
+    });
+    if (!progressed) break;
+  }
+  const stripped = working.replace(/\n{3,}/g, '\n\n').trim();
+  if (stripped.length > 0) return stripped;
+  if (interiors.length > 0) return interiors.join('\n\n');
+  return text.trim();
 };
 
 const REASONING_TAG_RE = /<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi;
@@ -99,6 +117,132 @@ export const preservesLinks = (draft: string, rewrite: string): boolean => {
   const rewriteUrls = new Set(extractUrls(rewrite));
   return extractUrls(draft).every((url) => rewriteUrls.has(url));
 };
+
+// Live-stream counterpart to stripReasoningTags. Providers often stream the
+// open tag, reasoning body, and close tag across many text_delta events; if
+// those deltas were published raw, UIs (and the CLI, which prefers stream text
+// over text_final once any delta arrived) would show the thinking. Buffer a
+// partial open-tag prefix, suppress paired bodies, and on flush leave an
+// unclosed tag as-is so a truncated real reply is not blanked.
+const REASONING_OPEN_TAGS = ['<think>', '<thinking>', '<reasoning>'] as const;
+const REASONING_MAX_OPEN_LEN = '<reasoning>'.length;
+const REASONING_OPEN_RE = /^<(think|thinking|reasoning)>/i;
+
+export interface ReasoningTagStreamState {
+  buf: string;
+  inReasoning: boolean;
+  openName: string | null;
+  /** Exact open-tag text as received (e.g. `<Think>`), re-emitted on unclosed flush. */
+  openRaw: string | null;
+  /** Same-name nesting depth; suppression only ends when the outermost tag closes. */
+  depth: number;
+  /** Body consumed while suppressed, re-emitted after `openRaw` on unclosed flush. */
+  suppressed: string;
+}
+
+export const newReasoningTagStream = (): ReasoningTagStreamState => ({
+  buf: '',
+  inReasoning: false,
+  openName: null,
+  openRaw: null,
+  depth: 0,
+  suppressed: '',
+});
+
+const couldBeReasoningOpenPrefix = (s: string): boolean => {
+  if (!s.startsWith('<')) return false;
+  const lower = s.toLowerCase();
+  return REASONING_OPEN_TAGS.some((tag) => tag.startsWith(lower));
+};
+
+const drainReasoningTagBuffer = (
+  state: ReasoningTagStreamState,
+  flush: boolean,
+): string => {
+  let out = '';
+  while (state.buf.length > 0) {
+    if (state.inReasoning) {
+      const name = state.openName ?? 'think';
+      // Track nested same-name opens so suppression only ends at the
+      // outermost close — mirrors stripReasoningTags' innermost peeling.
+      const tagRe = new RegExp(`<(/?)${name}>`, 'i');
+      const match = tagRe.exec(state.buf);
+      if (match) {
+        const end = match.index + match[0].length;
+        const isClose = match[1] === '/';
+        if (isClose && state.depth <= 1) {
+          state.buf = state.buf.slice(end);
+          state.inReasoning = false;
+          state.openName = null;
+          state.openRaw = null;
+          state.depth = 0;
+          state.suppressed = '';
+          continue;
+        }
+        state.depth += isClose ? -1 : 1;
+        state.suppressed += state.buf.slice(0, end);
+        state.buf = state.buf.slice(end);
+        continue;
+      }
+      if (flush) {
+        // Unclosed: surface the remainder (including the open tag) unchanged.
+        out += (state.openRaw ?? '') + state.suppressed + state.buf;
+        state.buf = '';
+        state.inReasoning = false;
+        state.openName = null;
+        state.openRaw = null;
+        state.depth = 0;
+        state.suppressed = '';
+        break;
+      }
+      // Still inside a paired block; hold everything until the close arrives.
+      break;
+    }
+
+    const lt = state.buf.indexOf('<');
+    if (lt === -1) {
+      out += state.buf;
+      state.buf = '';
+      break;
+    }
+    if (lt > 0) {
+      out += state.buf.slice(0, lt);
+      state.buf = state.buf.slice(lt);
+    }
+
+    const openMatch = REASONING_OPEN_RE.exec(state.buf);
+    if (openMatch) {
+      state.inReasoning = true;
+      state.openName = openMatch[1]!.toLowerCase();
+      state.openRaw = openMatch[0];
+      state.depth = 1;
+      state.suppressed = '';
+      state.buf = state.buf.slice(openMatch[0].length);
+      continue;
+    }
+
+    const head = state.buf.slice(0, Math.min(state.buf.length, REASONING_MAX_OPEN_LEN));
+    if (!flush && couldBeReasoningOpenPrefix(head)) {
+      break;
+    }
+
+    // Not a reasoning open tag — emit the '<' and keep scanning.
+    out += '<';
+    state.buf = state.buf.slice(1);
+  }
+  return out;
+};
+
+export const pushReasoningTagDelta = (
+  state: ReasoningTagStreamState,
+  delta: string,
+): string => {
+  state.buf += delta;
+  return drainReasoningTagBuffer(state, false);
+};
+
+export const flushReasoningTagStream = (state: ReasoningTagStreamState): string =>
+  drainReasoningTagBuffer(state, true);
 
 export const extractAssistantText = (message: AssistantMessage): string => {
   const textParts = message.content

@@ -208,7 +208,7 @@ export const sandboxes = pgTable('sandboxes', {
   id: text('id').primaryKey(),
   agentId: text('agent_id').notNull(),
   alias: text('alias').notNull(),
-  /** 'host' | 'docker' | 'e2b' | 'daytona' (future) */
+  /** 'host' | 'docker' | 'e2b' | 'daytona' | 'tenki' (future) */
   type: text('type').notNull(),
   externalId: text('external_id'),
   /** 'pending' | 'provisioned' | 'deleted' — see SandboxStatus type. */
