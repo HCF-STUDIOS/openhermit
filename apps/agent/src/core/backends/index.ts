@@ -5,3 +5,4 @@ import './docker.js';
 import './host.js';
 import './e2b.js';
 import './daytona.js';
+import './tenki.js';

@@ -9,6 +9,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 
 import {
   gatewayRoutes,
+  isSandboxType,
   isSessionSpec,
   isSessionMessage,
   isToolApprovalRequest,
@@ -3506,7 +3507,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       type = body.type;
       config = body.config;
     }
-    if (type !== 'host' && type !== 'docker' && type !== 'e2b' && type !== 'daytona') {
+    if (!isSandboxType(type)) {
       throw new ValidationError(`Invalid sandbox type: ${type}`);
     }
     const store = requireSandboxStore();
