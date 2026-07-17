@@ -104,6 +104,7 @@ test('channel token subscribes to a session in its own namespace', async () => {
     assert.deepEqual(subscribed, ['amiko:conv-1']);
   } finally {
     server.close();
+    await once(server, 'close');
   }
 });
 
@@ -118,5 +119,6 @@ test('channel token cannot subscribe outside its namespace', async () => {
     assert.deepEqual(subscribed, []);
   } finally {
     server.close();
+    await once(server, 'close');
   }
 });
