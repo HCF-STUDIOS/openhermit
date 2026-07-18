@@ -1693,25 +1693,29 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   // --- admin API ---
 
-  app.get('/api/admin/agents/fleet', async (c) => {
-    requireAdmin(c.req.header('authorization'));
-    if (!agentStore) return c.json([]);
+  // The fleet view polls this endpoint with the whole fleet as scope, and its
+  // stats/usage aggregates are the most expensive reads on the gateway. Serve
+  // a short-lived cached copy so N open admin tabs cost one computation, and
+  // collapse concurrent requests into a single in-flight promise.
+  const FLEET_CACHE_TTL_MS = 30_000;
+  let fleetCache: { at: number; payload: unknown[] } | null = null;
+  let fleetInFlight: Promise<unknown[]> | null = null;
 
-    const records = await agentStore.list();
+  const computeFleet = async (): Promise<unknown[]> => {
+    const records = await agentStore!.list();
     const agentIds = records.map((r) => r.agentId);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const [stats, usage] = await Promise.all([
-      agentStore.fleetStats(agentIds, since),
-      agentStore.fleetUsage(agentIds),
+      agentStore!.fleetStats(agentIds, since),
+      agentStore!.fleetUsage(agentIds),
     ]);
 
     const emptyUsage = {
       window24h: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
       window7d:  { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
-      allTime:   { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
     };
 
-    const fleet = await Promise.all(records.map(async (record) => {
+    return records.map((record) => {
       const stat = stats.get(record.agentId) ?? {
         sessions24h: 0, errors24h: 0, skillsCount: 0, mcpCount: 0,
       };
@@ -1732,8 +1736,27 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         mcpCount: stat.mcpCount,
         usage: u,
       };
-    }));
-    return c.json(fleet);
+    });
+  };
+
+  app.get('/api/admin/agents/fleet', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    if (!agentStore) return c.json([]);
+
+    if (fleetCache && Date.now() - fleetCache.at < FLEET_CACHE_TTL_MS) {
+      return c.json(fleetCache.payload);
+    }
+    if (!fleetInFlight) {
+      fleetInFlight = computeFleet()
+        .then((payload) => {
+          fleetCache = { at: Date.now(), payload };
+          return payload;
+        })
+        .finally(() => {
+          fleetInFlight = null;
+        });
+    }
+    return c.json(await fleetInFlight);
   });
 
   app.get('/api/admin/agents/:agentId/usage', async (c) => {

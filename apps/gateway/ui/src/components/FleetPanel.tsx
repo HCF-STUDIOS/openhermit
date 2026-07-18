@@ -18,7 +18,6 @@ export interface UsageWindow {
 export interface FleetUsage {
   window24h: UsageWindow;
   window7d: UsageWindow;
-  allTime: UsageWindow;
 }
 
 interface FleetAgent {
@@ -55,7 +54,9 @@ interface McpServerInfo {
   headerKeys?: string[];
 }
 
-const REFRESH_MS = 10_000;
+// The fleet endpoint aggregates stats for every agent; the gateway caches it
+// for 30s, so polling faster than that only re-reads the cache anyway.
+const REFRESH_MS = 60_000;
 
 const formatRelative = (iso?: string): string => {
   if (!iso) return '—';
