@@ -76,7 +76,22 @@ export const createSandboxExecTool = (
 
     await backend.ensure();
     context.onExec?.();
-    const result = await backend.exec(args.command, args.cwd ? { cwd: args.cwd } : undefined);
+    // Expose the calling session to sandbox CLIs (e.g. `amiko create ...`) so
+    // async media jobs can publish their skeleton + result back into THIS chat
+    // session instead of returning a bare URL.
+    const sessionEnv: Record<string, string> = {
+      ...(context.sessionId ? { AMIKO_SESSION_ID: context.sessionId } : {}),
+      ...(context.agentId ? { AMIKO_AGENT_ID: context.agentId } : {}),
+      // Spend autonomy: lets the amiko CLI auto-approve create jobs whose
+      // quoted cost is under this limit (gateway-level env, deploy-scoped).
+      ...(process.env.AMIKO_AUTO_APPROVE_LIMIT
+        ? { AMIKO_AUTO_APPROVE_LIMIT: process.env.AMIKO_AUTO_APPROVE_LIMIT }
+        : {}),
+    };
+    const result = await backend.exec(args.command, {
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(Object.keys(sessionEnv).length > 0 ? { env: sessionEnv } : {}),
+    });
 
     const details = {
       stdout: result.stdout,
