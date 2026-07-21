@@ -3478,6 +3478,14 @@ export class AgentRunner implements SessionRuntime {
 
         const turnCorrelationId = session.currentTurnCorrelationId;
         delete session.currentTurnCorrelationId;
+        // Barrier over every side effect queued so far this turn (user message,
+        // tool results, agent_start, persistSessionIndex). The reply pass persists
+        // its assistant row with a direct appendLogEntry, not queueSideEffect, so
+        // without this a fast/instant rewrite could write the assistant row before
+        // those queued rows land. Awaiting the snapshot before the direct write
+        // restores ordering; it excludes the pass's own later queueSideEffect
+        // chaining (below), so it cannot deadlock on itself.
+        const priorSideEffects = session.sideEffects;
         const replyPass = (async () => {
           if (isTwoStepTurn && finalText && finalText.trim() !== '<NO_REPLY>') {
             // Use the user-text snapshot captured before this pass was queued;
@@ -3528,6 +3536,9 @@ export class AgentRunner implements SessionRuntime {
           // empty, so the turn never loses its assistant history row.
           const persistedContent = finalText || draftText;
           if (isTwoStepTurn && persistedContent && persistedContent.trim() !== '<NO_REPLY>') {
+            // Order after this turn's already-queued rows so the assistant row
+            // never overtakes the user/tool/agent_start entries.
+            await priorSideEffects;
             await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
               ts,
               role: 'assistant',
