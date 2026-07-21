@@ -45,16 +45,23 @@ function makeContext(rec: Recorder, over: Partial<ToolContext>): ToolContext {
 }
 
 test('exec injects AMIKO_SESSION_ID and AMIKO_AGENT_ID when the context has them', async () => {
-  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
-  const ctx = makeContext(rec, { sessionId: 'sess-42', agentId: 'agent-7' });
-  const tool = createSandboxExecTool(ctx);
-  await tool.execute('tc-1', { command: 'echo hi' });
+  const prev = process.env.AMIKO_AUTO_APPROVE_LIMIT;
+  delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
+  try {
+    const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+    const ctx = makeContext(rec, { sessionId: 'sess-42', agentId: 'agent-7' });
+    const tool = createSandboxExecTool(ctx);
+    await tool.execute('tc-1', { command: 'echo hi' });
 
-  assert.equal(rec.ensured, 1);
-  assert.deepEqual(rec.lastOpts?.env, {
-    AMIKO_SESSION_ID: 'sess-42',
-    AMIKO_AGENT_ID: 'agent-7',
-  });
+    assert.equal(rec.ensured, 1);
+    assert.deepEqual(rec.lastOpts?.env, {
+      AMIKO_SESSION_ID: 'sess-42',
+      AMIKO_AGENT_ID: 'agent-7',
+    });
+  } finally {
+    if (prev === undefined) delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
+    else process.env.AMIKO_AUTO_APPROVE_LIMIT = prev;
+  }
 });
 
 test('exec omits the env object entirely when there is no session/agent context', async () => {
