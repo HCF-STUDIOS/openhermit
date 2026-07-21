@@ -102,15 +102,15 @@ test('container-manager: execInWorkspace threads env into --env argv flags', asy
   const manager = new DockerContainerManager(workspace, { runner });
 
   await manager.execInWorkspace('default', 'run-it', '/root/work', {
-    AMIKO_SESSION_ID: 'sess-1',
-    AMIKO_AGENT_ID: 'agent-1',
+    OPENHERMIT_SESSION_ID: 'sess-1',
+    OPENHERMIT_AGENT_ID: 'agent-1',
   });
 
   const execCall = runner.calls[1]!;
   assert.equal(execCall[0], 'exec');
   // Each env var becomes an adjacent `--env KEY=VALUE` pair.
-  const sessIdx = execCall.indexOf('AMIKO_SESSION_ID=sess-1');
-  const agentIdx = execCall.indexOf('AMIKO_AGENT_ID=agent-1');
+  const sessIdx = execCall.indexOf('OPENHERMIT_SESSION_ID=sess-1');
+  const agentIdx = execCall.indexOf('OPENHERMIT_AGENT_ID=agent-1');
   assert.ok(sessIdx > 0 && execCall[sessIdx - 1] === '--env');
   assert.ok(agentIdx > 0 && execCall[agentIdx - 1] === '--env');
   // cwd and command are still present.
@@ -177,8 +177,8 @@ function e2bBackendWithFakeSandbox(
 test('e2b backend: ExecOpts.env is forwarded as sandbox run envs', async () => {
   const cap: RunCapture = {};
   const backend = e2bBackendWithFakeSandbox(cap);
-  await backend.exec('do-thing', { env: { AMIKO_SESSION_ID: 'sess-e2b' } });
-  assert.deepEqual(cap.options?.envs, { AMIKO_SESSION_ID: 'sess-e2b' });
+  await backend.exec('do-thing', { env: { OPENHERMIT_SESSION_ID: 'sess-e2b' } });
+  assert.deepEqual(cap.options?.envs, { OPENHERMIT_SESSION_ID: 'sess-e2b' });
 });
 
 test('e2b backend: passthrough secrets merge with opts.env, opts wins on conflict', async () => {

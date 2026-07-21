@@ -76,17 +76,12 @@ export const createSandboxExecTool = (
 
     await backend.ensure();
     context.onExec?.();
-    // Expose the calling session to sandbox CLIs (e.g. `amiko create ...`) so
-    // async media jobs can publish their skeleton + result back into THIS chat
-    // session instead of returning a bare URL.
+    // Expose the calling session and agent to sandbox CLIs so tools running in
+    // the sandbox can tie their work back to THIS chat session. Consumers map
+    // these to whatever names their downstream expects.
     const sessionEnv: Record<string, string> = {
-      ...(context.sessionId ? { AMIKO_SESSION_ID: context.sessionId } : {}),
-      ...(context.agentId ? { AMIKO_AGENT_ID: context.agentId } : {}),
-      // Spend autonomy: lets the amiko CLI auto-approve create jobs whose
-      // quoted cost is under this limit (gateway-level env, deploy-scoped).
-      ...(process.env.AMIKO_AUTO_APPROVE_LIMIT
-        ? { AMIKO_AUTO_APPROVE_LIMIT: process.env.AMIKO_AUTO_APPROVE_LIMIT }
-        : {}),
+      ...(context.sessionId ? { OPENHERMIT_SESSION_ID: context.sessionId } : {}),
+      ...(context.agentId ? { OPENHERMIT_AGENT_ID: context.agentId } : {}),
     };
     const result = await backend.exec(args.command, {
       ...(args.cwd ? { cwd: args.cwd } : {}),

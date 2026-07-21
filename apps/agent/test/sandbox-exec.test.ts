@@ -44,75 +44,26 @@ function makeContext(rec: Recorder, over: Partial<ToolContext>): ToolContext {
   } as unknown as ToolContext;
 }
 
-test('exec injects AMIKO_SESSION_ID and AMIKO_AGENT_ID when the context has them', async () => {
-  const prev = process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  try {
-    const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
-    const ctx = makeContext(rec, { sessionId: 'sess-42', agentId: 'agent-7' });
-    const tool = createSandboxExecTool(ctx);
-    await tool.execute('tc-1', { command: 'echo hi' });
+test('exec injects OPENHERMIT_SESSION_ID and OPENHERMIT_AGENT_ID when the context has them', async () => {
+  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+  const ctx = makeContext(rec, { sessionId: 'sess-42', agentId: 'agent-7' });
+  const tool = createSandboxExecTool(ctx);
+  await tool.execute('tc-1', { command: 'echo hi' });
 
-    assert.equal(rec.ensured, 1);
-    assert.deepEqual(rec.lastOpts?.env, {
-      AMIKO_SESSION_ID: 'sess-42',
-      AMIKO_AGENT_ID: 'agent-7',
-    });
-  } finally {
-    if (prev === undefined) delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
-    else process.env.AMIKO_AUTO_APPROVE_LIMIT = prev;
-  }
+  assert.equal(rec.ensured, 1);
+  assert.deepEqual(rec.lastOpts?.env, {
+    OPENHERMIT_SESSION_ID: 'sess-42',
+    OPENHERMIT_AGENT_ID: 'agent-7',
+  });
 });
 
 test('exec omits the env object entirely when there is no session/agent context', async () => {
-  const prev = process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  try {
-    const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
-    const ctx = makeContext(rec, {});
-    const tool = createSandboxExecTool(ctx);
-    await tool.execute('tc-1', { command: 'echo hi' });
+  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+  const ctx = makeContext(rec, {});
+  const tool = createSandboxExecTool(ctx);
+  await tool.execute('tc-1', { command: 'echo hi' });
 
-    assert.equal(rec.lastOpts?.env, undefined);
-  } finally {
-    if (prev !== undefined) process.env.AMIKO_AUTO_APPROVE_LIMIT = prev;
-  }
-});
-
-test('exec forwards AMIKO_AUTO_APPROVE_LIMIT from process env', async () => {
-  const prev = process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  process.env.AMIKO_AUTO_APPROVE_LIMIT = '5.00';
-  try {
-    const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
-    const ctx = makeContext(rec, { sessionId: 'sess-1', agentId: 'agent-1' });
-    const tool = createSandboxExecTool(ctx);
-    await tool.execute('tc-1', { command: 'echo hi' });
-
-    assert.deepEqual(rec.lastOpts?.env, {
-      AMIKO_SESSION_ID: 'sess-1',
-      AMIKO_AGENT_ID: 'agent-1',
-      AMIKO_AUTO_APPROVE_LIMIT: '5.00',
-    });
-  } finally {
-    if (prev === undefined) delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
-    else process.env.AMIKO_AUTO_APPROVE_LIMIT = prev;
-  }
-});
-
-test('exec forwards AMIKO_AUTO_APPROVE_LIMIT even without a session context', async () => {
-  const prev = process.env.AMIKO_AUTO_APPROVE_LIMIT;
-  process.env.AMIKO_AUTO_APPROVE_LIMIT = '2.50';
-  try {
-    const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
-    const ctx = makeContext(rec, {});
-    const tool = createSandboxExecTool(ctx);
-    await tool.execute('tc-1', { command: 'echo hi' });
-
-    assert.deepEqual(rec.lastOpts?.env, { AMIKO_AUTO_APPROVE_LIMIT: '2.50' });
-  } finally {
-    if (prev === undefined) delete process.env.AMIKO_AUTO_APPROVE_LIMIT;
-    else process.env.AMIKO_AUTO_APPROVE_LIMIT = prev;
-  }
+  assert.equal(rec.lastOpts?.env, undefined);
 });
 
 test('exec passes cwd through alongside the session env', async () => {
@@ -122,5 +73,5 @@ test('exec passes cwd through alongside the session env', async () => {
   await tool.execute('tc-1', { command: 'ls', cwd: '/home/agent/work' });
 
   assert.equal(rec.lastOpts?.cwd, '/home/agent/work');
-  assert.equal(rec.lastOpts?.env?.AMIKO_SESSION_ID, 'sess-9');
+  assert.equal(rec.lastOpts?.env?.OPENHERMIT_SESSION_ID, 'sess-9');
 });
