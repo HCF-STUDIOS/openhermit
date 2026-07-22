@@ -79,6 +79,7 @@ import {
   startTurnTrace,
 } from './langfuse.js';
 import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
+import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import { type Caller, type SessionDescriptor, SessionEventBroker, type SessionRuntime } from './runtime.js';
 export type { SessionEventEnvelope } from './runtime.js';
 import {
@@ -2341,7 +2342,7 @@ export class AgentRunner implements SessionRuntime {
       : baseSystemPrompt;
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
-      withOpenRouterAttribution(this.options.streamFn),
+      withOpenRouterAttribution(withAmikoTwinAttribution(this.options.streamFn)),
       input.langfuseTurnContext ?? { currentTrace: undefined },
     );
 
