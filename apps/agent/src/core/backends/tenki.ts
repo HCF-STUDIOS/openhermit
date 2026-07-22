@@ -192,7 +192,10 @@ export class TenkiExecBackend implements ExecBackend {
     const startedAt = Date.now();
     const cwd = opts?.cwd ?? this.agentHome;
     try {
-      const passEnv = (await this.context.passThroughEnvProvider?.()) ?? {};
+      const passEnv = {
+        ...((await this.context.passThroughEnvProvider?.()) ?? {}),
+        ...(opts?.env ?? {}),
+      };
       const handle = this.session!.run(['sh', '-c', command], {
         cwd,
         ...(Object.keys(passEnv).length > 0 ? { env: passEnv } : {}),

@@ -76,7 +76,17 @@ export const createSandboxExecTool = (
 
     await backend.ensure();
     context.onExec?.();
-    const result = await backend.exec(args.command, args.cwd ? { cwd: args.cwd } : undefined);
+    // Expose the calling session and agent to sandbox CLIs so tools running in
+    // the sandbox can tie their work back to THIS chat session. Consumers map
+    // these to whatever names their downstream expects.
+    const sessionEnv: Record<string, string> = {
+      ...(context.sessionId ? { OPENHERMIT_SESSION_ID: context.sessionId } : {}),
+      ...(context.agentId ? { OPENHERMIT_AGENT_ID: context.agentId } : {}),
+    };
+    const result = await backend.exec(args.command, {
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(Object.keys(sessionEnv).length > 0 ? { env: sessionEnv } : {}),
+    });
 
     const details = {
       stdout: result.stdout,
