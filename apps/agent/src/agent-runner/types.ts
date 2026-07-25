@@ -29,6 +29,9 @@ export interface RunnerSession extends SessionDescriptor {
    *  `correlationId`, so callers can group events back to the originating
    *  user message. Cleared at agent_end. */
   currentTurnCorrelationId?: string;
+  /** Text of the user message that triggered the in-flight turn. Used to
+   *  phrase user-facing error notices in the user's own language. */
+  currentTurnUserText?: string;
   approvalGate: ApprovalGate;
   status: SessionStatus;
   messageCount: number;
