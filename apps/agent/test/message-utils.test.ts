@@ -63,14 +63,61 @@ test('stripReasoningTags peels nested same-name tags without residual close mark
   );
 });
 
-test('stripReasoningTags leaves an unclosed tag as-is', () => {
-  const open = '<think>partial answer continues';
-  assert.equal(stripReasoningTags(open), open);
+test('stripReasoningTags cuts an unclosed tag to end-of-text, keeping preceding text', () => {
+  assert.equal(
+    stripReasoningTags('Real answer.<think>runaway reasoning that never closes'),
+    'Real answer.',
+  );
+});
+
+test('stripReasoningTags returns interiors for a bare unclosed reasoning-only block', () => {
+  // No tool calls / structured thinking context: do not blank the only content.
+  assert.equal(
+    stripReasoningTags('<think>partial answer continues'),
+    'partial answer continues',
+  );
+});
+
+test('stripReasoningTags with allowEmpty blanks an unclosed reasoning-only block', () => {
+  // The minimax-m2.7 shape: text is a lone unterminated <think> body and the
+  // message continues with tool calls — nothing should reach the user.
+  assert.equal(
+    stripReasoningTags('<think>Still getting "NotEnoughPositionToClose". Let me try', {
+      allowEmpty: true,
+    }),
+    '',
+  );
 });
 
 test('extractAssistantText strips inline reasoning from a text block', () => {
   const msg = assistantMsg('<think>plan</think>Final answer.');
   assert.equal(extractAssistantText(msg), 'Final answer.');
+});
+
+test('extractAssistantText blanks an unclosed reasoning-only block on a tool-call turn', () => {
+  // minimax-m2.7 (thinking=high) opens <think> in the text, never closes it,
+  // and proceeds to tool calls — the reasoning must not become user text.
+  const msg = {
+    role: 'assistant',
+    content: [
+      { type: 'text', text: '<think>The position clearly exists. Let me try the amend endpoint' },
+      { type: 'toolCall', id: 'call-1', name: 'exec', arguments: {} },
+    ],
+    timestamp: 1,
+  } as unknown as AssistantMessage;
+  assert.equal(extractAssistantText(msg), '');
+});
+
+test('extractAssistantText blanks unclosed reasoning when a structured thinking block exists', () => {
+  const msg = {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: 'structured reasoning' },
+      { type: 'text', text: '<think>duplicated inline reasoning, unterminated' },
+    ],
+    timestamp: 1,
+  } as unknown as AssistantMessage;
+  assert.equal(extractAssistantText(msg), '');
 });
 
 test('extractAssistantText strips across multiple text parts', () => {
@@ -111,10 +158,16 @@ describe('reasoning tag stream', () => {
     assert.equal(runReasoningStream(['a < b and <div>ok</div>']), 'a < b and <div>ok</div>');
   });
 
-  test('flush of an unclosed tag surfaces the remainder (no blanking)', () => {
+  test('flush of an unclosed tag drops the suppressed reasoning', () => {
     const state = newReasoningTagStream();
     assert.equal(pushReasoningTagDelta(state, '<think>still going'), '');
-    assert.equal(flushReasoningTagStream(state), '<think>still going');
+    assert.equal(flushReasoningTagStream(state), '');
+  });
+
+  test('flush keeps text emitted before an unclosed tag', () => {
+    const state = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(state, 'Answer first. <think>then reasoning'), 'Answer first. ');
+    assert.equal(flushReasoningTagStream(state), '');
   });
 
   test('handles thinking and reasoning variants mid-stream', () => {
@@ -137,9 +190,9 @@ describe('reasoning tag stream', () => {
     );
   });
 
-  test('flush of an unclosed nested tag surfaces the full remainder', () => {
+  test('flush of an unclosed nested tag drops the full remainder', () => {
     const state = newReasoningTagStream();
     assert.equal(pushReasoningTagDelta(state, '<think>outer <think>inner'), '');
-    assert.equal(flushReasoningTagStream(state), '<think>outer <think>inner');
+    assert.equal(flushReasoningTagStream(state), '');
   });
 });
