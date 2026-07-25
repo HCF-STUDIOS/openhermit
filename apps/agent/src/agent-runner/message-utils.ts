@@ -54,17 +54,35 @@ export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage
 const REASONING_INNERMOST_RE =
   /<(think|thinking|reasoning)>((?:(?!<(?:think|thinking|reasoning)>)[\s\S])*?)<\/\1>/gi;
 
+const REASONING_UNCLOSED_RE = /<(think|thinking|reasoning)>[\s\S]*$/i;
+
 /**
  * Remove inline reasoning tags a provider may emit inside a normal text block
  * (`<think>…</think>`, `<thinking>…</thinking>`, `<reasoning>…</reasoning>`),
  * so model reasoning never leaks into the user-facing reply. Structured
- * `thinking` blocks are handled separately and are unaffected. Only paired tags
- * are stripped; an unclosed tag is left as-is to avoid blanking a truncated
- * real reply. If stripping empties the text entirely (a pathological
- * reasoning-only text block), return the tag interiors without wrappers so the
- * reply is not blanked and raw markup does not leak.
+ * `thinking` blocks are handled separately and are unaffected.
+ *
+ * An UNCLOSED tag is treated as reasoning that runs to the end of the block
+ * and is cut: minimax-m2.7 (thinking=high) routinely opens `<think>` and
+ * jumps straight into tool calls without ever closing it, which used to
+ * re-emit the whole reasoning body to the user. Text before the tag is kept.
+ *
+ * If stripping empties the text entirely (a reasoning-only block):
+ * `allowEmpty` callers (message also carries tool calls or a structured
+ * thinking block) get `''` — blanking is safe there because the turn
+ * continues via tools or the thinking-promotion path owns the fallback.
+ * Otherwise the tag interiors are returned without wrappers so a
+ * reasoning-only final reply is not blanked into silence or raw markup.
+ *
+ * Known tradeoff (accepted): tag literals inside prose or code fences (a
+ * reply *explaining* `<think>` tags) are stripped like real reasoning — an
+ * unclosed literal cuts the rest of the reply. Leaking reasoning to end
+ * users is the worse failure, so detection stays syntactic.
  */
-export const stripReasoningTags = (text: string): string => {
+export const stripReasoningTags = (
+  text: string,
+  opts?: { allowEmpty?: boolean },
+): string => {
   const interiors: string[] = [];
   let working = text;
   // Peel innermost pairs first so nested same-name tags collapse cleanly.
@@ -78,8 +96,15 @@ export const stripReasoningTags = (text: string): string => {
     });
     if (!progressed) break;
   }
+  // Whatever follows an unpaired open tag is reasoning that never closed.
+  working = working.replace(REASONING_UNCLOSED_RE, (match) => {
+    const inner = match.slice(match.indexOf('>') + 1).trim();
+    if (inner.length > 0) interiors.push(inner);
+    return '';
+  });
   const stripped = working.replace(/\n{3,}/g, '\n\n').trim();
   if (stripped.length > 0) return stripped;
+  if (opts?.allowEmpty) return '';
   if (interiors.length > 0) return interiors.join('\n\n');
   return text.trim();
 };
@@ -151,8 +176,12 @@ const drainReasoningTagBuffer = (
         continue;
       }
       if (flush) {
-        // Unclosed: surface the remainder (including the open tag) unchanged.
-        out += (state.openRaw ?? '') + state.suppressed + state.buf;
+        // Unclosed at end-of-stream: reasoning that never got its close
+        // (minimax-m2.7 opens <think> and goes straight to tool calls).
+        // Surfacing it was the leak — drop it. The batch pass in
+        // stripReasoningTags governs the persisted/text_final text, so a
+        // genuinely truncated reasoning-only reply still reaches the user
+        // through the interiors fallback there.
         state.buf = '';
         state.inReasoning = false;
         state.openName = null;
@@ -216,7 +245,14 @@ export const extractAssistantText = (message: AssistantMessage): string => {
     .map((content) => content.text.trim())
     .filter((text) => text.length > 0);
 
-  return stripReasoningTags(textParts.join('\n\n'));
+  // Blanking a reasoning-only text block is safe when the turn has tool
+  // calls to continue with, or a structured thinking block that the
+  // final-thinking-only promotion path can fall back on. Only a bare
+  // reasoning-only reply keeps the interiors fallback.
+  const allowEmpty = message.content.some(
+    (content) => content.type === 'toolCall' || content.type === 'thinking',
+  );
+  return stripReasoningTags(textParts.join('\n\n'), { allowEmpty });
 };
 
 export const extractThinkingText = (message: AssistantMessage): string => {
