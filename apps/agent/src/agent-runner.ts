@@ -79,6 +79,7 @@ import {
   startTurnTrace,
 } from './langfuse.js';
 import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
+import { buildUserFacingModelError } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import { type Caller, type SessionDescriptor, SessionEventBroker, type SessionRuntime } from './runtime.js';
 export type { SessionEventEnvelope } from './runtime.js';
@@ -1231,6 +1232,7 @@ export class AgentRunner implements SessionRuntime {
         } else {
           delete session.currentTurnCorrelationId;
         }
+        session.currentTurnUserText = message.text;
         if (this.options.langfuse && session.langfuseTurnContext) {
           startTurnTrace(
             this.options.langfuse,
@@ -3068,10 +3070,16 @@ export class AgentRunner implements SessionRuntime {
         }
 
         if (event.assistantMessageEvent.type === 'error') {
+          // Channels forward the error message to the end user verbatim —
+          // publish a classified, language-matched notice, never provider
+          // internals (raw text is logged/persisted on the message_end path).
           void this.events.publish({
             type: 'error',
             sessionId: session.spec.sessionId,
-            message: event.assistantMessageEvent.error.errorMessage ?? 'Model stream failed.',
+            message: buildUserFacingModelError(
+              event.assistantMessageEvent.error.errorMessage ?? 'Model stream failed.',
+              session.currentTurnUserText,
+            ),
           });
         }
         break;
@@ -3136,10 +3144,13 @@ export class AgentRunner implements SessionRuntime {
 
           this.logRuntime(`model error in ${session.spec.sessionId}: ${errorMsg}`);
 
+          // User-facing notice goes out classified + in the user's language;
+          // the raw provider error stays in logRuntime above and in the
+          // persisted entry's errorMessage below for diagnostics.
           void this.events.publish({
             type: 'error',
             sessionId: session.spec.sessionId,
-            message: errorMsg,
+            message: buildUserFacingModelError(errorMsg, session.currentTurnUserText),
           });
 
           void this.queueSideEffect(session, async () => {
@@ -3424,10 +3435,13 @@ export class AgentRunner implements SessionRuntime {
     }
 
     try {
+      // Same contract as the model-error paths: users get a classified,
+      // language-matched notice; the raw message stays in the persisted
+      // role:'error' entry below and in the langfuse trace above.
       await this.events.publish({
         type: 'error',
         sessionId: session.spec.sessionId,
-        message,
+        message: buildUserFacingModelError(message, session.currentTurnUserText),
       });
       await this.events.publish({
         type: 'agent_end',
