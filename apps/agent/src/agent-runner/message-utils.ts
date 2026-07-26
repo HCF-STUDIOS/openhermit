@@ -55,6 +55,11 @@ const REASONING_INNERMOST_RE =
   /<(think|thinking|reasoning)>((?:(?!<(?:think|thinking|reasoning)>)[\s\S])*?)<\/\1>/gi;
 
 const REASONING_UNCLOSED_RE = /<(think|thinking|reasoning)>[\s\S]*$/i;
+// A close tag with no opener earlier in the block: the open tag lived in a
+// previous assistant message of the same tool loop (cut there as an unclosed
+// tag), and this block starts mid-reasoning. Lazy match: cut through the
+// FIRST orphan close only, so a later literal tag in prose stays prose.
+const REASONING_ORPHAN_CLOSE_RE = /^[\s\S]*?<\/(think|thinking|reasoning)>\s*/i;
 
 /**
  * Remove inline reasoning tags a provider may emit inside a normal text block
@@ -96,6 +101,14 @@ export const stripReasoningTags = (
     });
     if (!progressed) break;
   }
+  // Whatever precedes an unmatched CLOSE tag is reasoning that started in a
+  // previous message of the same tool loop (minimax-m2.7 spans <think>
+  // blocks across tool-call turns; the opener was cut there as unclosed).
+  working = working.replace(REASONING_ORPHAN_CLOSE_RE, (match) => {
+    const inner = match.replace(/<\/(think|thinking|reasoning)>\s*$/i, '').trim();
+    if (inner.length > 0) interiors.push(inner);
+    return '';
+  });
   // Whatever follows an unpaired open tag is reasoning that never closed.
   working = working.replace(REASONING_UNCLOSED_RE, (match) => {
     const inner = match.slice(match.indexOf('>') + 1).trim();
@@ -131,12 +144,20 @@ export interface ReasoningTagStreamState {
   suppressed: string;
 }
 
-export const newReasoningTagStream = (): ReasoningTagStreamState => ({
+/**
+ * `carryTagName` starts the stream already suppressed: the previous assistant
+ * message of this turn ended inside an unclosed reasoning tag (minimax-m2.7
+ * spans <think> across tool-call turns), so this message opens mid-reasoning
+ * and must stay quiet until the matching close tag arrives. If no close ever
+ * arrives, the flush drops the suppressed text and the batch pass in
+ * stripReasoningTags still governs the authoritative text_final.
+ */
+export const newReasoningTagStream = (carryTagName?: string): ReasoningTagStreamState => ({
   buf: '',
-  inReasoning: false,
-  openName: null,
-  openRaw: null,
-  depth: 0,
+  inReasoning: carryTagName !== undefined,
+  openName: carryTagName?.toLowerCase() ?? null,
+  openRaw: carryTagName !== undefined ? `<${carryTagName}>` : null,
+  depth: carryTagName !== undefined ? 1 : 0,
   suppressed: '',
 });
 
@@ -235,6 +256,12 @@ export const pushReasoningTagDelta = (
   state.buf += delta;
   return drainReasoningTagBuffer(state, false);
 };
+
+/** Read BEFORE flushing: the tag name still open at end-of-message, if any.
+ *  Callers thread it into the next message's stream via `newReasoningTagStream`
+ *  so reasoning spanning tool-call turns stays suppressed. */
+export const reasoningStreamUnclosedTag = (state: ReasoningTagStreamState): string | undefined =>
+  state.inReasoning ? (state.openName ?? undefined) : undefined;
 
 export const flushReasoningTagStream = (state: ReasoningTagStreamState): string =>
   drainReasoningTagBuffer(state, true);

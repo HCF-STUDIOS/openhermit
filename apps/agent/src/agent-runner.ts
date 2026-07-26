@@ -67,6 +67,7 @@ import {
   newReasoningTagStream,
   pushReasoningTagDelta,
   flushReasoningTagStream,
+  reasoningStreamUnclosedTag,
   serializeDetails,
 } from './agent-runner/message-utils.js';
 import {
@@ -1226,6 +1227,7 @@ export class AgentRunner implements SessionRuntime {
         session.latestAssistantText = undefined;
         session.speakerTagStream = undefined;
         session.reasoningTagStream = undefined;
+        session.reasoningCarryTagName = undefined;
         session.consecutiveToolFailures = 0;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
@@ -3020,7 +3022,7 @@ export class AgentRunner implements SessionRuntime {
         // reasoning tags never flash (or stick, on clients that prefer deltas).
         const isGroupStream = session.spec.source.type === 'group';
         if (event.assistantMessageEvent.type === 'text_start') {
-          session.reasoningTagStream = newReasoningTagStream();
+          session.reasoningTagStream = newReasoningTagStream(session.reasoningCarryTagName);
           if (isGroupStream) {
             session.speakerTagStream = newSpeakerTagStream();
           }
@@ -3029,7 +3031,7 @@ export class AgentRunner implements SessionRuntime {
         if (event.assistantMessageEvent.type === 'text_delta') {
           const rawDelta = event.assistantMessageEvent.delta;
           // In case the provider skipped text_start.
-          session.reasoningTagStream ??= newReasoningTagStream();
+          session.reasoningTagStream ??= newReasoningTagStream(session.reasoningCarryTagName);
           let outText = pushReasoningTagDelta(session.reasoningTagStream, rawDelta);
           if (isGroupStream) {
             session.speakerTagStream ??= newSpeakerTagStream();
@@ -3048,6 +3050,7 @@ export class AgentRunner implements SessionRuntime {
         if (event.assistantMessageEvent.type === 'text_end') {
           let tail = '';
           if (session.reasoningTagStream) {
+            session.reasoningCarryTagName = reasoningStreamUnclosedTag(session.reasoningTagStream);
             tail += flushReasoningTagStream(session.reasoningTagStream);
             session.reasoningTagStream = undefined;
           }
@@ -3090,6 +3093,7 @@ export class AgentRunner implements SessionRuntime {
         {
           let tail = '';
           if (session.reasoningTagStream) {
+            session.reasoningCarryTagName = reasoningStreamUnclosedTag(session.reasoningTagStream);
             tail += flushReasoningTagStream(session.reasoningTagStream);
             session.reasoningTagStream = undefined;
           }

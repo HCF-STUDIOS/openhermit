@@ -7,6 +7,7 @@ import {
   stripReasoningTags,
   extractAssistantText,
   newReasoningTagStream,
+  reasoningStreamUnclosedTag,
   pushReasoningTagDelta,
   flushReasoningTagStream,
 } from '../src/agent-runner/message-utils.js';
@@ -75,6 +76,22 @@ test('stripReasoningTags returns interiors for a bare unclosed reasoning-only bl
   assert.equal(
     stripReasoningTags('<think>partial answer continues'),
     'partial answer continues',
+  );
+});
+
+test('stripReasoningTags cuts leading reasoning through an orphan close tag', () => {
+  // The opener lived in the previous tool-call message (cut there as
+  // unclosed); this block starts mid-reasoning and closes it before the reply.
+  assert.equal(
+    stripReasoningTags('仓位还在（20 DOGE）。止损问题是参数格式</think>试试去掉 stopPx 只平仓：'),
+    '试试去掉 stopPx 只平仓：',
+  );
+});
+
+test('stripReasoningTags orphan-close cut is lazy: later literal close stays prose', () => {
+  assert.equal(
+    stripReasoningTags('mid-span</think>Reply that mentions a literal </think> tag'),
+    'Reply that mentions a literal </think> tag',
   );
 });
 
@@ -194,5 +211,28 @@ describe('reasoning tag stream', () => {
     const state = newReasoningTagStream();
     assert.equal(pushReasoningTagDelta(state, '<think>outer <think>inner'), '');
     assert.equal(flushReasoningTagStream(state), '');
+  });
+
+  test('carry-over: next message stays suppressed until the spanning close arrives', () => {
+    // Message N ends unclosed; its tag name is read before flush and threaded
+    // into message N+1's stream, which then suppresses the continuation.
+    const first = newReasoningTagStream();
+    assert.equal(pushReasoningTagDelta(first, '<think>spanning reasoning'), '');
+    const carry = reasoningStreamUnclosedTag(first);
+    assert.equal(carry, 'think');
+    assert.equal(flushReasoningTagStream(first), '');
+
+    const second = newReasoningTagStream(carry);
+    assert.equal(pushReasoningTagDelta(second, 'still reasoning</think>Real reply'), 'Real reply');
+    assert.equal(flushReasoningTagStream(second), '');
+  });
+
+  test('carry-over with no close drops the stream but never the batch text', () => {
+    const state = newReasoningTagStream('think');
+    assert.equal(pushReasoningTagDelta(state, 'pure reply that never closes'), '');
+    assert.equal(flushReasoningTagStream(state), '');
+    // The authoritative text_final comes from stripReasoningTags, which leaves
+    // untagged text alone — nothing is lost, only the typing effect.
+    assert.equal(stripReasoningTags('pure reply that never closes'), 'pure reply that never closes');
   });
 });
