@@ -24,6 +24,9 @@ export interface RunnerSession extends SessionDescriptor {
   speakerTagStream?: SpeakerTagStreamState | undefined;
   // Suppresses inline <think>/<thinking>/<reasoning> bodies on the live stream.
   reasoningTagStream?: ReasoningTagStreamState | undefined;
+  /** Reasoning tag left unclosed by the previous assistant message of this
+   *  turn; the next message's stream starts suppressed under it. */
+  reasoningCarryTagName?: string | undefined;
   /** Inbound messageId of the user message that triggered the in-flight
    *  turn. Stamped onto every outbound event for that turn as
    *  `correlationId`, so callers can group events back to the originating
