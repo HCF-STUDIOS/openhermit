@@ -82,6 +82,10 @@ import {
 import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
 import { buildUserFacingModelError } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
+import {
+  awaitTriggeredTurn,
+  surfaceRunError,
+} from './agent-runner/scheduled-turn.js';
 import { type Caller, type SessionDescriptor, SessionEventBroker, type SessionRuntime } from './runtime.js';
 export type { SessionEventEnvelope } from './runtime.js';
 import {
@@ -226,38 +230,64 @@ export class AgentRunner implements SessionRuntime {
       schedule_id: schedule.scheduleId,
       schedule_type: schedule.type,
     };
-    await this.postMessage(sessionId, { text: transformed.prompt, metadata });
-
     // Tear down for one-off schedules and for ephemeral cron firings.
     // Dedicated cron schedules keep history across firings on purpose.
     const shouldTearDown =
       schedule.type === 'once' || schedule.sessionMode.kind === 'ephemeral';
-    if (shouldTearDown) {
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        // postMessage returns as soon as the turn is queued; wait for the
-        // LLM call and any side effects to actually finish before tearing
-        // the session down. Without this the central scheduler treats a
-        // firing as "done" the moment it's queued, so a burst of missed
-        // cron slots all run in parallel.
-        await session.queue;
-        await session.sideEffects;
-        await session.backgroundTasks;
-        session.status = 'inactive';
-        this.clearIdleSummaryTimer(session);
-        // Await so the inactive row is committed before we drop the
-        // in-memory session. Otherwise a later-resolving 'idle' persist
-        // from the same turn can overwrite us in the DB.
-        await this.persistSessionIndex(session);
-        this.sessions.delete(sessionId);
-      } else {
-        await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
+    let runFailed = false;
+
+    try {
+      // postMessage only acknowledges that the turn was queued. Every schedule
+      // mode must wait for model completion so the central scheduler can
+      // record a real success or apply its existing failure backoff.
+      await awaitTriggeredTurn(
+        () => this.postMessage(sessionId, { text: transformed.prompt, metadata }),
+        () => this.waitForSessionIdle(sessionId),
+      );
+    } catch (error) {
+      runFailed = true;
+      throw error;
+    } finally {
+      if (shouldTearDown) {
+        try {
+          const session = this.sessions.get(sessionId);
+          if (session) {
+            session.status = 'inactive';
+            this.clearIdleSummaryTimer(session);
+            // Await so the inactive row is committed before we drop the
+            // in-memory session. Otherwise a later-resolving 'idle' persist
+            // from the same turn can overwrite us in the DB.
+            await this.persistSessionIndex(session);
+            this.sessions.delete(sessionId);
+          } else {
+            await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
+          }
+          await this.bus.emit('session.closed@v1', {
+            agentId: this.scope.agentId,
+            sessionId,
+            reason: 'idle',
+          });
+        } catch (teardownError) {
+          if (!runFailed) {
+            throw teardownError;
+          }
+          this.logRuntime(
+            `scheduled job teardown failed for ${sessionId}: ${
+              teardownError instanceof Error ? teardownError.message : String(teardownError)
+            }`,
+          );
+        }
+      } else if (runFailed) {
+        // Schedule-sourced errors are deliberately rethrown into session.queue
+        // for backoff tracking; for dedicated cron sessions (never torn down)
+        // that leaves the queue permanently rejected until the next message.
+        // Reset it so idle-summary/turn-limit checkpoints aren't silently
+        // skipped in the meantime.
+        const session = this.sessions.get(sessionId);
+        if (session) {
+          session.queue = Promise.resolve();
+        }
       }
-      await this.bus.emit('session.closed@v1', {
-        agentId: this.scope.agentId,
-        sessionId,
-        reason: 'idle',
-      });
     }
   }
 
@@ -1263,7 +1293,11 @@ export class AgentRunner implements SessionRuntime {
         );
         await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
       } catch (error) {
-        await this.handleRunError(session, error);
+        await surfaceRunError(
+          session.spec.source.kind,
+          error,
+          (runError) => this.handleRunError(session, runError),
+        );
       }
     };
 
