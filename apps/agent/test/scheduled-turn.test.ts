@@ -104,6 +104,7 @@ test('runScheduledJob does not report success before a dedicated turn completes'
   const order: string[] = [];
   const fakeRunner = {
     scope: { agentId: 'agent-1' },
+    sessions: new Map(),
     bus: {
       transform: async (_event: string, payload: Record<string, unknown>) =>
         payload,
@@ -130,6 +131,57 @@ test('runScheduledJob does not report success before a dedicated turn completes'
     creditError,
   );
   assert.deepEqual(order, ['opened', 'queued', 'waited']);
+});
+
+test('runScheduledJob heals dedicated session.queue after a failed turn', async () => {
+  const schedule: ScheduleRecord = {
+    agentId: 'agent-1',
+    scheduleId: 'schedule-1',
+    type: 'cron',
+    status: 'active',
+    cronExpression: '* * * * *',
+    prompt: 'check credits',
+    sessionMode: { kind: 'dedicated' },
+    delivery: { kind: 'silent' },
+    policy: {},
+    createdAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:00:00.000Z',
+    runCount: 0,
+    consecutiveErrors: 0,
+  };
+  const creditError = new Error('402 Insufficient credits');
+  const sessionId = 'schedule:schedule-1';
+  const session = {
+    status: 'running',
+    queue: Promise.reject(creditError),
+  };
+  // Avoid unhandled rejection from the pre-seeded rejected queue.
+  session.queue.catch(() => undefined);
+  const fakeRunner = {
+    scope: { agentId: 'agent-1' },
+    sessions: new Map([[sessionId, session]]),
+    bus: {
+      transform: async (_event: string, payload: Record<string, unknown>) =>
+        payload,
+    },
+    openSession: async () => undefined,
+    postMessage: async () => ({ sessionId, triggered: true }),
+    waitForSessionIdle: async () => {
+      throw creditError;
+    },
+  };
+
+  await assert.rejects(
+    (AgentRunner.prototype.runScheduledJob as Function).call(
+      fakeRunner,
+      schedule,
+      sessionId,
+    ),
+    creditError,
+  );
+
+  assert.equal(fakeRunner.sessions.has(sessionId), true);
+  await assert.doesNotReject(session.queue);
 });
 
 test('runScheduledJob preserves the run error when ephemeral teardown also fails', async () => {

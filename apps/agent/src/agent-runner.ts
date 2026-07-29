@@ -277,6 +277,16 @@ export class AgentRunner implements SessionRuntime {
             }`,
           );
         }
+      } else if (runFailed) {
+        // Schedule-sourced errors are deliberately rethrown into session.queue
+        // for backoff tracking; for dedicated cron sessions (never torn down)
+        // that leaves the queue permanently rejected until the next message.
+        // Reset it so idle-summary/turn-limit checkpoints aren't silently
+        // skipped in the meantime.
+        const session = this.sessions.get(sessionId);
+        if (session) {
+          session.queue = Promise.resolve();
+        }
       }
     }
   }
