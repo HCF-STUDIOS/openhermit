@@ -14,7 +14,15 @@ export async function surfaceRunError(
   error: unknown,
   surface: (error: unknown) => Promise<void>,
 ): Promise<void> {
-  await surface(error);
+  try {
+    await surface(error);
+  } catch (surfaceError) {
+    if (sourceKind === 'schedule') {
+      console.error('[scheduled-turn] failed to surface run error', surfaceError);
+      throw error;
+    }
+    throw surfaceError;
+  }
   if (sourceKind === 'schedule') {
     throw error;
   }

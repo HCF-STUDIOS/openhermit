@@ -234,6 +234,7 @@ export class AgentRunner implements SessionRuntime {
     // Dedicated cron schedules keep history across firings on purpose.
     const shouldTearDown =
       schedule.type === 'once' || schedule.sessionMode.kind === 'ephemeral';
+    let runFailed = false;
 
     try {
       // postMessage only acknowledges that the turn was queued. Every schedule
@@ -243,25 +244,39 @@ export class AgentRunner implements SessionRuntime {
         () => this.postMessage(sessionId, { text: transformed.prompt, metadata }),
         () => this.waitForSessionIdle(sessionId),
       );
+    } catch (error) {
+      runFailed = true;
+      throw error;
     } finally {
       if (shouldTearDown) {
-        const session = this.sessions.get(sessionId);
-        if (session) {
-          session.status = 'inactive';
-          this.clearIdleSummaryTimer(session);
-          // Await so the inactive row is committed before we drop the
-          // in-memory session. Otherwise a later-resolving 'idle' persist
-          // from the same turn can overwrite us in the DB.
-          await this.persistSessionIndex(session);
-          this.sessions.delete(sessionId);
-        } else {
-          await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
+        try {
+          const session = this.sessions.get(sessionId);
+          if (session) {
+            session.status = 'inactive';
+            this.clearIdleSummaryTimer(session);
+            // Await so the inactive row is committed before we drop the
+            // in-memory session. Otherwise a later-resolving 'idle' persist
+            // from the same turn can overwrite us in the DB.
+            await this.persistSessionIndex(session);
+            this.sessions.delete(sessionId);
+          } else {
+            await this.store.sessions.updateStatus(this.scope, sessionId, 'inactive');
+          }
+          await this.bus.emit('session.closed@v1', {
+            agentId: this.scope.agentId,
+            sessionId,
+            reason: 'idle',
+          });
+        } catch (teardownError) {
+          if (!runFailed) {
+            throw teardownError;
+          }
+          this.logRuntime(
+            `scheduled job teardown failed for ${sessionId}: ${
+              teardownError instanceof Error ? teardownError.message : String(teardownError)
+            }`,
+          );
         }
-        await this.bus.emit('session.closed@v1', {
-          agentId: this.scope.agentId,
-          sessionId,
-          reason: 'idle',
-        });
       }
     }
   }
