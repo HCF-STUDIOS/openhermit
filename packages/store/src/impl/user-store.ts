@@ -245,47 +245,52 @@ export class DbUserStore implements UserStore {
     // silently stripping owner-gated tools (exec/CLI) from all of the
     // agent's cron work (2026-07-31 罗洪 incident; hert's 07-17 schedule
     // failure was the same class).
-    await this.db.update(sessionEvents).set({ userId: newUserId })
-      .where(eq(sessionEvents.userId, orphanUserId));
-    await this.db.update(schedules).set({ createdBy: newUserId })
-      .where(eq(schedules.createdBy, orphanUserId));
+    //
+    // One transaction, like merge() below: a crash mid-migration must not
+    // leave the user deleted (or deletable) with references still dangling.
+    await this.db.transaction(async (tx) => {
+      await tx.update(sessionEvents).set({ userId: newUserId })
+        .where(eq(sessionEvents.userId, orphanUserId));
+      await tx.update(schedules).set({ createdBy: newUserId })
+        .where(eq(schedules.createdBy, orphanUserId));
 
-    // Agent roles: move each of the orphan's memberships to the survivor.
-    // Where both users have a role on the same agent, keep the stronger one
-    // (owner > user > guest) on the survivor and drop the orphan's row —
-    // a merge must never demote the surviving identity.
-    const rank: Record<string, number> = { owner: 3, user: 2, guest: 1 };
-    const orphanRoles = await this.db.select().from(userAgents)
-      .where(eq(userAgents.userId, orphanUserId));
-    for (const membership of orphanRoles) {
-      const [existing] = await this.db.select().from(userAgents).where(and(
-        eq(userAgents.userId, newUserId),
-        eq(userAgents.agentId, membership.agentId),
-      ));
-      if (!existing) {
-        await this.db.update(userAgents)
-          .set({ userId: newUserId })
-          .where(and(
-            eq(userAgents.userId, orphanUserId),
-            eq(userAgents.agentId, membership.agentId),
-          ));
-        continue;
+      // Agent roles: move each of the orphan's memberships to the survivor.
+      // Where both users have a role on the same agent, keep the stronger one
+      // (owner > user > guest) on the survivor and drop the orphan's row —
+      // a merge must never demote the surviving identity.
+      const rank: Record<string, number> = { owner: 3, user: 2, guest: 1 };
+      const orphanRoles = await tx.select().from(userAgents)
+        .where(eq(userAgents.userId, orphanUserId));
+      for (const membership of orphanRoles) {
+        const [existing] = await tx.select().from(userAgents).where(and(
+          eq(userAgents.userId, newUserId),
+          eq(userAgents.agentId, membership.agentId),
+        ));
+        if (!existing) {
+          await tx.update(userAgents)
+            .set({ userId: newUserId })
+            .where(and(
+              eq(userAgents.userId, orphanUserId),
+              eq(userAgents.agentId, membership.agentId),
+            ));
+          continue;
+        }
+        if ((rank[membership.role] ?? 0) > (rank[existing.role] ?? 0)) {
+          await tx.update(userAgents)
+            .set({ role: membership.role })
+            .where(and(
+              eq(userAgents.userId, newUserId),
+              eq(userAgents.agentId, membership.agentId),
+            ));
+        }
+        await tx.delete(userAgents).where(and(
+          eq(userAgents.userId, orphanUserId),
+          eq(userAgents.agentId, membership.agentId),
+        ));
       }
-      if ((rank[membership.role] ?? 0) > (rank[existing.role] ?? 0)) {
-        await this.db.update(userAgents)
-          .set({ role: membership.role })
-          .where(and(
-            eq(userAgents.userId, newUserId),
-            eq(userAgents.agentId, membership.agentId),
-          ));
-      }
-      await this.db.delete(userAgents).where(and(
-        eq(userAgents.userId, orphanUserId),
-        eq(userAgents.agentId, membership.agentId),
-      ));
-    }
 
-    await this.db.delete(users).where(eq(users.userId, orphanUserId));
+      await tx.delete(users).where(eq(users.userId, orphanUserId));
+    });
   }
 
   private rowToUserRecord(row: typeof users.$inferSelect): UserRecord {
