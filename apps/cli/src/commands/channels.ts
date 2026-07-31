@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 import type { Command } from 'commander';
 
-import { createGateway, handleError } from './shared.js';
+import { createGateway, handleError, printTable } from './shared.js';
 
 /**
  * Pull the bare package name out of an npm install spec.
@@ -119,6 +119,102 @@ export const registerChannelsCommand = (program: Command): void => {
           return;
         }
         for (const p of packages) console.log(p);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  ch.command('enable <channelType>')
+    .description(
+      'Configure and enable a builtin channel on an agent.\n' +
+      'Sets the bot token secret and starts the channel bridge.\n' +
+      'Example: hermit channels enable telegram --agent <agentId> --token <bot-token>',
+    )
+    .requiredOption('--agent <agentId>', 'Agent ID')
+    .requiredOption('--token <token>', 'Bot token or API key for the channel')
+    .option('--mode <mode>', 'Connection mode: polling or webhook (telegram only)', 'polling')
+    .action(async (channelType: string, opts: { agent: string; token: string; mode: string }) => {
+      try {
+        const gateway = createGateway();
+
+        // 1. Find the channel record for this type.
+        const channels = await gateway.listAgentChannels(opts.agent);
+        const entry = channels.find((c) => c.channelType === channelType);
+        if (!entry) {
+          console.error(
+            `No ${channelType} channel found on agent ${opts.agent}.\n` +
+            `Builtin channels (telegram, discord, slack) are auto-seeded at agent create.\n` +
+            `Run: hermit channels status --agent ${opts.agent}`,
+          );
+          process.exit(1);
+        }
+
+        // 2. Derive the secret key name from the channel's descriptor
+        //    (e.g. TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN).
+        const primarySecretKey = entry.secretKeys?.[0]?.key;
+        if (!primarySecretKey) {
+          console.error(
+            `Channel "${channelType}" does not expose a secret key descriptor. ` +
+            `Configure credentials via the gateway API directly.`,
+          );
+          process.exit(1);
+        }
+
+        // 3. Write the token as an agent secret.
+        await gateway.setAgentSecret(opts.agent, primarySecretKey, opts.token);
+        console.log(`  ✓ ${primarySecretKey} updated`);
+
+        // 4. Enable the channel. The gateway auto-applies defaultConfig
+        //    (which contains the ${{SECRET}} placeholder) when config is empty.
+        //    For a mode override we merge into existing config.
+        const configOverride =
+          opts.mode !== 'polling' ? { ...entry.config, mode: opts.mode } : undefined;
+
+        const result = await gateway.updateAgentChannel(opts.agent, entry.id, {
+          enabled: true,
+          ...(configOverride ? { config: configOverride } : {}),
+        });
+
+        if (result.error) {
+          console.error(`\nBridge error: ${result.error}`);
+          console.error('Check that the token is valid and try again.');
+          process.exit(1);
+        }
+
+        console.log(`\n  Channel "${channelType}" is live on agent ${opts.agent}.`);
+        if (result.runtimeStatus) console.log(`  Bridge status: ${result.runtimeStatus}`);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  ch.command('status')
+    .description('Show runtime status for all channels on an agent.')
+    .requiredOption('--agent <agentId>', 'Agent ID')
+    .action(async (opts: { agent: string }) => {
+      try {
+        const gateway = createGateway();
+        const channels = await gateway.listAgentChannels(opts.agent);
+        if (channels.length === 0) {
+          console.log('No channels found on this agent.');
+          return;
+        }
+        printTable(
+          channels.map((c) => ({
+            type: c.channelType,
+            id: c.id,
+            status: c.runtimeStatus,
+            secrets: c.secretsSet ? 'set' : 'missing',
+            error: c.lastError ?? '',
+          })),
+          [
+            { key: 'type', label: 'Channel', width: 12 },
+            { key: 'id', label: 'ID', width: 28 },
+            { key: 'status', label: 'Status', width: 10 },
+            { key: 'secrets', label: 'Secrets', width: 8 },
+            { key: 'error', label: 'Error' },
+          ],
+        );
       } catch (error) {
         handleError(error);
       }
