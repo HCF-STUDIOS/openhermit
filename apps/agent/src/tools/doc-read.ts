@@ -1,8 +1,8 @@
 import { Type, type Static } from '@mariozechner/pi-ai';
 import { ValidationError } from '@openhermit/shared';
-import mammoth from 'mammoth';
-import ExcelJS from 'exceljs';
-import { extractText, getDocumentProxy, renderPageAsImage } from 'unpdf';
+import { formatFromBytes, formatFromPath, toDocument, toMarkdownBytes, type Format } from '@firecrawl/anydoc';
+import { classifyPdf, extractPagesMarkdown } from '@firecrawl/pdf-inspector';
+import { createIsomorphicCanvasFactory, getDocumentProxy, renderPageAsImage } from 'unpdf';
 import type { Worker } from 'tesseract.js';
 import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
@@ -23,7 +23,7 @@ const DocReadParams = Type.Object({
   max_pages: Type.Optional(
     Type.Number({
       description:
-        'For PDFs: max pages to render as images when a page has no extractable text (scanned/image-only pages a multimodal model can still read). Default 5.',
+        'Max images to pull into context: PDF pages with no extractable text (scanned/image-only) and images embedded in a document. Default 5.',
     }),
   ),
 });
@@ -32,29 +32,20 @@ type DocReadArgs = Static<typeof DocReadParams>;
 
 const MAX_INPUT_BYTES = 20 * 1024 * 1024;
 const DEFAULT_MAX_RENDER_PAGES = 5;
-const MIN_TEXT_CHARS_PER_PAGE = 8;
 const RENDER_SCALE = 2;
 const RENDER_MAX_DIM = 2200;
 const MAX_PDF_PAGES = 200;
 const MAX_RENDER_PAGES = 10;
-const MAX_XLSX_SHEETS = 50;
-const MAX_XLSX_ROWS_PER_SHEET = 5000;
 const TESSDATA_CACHE = path.join(os.tmpdir(), 'openhermit-tessdata');
 
-const DOCX_MIME =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-const XLSX_MIME =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+// anydoc reads the signature each container specification designates, so a
+// mislabelled mime type doesn't matter; the extension is only the fallback for
+// signature-less formats. Widened to string so we can compare it to literals.
+const detectFormat = (buf: Buffer, name: string): string | null =>
+  formatFromBytes(buf) ?? formatFromPath(name);
 
-const ends = (name: string, ext: string): boolean => name.toLowerCase().endsWith(ext);
-const isPdf = (mime: string, name: string): boolean =>
-  mime === 'application/pdf' || ends(name, '.pdf');
-const isDocx = (mime: string, name: string): boolean =>
-  mime === DOCX_MIME || ends(name, '.docx');
-const isXlsx = (mime: string, name: string): boolean =>
-  mime === XLSX_MIME || ends(name, '.xlsx');
 const isNotebook = (mime: string, name: string): boolean =>
-  mime === 'application/x-ipynb+json' || ends(name, '.ipynb');
+  mime === 'application/x-ipynb+json' || name.toLowerCase().endsWith('.ipynb');
 const isImageMime = (mime: string): boolean => mime.startsWith('image/');
 const isTextMime = (mime: string): boolean =>
   mime.startsWith('text/') ||
@@ -77,23 +68,6 @@ async function streamToBuffer(stream: NodeJS.ReadableStream, cap: number): Promi
   }
   return Buffer.concat(chunks);
 }
-
-const cellToString = (value: unknown): string => {
-  if (value === null || value === undefined) return '';
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === 'object') {
-    const o = value as Record<string, unknown>;
-    if (typeof o['text'] === 'string') return o['text'];
-    if (o['result'] !== undefined) return String(o['result']);
-    if (typeof o['hyperlink'] === 'string') return o['hyperlink'];
-    if (Array.isArray(o['richText']))
-      return (o['richText'] as Array<{ text?: string }>).map((r) => r.text ?? '').join('');
-  }
-  return String(value);
-};
-
-const csvEscape = (s: string): string =>
-  /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 
 async function ocrPng(worker: Worker, png: Buffer): Promise<string> {
   // tesseract's ImageLike type omits Node Buffer, which it accepts at runtime.
@@ -130,34 +104,44 @@ async function readPdf(
   ocr: ((png: Buffer) => Promise<string | null>) | null,
   canvasImport: CanvasImport | null,
 ): Promise<Block[]> {
-  const pdf = await getDocumentProxy(new Uint8Array(buf));
-  try {
-    if (pdf.numPages > MAX_PDF_PAGES) {
-      return [{
-        type: 'text',
-        text: `This PDF has ${pdf.numPages} pages, exceeding doc_read's ${MAX_PDF_PAGES}-page limit. Use the sandbox_path with Read/Bash, or extract a smaller page range.`,
-      }];
-    }
-    const { totalPages, text } = await extractText(pdf, { mergePages: false });
+  // pdf-inspector is a synchronous native binding; it blocks the event loop for
+  // the parse. ponytail: fine at doc_read's 20MB / 200-page ceiling (tens of ms);
+  // move it to a worker thread if bigger documents ever get through.
+  const { pageCount } = classifyPdf(buf);
+  if (pageCount > MAX_PDF_PAGES) {
+    return [{
+      type: 'text',
+      text: `This PDF has ${pageCount} pages, exceeding doc_read's ${MAX_PDF_PAGES}-page limit. Use the sandbox_path with Read/Bash, or extract a smaller page range.`,
+    }];
+  }
 
-    const textParts: string[] = [];
-    const scannedPages: number[] = [];
-    text.forEach((pageText, i) => {
-      const clean = (pageText ?? '').trim();
-      if (clean.replace(/\s/g, '').length >= MIN_TEXT_CHARS_PER_PAGE) {
-        textParts.push(`--- page ${i + 1} ---\n${clean}`);
-      } else {
-        scannedPages.push(i + 1);
-      }
-    });
+  // needsOcr is pdf-inspector's own verdict on the text layer (empty, GID-encoded
+  // fonts, garbage), so it replaces the old "did we get enough characters?" guess.
+  const textParts: string[] = [];
+  const scannedPages: number[] = [];
+  for (const page of extractPagesMarkdown(buf).pages) {
+    const pageNo = page.page + 1; // pdf-inspector reports 0-indexed pages here
+    const clean = page.markdown.trim();
+    if (page.needsOcr) scannedPages.push(pageNo);
+    else if (clean) textParts.push(`--- page ${pageNo} ---\n${clean}`);
+    // else: a genuinely blank page — nothing to show and nothing to render.
+  }
 
-    const blocks: Block[] = [];
-    if (textParts.length > 0) {
-      blocks.push({ type: 'text', text: textParts.join('\n\n') });
-    }
+  const blocks: Block[] = [];
+  if (textParts.length > 0) {
+    blocks.push({ type: 'text', text: textParts.join('\n\n') });
+  }
 
-    let rendered = 0;
-    if (canvasImport && maxRenderPages > 0) {
+  // pdf-inspector doesn't rasterise, so pages it flags for OCR still go through
+  // pdf.js. Only opened when there is actually something to render.
+  let rendered = 0;
+  if (canvasImport && maxRenderPages > 0 && scannedPages.length > 0) {
+    // The factory has to go on the proxy: unpdf only attaches its own when
+    // renderPageAsImage opens the document, and pdf.js needs a working one to
+    // decode raster images — i.e. every page worth rendering here.
+    const CanvasFactory = await createIsomorphicCanvasFactory(canvasImport);
+    const pdf = await getDocumentProxy(new Uint8Array(buf), { CanvasFactory });
+    try {
       for (const pageNo of scannedPages) {
         if (rendered >= maxRenderPages) break;
         const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
@@ -179,54 +163,64 @@ async function readPdf(
         }
         rendered += 1;
       }
+    } finally {
+      await pdf.destroy();
     }
-
-    if (blocks.length === 0) {
-      blocks.push({
-        type: 'text',
-        text: canvasImport
-          ? `This PDF has ${totalPages} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`
-          : `This PDF has ${totalPages} page(s) of scanned/image-only content, but PDF page rendering is unavailable in this build (the @napi-rs/canvas backend isn't installed). Use the sandbox_path with Read/Bash.`,
-      });
-    } else if (scannedPages.length > rendered) {
-      const more = scannedPages.length - rendered;
-      blocks.push({
-        type: 'text',
-        text: canvasImport
-          ? `(${more} more scanned page(s) not rendered; raise max_pages to see them.)`
-          : `(${more} scanned page(s) not rendered; PDF page rendering is unavailable in this build.)`,
-      });
-    }
-    return blocks;
-  } finally {
-    await pdf.destroy();
   }
+
+  if (blocks.length === 0) {
+    blocks.push({
+      type: 'text',
+      text: canvasImport
+        ? `This PDF has ${pageCount} page(s) but no extractable text, and no pages were rendered (max_pages=${maxRenderPages}).`
+        : `This PDF has ${pageCount} page(s) of scanned/image-only content, but PDF page rendering is unavailable in this build (the @napi-rs/canvas backend isn't installed). Use the sandbox_path with Read/Bash.`,
+    });
+  } else if (scannedPages.length > rendered) {
+    const more = scannedPages.length - rendered;
+    blocks.push({
+      type: 'text',
+      text: canvasImport
+        ? `(${more} more scanned page(s) not rendered; raise max_pages to see them.)`
+        : `(${more} scanned page(s) not rendered; PDF page rendering is unavailable in this build.)`,
+    });
+  }
+  return blocks;
 }
 
-async function readXlsx(buf: Buffer): Promise<string> {
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buf as unknown as ArrayBuffer);
-  const sheets: string[] = [];
-  let sheetCount = 0;
-  wb.eachSheet((ws) => {
-    if (sheetCount >= MAX_XLSX_SHEETS) return;
-    sheetCount += 1;
-    const lines: string[] = [];
-    let rows = 0;
-    let truncated = false;
-    ws.eachRow({ includeEmpty: false }, (row) => {
-      if (rows >= MAX_XLSX_ROWS_PER_SHEET) { truncated = true; return; }
-      rows += 1;
-      const values = Array.isArray(row.values) ? row.values.slice(1) : [];
-      lines.push(values.map((v) => csvEscape(cellToString(v))).join(','));
-    });
-    if (truncated) lines.push(`… (truncated at ${MAX_XLSX_ROWS_PER_SHEET} rows)`);
-    sheets.push(`### ${ws.name}\n${lines.join('\n')}`);
-  });
-  if (wb.worksheets.length > MAX_XLSX_SHEETS) {
-    sheets.push(`(… ${wb.worksheets.length - MAX_XLSX_SHEETS} more sheet(s) not shown)`);
+// Markdown can't carry bytes, so anydoc leaves embedded images as alt text and
+// keeps the bytes on the document model. A deck or a report is mostly those
+// images, so pull them back out — as image blocks, or OCR'd for a text-only model.
+async function readOfficeDoc(
+  buf: Buffer,
+  format: Format,
+  maxImages: number,
+  ocr: ((png: Buffer) => Promise<string | null>) | null,
+): Promise<Block[]> {
+  const markdown = (await toMarkdownBytes(buf, format)).trim();
+  const blocks: Block[] = [
+    { type: 'text', text: markdown || `(${format} has no extractable text)` },
+  ];
+  if (maxImages <= 0) return blocks;
+
+  // Second parse: anydoc has no single call returning markdown and assets both.
+  const assets = (await toDocument(buf, format)).assets.filter((a) =>
+    a.mediaType.startsWith('image/'),
+  );
+  for (const asset of assets.slice(0, maxImages)) {
+    if (ocr) {
+      const text = await ocr(asset.data);
+      if (text) blocks.push({ type: 'text', text: `--- embedded image (OCR) ---\n${text}` });
+      continue;
+    }
+    blocks.push({ type: 'image', data: asset.data.toString('base64'), mimeType: asset.mediaType });
   }
-  return sheets.join('\n\n');
+  if (assets.length > maxImages) {
+    blocks.push({
+      type: 'text',
+      text: `(${assets.length - maxImages} more embedded image(s) not shown; raise max_pages to see them.)`,
+    });
+  }
+  return blocks;
 }
 
 const nbSource = (src: unknown): string =>
@@ -263,7 +257,7 @@ export const createDocReadTool = (
   executionMode: 'sequential',
   label: 'Read Document',
   description:
-    'Extract the contents of an uploaded document into the model context. Handles PDF, Word (.docx), Excel (.xlsx) and Jupyter notebooks (.ipynb) by pulling out their text, spreadsheets as CSV, notebook cells, and images directly. Scanned/image-only PDF pages are rendered to images so a multimodal model can read them. For plain text/code/JSON or other files, prefer attachment_fetch.',
+    'Extract the contents of an uploaded document into the model context as Markdown. Handles PDF, Word (.doc/.docx), Excel (.xls/.xlsx), PowerPoint (.ppt/.pptx), OpenDocument (.odt/.ods/.odp), RTF, EPUB, Jupyter notebooks (.ipynb) and images. Images embedded in a document, and scanned/image-only PDF pages, are returned as images so a multimodal model can read them. For plain text/code/JSON or other files, prefer attachment_fetch.',
   parameters: DocReadParams,
   execute: async (_toolCallId, args: DocReadArgs) => {
     if (!context.attachmentStore || !context.attachmentStorage || !context.storeScope) {
@@ -346,25 +340,25 @@ export const createDocReadTool = (
       : null;
 
     try {
-      if (isPdf(mime, name)) {
+      const format = detectFormat(buf, name);
+      if (format === 'pdf') {
         const canvasImport = await loadCanvasImport();
         const blocks = await readPdf(buf, maxRenderPages, ocr, canvasImport);
         if (ocrUsed) blocks.push({ type: 'text', text: OCR_NOTE });
         return { content: blocks, details: { id: row.id, kind: 'pdf' } };
       }
-      if (isDocx(mime, name)) {
-        const { value } = await mammoth.extractRawText({ buffer: buf as unknown as Buffer });
+      // csv is already plain text; a markdown table would only pad it out. Handled
+      // here rather than left to isTextMime so a mislabelled .csv still reads.
+      if (format === 'csv') {
         return {
-          content: asTextContent(value.trim() || '(docx has no extractable text)'),
-          details: { id: row.id, kind: 'docx', chars: value.length },
+          content: asTextContent(buf.toString('utf8')),
+          details: { id: row.id, kind: 'csv', size: buf.length },
         };
       }
-      if (isXlsx(mime, name)) {
-        const text = await readXlsx(buf);
-        return {
-          content: asTextContent(text || '(xlsx has no rows)'),
-          details: { id: row.id, kind: 'xlsx' },
-        };
+      if (format) {
+        const blocks = await readOfficeDoc(buf, format as Format, maxRenderPages, ocr);
+        if (ocrUsed) blocks.push({ type: 'text', text: OCR_NOTE });
+        return { content: blocks, details: { id: row.id, kind: format } };
       }
       if (isNotebook(mime, name)) {
         const text = readNotebook(buf);
@@ -404,10 +398,16 @@ export const createDocReadTool = (
         };
       }
     } catch (err) {
+      // anydoc rejects with a ConvertErrorCode on `code` (encrypted, malformed,
+      // unsupported, …), which says more than the message alone.
       const msg = err instanceof Error ? err.message : String(err);
+      const code = (err as { code?: unknown })?.code;
       return {
         content: asTextContent(
-          formatJson({ ...summary, error: `failed to extract: ${msg}. Try the sandbox_path with Read/Bash.` }),
+          formatJson({
+            ...summary,
+            error: `failed to extract${typeof code === 'string' ? ` (${code})` : ''}: ${msg}. Try the sandbox_path with Read/Bash.`,
+          }),
         ),
         details: { id: row.id, kind: 'extract-error' },
       };
@@ -430,7 +430,7 @@ export const createDocReadTool = (
 const DOC_TOOLSET_DESCRIPTION = `\
 ### Documents
 
-\`doc_read\` extracts the contents of an uploaded document into the model context: PDF and Word (.docx) as text, Excel (.xlsx) as CSV, Jupyter notebooks (.ipynb) as cell sources, and images directly. Scanned/image-only PDF pages are rendered to images for a multimodal model to read. Pass an \`attachment_id\` from \`attachment_list\`. For plain text/code or other formats, use \`attachment_fetch\`.`;
+\`doc_read\` extracts the contents of an uploaded document into the model context as Markdown: PDF, Word (.doc/.docx), Excel (.xls/.xlsx), PowerPoint (.ppt/.pptx), OpenDocument (.odt/.ods/.odp), RTF and EPUB, plus Jupyter notebooks (.ipynb) as cell sources and images directly. Images embedded in a document, and scanned/image-only PDF pages, come through as images for a multimodal model to read. Pass an \`attachment_id\` from \`attachment_list\`. For plain text/code or other formats, use \`attachment_fetch\`.`;
 
 export const createDocToolset = (context: ToolContext): Toolset => ({
   id: 'doc',
