@@ -189,13 +189,27 @@ function readZipEntries(buf: Buffer): Map<string, Buffer> {
   return out;
 }
 
+// Hand-rolled: node:zlib only grew crc32() in Node 22.2, but this repo's
+// package.json declares "engines": { "node": ">=20" }. Don't swap this back
+// for zlib.crc32 — that breaks the suite on Node 20/21.
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(data: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of data) crc = CRC_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function writeZipStore(entries: Array<{ name: string; data: Buffer }>): Buffer {
   const localParts: Buffer[] = [];
   const centralParts: Buffer[] = [];
   let offset = 0;
   for (const { name, data } of entries) {
     const nameBuf = Buffer.from(name, 'utf8');
-    const crc = zlib.crc32(data);
+    const crc = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
