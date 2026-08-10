@@ -289,6 +289,22 @@ test('doc_read bounds the rendered image size for a large-format page', async ()
   );
 });
 
+test('doc_read records how long the PDF parse blocked', async () => {
+  const { pdfParseDurationMs } = await import('../src/metrics.js');
+  // prom-client's get() is async and returns { values: [...] }; the observation
+  // count lives in the entry whose metricName ends in `_count`.
+  const countOf = async (): Promise<number> =>
+    (await pdfParseDurationMs.get()).values.find((v) =>
+      v.metricName?.endsWith('_count'),
+    )?.value ?? 0;
+
+  const before = await countOf();
+  const pdf = makePdf('BT /F1 24 Tf 36 120 Td (TIMED) Tj ET');
+  await run(ctxFor(pdf, 'application/pdf', 'a.pdf'), { attachment_id: 'att_1' });
+
+  assert.equal(await countOf(), before + 1, 'the PDF parse should be observed once');
+});
+
 test('doc_read extracts cell sources from a Jupyter notebook', async () => {
   const nb = Buffer.from(
     JSON.stringify({

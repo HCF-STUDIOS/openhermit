@@ -64,3 +64,19 @@ export const agentMessagesTotal = new Counter({
   labelNames: ['agent_id', 'source'] as const,
   registers: [metricsRegistry],
 });
+
+// pdf-inspector's bindings are synchronous, so this duration is time the event
+// loop was blocked, not just wall clock. SLOW_PARSE_MS marks where that starts
+// to matter; see docs/superpowers/specs/2026-08-10-pdf-inspector-async-design.md
+export const SLOW_PARSE_MS = 250;
+
+export const pdfParseDurationMs = new Histogram({
+  name: 'openhermit_pdf_parse_duration_ms',
+  help: 'Event loop blocked by a synchronous pdf-inspector parse',
+  buckets: [10, 50, 100, 250, 500, 1000],
+  registers: [metricsRegistry],
+});
+
+export function recordPdfParse(ms: number): void {
+  pdfParseDurationMs.observe(ms);
+}

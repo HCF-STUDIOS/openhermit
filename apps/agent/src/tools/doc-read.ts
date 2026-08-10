@@ -15,6 +15,7 @@ import {
   asTextContent,
   formatJson,
 } from './shared.js';
+import { recordPdfParse, SLOW_PARSE_MS } from '../metrics.js';
 
 const DocReadParams = Type.Object({
   attachment_id: Type.String({
@@ -107,6 +108,7 @@ async function readPdf(
   // pdf-inspector is a synchronous native binding; it blocks the event loop for
   // the parse. ponytail: fine at doc_read's 20MB / 200-page ceiling (tens of ms);
   // move it to a worker thread if bigger documents ever get through.
+  const parseStart = performance.now();
   const { pageCount } = classifyPdf(buf);
   if (pageCount > MAX_PDF_PAGES) {
     return [{
@@ -125,6 +127,14 @@ async function readPdf(
     if (page.needsOcr) scannedPages.push(pageNo);
     else if (clean) textParts.push(`--- page ${pageNo} ---\n${clean}`);
     // else: a genuinely blank page — nothing to show and nothing to render.
+  }
+  const parseMs = performance.now() - parseStart;
+  recordPdfParse(parseMs);
+  if (parseMs > SLOW_PARSE_MS) {
+    console.warn(
+      `[doc_read] pdf-inspector blocked the event loop for ${Math.round(parseMs)}ms ` +
+        `across ${pageCount} page(s)`,
+    );
   }
 
   const blocks: Block[] = [];
