@@ -37,6 +37,11 @@ const RENDER_SCALE = 2;
 const RENDER_MAX_DIM = 2200;
 const MAX_PDF_PAGES = 200;
 const MAX_RENDER_PAGES = 10;
+// Input is capped at 20MB, so a single .docx/.pptx can carry several
+// multi-megabyte images; without a per-image ceiling those can push tens of
+// MB of base64 into the model context (the PDF path avoids this because
+// RENDER_SCALE/RENDER_MAX_DIM bound each rendered page instead).
+const MAX_EMBEDDED_IMAGE_BYTES = 2 * 1024 * 1024;
 const TESSDATA_CACHE = path.join(os.tmpdir(), 'openhermit-tessdata');
 
 // anydoc reads the signature each container specification designates, so a
@@ -154,22 +159,28 @@ async function readPdf(
     try {
       for (const pageNo of scannedPages) {
         if (rendered >= maxRenderPages) break;
-        const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
-        const scale = Math.min(RENDER_SCALE, RENDER_MAX_DIM / Math.max(vp.width, vp.height));
-        const png = Buffer.from(
-          await renderPageAsImage(pdf, pageNo, { canvasImport, scale }),
-        );
-        if (ocr) {
-          const text = await ocr(png);
-          if (text === null) {
-            // text-only model + OCR backend unavailable
-            blocks.push({ type: 'text', text: `--- page ${pageNo} ---\n(scanned page; OCR is unavailable in this build)` });
+        try {
+          const vp = (await pdf.getPage(pageNo)).getViewport({ scale: 1 });
+          const scale = Math.min(RENDER_SCALE, RENDER_MAX_DIM / Math.max(vp.width, vp.height));
+          const png = Buffer.from(
+            await renderPageAsImage(pdf, pageNo, { canvasImport, scale }),
+          );
+          if (ocr) {
+            const text = await ocr(png);
+            if (text === null) {
+              // text-only model + OCR backend unavailable
+              blocks.push({ type: 'text', text: `--- page ${pageNo} ---\n(scanned page; OCR is unavailable in this build)` });
+            } else {
+              blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
+            }
           } else {
-            blocks.push({ type: 'text', text: `--- page ${pageNo} (OCR) ---\n${text || '(no text found)'}` });
+            blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+            blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
           }
-        } else {
-          blocks.push({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
-          blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
+        } catch {
+          // One bad page (a malformed image XObject, an unsupported filter, …)
+          // must not sink the text already collected from every other page.
+          blocks.push({ type: 'text', text: `--- page ${pageNo} ---\n(could not render this scanned page)` });
         }
         rendered += 1;
       }
@@ -213,13 +224,20 @@ async function readOfficeDoc(
   if (maxImages <= 0) return blocks;
 
   // Second parse: anydoc has no single call returning markdown and assets both.
-  const assets = (await toDocument(buf, format)).assets.filter((a) =>
+  const allAssets = (await toDocument(buf, format)).assets.filter((a) =>
     a.mediaType.startsWith('image/'),
   );
+  const assets = allAssets.filter((a) => a.data.length <= MAX_EMBEDDED_IMAGE_BYTES);
+  const skippedForSize = allAssets.length - assets.length;
   for (const asset of assets.slice(0, maxImages)) {
     if (ocr) {
       const text = await ocr(asset.data);
-      if (text) blocks.push({ type: 'text', text: `--- embedded image (OCR) ---\n${text}` });
+      if (text === null) {
+        // text-only model + OCR backend unavailable
+        blocks.push({ type: 'text', text: `(embedded image; OCR is unavailable in this build)` });
+      } else if (text) {
+        blocks.push({ type: 'text', text: `--- embedded image (OCR) ---\n${text}` });
+      }
       continue;
     }
     blocks.push({ type: 'image', data: asset.data.toString('base64'), mimeType: asset.mediaType });
@@ -228,6 +246,12 @@ async function readOfficeDoc(
     blocks.push({
       type: 'text',
       text: `(${assets.length - maxImages} more embedded image(s) not shown; raise max_pages to see them.)`,
+    });
+  }
+  if (skippedForSize > 0) {
+    blocks.push({
+      type: 'text',
+      text: `(${skippedForSize} embedded image(s) skipped as too large; each exceeded doc_read's ${MAX_EMBEDDED_IMAGE_BYTES}-byte per-image limit.)`,
     });
   }
   return blocks;
