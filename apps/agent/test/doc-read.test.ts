@@ -42,9 +42,9 @@ function makePdf(streamContent: string): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
-// A single-page PDF whose only content is a JPEG covering the page — what a
-// real scan looks like. Rendering one needs pdf.js to have a working canvas
-// factory for image decoding, which makePdf's text-only pages never exercise.
+// A single-page PDF whose only content is a JPEG, i.e. what a real scan looks
+// like. Rendering one needs pdf.js to have a working canvas factory, which
+// makePdf's text-only pages never exercise.
 function makeScanPdf(label: string, w = 300, h = 200): Buffer {
   const canvas = createCanvas(w, h);
   const ctx = canvas.getContext('2d');
@@ -91,13 +91,10 @@ function makeScanPdf(label: string, w = 300, h = 200): Buffer {
   return Buffer.concat(parts);
 }
 
-// A 2-page PDF: page 1 has real extractable text, page 2 draws a real JPEG
-// through an XObject that lies about its dimensions (declares a 100000000 x
-// 100000000 image). unpdf's canvas backend rejects allocating a surface that
-// large ("Create skia surface failed"), which is a real, deterministic throw
-// out of renderPageAsImage — the "one corrupt scanned page among otherwise
-// good pages" case. (A JPEG with a garbled byte stream doesn't reproduce
-// this: pdf.js just logs a decode warning and renders the page blank.)
+// Page 1 has extractable text, page 2 draws a JPEG through an XObject that
+// declares a 100000000 x 100000000 image, so the canvas backend throws
+// ("Create skia surface failed") out of renderPageAsImage. A garbled JPEG
+// byte stream does not reproduce it: pdf.js just renders the page blank.
 function makeMixedFailurePdf(text: string, w = 300, h = 200): Buffer {
   const jpg = createCanvas(10, 10).toBuffer('image/jpeg', 90);
   const textContent = `BT /F1 24 Tf 36 120 Td (${text}) Tj ET`;
@@ -155,9 +152,8 @@ function makeMixedFailurePdf(text: string, w = 300, h = 200): Buffer {
   return Buffer.concat(parts);
 }
 
-// Minimal ZIP reader/writer (STORE method, no compression) built on node:zlib
-// alone. docx/pptx are ZIP containers; this lets a test rewrite one asset
-// (swap in an oversized image) without a zip library dependency.
+// Minimal ZIP reader/writer (STORE method). docx/pptx are ZIP containers, so
+// this lets a test swap one asset without a zip library dependency.
 function readZipEntries(buf: Buffer): Map<string, Buffer> {
   let eocd = -1;
   for (let i = buf.length - 22; i >= 0; i--) {
@@ -189,9 +185,8 @@ function readZipEntries(buf: Buffer): Map<string, Buffer> {
   return out;
 }
 
-// Hand-rolled: node:zlib only grew crc32() in Node 22.2, but this repo's
-// package.json declares "engines": { "node": ">=20" }. Don't swap this back
-// for zlib.crc32 — that breaks the suite on Node 20/21.
+// Hand-rolled because node:zlib only grew crc32() in Node 22.2 and package.json
+// declares "engines": { "node": ">=20" }. Swapping in zlib.crc32 breaks Node 20.
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n;
   for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
@@ -243,9 +238,8 @@ function writeZipStore(entries: Array<{ name: string; data: Buffer }>): Buffer {
   return Buffer.concat([localBuf, centralBuf, eocd]);
 }
 
-// Swaps sample-with-image.docx's embedded picture for a >2MB one (random
-// per-pixel noise so it doesn't compress away) to exercise the per-image size
-// cap through the real anydoc asset path, not a mocked one.
+// Swaps the fixture's embedded picture for a >2MB one (random noise, so it
+// doesn't compress away) to hit the size cap through the real anydoc path.
 function makeDocxWithOversizedImage(): Buffer {
   const original = readFileSync(new URL('./fixtures/sample-with-image.docx', import.meta.url));
   const entries = readZipEntries(original);

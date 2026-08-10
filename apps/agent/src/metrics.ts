@@ -66,8 +66,7 @@ export const agentMessagesTotal = new Counter({
 });
 
 // pdf-inspector's bindings are synchronous, so this duration is time the event
-// loop was blocked, not just wall clock. SLOW_PARSE_MS marks where that starts
-// to matter; see docs/superpowers/specs/2026-08-10-pdf-inspector-async-design.md
+// loop was blocked, not just wall clock.
 export const SLOW_PARSE_MS = 250;
 
 export const pdfParseDurationMs = new Histogram({

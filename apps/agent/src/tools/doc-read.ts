@@ -37,16 +37,13 @@ const RENDER_SCALE = 2;
 const RENDER_MAX_DIM = 2200;
 const MAX_PDF_PAGES = 200;
 const MAX_RENDER_PAGES = 10;
-// Input is capped at 20MB, so a single .docx/.pptx can carry several
-// multi-megabyte images; without a per-image ceiling those can push tens of
-// MB of base64 into the model context (the PDF path avoids this because
-// RENDER_SCALE/RENDER_MAX_DIM bound each rendered page instead).
+// A .docx/.pptx can hold several multi-megabyte images inside the 20MB input
+// cap; without a per-image ceiling they flood the model context as base64.
 const MAX_EMBEDDED_IMAGE_BYTES = 2 * 1024 * 1024;
 const TESSDATA_CACHE = path.join(os.tmpdir(), 'openhermit-tessdata');
 
-// anydoc reads the signature each container specification designates, so a
-// mislabelled mime type doesn't matter; the extension is only the fallback for
-// signature-less formats. Widened to string so we can compare it to literals.
+// formatFromBytes reads the file signature, so a mislabelled mime type doesn't
+// matter; the path is only the fallback for signature-less formats.
 const detectFormat = (buf: Buffer, name: string): string | null =>
   formatFromBytes(buf) ?? formatFromPath(name);
 
@@ -110,9 +107,8 @@ async function readPdf(
   ocr: ((png: Buffer) => Promise<string | null>) | null,
   canvasImport: CanvasImport | null,
 ): Promise<Block[]> {
-  // pdf-inspector is a synchronous native binding; it blocks the event loop for
-  // the parse. ponytail: fine at doc_read's 20MB / 200-page ceiling (tens of ms);
-  // move it to a worker thread if bigger documents ever get through.
+  // pdf-inspector is a synchronous native binding, so this blocks the event loop.
+  // ponytail: fine at doc_read's 20MB / 200-page ceiling, worker thread above it.
   const parseStart = performance.now();
   const { pageCount } = classifyPdf(buf);
   if (pageCount > MAX_PDF_PAGES) {
@@ -122,8 +118,7 @@ async function readPdf(
     }];
   }
 
-  // needsOcr is pdf-inspector's own verdict on the text layer (empty, GID-encoded
-  // fonts, garbage), so it replaces the old "did we get enough characters?" guess.
+  // needsOcr is pdf-inspector's own verdict on the text layer, not a character count.
   const textParts: string[] = [];
   const scannedPages: number[] = [];
   for (const page of extractPagesMarkdown(buf).pages) {
@@ -131,7 +126,7 @@ async function readPdf(
     const clean = page.markdown.trim();
     if (page.needsOcr) scannedPages.push(pageNo);
     else if (clean) textParts.push(`--- page ${pageNo} ---\n${clean}`);
-    // else: a genuinely blank page — nothing to show and nothing to render.
+    // else: a blank page, nothing to show and nothing to render.
   }
   const parseMs = performance.now() - parseStart;
   recordPdfParse(parseMs);
@@ -147,13 +142,11 @@ async function readPdf(
     blocks.push({ type: 'text', text: textParts.join('\n\n') });
   }
 
-  // pdf-inspector doesn't rasterise, so pages it flags for OCR still go through
-  // pdf.js. Only opened when there is actually something to render.
+  // pdf-inspector doesn't rasterise, so flagged pages still go through pdf.js.
   let rendered = 0;
   if (canvasImport && maxRenderPages > 0 && scannedPages.length > 0) {
-    // The factory has to go on the proxy: unpdf only attaches its own when
-    // renderPageAsImage opens the document, and pdf.js needs a working one to
-    // decode raster images — i.e. every page worth rendering here.
+    // The factory has to go on the proxy: unpdf only attaches its own inside
+    // renderPageAsImage, and pdf.js needs one to decode raster images.
     const CanvasFactory = await createIsomorphicCanvasFactory(canvasImport);
     const pdf = await getDocumentProxy(new Uint8Array(buf), { CanvasFactory });
     try {
@@ -178,8 +171,7 @@ async function readPdf(
             blocks.push({ type: 'text', text: `(rendered page ${pageNo} as an image to read)` });
           }
         } catch {
-          // One bad page (a malformed image XObject, an unsupported filter, …)
-          // must not sink the text already collected from every other page.
+          // One bad page must not sink the text collected from every other page.
           blocks.push({ type: 'text', text: `--- page ${pageNo} ---\n(could not render this scanned page)` });
         }
         rendered += 1;
@@ -209,8 +201,7 @@ async function readPdf(
 }
 
 // Markdown can't carry bytes, so anydoc leaves embedded images as alt text and
-// keeps the bytes on the document model. A deck or a report is mostly those
-// images, so pull them back out — as image blocks, or OCR'd for a text-only model.
+// keeps the bytes on the document model. A deck is mostly those images.
 async function readOfficeDoc(
   buf: Buffer,
   format: Format,
@@ -381,8 +372,7 @@ export const createDocReadTool = (
         if (ocrUsed) blocks.push({ type: 'text', text: OCR_NOTE });
         return { content: blocks, details: { id: row.id, kind: 'pdf' } };
       }
-      // csv is already plain text; a markdown table would only pad it out. Handled
-      // here rather than left to isTextMime so a mislabelled .csv still reads.
+      // csv is plain text already; a markdown table would only pad it out.
       if (format === 'csv') {
         return {
           content: asTextContent(buf.toString('utf8')),
@@ -432,8 +422,7 @@ export const createDocReadTool = (
         };
       }
     } catch (err) {
-      // anydoc rejects with a ConvertErrorCode on `code` (encrypted, malformed,
-      // unsupported, …), which says more than the message alone.
+      // anydoc puts a ConvertErrorCode on `code`, which says more than the message.
       const msg = err instanceof Error ? err.message : String(err);
       const code = (err as { code?: unknown })?.code;
       return {
