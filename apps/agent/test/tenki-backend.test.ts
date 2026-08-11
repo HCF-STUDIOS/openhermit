@@ -38,7 +38,7 @@ test('Tenki exec preserves normal non-zero command results', async () => {
     return session;
   } };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test' }, context as never, client as never,
+    { type: 'tenki' }, context as never, client as never,
   );
 
   const result = await backend.exec('exit 42');
@@ -46,7 +46,7 @@ test('Tenki exec preserves normal non-zero command results', async () => {
   assert.equal(result.stderr, 'err');
   assert.equal(result.exitCode, 42);
   assert.ok(result.durationMs >= 0);
-  assert.equal(createOptions?.projectId, 'project-test');
+  assert.ok(createOptions && !('projectId' in createOptions));
 });
 
 test('Tenki exec kills timed-out process and returns 137', async () => {
@@ -57,7 +57,7 @@ test('Tenki exec kills timed-out process and returns 137', async () => {
     closeIfOpen: async () => undefined,
   };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test', timeout_ms: 1 }, context as never,
+    { type: 'tenki', timeout_ms: 1 }, context as never,
     { createAndWait: async () => session } as never,
   );
 
@@ -74,7 +74,7 @@ test('Tenki ensure serializes concurrent sandbox creation', async () => {
     id: 'session-1', state: 'RUNNING', closeIfOpen: async () => undefined,
   };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test' }, context as never,
+    { type: 'tenki' }, context as never,
     { createAndWait: async () => { creates += 1; await gate; return session; } } as never,
   );
 
@@ -94,7 +94,7 @@ test('Tenki exec clears timeout when process handle rejects', async () => {
     run: () => processHandle(Promise.reject(new Error('transport'))),
   };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test', timeout_ms: 60_000 }, context as never,
+    { type: 'tenki', timeout_ms: 60_000 }, context as never,
     { createAndWait: async () => session } as never,
   );
   globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
@@ -113,7 +113,7 @@ test('Tenki exec clears timeout when process handle rejects', async () => {
 test('Tenki reconnect does not create a duplicate after auth failure', async () => {
   let created = false;
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test' },
+    { type: 'tenki' },
     {
       ...context,
       getRuntimeState: async () => ({ tenki: { sessionId: 'old', cwd: '/home/tenki', updatedAt: 'now' } }),
@@ -140,7 +140,7 @@ test('Tenki sessionless skill sync executes immediately without persistence hook
     closeIfOpen: async () => undefined,
   };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test' }, context as never,
+    { type: 'tenki' }, context as never,
     { createAndWait: async () => session } as never,
   );
 
@@ -157,7 +157,7 @@ test('Tenki shutdown keeps live handle when pause fails', async () => {
     closeIfOpen: async () => undefined,
   };
   const backend = new TenkiExecBackend(
-    { type: 'tenki', project_id: 'project-test' }, context as never,
+    { type: 'tenki' }, context as never,
     { createAndWait: async () => { creates += 1; return session; } } as never,
   );
   await backend.ensure();

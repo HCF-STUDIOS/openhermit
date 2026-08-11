@@ -56,7 +56,6 @@ export class TenkiExecBackend implements ExecBackend {
   readonly files: TenkiFileBackend;
 
   private readonly cpuCores: number;
-  private readonly projectId: string;
   private readonly workspaceId: string | undefined;
   private readonly memoryMb: number;
   private readonly diskSizeGb: number;
@@ -75,7 +74,6 @@ export class TenkiExecBackend implements ExecBackend {
     this.label = config.label ?? 'Tenki';
     this.username = TENKI_DEFAULT_USERNAME;
     this.agentHome = config.agent_home ?? TENKI_DEFAULT_AGENT_HOME;
-    this.projectId = config.project_id;
     this.workspaceId = config.workspace_id;
     this.cpuCores = config.cpu_cores ?? TENKI_DEFAULT_CPU_CORES;
     this.memoryMb = config.memory_mb ?? TENKI_DEFAULT_MEMORY_MB;
@@ -153,7 +151,6 @@ export class TenkiExecBackend implements ExecBackend {
     }
 
     const session = await client.createAndWait({
-      projectId: this.projectId,
       ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
       cpuCores: this.cpuCores,
       memoryMb: this.memoryMb,

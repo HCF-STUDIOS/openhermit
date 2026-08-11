@@ -60,7 +60,7 @@
     "@openhermit/shared": "0.2.0",
     "@openhermit/store": "0.2.0",
     "@openhermit/voice": "0.2.0",
-    "@tenkicloud/sandbox": "^0.3.6",
+    "@tenkicloud/sandbox": "^0.5.4",
     "croner": "^10.0.1",
     "defuddle": "^0.11.0",
     "e2b": "^2.19.4",
