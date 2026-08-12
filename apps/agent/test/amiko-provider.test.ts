@@ -196,3 +196,30 @@ test('AMIKO_BASE_URL overrides the router endpoint', async () => {
   await listProviderCatalogWithDynamic();
   assert.deepEqual(urls, ['http://localhost:4141/api/v1/models']);
 });
+
+// --- image modality ---
+
+test('amiko-routed models report image input, so doc_read sends image blocks', () => {
+  // doc_read routes on modelSupportsImageInput, which agent-runner derives from
+  // resolveModel(...).input. Lose the modality and every image silently OCRs.
+  for (const id of [
+    'google/gemini-3.1-flash-lite-preview',
+    'google/gemini-3-flash-preview',
+    'anthropic/claude-sonnet-4.5',
+  ]) {
+    const amiko = resolveModel(modelConfig('amiko', id)) as { input?: string[] };
+    const openrouter = resolveModel(modelConfig('openrouter', id)) as { input?: string[] };
+    assert.deepEqual(
+      amiko.input,
+      openrouter.input,
+      `amiko must borrow ${id}'s modalities from the openrouter catalogue`,
+    );
+    assert.ok(amiko.input?.includes('image'), `${id} via amiko should accept images`);
+  }
+});
+
+test('a text-only model routed through amiko still resolves as text-only', () => {
+  // The other half: doc_read must OCR rather than ship blocks this model can't read.
+  const m = resolveModel(modelConfig('amiko', 'openai/gpt-oss-120b')) as { input?: string[] };
+  assert.deepEqual(m.input, ['text']);
+});
