@@ -76,6 +76,7 @@ import {
   type AuthResolverOptions,
   type JwtConfig,
   type UserAuthProvider,
+  enforceSenderIdentity,
   resolveAuth,
   signJwt,
   tokensMatch,
@@ -1262,6 +1263,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       throw new ValidationError('Invalid SessionMessage payload.');
     }
 
+    // Security: the runtime resolves this message's acting identity and role
+    // from `payload.sender`. Reject a sender the authenticated caller isn't
+    // entitled to assert — before any side effect (attachment fetch, post) —
+    // so a low-privilege token can't impersonate the owner (e.g. forge
+    // `cli:root`) and unlock owner-gated tools.
+    enforceSenderIdentity(auth, payload.sender);
+
     // URL-passthrough: convert `{ url, !id }` attachments into real
     // session_attachments rows (fetch + persist + materialize) before
     // forwarding. Mutates `payload.attachments` in place. Fetch failures
@@ -1291,15 +1299,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         delete payload.attachments;
       } else {
         payload.attachments = resolvedAttachments;
-      }
-    }
-
-    // Channel namespace enforcement
-    if (auth.mode === 'channel' && auth.channelNamespace && payload.sender) {
-      if (payload.sender.channel !== auth.channelNamespace) {
-        throw new ValidationError(
-          `Channel namespace violation: channel "${auth.channelNamespace}" cannot declare sender identity for "${payload.sender.channel}".`,
-        );
       }
     }
 

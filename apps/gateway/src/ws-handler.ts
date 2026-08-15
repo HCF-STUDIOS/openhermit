@@ -21,8 +21,10 @@ import {
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 
 import type { AgentInstanceManager } from './agent-instance.js';
+import { UnauthorizedError } from '@openhermit/shared';
+
 import type { AuthContext, AuthResolverOptions } from './auth.js';
-import { resolveAuth } from './auth.js';
+import { enforceSenderIdentity, resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
 
 const WS_PING_INTERVAL_MS = 30_000;
@@ -156,6 +158,11 @@ const handleRequest = async (
           return;
         }
         await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        // Security: `sender` drives the runtime's per-message identity/role
+        // resolution, so a caller may only assert a sender it is entitled to
+        // (see enforceSenderIdentity). Blocks owner impersonation via a
+        // forged `cli:root` sender.
+        enforceSenderIdentity(conn.auth, p.sender as { channel?: string; channelUserId?: string } | undefined);
         const message = {
           text: p.text,
           ...(p.messageId !== undefined ? { messageId: p.messageId } : {}),
@@ -317,6 +324,10 @@ const handleRequest = async (
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof SessionAccessDeniedError) {
       sendError(ws, id, error.wsCode, message);
+      return;
+    }
+    if (error instanceof UnauthorizedError) {
+      sendError(ws, id, 'UNAUTHORIZED', message);
       return;
     }
     sendError(ws, id, 'INTERNAL_ERROR', message);

@@ -20,6 +20,8 @@
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
+import { UnauthorizedError } from '@openhermit/shared';
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 /** Verified identity attached to every authenticated request. */
@@ -50,6 +52,62 @@ export interface AuthContext {
    * Channel-declared sender identities must match this namespace.
    */
   channelNamespace?: string;
+}
+
+/**
+ * Guard a caller-supplied message `sender` against the authenticated
+ * principal.
+ *
+ * The agent runtime derives each message's acting identity — and therefore
+ * its role, including `owner`, which gates privileged tools like `exec` —
+ * from `message.sender` (see AgentRunner.resolveMessageSender). That makes
+ * `sender` security-critical: whoever can name an arbitrary sender inherits
+ * that identity's role. Left unchecked, a low-privilege caller could set
+ * `sender = { channel: 'cli', channelUserId: 'root' }`, be resolved as the
+ * agent owner, and unlock owner-only tools — the 2026-08-11 fleet-wide
+ * exec/RCE incident. This clamps who may assert what, per auth mode:
+ *
+ *   - `admin`: fully trusted; may assert any sender.
+ *   - `channel`: a channel-service token speaks for many users, but only
+ *     inside its own channel. Require a namespace (fail closed if the token
+ *     has none) and require `sender.channel` to equal it — so a channel can
+ *     never assert an identity that lives in a different channel.
+ *   - `user`: the token is one specific person; it may only send as itself.
+ *     A `sender` naming a different (channel, channelUserId) is rejected.
+ *
+ * Throws {@link UnauthorizedError} on any disallowed assertion.
+ */
+export function enforceSenderIdentity(
+  auth: AuthContext,
+  sender: { channel?: string; channelUserId?: string } | undefined,
+): void {
+  if (!sender) return;
+  if (auth.mode === 'admin') return;
+
+  if (auth.mode === 'channel') {
+    if (!auth.channelNamespace) {
+      throw new UnauthorizedError(
+        'Channel token without a namespace cannot declare a sender identity.',
+      );
+    }
+    if (sender.channel !== undefined && sender.channel !== auth.channelNamespace) {
+      throw new UnauthorizedError(
+        `Channel namespace violation: "${auth.channelNamespace}" cannot declare sender identity for "${sender.channel}".`,
+      );
+    }
+    return;
+  }
+
+  // user mode: a JWT identifies exactly one person, so it may only speak as
+  // itself. Any divergent channel/channelUserId is an impersonation attempt.
+  if (
+    (sender.channel !== undefined && sender.channel !== auth.channel) ||
+    (sender.channelUserId !== undefined && sender.channelUserId !== auth.channelUserId)
+  ) {
+    throw new UnauthorizedError(
+      'A user token may only send messages as its own identity.',
+    );
+  }
 }
 
 /**
