@@ -430,3 +430,247 @@ export interface ScheduleRunRecord {
   durationMs?: number;
   error?: string;
 }
+
+// ─── Deep Research (docs/deep-research-design.md §18) ───────────────────────
+// JSON blob columns (plan, source policy, budgets, usage, working state,
+// report, locators, quality) are validated and typed by the agent runtime;
+// the store treats them as opaque objects.
+
+export type ResearchRunStatus =
+  | 'created'
+  | 'planning'
+  | 'awaiting_plan_approval'
+  | 'queued'
+  | 'researching'
+  | 'synthesizing'
+  | 'paused'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+  | 'budget_exhausted';
+
+export type ResearchResumePhase = 'planning' | 'researching' | 'synthesizing';
+
+export type ResearchStepStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+  | 'invalidated';
+
+export type ResearchSourceStatus =
+  | 'candidate'
+  | 'fetched'
+  | 'blocked'
+  | 'failed'
+  | 'unsupported'
+  | 'duplicate';
+
+export interface ResearchRunRecord {
+  runId: string;
+  agentId: string;
+  sessionId: string;
+  requestedByUserId: string | null;
+  clientRequestId: string | null;
+  status: ResearchRunStatus;
+  resumePhase: ResearchResumePhase | null;
+  terminalReason: string | null;
+  depth: string;
+  objective: string;
+  planJson: Record<string, unknown> | null;
+  planVersion: number;
+  sourcePolicyJson: Record<string, unknown>;
+  budgetJson: Record<string, unknown>;
+  usageJson: Record<string, unknown>;
+  workingStateJson: Record<string, unknown>;
+  reportJson: Record<string, unknown> | null;
+  pauseRequested: boolean;
+  cancelRequested: boolean;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface ResearchRunCreateInput {
+  runId?: string;
+  agentId: string;
+  sessionId: string;
+  requestedByUserId?: string | null;
+  clientRequestId?: string | null;
+  depth: string;
+  objective: string;
+  sourcePolicyJson: Record<string, unknown>;
+  budgetJson: Record<string, unknown>;
+}
+
+export interface ResearchRunPatch {
+  status?: ResearchRunStatus;
+  resumePhase?: ResearchResumePhase | null;
+  terminalReason?: string | null;
+  planJson?: Record<string, unknown>;
+  planVersion?: number;
+  sourcePolicyJson?: Record<string, unknown>;
+  budgetJson?: Record<string, unknown>;
+  usageJson?: Record<string, unknown>;
+  workingStateJson?: Record<string, unknown>;
+  reportJson?: Record<string, unknown> | null;
+  pauseRequested?: boolean;
+  cancelRequested?: boolean;
+  lastError?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface ResearchStepRecord {
+  stepId: string;
+  runId: string;
+  agentId: string;
+  iteration: number;
+  attempt: number;
+  kind: string;
+  status: ResearchStepStatus;
+  dedupeKey: string;
+  questionIds: string[];
+  inputJson: Record<string, unknown>;
+  outputJson: Record<string, unknown>;
+  usageJson: Record<string, unknown>;
+  summary: string | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface ResearchStepCreateInput {
+  stepId?: string;
+  runId: string;
+  agentId: string;
+  iteration: number;
+  kind: string;
+  dedupeKey: string;
+  questionIds?: string[];
+  inputJson?: Record<string, unknown>;
+  summary?: string | null;
+}
+
+export interface ResearchStepPatch {
+  status?: ResearchStepStatus;
+  attempt?: number;
+  outputJson?: Record<string, unknown>;
+  usageJson?: Record<string, unknown>;
+  summary?: string | null;
+  error?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface ResearchSourceRecord {
+  sourceId: string;
+  runId: string;
+  agentId: string;
+  kind: string;
+  status: ResearchSourceStatus;
+  url: string | null;
+  canonicalUrl: string | null;
+  canonicalUrlHash: string | null;
+  title: string | null;
+  publisher: string | null;
+  domain: string | null;
+  author: string | null;
+  publishedAt: string | null;
+  retrievedAt: string | null;
+  mimeType: string | null;
+  sourceClass: string;
+  qualityJson: Record<string, unknown>;
+  metadataJson: Record<string, unknown>;
+  discoveredByStepId: string;
+  snapshotText: string | null;
+  contentHash: string | null;
+  contentBytes: number | null;
+  truncated: boolean;
+  duplicateOfSourceId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchSourceCreateInput {
+  sourceId?: string;
+  runId: string;
+  agentId: string;
+  kind?: string;
+  url?: string | null;
+  canonicalUrl?: string | null;
+  canonicalUrlHash?: string | null;
+  title?: string | null;
+  publisher?: string | null;
+  domain?: string | null;
+  publishedAt?: string | null;
+  metadataJson?: Record<string, unknown>;
+  discoveredByStepId: string;
+}
+
+export interface ResearchSourcePatch {
+  status?: ResearchSourceStatus;
+  url?: string | null;
+  canonicalUrl?: string | null;
+  canonicalUrlHash?: string | null;
+  title?: string | null;
+  publisher?: string | null;
+  domain?: string | null;
+  author?: string | null;
+  publishedAt?: string | null;
+  retrievedAt?: string | null;
+  mimeType?: string | null;
+  sourceClass?: string;
+  qualityJson?: Record<string, unknown>;
+  metadataJson?: Record<string, unknown>;
+  snapshotText?: string | null;
+  contentHash?: string | null;
+  contentBytes?: number | null;
+  truncated?: boolean;
+  duplicateOfSourceId?: string | null;
+  lastError?: string | null;
+}
+
+export interface ResearchEvidenceRecord {
+  evidenceId: string;
+  runId: string;
+  agentId: string;
+  sourceId: string;
+  extractionStepId: string;
+  questionIds: string[];
+  excerpt: string;
+  locatorJson: Record<string, unknown>;
+  claimKey: string | null;
+  stance: string;
+  normalizedValue: string | null;
+  scopeJson: Record<string, unknown>;
+  relevanceBasisPoints: number;
+  confidenceBasisPoints: number;
+  outOfScope: boolean;
+  evidenceHash: string;
+  createdAt: string;
+}
+
+export interface ResearchEvidenceCreateInput {
+  evidenceId?: string;
+  runId: string;
+  agentId: string;
+  sourceId: string;
+  extractionStepId: string;
+  questionIds: string[];
+  excerpt: string;
+  locatorJson: Record<string, unknown>;
+  claimKey?: string | null;
+  stance: string;
+  normalizedValue?: string | null;
+  scopeJson?: Record<string, unknown>;
+  relevanceBasisPoints?: number;
+  confidenceBasisPoints?: number;
+  evidenceHash: string;
+}

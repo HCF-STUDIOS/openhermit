@@ -22,6 +22,18 @@ import type {
   MemoryUpdateInput,
   PersistedSessionIndexEntry,
   PolicyRecord,
+  ResearchEvidenceCreateInput,
+  ResearchEvidenceRecord,
+  ResearchRunCreateInput,
+  ResearchRunPatch,
+  ResearchRunRecord,
+  ResearchRunStatus,
+  ResearchSourceCreateInput,
+  ResearchSourcePatch,
+  ResearchSourceRecord,
+  ResearchStepCreateInput,
+  ResearchStepPatch,
+  ResearchStepRecord,
   SandboxCreateInput,
   SandboxRecord,
   SandboxStatus,
@@ -369,6 +381,103 @@ export interface AttachmentStorage {
   delete(storageKey: string): Promise<void>;
 }
 
+/**
+ * Durable Deep Research state (docs/deep-research-design.md §18): runs with
+ * compare-and-set status/plan-version transitions, idempotent workflow steps,
+ * normalized source snapshots, and hash-idempotent evidence.
+ */
+export interface ResearchStore {
+  // Runs
+  createRun(input: ResearchRunCreateInput): Promise<ResearchRunRecord>;
+  getRun(scope: StoreScope, runId: string): Promise<ResearchRunRecord | undefined>;
+  getRunByClientRequestId(
+    scope: StoreScope,
+    sessionId: string,
+    clientRequestId: string,
+  ): Promise<ResearchRunRecord | undefined>;
+  listRuns(scope: StoreScope, sessionId: string, options?: { limit?: number }): Promise<ResearchRunRecord[]>;
+  /** The (at most one) nonterminal run in a session. */
+  findActiveRun(scope: StoreScope, sessionId: string): Promise<ResearchRunRecord | undefined>;
+  /** Cross-session scan by status — reconciliation after unclean restart. */
+  listRunsByStatus(scope: StoreScope, statuses: ResearchRunStatus[]): Promise<ResearchRunRecord[]>;
+  /**
+   * Compare-and-set transition: patch applies only when the current status
+   * is in `expectStatus`. Returns the updated record, or undefined when the
+   * run is missing or in a different status (caller decides how to surface
+   * the conflict).
+   */
+  transitionRun(
+    scope: StoreScope,
+    runId: string,
+    expectStatus: ResearchRunStatus[],
+    patch: ResearchRunPatch,
+  ): Promise<ResearchRunRecord | undefined>;
+  /**
+   * Optimistic plan update: applies only when plan_version matches
+   * `expectedVersion`; bumps the version. Undefined on conflict (409).
+   */
+  updatePlan(
+    scope: StoreScope,
+    runId: string,
+    expectedVersion: number,
+    patch: { planJson: Record<string, unknown>; sourcePolicyJson?: Record<string, unknown> },
+  ): Promise<ResearchRunRecord | undefined>;
+  /** Non-CAS incremental persist of usage/working-state/control fields. */
+  patchRun(scope: StoreScope, runId: string, patch: ResearchRunPatch): Promise<void>;
+
+  // Steps
+  /**
+   * Insert a pending step; idempotent by (run_id, dedupe_key) — when the key
+   * already exists the existing row is returned with `created: false`.
+   */
+  insertStep(input: ResearchStepCreateInput): Promise<{ step: ResearchStepRecord; created: boolean }>;
+  updateStep(scope: StoreScope, stepId: string, patch: ResearchStepPatch): Promise<void>;
+  listSteps(scope: StoreScope, runId: string, options?: { limit?: number }): Promise<ResearchStepRecord[]>;
+  /** running → interrupted; used on shutdown/restart reconciliation. */
+  markRunningStepsInterrupted(scope: StoreScope, runId: string): Promise<number>;
+  /** pending → invalidated; used when a refinement changes the plan. */
+  invalidatePendingSteps(scope: StoreScope, runId: string): Promise<number>;
+
+  // Sources
+  /**
+   * Insert candidate sources, idempotent per (run_id, canonical_url_hash),
+   * and mark the discovering step completed — one transaction (§15).
+   * Returns the effective source rows (existing rows for duplicates).
+   */
+  completeSearchStep(
+    scope: StoreScope,
+    stepId: string,
+    stepPatch: ResearchStepPatch,
+    candidates: ResearchSourceCreateInput[],
+  ): Promise<ResearchSourceRecord[]>;
+  getSource(scope: StoreScope, runId: string, sourceId: string): Promise<ResearchSourceRecord | undefined>;
+  listSources(scope: StoreScope, runId: string, options?: { status?: string; limit?: number }): Promise<ResearchSourceRecord[]>;
+  updateSource(scope: StoreScope, sourceId: string, patch: ResearchSourcePatch): Promise<void>;
+  findSourceByContentHash(
+    scope: StoreScope,
+    runId: string,
+    contentHash: string,
+    excludeSourceId?: string,
+  ): Promise<ResearchSourceRecord | undefined>;
+
+  // Evidence
+  /**
+   * Insert evidence idempotently by (run_id, evidence_hash). Returns the
+   * effective records (existing rows where hashes already existed).
+   */
+  insertEvidence(inputs: ResearchEvidenceCreateInput[]): Promise<ResearchEvidenceRecord[]>;
+  listEvidence(
+    scope: StoreScope,
+    runId: string,
+    options?: { sourceId?: string; includeOutOfScope?: boolean },
+  ): Promise<ResearchEvidenceRecord[]>;
+  markEvidenceOutOfScope(scope: StoreScope, runId: string, evidenceIds: string[]): Promise<void>;
+
+  // Cleanup
+  /** Transactional evidence → sources → steps → runs removal for a session. */
+  deleteBySession(scope: StoreScope, sessionId: string): Promise<void>;
+}
+
 export interface InternalStateStore {
   sessions: SessionStore;
   messages: MessageStore;
@@ -376,5 +485,6 @@ export interface InternalStateStore {
   instructions: InstructionStore;
   users: UserStore;
   schedules: ScheduleStore;
+  research: ResearchStore;
   close(): Promise<void>;
 }

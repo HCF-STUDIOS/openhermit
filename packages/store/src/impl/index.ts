@@ -10,6 +10,7 @@ import { DbInstructionStore } from './instruction-store.js';
 import { DbUserStore } from './user-store.js';
 import { DbAgentStore } from './agent-store.js';
 import { DbScheduleStore } from './schedule-store.js';
+import { DbResearchStore } from './research-store.js';
 
 export type DrizzleDb = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -24,6 +25,7 @@ export class DbInternalStateStore implements InternalStateStore {
   readonly instructions: DbInstructionStore;
   readonly users: DbUserStore;
   readonly schedules: DbScheduleStore;
+  readonly research: DbResearchStore;
 
   private constructor(
     private readonly pool: pg.Pool,
@@ -35,6 +37,7 @@ export class DbInternalStateStore implements InternalStateStore {
     this.instructions = new DbInstructionStore(db);
     this.users = new DbUserStore(db);
     this.schedules = new DbScheduleStore(db);
+    this.research = new DbResearchStore(db);
   }
 
   static async open(databaseUrl?: string): Promise<DbInternalStateStore> {
@@ -89,6 +92,7 @@ export {
   type AgentChannelLoaded,
 } from './db-agent-channel-store.js';
 export { DbChannelCredentialStore } from './channel-credential-store.js';
+export { DbResearchStore } from './research-store.js';
 export { runMigrations } from './migrator.js';
 export { DbMetaStore } from './meta-store.js';
 export { DbConsumedJtiStore } from './consumed-jti-store.js';
