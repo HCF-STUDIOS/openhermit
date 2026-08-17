@@ -1,5 +1,13 @@
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, ImageContent, Message, TextContent } from '@mariozechner/pi-ai';
+import type {
+  AssistantMessage,
+  ImageContent,
+  Message,
+  TextContent,
+  ThinkingContent,
+  ToolCall,
+  UserMessage,
+} from '@mariozechner/pi-ai';
 
 import type { SessionAttachment, SessionMessage } from '@openhermit/protocol';
 import type { AttachmentStorage, AttachmentStore } from '@openhermit/store';
@@ -48,6 +56,110 @@ export const isEmptyAssistantTurn = (message: AgentMessage): boolean => {
  */
 export const stripEmptyAssistantTurns = (messages: AgentMessage[]): AgentMessage[] =>
   messages.filter((message) => !isEmptyAssistantTurn(message));
+
+const toUserBlocks = (
+  content: UserMessage['content'],
+): (TextContent | ImageContent)[] =>
+  typeof content === 'string'
+    ? content.length > 0
+      ? [{ type: 'text', text: content }]
+      : []
+    : content;
+
+/**
+ * Merge runs of consecutive `{type:'text'}` blocks into one, joining with a
+ * blank line. Non-text blocks (images, toolCalls, thinking) pass through
+ * verbatim and in order. Inputs are never mutated — a coalesced text block is
+ * a fresh object — so the caller's original messages stay untouched (this is a
+ * request-only transform).
+ */
+const coalesceTextBlocks = <B extends { type: string }>(blocks: B[]): B[] => {
+  const out: B[] = [];
+  for (const block of blocks) {
+    const prev = out[out.length - 1];
+    if (
+      block.type === 'text' &&
+      prev &&
+      prev.type === 'text'
+    ) {
+      out[out.length - 1] = {
+        ...prev,
+        text: `${(prev as unknown as TextContent).text}\n\n${(block as unknown as TextContent).text}`,
+      };
+    } else {
+      out.push(block);
+    }
+  }
+  return out;
+};
+
+const mergeUserRun = (run: UserMessage[]): UserMessage => {
+  const blocks = coalesceTextBlocks(run.flatMap((m) => toUserBlocks(m.content)));
+  return { ...run[run.length - 1]!, role: 'user', content: blocks };
+};
+
+const mergeAssistantRun = (run: AssistantMessage[]): AssistantMessage => {
+  const blocks = coalesceTextBlocks(
+    run.flatMap((m) => m.content as (TextContent | ThinkingContent | ToolCall)[]),
+  );
+  const last = run[run.length - 1]!;
+  const hasToolCall = blocks.some((b) => b.type === 'toolCall');
+  return {
+    ...last,
+    role: 'assistant',
+    content: blocks,
+    // A merged assistant that still carries a toolCall must be reported as a
+    // tool-use turn so the toolResult(s) that follow it stay valid.
+    stopReason: hasToolCall ? 'toolUse' : last.stopReason,
+  };
+};
+
+/**
+ * Coalesce consecutive same-role user/assistant messages so the transcript
+ * strictly alternates. Strict providers (notably MiniMax, `400 invalid params
+ * (2013)`) reject two user or two assistant messages in a row, whereas
+ * Anthropic silently merges them.
+ *
+ * Two production failure modes this fixes, both seen wedging a single
+ * long-lived session forever:
+ *  1. A failed turn records an empty error-placeholder assistant turn;
+ *     `stripEmptyAssistantTurns` drops it, leaving the failed turn's user
+ *     message adjacent to the next user message. Each subsequent failure adds
+ *     another orphan user turn, so the run of consecutive user messages grows
+ *     and every future turn 400s — a self-perpetuating lock.
+ *  2. An assistant text turn landing between a toolCall and its toolResult
+ *     (`assistant(toolCall) → assistant(text) → toolResult`) — merging the two
+ *     assistant turns restores `assistant(toolCall,text) → toolResult`.
+ *
+ * `toolResult` messages pass through untouched: consecutive toolResults are
+ * legitimate parallel results and must not be merged. Request-only — callers
+ * apply this to the wire payload, never to persisted state.
+ */
+export const normalizeMessageAlternation = (
+  messages: AgentMessage[],
+): AgentMessage[] => {
+  const out: AgentMessage[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const role = (messages[i] as Message).role;
+    if (role !== 'user' && role !== 'assistant') {
+      out.push(messages[i]!);
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < messages.length && (messages[j] as Message).role === role) j += 1;
+    if (j - i === 1) {
+      out.push(messages[i]!);
+    } else if (role === 'user') {
+      out.push(mergeUserRun(messages.slice(i, j) as unknown as UserMessage[]));
+    } else {
+      out.push(mergeAssistantRun(messages.slice(i, j) as unknown as AssistantMessage[]));
+    }
+    i = j;
+  }
+  return out;
+};
 
 // Innermost pair only: body may not contain another reasoning open tag. Used
 // iteratively so nested same-name tags do not leave residual close markup.

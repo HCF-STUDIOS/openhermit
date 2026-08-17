@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed** a session-wedge where strict providers (notably MiniMax, `400 invalid params (2013)`) rejected every turn of a long-lived session forever. Before each LLM call the request payload is now normalized to strictly alternate user/assistant turns (`normalizeMessageAlternation`): consecutive same-role messages are coalesced. This unwedges two production failure modes — (1) failed turns whose empty error-placeholder was stripped left orphan user messages that accumulated into a non-alternating run, and (2) an assistant text turn landing between a `toolCall` and its `toolResult`. The transform is request-only; persisted history is untouched, and `toolResult` messages (parallel results) are never merged.
 - **Changed** Supabase attachment storage to prefer a new-style Supabase secret API key (`sb_secret_…`). The key now resolves from `SUPABASE_SERVICE_ROLE_KEY` or the new `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`. `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY` is **deprecated** — it still works as a fallback but logs a warning; rename it to `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`. The legacy JWT service-role key continues to work.
 
 ## SDK 0.5.1 — 2026-05-18

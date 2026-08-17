@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { AssistantMessage } from '@mariozechner/pi-ai';
+import type {
+  AssistantMessage,
+  ToolResultMessage,
+  UserMessage,
+} from '@mariozechner/pi-ai';
+import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
 import {
   stripReasoningTags,
@@ -10,6 +15,7 @@ import {
   reasoningStreamUnclosedTag,
   pushReasoningTagDelta,
   flushReasoningTagStream,
+  normalizeMessageAlternation,
 } from '../src/agent-runner/message-utils.js';
 
 const assistantMsg = (text: string): AssistantMessage =>
@@ -234,5 +240,111 @@ describe('reasoning tag stream', () => {
     // The authoritative text_final comes from stripReasoningTags, which leaves
     // untagged text alone — nothing is lost, only the typing effect.
     assert.equal(stripReasoningTags('pure reply that never closes'), 'pure reply that never closes');
+  });
+});
+
+const user = (text: string): UserMessage =>
+  ({ role: 'user', content: [{ type: 'text', text }], timestamp: 1 }) as UserMessage;
+const assistantText = (text: string): AssistantMessage =>
+  ({
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    api: 'openai-completions',
+    provider: 'minimax',
+    model: 'MiniMax-M3',
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: 'stop',
+    timestamp: 1,
+  }) as AssistantMessage;
+const assistantCall = (id: string, name: string): AssistantMessage =>
+  ({
+    ...assistantText(''),
+    content: [{ type: 'toolCall', id, name, arguments: {} }],
+    stopReason: 'toolUse',
+  }) as AssistantMessage;
+const toolResult = (id: string, name: string): ToolResultMessage =>
+  ({
+    role: 'toolResult',
+    toolCallId: id,
+    toolName: name,
+    content: [{ type: 'text', text: 'ok' }],
+    isError: false,
+    timestamp: 1,
+  }) as ToolResultMessage;
+
+const roles = (messages: AgentMessage[]): string =>
+  messages.map((m) => (m as { role: string }).role[0]!.toUpperCase()).join('');
+
+describe('normalizeMessageAlternation', () => {
+  test('collapses the trailing run of consecutive user turns (the wedge)', () => {
+    // Mirrors the production wedge: a session where every failed turn left an
+    // orphan user message behind, producing 7 users in a row that MiniMax 400s.
+    const wedged: AgentMessage[] = [
+      assistantText('reply'),
+      user('最近一个文档发我'),
+      user('hi'),
+      user('hi'),
+      user('hi'),
+      user('hello'),
+      user('hi'),
+    ] as AgentMessage[];
+    const out = normalizeMessageAlternation(wedged);
+    assert.equal(roles(out), 'AU');
+    const merged = out[1] as UserMessage;
+    assert.ok(Array.isArray(merged.content));
+    // Six user turns coalesce into one text block joined by blank lines.
+    const text = (merged.content as { type: string; text: string }[])
+      .map((b) => b.text)
+      .join('');
+    assert.match(text, /最近一个文档发我\n\nhi\n\nhi\n\nhi\n\nhello\n\nhi/);
+  });
+
+  test('merges assistant(toolCall) + assistant(text) so the toolResult stays adjacent', () => {
+    // assistant(toolCall) → assistant(text) → toolResult is the other observed
+    // corruption; merging the two assistants restores a valid tool pairing.
+    const broken: AgentMessage[] = [
+      assistantCall('call_1', 'attachment_send'),
+      assistantText('发你 👇'),
+      toolResult('call_1', 'attachment_send'),
+    ] as AgentMessage[];
+    const out = normalizeMessageAlternation(broken);
+    assert.equal(roles(out), 'AT');
+    const merged = out[0] as AssistantMessage;
+    const types = merged.content.map((b) => b.type);
+    assert.deepEqual(types, ['toolCall', 'text']);
+    // Still a tool-use turn so the following toolResult is valid.
+    assert.equal(merged.stopReason, 'toolUse');
+  });
+
+  test('leaves consecutive toolResults (parallel results) untouched', () => {
+    const parallel: AgentMessage[] = [
+      assistantCall('call_a', 'x'),
+      toolResult('call_a', 'x'),
+      toolResult('call_b', 'y'),
+      assistantText('done'),
+    ] as AgentMessage[];
+    const out = normalizeMessageAlternation(parallel);
+    // toolResults are NOT merged; nothing collapses here.
+    assert.equal(roles(out), 'ATTA');
+    assert.equal(out.length, 4);
+  });
+
+  test('is a no-op on an already-alternating transcript', () => {
+    const clean: AgentMessage[] = [
+      user('hi'),
+      assistantText('hello'),
+      user('bye'),
+      assistantText('cya'),
+    ] as AgentMessage[];
+    const out = normalizeMessageAlternation(clean);
+    assert.equal(roles(out), 'UAUA');
+    assert.equal(out.length, 4);
+  });
+
+  test('does not mutate the input messages', () => {
+    const input: AgentMessage[] = [user('a'), user('b')] as AgentMessage[];
+    const before = JSON.stringify(input);
+    normalizeMessageAlternation(input);
+    assert.equal(JSON.stringify(input), before);
   });
 });
