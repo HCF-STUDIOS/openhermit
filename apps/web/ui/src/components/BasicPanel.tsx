@@ -58,7 +58,8 @@ export function BasicPanel() {
       .then(([c, cat, sec]) => {
         setConfig(c);
         setCatalog(cat);
-        setSecrets(sec);
+        // Only key-existence is checked; entry objects are truthy like values.
+        setSecrets(sec as unknown as Record<string, string>);
         const initialProvider = c.model?.provider ?? '';
         setProvider(initialProvider);
         // If the existing provider isn't in the catalog, drop the user

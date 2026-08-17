@@ -55,7 +55,8 @@ export function VoicePanel() {
     ])
       .then(([c, sec]) => {
         setConfig(c);
-        setSecrets(sec);
+        // Only key-existence is checked; entry objects are truthy like values.
+        setSecrets(sec as unknown as Record<string, string>);
         const voice = readVoice(c);
         setSttEnabled(Boolean(voice.stt));
         setSttModelId(voice.stt?.model_id ?? '');
