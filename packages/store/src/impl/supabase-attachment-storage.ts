@@ -19,9 +19,11 @@ export interface SupabaseAttachmentStorageOptions {
   signedUrlExpiresIn?: number;
   /**
    * Supabase API secret key (`sb_secret_…`). If omitted, read from
-   * `SUPABASE_SERVICE_ROLE_KEY` or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`.
-   * Provided as an option for testability — operators should set the env
-   * var, not put the key in gateway config.
+   * `SUPABASE_SERVICE_ROLE_KEY` or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`
+   * (preferred), falling back to the deprecated
+   * `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY`. Provided as an option for
+   * testability — operators should set the env var, not put the key in
+   * gateway config.
    *
    * Named `serviceRoleKey` for backward compatibility; it now also accepts a
    * new-style secret API key, which is the recommended value.
@@ -62,11 +64,12 @@ interface SupabaseSdkModule {
 /**
  * Supabase-Storage-backed `AttachmentStorage`. The project URL and secret
  * key both come from env (`SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`
- * or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`) — gateway config only
- * carries the non-secret bucket pointer. The key accepts a new-style
- * Supabase secret API key (`sb_secret_…`); the legacy JWT service-role key
- * still works. Signed URLs are supported and used by `attachment_fetch`
- * for short-lived inline links.
+ * or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`; the deprecated
+ * `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY` still works as a fallback and
+ * logs a warning) — gateway config only carries the non-secret bucket
+ * pointer. The key accepts a new-style Supabase secret API key
+ * (`sb_secret_…`); the legacy JWT service-role key still works. Signed URLs
+ * are supported and used by `attachment_fetch` for short-lived inline links.
  */
 export class SupabaseAttachmentStorage implements AttachmentStorage {
   readonly name = 'supabase';
