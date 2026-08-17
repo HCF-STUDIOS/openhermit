@@ -280,34 +280,39 @@ export type ResearchDecision = z.infer<typeof researchDecisionSchema>;
 
 // ─── Evidence extraction schema (§10 — extractor model output) ──────────────
 
+// Advisory model-judgment fields tolerate drift (`.catch()` maps invalid
+// values to a safe fallback) — a model inventing an enum label must not sink
+// an otherwise-verifiable extraction. Provenance-relevant fields (excerpt,
+// questionIds) stay strict: those are verified, not trusted.
 export const extractedEvidenceSchema = z.object({
   questionIds: z.array(nonEmpty).min(1),
   excerpt: nonEmpty.max(1_000),
-  claimKey: z.string().max(200).optional(),
-  stance: z.enum(['supports', 'contradicts', 'context']).default('context'),
-  normalizedValue: z.string().max(500).optional(),
+  claimKey: z.string().max(200).optional().catch(undefined),
+  stance: z.enum(['supports', 'contradicts', 'context']).default('context').catch('context'),
+  normalizedValue: z.string().max(500).optional().catch(undefined),
   scope: z
     .object({
-      asOf: z.string().max(64).optional(),
-      geography: z.string().max(200).optional(),
-      population: z.string().max(200).optional(),
-      definition: z.string().max(500).optional(),
-      methodology: z.string().max(500).optional(),
+      asOf: z.string().max(64).optional().catch(undefined),
+      geography: z.string().max(200).optional().catch(undefined),
+      population: z.string().max(200).optional().catch(undefined),
+      definition: z.string().max(500).optional().catch(undefined),
+      methodology: z.string().max(500).optional().catch(undefined),
     })
-    .optional(),
-  relevanceBasisPoints: z.number().int().min(0).max(10_000).default(5_000),
-  confidenceBasisPoints: z.number().int().min(0).max(10_000).default(5_000),
+    .optional()
+    .catch(undefined),
+  relevanceBasisPoints: z.number().int().min(0).max(10_000).default(5_000).catch(5_000),
+  confidenceBasisPoints: z.number().int().min(0).max(10_000).default(5_000).catch(5_000),
 });
 
 export type ExtractedEvidence = z.infer<typeof extractedEvidenceSchema>;
 
 export const sourceQualityAssessmentSchema = z.object({
-  sourceClass: z.enum(RESEARCH_SOURCE_CLASSES).default('unknown'),
-  authority: z.enum(['high', 'medium', 'low', 'unknown']).default('unknown'),
-  proximityToClaim: z.enum(['direct', 'reported', 'derived', 'unknown']).default('unknown'),
-  recency: z.enum(['current', 'dated', 'unknown']).default('unknown'),
-  methodologyTransparency: z.enum(['clear', 'partial', 'absent', 'unknown']).default('unknown'),
-  notes: z.array(z.string().max(500)).max(10).default([]),
+  sourceClass: z.enum(RESEARCH_SOURCE_CLASSES).default('unknown').catch('unknown'),
+  authority: z.enum(['high', 'medium', 'low', 'unknown']).default('unknown').catch('unknown'),
+  proximityToClaim: z.enum(['direct', 'reported', 'derived', 'unknown']).default('unknown').catch('unknown'),
+  recency: z.enum(['current', 'dated', 'unknown']).default('unknown').catch('unknown'),
+  methodologyTransparency: z.enum(['clear', 'partial', 'absent', 'unknown']).default('unknown').catch('unknown'),
+  notes: z.array(z.string().max(500)).max(10).default([]).catch([]),
 });
 
 export const extractionOutputSchema = z.object({

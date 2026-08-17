@@ -24,6 +24,8 @@ export interface ResearchPhaseCallInput {
 export interface ResearchPhaseCallResult {
   text: string;
   usage?: { inputTokens: number; outputTokens: number } | undefined;
+  /** Provider stop reason; 'length' means the answer hit the output-token cap. */
+  stopReason?: string | undefined;
 }
 
 /** Provided by the runtime: one no-tools internal model turn. */
@@ -94,6 +96,27 @@ export const callPhaseWithRepair = async <Schema extends z.ZodType>(
 ): Promise<PhaseOutcome<z.infer<Schema>>> => {
   const usage = { inputTokens: 0, outputTokens: 0 };
 
+  const describeFailure = (
+    result: ResearchPhaseCallResult,
+    parsedValue: unknown,
+    error: z.ZodError | undefined,
+  ): string => {
+    if (parsedValue === undefined) {
+      // Truncation is by far the most common cause of unparseable JSON —
+      // name it so the fix (raise model.max_tokens / lower thinking) is
+      // actionable instead of mysterious.
+      if (result.stopReason === 'length') {
+        return 'the answer was truncated at the model output-token limit before the JSON closed (raise model.max_tokens or lower model.thinking)';
+      }
+      const head = stripFences(result.text).slice(0, 120).replace(/\s+/g, ' ');
+      return `the answer was not parseable JSON (began: "${head}")`;
+    }
+    return `validation failed: ${(error?.issues ?? [])
+      .slice(0, 5)
+      .map((i) => `${i.path.join('.')}: ${i.message}`)
+      .join('; ')}`;
+  };
+
   const first = await model(input);
   addUsage(usage, first);
   const parsed = extractJsonObject(first.text);
@@ -102,13 +125,7 @@ export const callPhaseWithRepair = async <Schema extends z.ZodType>(
     return { value: validated.data, modelCalls: 1, usage };
   }
 
-  const issue =
-    parsed === undefined
-      ? 'the answer was not parseable JSON'
-      : `validation failed: ${validated.error.issues
-          .slice(0, 5)
-          .map((i) => `${i.path.join('.')}: ${i.message}`)
-          .join('; ')}`;
+  const issue = describeFailure(first, parsed, validated.error);
 
   const repair = await model({
     ...input,
@@ -131,6 +148,10 @@ export const callPhaseWithRepair = async <Schema extends z.ZodType>(
 
   throw new ResearchPhaseError(
     input.phase,
-    `model output failed validation after one repair attempt (${issue})`,
+    `model output failed validation after one repair attempt (${describeFailure(
+      repair,
+      repairedParsed,
+      repairedValidated.error,
+    )})`,
   );
 };

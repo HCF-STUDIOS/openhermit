@@ -191,12 +191,39 @@ test('extraction schema: validates evidence payloads and caps counts', () => {
     }).success,
     false,
   );
+  // Out-of-range advisory scores are clamped to the fallback, not fatal.
+  const clamped = extractionOutputSchema.parse({
+    evidence: [{ questionIds: ['q1'], excerpt: 'x', relevanceBasisPoints: 99_999 }],
+  });
+  assert.equal(clamped.evidence[0]!.relevanceBasisPoints, 5000);
+});
+
+test('extraction schema: advisory enum drift falls back instead of failing', () => {
+  const out = extractionOutputSchema.parse({
+    evidence: [
+      {
+        questionIds: ['q1'],
+        excerpt: 'Total revenue was $4.2 billion',
+        stance: 'confirms', // invalid → context
+        relevanceBasisPoints: 12_000, // out of range → 5000
+      },
+    ],
+    quality: {
+      sourceClass: 'official',
+      proximityToClaim: 'exact', // invalid → unknown (observed with gemini-flash)
+      authority: 'very-high', // invalid → unknown
+    },
+  });
+  assert.equal(out.evidence.length, 1);
+  assert.equal(out.evidence[0]!.stance, 'context');
+  assert.equal(out.evidence[0]!.relevanceBasisPoints, 5000);
+  assert.equal(out.quality.sourceClass, 'official');
+  assert.equal(out.quality.proximityToClaim, 'unknown');
+  assert.equal(out.quality.authority, 'unknown');
+
+  // Provenance fields stay strict: a missing/empty excerpt still fails.
   assert.equal(
-    extractionOutputSchema.safeParse({
-      evidence: [
-        { questionIds: ['q1'], excerpt: 'x', relevanceBasisPoints: 99_999 },
-      ],
-    }).success,
+    extractionOutputSchema.safeParse({ evidence: [{ questionIds: ['q1'], excerpt: '' }] }).success,
     false,
   );
 });

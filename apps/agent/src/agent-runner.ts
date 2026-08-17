@@ -1071,7 +1071,11 @@ export class AgentRunner implements SessionRuntime {
    */
   private async runResearchPhaseCall(
     input: ResearchPhaseCallInput,
-  ): Promise<{ text: string; usage?: { inputTokens: number; outputTokens: number } }> {
+  ): Promise<{
+    text: string;
+    usage?: { inputTokens: number; outputTokens: number };
+    stopReason?: string;
+  }> {
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
     const agent = await this.createConfiguredAgent({
@@ -1106,6 +1110,7 @@ export class AgentRunner implements SessionRuntime {
       ...(usage
         ? { usage: { inputTokens: usage.input ?? 0, outputTokens: usage.output ?? 0 } }
         : {}),
+      ...(assistantMessage.stopReason ? { stopReason: assistantMessage.stopReason } : {}),
     };
   }
 

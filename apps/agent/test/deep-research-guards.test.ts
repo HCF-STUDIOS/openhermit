@@ -365,3 +365,34 @@ test('decision schema: validates 1–3 typed actions and rejects unknown types',
     false,
   );
 });
+
+// ─── Phase-call failure reporting ───────────────────────────────────────────
+
+test('callPhaseWithRepair: truncation (stopReason=length) is named, not "unparseable"', async () => {
+  const { callPhaseWithRepair } = await import('../src/research/model-phase.js');
+  const truncated = '{"actions": [{"type": "search", "questionIds": ["q1"], "query": "acme';
+  const model = async () => ({ text: truncated, stopReason: 'length' as const });
+  await assert.rejects(
+    () =>
+      callPhaseWithRepair(model, researchDecisionSchema, {
+        runId: 'rr_t', sessionId: 's', phase: 'decision',
+        systemPrompt: 'sys', userPrompt: 'user',
+      }),
+    (err: unknown) =>
+      err instanceof Error && /truncated at the model output-token limit/.test(err.message),
+  );
+});
+
+test('callPhaseWithRepair: unparseable prose error includes the answer head', async () => {
+  const { callPhaseWithRepair } = await import('../src/research/model-phase.js');
+  const model = async () => ({ text: 'Sure! Here is my plan in prose form.' });
+  await assert.rejects(
+    () =>
+      callPhaseWithRepair(model, researchDecisionSchema, {
+        runId: 'rr_t', sessionId: 's', phase: 'decision',
+        systemPrompt: 'sys', userPrompt: 'user',
+      }),
+    (err: unknown) =>
+      err instanceof Error && /began: "Sure! Here is my plan/.test(err.message),
+  );
+});
