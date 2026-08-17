@@ -360,3 +360,16 @@ type Grant =
 Roles are a fixed trust hierarchy (owner > user > guest) used by system-level fallbacks. Circles are flat, owner-defined labels with no internal ordering. A user may belong to multiple circles; matching is OR.
 
 Slated for after the per-user grant mechanism shows real demand for batched authorization.
+
+## Deep Research
+
+Research model phase calls run on the internal-turn path (curated empty tool
+list, no user principal) — the same deliberate policy bypass as compaction and
+introspection, which exists because role-based filtering silently dropped
+internal-only tools fleet-wide. The research *executor* is different: before a
+run's orchestrator gets web capabilities, `web_search` and `web_fetch` are
+evaluated against the agent's `tool` policy rows with the same
+`resolveToolMatches`/`evaluateAccess` primitives as the chat tool filter, and
+anything but `allow` removes the capability. Action-level enforcement (source
+policy domains, budgets, duplicate checks) then applies to every model-
+proposed action before execution.

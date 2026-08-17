@@ -54,6 +54,7 @@ hermit config secrets set OPENROUTER_API_KEY sk-... --agent main  # rotate a sec
 - ⏱ **Schedules & automation** — cron and one-shot jobs with timeout, concurrency policy, and error backoff.
 - 👥 **Multi-user with roles** — owner / user / guest. Identity reconciliation across CLI, web, and channels.
 - 🔌 **Multi-protocol transport** — HTTP sync, inline SSE streaming, durable SSE, WebSocket RPC.
+- 🔬 **Deep Research** — durable, session-attached research runs: an LLM-drafted plan you review and approve, a bounded search/read/extract loop with hard budgets, and a final report whose every finding cites server-verified evidence excerpts. Pause, refine, resume; runs survive restarts. Requires a configured web provider (Tavily or Exa recommended; the default Defuddle provider works but scrapes Google results). Current limitations: HTML/text sources only (PDFs are reported as unsupported), web-only sources (no uploaded files or MCP yet), manual resume after an unclean restart. See [Deep Research Design](docs/deep-research-design.md).
 
 ---
 
@@ -304,6 +305,7 @@ Optional `attachments.limits.maxBytes` overrides the default 25 MB cap. Every su
 - [MCP Servers](docs/mcp-servers.md)
 - [Channel Adapters](docs/channel-adapter.md)
 - [Introspection Design](docs/introspection-design.md)
+- [Deep Research Design](docs/deep-research-design.md)
 - [Architecture Decisions](docs/decisions.md)
 - [Shipped Features](docs/plan.md)
 - [Roadmap](docs/roadmap.md)

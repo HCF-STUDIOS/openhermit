@@ -203,7 +203,23 @@ export class ResearchOrchestrator {
 
   private readonly executionsBySession = new Map<string, string>();
 
+  /** Per-run serialization of the content-hash dedupe critical section. */
+  private readonly dedupeChains = new Map<string, Promise<void>>();
+
   constructor(private readonly deps: ResearchOrchestratorDeps) {}
+
+  /**
+   * Serialize the mirror-detection check-then-write per run: two concurrent
+   * cross-domain reads of identical content would otherwise both pass the
+   * "no mirror yet" check before either writes its hash, and mirrors would
+   * count as independent sources (§10).
+   */
+  private withDedupeLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.dedupeChains.get(runId) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.dedupeChains.set(runId, next.then(() => undefined, () => undefined));
+    return next;
+  }
 
   private get now(): number {
     return (this.deps.now ?? Date.now)();
@@ -1519,12 +1535,30 @@ export class ResearchOrchestrator {
       }
 
       const hash = contentHash(snapshot);
-      const mirror = await this.deps.research.findSourceByContentHash(
-        this.deps.scope,
-        run.runId,
-        hash,
-        source.sourceId,
-      );
+      const mirror = await this.withDedupeLock(run.runId, async () => {
+        const existing = await this.deps.research.findSourceByContentHash(
+          this.deps.scope,
+          run.runId,
+          hash,
+          source.sourceId,
+        );
+        if (existing) return existing;
+        await this.deps.research.updateSource(this.deps.scope, source.sourceId, {
+          status: 'fetched',
+          snapshotText: snapshot,
+          contentHash: hash,
+          contentBytes: snapshotBytes,
+          truncated: acquired.truncated,
+          title: acquired.title ?? source.title,
+          canonicalUrl: acquired.canonicalUrl ?? source.canonicalUrl,
+          author: acquired.author ?? null,
+          publisher: acquired.publisher ?? null,
+          publishedAt: acquired.publishedAt ?? source.publishedAt,
+          retrievedAt: acquired.retrievedAt,
+          mimeType: acquired.mimeType ?? null,
+        });
+        return undefined;
+      });
       if (mirror) {
         await this.deps.research.updateSource(this.deps.scope, source.sourceId, {
           status: 'duplicate',
@@ -1543,21 +1577,6 @@ export class ResearchOrchestrator {
         this.publishSourceUpdate(run, source.sourceId, 'duplicate', source);
         return { outcome: 'ok', ...none };
       }
-
-      await this.deps.research.updateSource(this.deps.scope, source.sourceId, {
-        status: 'fetched',
-        snapshotText: snapshot,
-        contentHash: hash,
-        contentBytes: snapshotBytes,
-        truncated: acquired.truncated,
-        title: acquired.title ?? source.title,
-        canonicalUrl: acquired.canonicalUrl ?? source.canonicalUrl,
-        author: acquired.author ?? null,
-        publisher: acquired.publisher ?? null,
-        publishedAt: acquired.publishedAt ?? source.publishedAt,
-        retrievedAt: acquired.retrievedAt,
-        mimeType: acquired.mimeType ?? null,
-      });
       budget.spend({ fetchedSources: 1, snapshotBytes });
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'ok' });
       researchSourcesTotal.inc({ agent_id: this.deps.agentId, kind: 'web', status: 'fetched' });
