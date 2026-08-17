@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Changed** Supabase attachment storage to prefer a new-style Supabase secret API key (`sb_secret_…`). The key now resolves from `SUPABASE_SERVICE_ROLE_KEY` or the new `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`. `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY` is **deprecated** — it still works as a fallback but logs a warning; rename it to `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`. The legacy JWT service-role key continues to work.
+
 ## SDK 0.5.1 — 2026-05-18
 
 - **Added** `AgentLocalClient.uploadAttachment` / `listAttachments` / `getAttachment` — the same per-session attachment surface that `GatewayClient` already exposed, but on the per-agent client, so callers holding a channel-mode token (not an admin token) can upload directly under `/api/agents/:id/sessions/:sid/attachments`. Server-side auth is unchanged: same `requireAuth` → `enforceSessionNamespace` → `requireSessionAccessHttp` chain that `postMessage` uses, so any token that can `postMessage` on a session can also `uploadAttachment` to it.

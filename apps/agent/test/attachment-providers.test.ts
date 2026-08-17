@@ -91,3 +91,53 @@ test('SupabaseAttachmentStorage.open: actionable error when SDK missing', async 
     else process.env.SUPABASE_SERVICE_ROLE_KEY = prev;
   }
 });
+
+test('SupabaseAttachmentStorage.open: accepts new OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY', async () => {
+  const prevRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const prevSecret = process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY = 'sb_secret_fake';
+  try {
+    // Gets past the key check and fails only because the SDK isn't installed.
+    await SupabaseAttachmentStorage.open({ url: 'https://x.supabase.co', bucket: 'b' });
+    assert.fail('expected open() to throw because @supabase/supabase-js is not installed');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    assert.match(msg, /@supabase\/supabase-js/);
+  } finally {
+    if (prevRole === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevRole;
+    if (prevSecret === undefined) delete process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY;
+    else process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY = prevSecret;
+  }
+});
+
+test('SupabaseAttachmentStorage.open: deprecated OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY still works + warns', async () => {
+  const prevRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const prevSecret = process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY;
+  const prevLegacy = process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY;
+  process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY = 'legacy-jwt-key';
+  const origWarn = console.warn;
+  let warned = '';
+  console.warn = (msg?: unknown) => {
+    warned += String(msg);
+  };
+  try {
+    await SupabaseAttachmentStorage.open({ url: 'https://x.supabase.co', bucket: 'b' });
+    assert.fail('expected open() to throw because @supabase/supabase-js is not installed');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    assert.match(msg, /@supabase\/supabase-js/);
+    assert.match(warned, /OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY is deprecated/);
+  } finally {
+    console.warn = origWarn;
+    if (prevRole === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevRole;
+    if (prevSecret === undefined) delete process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY;
+    else process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY = prevSecret;
+    if (prevLegacy === undefined) delete process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY;
+    else process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY = prevLegacy;
+  }
+});

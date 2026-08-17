@@ -18,9 +18,15 @@ export interface SupabaseAttachmentStorageOptions {
   /** Default expiry for `getSignedUrl` when caller passes nothing. */
   signedUrlExpiresIn?: number;
   /**
-   * Service-role key. If omitted, read from `SUPABASE_SERVICE_ROLE_KEY`.
-   * Provided as an option for testability — operators should set the env
-   * var, not put the key in gateway config.
+   * Supabase API secret key (`sb_secret_…`). If omitted, read from
+   * `SUPABASE_SERVICE_ROLE_KEY` or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`
+   * (preferred), falling back to the deprecated
+   * `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY`. Provided as an option for
+   * testability — operators should set the env var, not put the key in
+   * gateway config.
+   *
+   * Named `serviceRoleKey` for backward compatibility; it now also accepts a
+   * new-style secret API key, which is the recommended value.
    */
   serviceRoleKey?: string;
 }
@@ -56,11 +62,14 @@ interface SupabaseSdkModule {
 }
 
 /**
- * Supabase-Storage-backed `AttachmentStorage`. The project URL and
- * service-role key both come from env (`SUPABASE_URL`,
- * `SUPABASE_SERVICE_ROLE_KEY`) — gateway config only carries the
- * non-secret bucket pointer. Signed URLs are supported and used by
- * `attachment_fetch` for short-lived inline links.
+ * Supabase-Storage-backed `AttachmentStorage`. The project URL and secret
+ * key both come from env (`SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`
+ * or `OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY`; the deprecated
+ * `OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY` still works as a fallback and
+ * logs a warning) — gateway config only carries the non-secret bucket
+ * pointer. The key accepts a new-style Supabase secret API key
+ * (`sb_secret_…`); the legacy JWT service-role key still works. Signed URLs
+ * are supported and used by `attachment_fetch` for short-lived inline links.
  */
 export class SupabaseAttachmentStorage implements AttachmentStorage {
   readonly name = 'supabase';
@@ -86,14 +95,28 @@ export class SupabaseAttachmentStorage implements AttachmentStorage {
           'Set the env var on the gateway; the URL embeds the project ID and is treated as part of the credential.',
       );
     }
+    const legacyServiceKey = process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY;
     const key =
       options.serviceRoleKey ??
       process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY;
+      process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY ??
+      legacyServiceKey;
+    if (
+      legacyServiceKey &&
+      !options.serviceRoleKey &&
+      !process.env.SUPABASE_SERVICE_ROLE_KEY &&
+      !process.env.OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY
+    ) {
+      console.warn(
+        'SupabaseAttachmentStorage: OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY is deprecated. ' +
+          'Rename it to OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY and set a Supabase secret ' +
+          'API key (sb_secret_…) instead of the legacy service-role key.',
+      );
+    }
     if (!key) {
       throw new Error(
         'SupabaseAttachmentStorage requires SUPABASE_SERVICE_ROLE_KEY ' +
-          '(or OPENHERMIT_ATTACHMENT_SUPABASE_SERVICE_KEY). ' +
+          '(or OPENHERMIT_ATTACHMENT_SUPABASE_SECRET_KEY). ' +
           'Set the env var on the gateway; do not put it in gateway config.',
       );
     }
