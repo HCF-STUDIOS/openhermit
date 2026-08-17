@@ -23,6 +23,17 @@ const WebSearchParams = Type.Object({
       description: 'Whether to return short snippets or full page content.',
     }),
   ),
+  include_domains: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'Only return results from these domains (subdomains included), e.g. ["sec.gov", "example.com"].',
+    }),
+  ),
+  exclude_domains: Type.Optional(
+    Type.Array(Type.String(), {
+      description: 'Never return results from these domains (subdomains included).',
+    }),
+  ),
 });
 
 type WebSearchArgs = Static<typeof WebSearchParams>;
@@ -36,7 +47,7 @@ export const createWebSearchTool = ({
   description:
     'Search the web for information. Returns a list of results with titles, URLs, and snippets. Use content_mode "full" to also retrieve the full page content for each result.',
   parameters: WebSearchParams,
-  execute: async (_toolCallId, args: WebSearchArgs) => {
+  execute: async (_toolCallId, args: WebSearchArgs, signal?: AbortSignal) => {
     if (!webProvider) {
       return {
         content: asTextContent('Web provider is not available.'),
@@ -50,6 +61,9 @@ export const createWebSearchTool = ({
     const results = await webProvider.search(args.query, {
       limit,
       contentMode,
+      includeDomains: args.include_domains,
+      excludeDomains: args.exclude_domains,
+      signal,
     });
 
     if (results.length === 0) {

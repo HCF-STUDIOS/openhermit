@@ -2,12 +2,15 @@ import type {
   WebFetchOptions,
   WebFetchResult,
   WebProvider,
+  WebProviderCapabilities,
   WebSearchOptions,
   WebSearchResult,
 } from '../types.js';
+import { combineTimeoutSignal, filterResultsByDomains } from '../domains.js';
 
 const EXA_API_BASE = 'https://api.exa.ai';
 const MAX_RESPONSE_BYTES = 200_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface ExaSearchResult {
   title?: string;
@@ -36,6 +39,11 @@ interface ExaContentsResponse {
 
 export class ExaWebProvider implements WebProvider {
   readonly name = 'exa';
+
+  readonly capabilities: WebProviderCapabilities = {
+    nativeDomainFilters: true,
+    publishedDates: true,
+  };
 
   constructor(private readonly apiKey: string) {}
 
@@ -69,6 +77,10 @@ export class ExaWebProvider implements WebProvider {
         'Authorization': `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      signal: combineTimeoutSignal(
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+      ),
     });
 
     if (!response.ok) {
@@ -78,7 +90,7 @@ export class ExaWebProvider implements WebProvider {
 
     const data = await response.json() as ExaSearchResponse;
 
-    return data.results.map((r) => ({
+    const mapped = data.results.map((r) => ({
       title: r.title ?? r.url,
       url: r.url,
       snippet: r.highlights?.join(' … ') ?? r.text?.slice(0, 300) ?? '',
@@ -86,6 +98,14 @@ export class ExaWebProvider implements WebProvider {
       ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
       ...(r.score != null ? { score: r.score } : {}),
     }));
+
+    // Strict post-filter: the API forwards filters natively, but domain
+    // restrictions are a source-policy boundary, not a ranking hint.
+    return filterResultsByDomains(
+      mapped,
+      options?.includeDomains,
+      options?.excludeDomains,
+    );
   }
 
   async fetch(url: string, options?: WebFetchOptions): Promise<WebFetchResult> {
@@ -102,6 +122,10 @@ export class ExaWebProvider implements WebProvider {
         urls: [url],
         text: true,
       }),
+      signal: combineTimeoutSignal(
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+      ),
     });
 
     if (!response.ok) {
@@ -131,6 +155,12 @@ export class ExaWebProvider implements WebProvider {
       content: returnedContent,
       contentBytes,
       truncated,
+      acquisition: {
+        canonicalUrl: result.url,
+        author: result.author,
+        publishedAt: result.publishedDate,
+        retrievedAt: new Date().toISOString(),
+      },
       metadata: {
         author: result.author,
         publishedDate: result.publishedDate,

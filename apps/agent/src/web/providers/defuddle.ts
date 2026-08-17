@@ -1,13 +1,27 @@
+import { SafeFetchError, safeFetch } from '../../network/safe-fetch.js';
+
 import type {
+  WebAcquisition,
   WebFetchOptions,
   WebFetchResult,
   WebProvider,
+  WebProviderCapabilities,
   WebSearchOptions,
   WebSearchResult,
 } from '../types.js';
+import { filterResultsByDomains } from '../domains.js';
 
 const MAX_RESPONSE_BYTES = 200_000;
+/** Raw HTML cap before extraction — bounds both memory and Defuddle parse cost. */
+const MAX_HTML_BYTES = 2_000_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 const GOOGLE_SEARCH_URL = 'https://www.google.com/search';
+
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; OpenHermit/1.0)',
+  'Accept': 'text/html,application/xhtml+xml',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
 
 type DefuddleFn = (
   htmlOrDom: string,
@@ -29,19 +43,40 @@ async function loadDefuddle(): Promise<DefuddleFn> {
   return node.Defuddle;
 }
 
-async function fetchHtml(url: string): Promise<{ html: string; status: number; statusText: string }> {
-  const response = await fetch(new URL(url), {
-    method: 'GET',
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; OpenHermit/1.0)',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
+interface FetchedHtml {
+  html: string;
+  status: number;
+  statusText: string;
+  mimeType?: string | undefined;
+  finalUrl: string;
+}
 
-  const rawBuffer = await response.arrayBuffer();
-  const html = new TextDecoder('utf-8', { fatal: false }).decode(rawBuffer);
-  return { html, status: response.status, statusText: response.statusText };
+/**
+ * Direct page acquisition goes through the shared SSRF-safe fetch: DNS-pinned
+ * connections, per-hop redirect validation, timeout, and a raw-byte cap. This
+ * provider fetches arbitrary model-chosen URLs, so http is allowed but
+ * internal/metadata targets are not.
+ */
+async function fetchHtml(
+  url: string,
+  options?: { timeoutMs?: number | undefined; signal?: AbortSignal | undefined },
+): Promise<FetchedHtml> {
+  const result = await safeFetch(url, {
+    allowedProtocols: ['http:', 'https:'],
+    timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal: options?.signal,
+    maxBytes: MAX_HTML_BYTES,
+    onOversize: 'truncate',
+    headers: BROWSER_HEADERS,
+  });
+  const mimeType = result.headers.get('content-type')?.split(';')[0]?.trim();
+  return {
+    html: new TextDecoder('utf-8', { fatal: false }).decode(result.body),
+    status: result.status,
+    statusText: result.statusText,
+    mimeType,
+    finalUrl: result.finalUrl,
+  };
 }
 
 function truncateToBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
@@ -53,6 +88,29 @@ function truncateToBytes(text: string, maxBytes: number): { text: string; trunca
     text: new TextDecoder('utf-8', { fatal: false }).decode(encoded.slice(0, maxBytes)),
     truncated: true,
   };
+}
+
+/** `<link rel="canonical" href="…">` in either attribute order. */
+function extractCanonicalUrl(html: string, baseUrl: string): string | undefined {
+  const head = html.slice(0, 65_536);
+  const m =
+    head.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i) ??
+    head.match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
+  if (!m?.[1]) return undefined;
+  try {
+    const resolved = new URL(m[1], baseUrl);
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return undefined;
+    return resolved.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/** ISO-normalize when parseable; otherwise keep the raw provider string. */
+function normalizeDate(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? raw : new Date(t).toISOString();
 }
 
 /**
@@ -118,8 +176,16 @@ async function extractGoogleResults(
 export class DefuddleWebProvider implements WebProvider {
   readonly name = 'defuddle';
 
+  readonly capabilities: WebProviderCapabilities = {
+    nativeDomainFilters: false,
+    publishedDates: false,
+  };
+
   async search(query: string, options?: WebSearchOptions): Promise<WebSearchResult[]> {
     const limit = Math.max(1, Math.min(10, options?.limit ?? 5));
+    const hasDomainFilters = Boolean(
+      options?.includeDomains?.length || options?.excludeDomains?.length,
+    );
 
     const params = new URLSearchParams({
       q: query,
@@ -127,20 +193,38 @@ export class DefuddleWebProvider implements WebProvider {
       hl: 'en',
     });
 
-    const { html, status } = await fetchHtml(`${GOOGLE_SEARCH_URL}?${params.toString()}`);
+    const { html, status } = await fetchHtml(
+      `${GOOGLE_SEARCH_URL}?${params.toString()}`,
+      { timeoutMs: options?.timeoutMs, signal: options?.signal },
+    );
 
     if (status !== 200) {
       throw new Error(`Google search returned HTTP ${status}`);
     }
 
-    const results = await extractGoogleResults(html, limit);
+    // With filters active, extract extra candidates so post-filtering can
+    // still fill the requested limit.
+    const extracted = await extractGoogleResults(
+      html,
+      hasDomainFilters ? limit + 10 : limit,
+    );
+    const results = filterResultsByDomains(
+      extracted,
+      options?.includeDomains,
+      options?.excludeDomains,
+    ).slice(0, limit);
 
     // If content_mode is 'full', fetch each result page
     if (options?.contentMode === 'full') {
       await Promise.all(
         results.map(async (r) => {
           try {
-            const fetched = await this.fetch(r.url, { output: 'markdown', maxBytes: 50_000 });
+            const fetched = await this.fetch(r.url, {
+              output: 'markdown',
+              maxBytes: 50_000,
+              timeoutMs: options?.timeoutMs,
+              signal: options?.signal,
+            });
             r.content = fetched.content;
           } catch {
             // Content fetch is best-effort
@@ -161,7 +245,20 @@ export class DefuddleWebProvider implements WebProvider {
       throw new Error(`Only http/https URLs are supported, got: ${parsedUrl.protocol}`);
     }
 
-    const { html, status, statusText } = await fetchHtml(url);
+    let fetched: FetchedHtml;
+    try {
+      fetched = await fetchHtml(url, {
+        timeoutMs: options?.timeoutMs,
+        signal: options?.signal,
+      });
+    } catch (err) {
+      if (err instanceof SafeFetchError) {
+        throw new Error(`Fetch failed: ${err.message}`);
+      }
+      throw err;
+    }
+    const { html, status, statusText, mimeType, finalUrl } = fetched;
+    const retrievedAt = new Date().toISOString();
 
     if (output === 'raw') {
       const { text, truncated } = truncateToBytes(html, maxBytes);
@@ -170,6 +267,12 @@ export class DefuddleWebProvider implements WebProvider {
         content: text,
         contentBytes: new TextEncoder().encode(html).byteLength,
         truncated,
+        acquisition: {
+          canonicalUrl: extractCanonicalUrl(html, finalUrl) ?? finalUrl,
+          mimeType,
+          status,
+          retrievedAt,
+        },
         metadata: { status, statusText, output: 'raw' },
       };
     }
@@ -187,6 +290,15 @@ export class DefuddleWebProvider implements WebProvider {
       content: returnedContent,
       contentBytes,
       truncated,
+      acquisition: {
+        canonicalUrl: extractCanonicalUrl(html, finalUrl) ?? finalUrl,
+        mimeType,
+        status,
+        publisher: result.site ?? result.domain,
+        author: result.author,
+        publishedAt: normalizeDate(result.published),
+        retrievedAt,
+      },
       metadata: {
         status,
         statusText,

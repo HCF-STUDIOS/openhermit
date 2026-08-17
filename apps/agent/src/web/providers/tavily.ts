@@ -2,12 +2,15 @@ import type {
   WebFetchOptions,
   WebFetchResult,
   WebProvider,
+  WebProviderCapabilities,
   WebSearchOptions,
   WebSearchResult,
 } from '../types.js';
+import { combineTimeoutSignal, filterResultsByDomains } from '../domains.js';
 
 const TAVILY_API_BASE = 'https://api.tavily.com';
 const MAX_RESPONSE_BYTES = 200_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface TavilySearchResult {
   title: string;
@@ -34,6 +37,11 @@ interface TavilyExtractResponse {
 export class TavilyWebProvider implements WebProvider {
   readonly name = 'tavily';
 
+  readonly capabilities: WebProviderCapabilities = {
+    nativeDomainFilters: true,
+    publishedDates: true,
+  };
+
   constructor(private readonly apiKey: string) {}
 
   async search(query: string, options?: WebSearchOptions): Promise<WebSearchResult[]> {
@@ -59,6 +67,10 @@ export class TavilyWebProvider implements WebProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: combineTimeoutSignal(
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+      ),
     });
 
     if (!response.ok) {
@@ -68,7 +80,7 @@ export class TavilyWebProvider implements WebProvider {
 
     const data = await response.json() as TavilySearchResponse;
 
-    return data.results.map((r) => ({
+    const mapped = data.results.map((r) => ({
       title: r.title,
       url: r.url,
       snippet: r.content.slice(0, 300),
@@ -76,6 +88,14 @@ export class TavilyWebProvider implements WebProvider {
       ...(r.published_date ? { publishedDate: r.published_date } : {}),
       ...(r.score != null ? { score: r.score } : {}),
     }));
+
+    // Strict post-filter: the API forwards filters natively, but domain
+    // restrictions are a source-policy boundary, not a ranking hint.
+    return filterResultsByDomains(
+      mapped,
+      options?.includeDomains,
+      options?.excludeDomains,
+    );
   }
 
   async fetch(url: string, options?: WebFetchOptions): Promise<WebFetchResult> {
@@ -88,6 +108,10 @@ export class TavilyWebProvider implements WebProvider {
         api_key: this.apiKey,
         urls: [url],
       }),
+      signal: combineTimeoutSignal(
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+      ),
     });
 
     if (!response.ok) {
@@ -116,6 +140,10 @@ export class TavilyWebProvider implements WebProvider {
       content: returnedContent,
       contentBytes,
       truncated,
+      acquisition: {
+        canonicalUrl: result.url,
+        retrievedAt: new Date().toISOString(),
+      },
     };
   }
 }
