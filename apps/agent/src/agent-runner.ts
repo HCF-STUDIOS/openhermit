@@ -56,6 +56,7 @@ import {
   extractToolResultText,
   isAssistantMessage,
   isEmptyAssistantTurn,
+  normalizeMessageAlternation,
   stripEmptyAssistantTurns,
   stripLeadingSpeakerTag,
   transcodeGroupMentions,
@@ -2910,6 +2911,16 @@ export class AgentRunner implements SessionRuntime {
         liveState.push(...core);
       }
     }
+
+    // Final wire-shape guard: coalesce any consecutive same-role messages so
+    // the transcript strictly alternates user/assistant. Strict providers
+    // (MiniMax 400s with `invalid params (2013)`) reject consecutive user or
+    // assistant turns, and a failed turn whose empty placeholder was stripped
+    // can leave two user messages adjacent — which then wedges every following
+    // turn. Applied AFTER the live-state write-back so this only reshapes the
+    // request payload, never the persisted history (same request-only contract
+    // as truncateToolResults and the rolling window).
+    finalMessages = normalizeMessageAlternation(finalMessages);
 
     if (AgentRunner.DEBUG) {
       const budget = getContextCompactionMaxTokens(config, {
