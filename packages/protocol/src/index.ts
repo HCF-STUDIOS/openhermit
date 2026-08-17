@@ -1095,6 +1095,41 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/members/${encodeURIComponent(userId)}`,
   /** List the current JWT subject's agent memberships. */
   meAgents: '/api/users/me/agents',
+
+  /** Deep Research runs, nested under sessions (docs/deep-research-design.md §16). */
+  agentSessionResearchRuns: (agentId: string, sessionId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs`,
+  agentSessionResearchRunsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs',
+  agentSessionResearchRunById: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}`,
+  agentSessionResearchRunByIdPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId',
+  agentSessionResearchRunPlan: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/plan`,
+  agentSessionResearchRunPlanPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/plan',
+  agentSessionResearchRunActions: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/actions`,
+  agentSessionResearchRunActionsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/actions',
+  agentSessionResearchRunSteps: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/steps`,
+  agentSessionResearchRunStepsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/steps',
+  agentSessionResearchRunSources: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources`,
+  agentSessionResearchRunSourcesPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources',
+  agentSessionResearchRunSourceById: (
+    agentId: string,
+    sessionId: string,
+    runId: string,
+    sourceId: string,
+  ): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources/${encodeURIComponent(sourceId)}`,
+  agentSessionResearchRunSourceByIdPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources/:sourceId',
 } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

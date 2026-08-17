@@ -235,3 +235,60 @@ test('synthesizeAudio decodes base64 response back into Uint8Array', async () =>
   assert.deepEqual(Array.from(result.bytes), [9, 8, 7]);
   assert.equal(result.mimeType, 'audio/ogg');
 });
+test('AgentLocalClient research methods hit the nested research-run routes', async () => {
+  const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+  const client = new AgentLocalClient({
+    baseUrl: 'http://localhost:9999',
+    token: 'tok',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fetch: (async (input: any, init: any) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        ...(init?.body ? { body: JSON.parse(init.body) } : {}),
+      });
+      const url = String(input);
+      const payload = url.endsWith('/steps')
+        ? { steps: [] }
+        : url.endsWith('/sources')
+          ? { sources: [] }
+          : url.includes('/sources/')
+            ? { source: { sourceId: 'rsrc_1' }, evidence: [] }
+            : url.endsWith('/research-runs') && (init?.method ?? 'GET') === 'GET'
+              ? { runs: [] }
+              : { run: { runId: 'rr_1' } };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any,
+  });
+
+  const run = await client.createResearchRun('web:s1', { objective: 'ACME 2025', depth: 'quick' });
+  assert.equal(run.runId, 'rr_1');
+  await client.listResearchRuns('web:s1');
+  await client.getResearchRun('web:s1', 'rr_1');
+  await client.updateResearchPlan('web:s1', 'rr_1', { expectedVersion: 1, plan: { objective: 'x' } });
+  await client.researchRunAction('web:s1', 'rr_1', { action: 'approve_plan', expectedPlanVersion: 1 });
+  await client.listResearchSteps('web:s1', 'rr_1');
+  await client.listResearchSources('web:s1', 'rr_1');
+  await client.getResearchSource('web:s1', 'rr_1', 'rsrc_1');
+
+  const base = 'http://localhost:9999/sessions/web%3As1/research-runs';
+  assert.deepEqual(
+    calls.map((c) => `${c.method} ${c.url}`),
+    [
+      `POST ${base}`,
+      `GET ${base}`,
+      `GET ${base}/rr_1`,
+      `PATCH ${base}/rr_1/plan`,
+      `POST ${base}/rr_1/actions`,
+      `GET ${base}/rr_1/steps`,
+      `GET ${base}/rr_1/sources`,
+      `GET ${base}/rr_1/sources/rsrc_1`,
+    ],
+  );
+  assert.deepEqual(calls[0]!.body, { objective: 'ACME 2025', depth: 'quick' });
+  assert.deepEqual(calls[4]!.body, { action: 'approve_plan', expectedPlanVersion: 1 });
+});
