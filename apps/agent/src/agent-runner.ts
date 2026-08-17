@@ -1075,6 +1075,7 @@ export class AgentRunner implements SessionRuntime {
     text: string;
     usage?: { inputTokens: number; outputTokens: number };
     stopReason?: string;
+    errorMessage?: string;
   }> {
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
@@ -1111,6 +1112,7 @@ export class AgentRunner implements SessionRuntime {
         ? { usage: { inputTokens: usage.input ?? 0, outputTokens: usage.output ?? 0 } }
         : {}),
       ...(assistantMessage.stopReason ? { stopReason: assistantMessage.stopReason } : {}),
+      ...(assistantMessage.errorMessage ? { errorMessage: assistantMessage.errorMessage } : {}),
     };
   }
 

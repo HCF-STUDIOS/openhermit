@@ -26,6 +26,8 @@ export interface ResearchPhaseCallResult {
   usage?: { inputTokens: number; outputTokens: number } | undefined;
   /** Provider stop reason; 'length' means the answer hit the output-token cap. */
   stopReason?: string | undefined;
+  /** Provider/stream error attached to the turn (stopReason 'error'). */
+  errorMessage?: string | undefined;
 }
 
 /** Provided by the runtime: one no-tools internal model turn. */
@@ -102,11 +104,19 @@ export const callPhaseWithRepair = async <Schema extends z.ZodType>(
     error: z.ZodError | undefined,
   ): string => {
     if (parsedValue === undefined) {
+      // A provider/stream error settles as an assistant message with
+      // stopReason 'error' — surface the real cause, not "empty answer".
+      if (result.errorMessage) {
+        return `the model call errored: ${result.errorMessage.slice(0, 300)}`;
+      }
       // Truncation is by far the most common cause of unparseable JSON —
       // name it so the fix (raise model.max_tokens / lower thinking) is
       // actionable instead of mysterious.
       if (result.stopReason === 'length') {
         return 'the answer was truncated at the model output-token limit before the JSON closed (raise model.max_tokens or lower model.thinking)';
+      }
+      if (result.text.trim().length === 0) {
+        return `the model returned an empty answer (stopReason=${result.stopReason ?? 'unknown'})`;
       }
       const head = stripFences(result.text).slice(0, 120).replace(/\s+/g, ' ');
       return `the answer was not parseable JSON (began: "${head}")`;
