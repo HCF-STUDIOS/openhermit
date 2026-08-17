@@ -85,7 +85,7 @@ test('reducer: progress events update status/counts and dedupe by stepId', () =>
   assert.ok(state.refreshNonce > 0, 'stepId progress implies new durable rows');
 });
 
-test('reducer: plan_ready flips status, bumps version and refreshNonce', () => {
+test('reducer: plan_ready flips status and refreshNonce but NOT planVersion', () => {
   let state = reduceResearch(initialResearchState, {
     type: 'loaded',
     run: run({ status: 'planning', planVersion: 0 }),
@@ -96,8 +96,19 @@ test('reducer: plan_ready flips status, bumps version and refreshNonce', () => {
     event: { type: 'research_plan_ready', runId: 'rr_1', planVersion: 1 },
   });
   assert.equal(state.run?.status, 'awaiting_plan_approval');
-  assert.equal(state.run?.planVersion, 1);
+  // Version stays until the durable reload delivers version + plan body
+  // together — patching it early desyncs the plan editor (it keys its
+  // resync off the version and would keep showing a stale/missing plan).
+  assert.equal(state.run?.planVersion, 0);
   assert.equal(state.refreshNonce, before + 1);
+
+  // The durable reload then lands both atomically.
+  state = reduceResearch(state, {
+    type: 'loaded',
+    run: run({ status: 'awaiting_plan_approval', planVersion: 1, plan: { objective: 'ACME 2025', questions: [] } }),
+  });
+  assert.equal(state.run?.planVersion, 1);
+  assert.ok(state.run?.plan);
 });
 
 test('reducer: source updates upsert by sourceId', () => {

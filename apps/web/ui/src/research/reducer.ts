@@ -161,14 +161,14 @@ export const reduceResearch = (
       }
 
       if (event.type === 'research_plan_ready') {
+        // Flip the status for immediate feedback, but do NOT patch
+        // planVersion: the plan body only arrives with the durable reload,
+        // and version + plan must land together — otherwise the editor sees
+        // the new version with the old (or missing) plan and never resyncs.
         return {
           ...state,
           run: state.run
-            ? {
-                ...state.run,
-                status: 'awaiting_plan_approval',
-                planVersion: event.planVersion ?? state.run.planVersion,
-              }
+            ? { ...state.run, status: 'awaiting_plan_approval' }
             : state.run,
           refreshNonce: state.refreshNonce + 1,
         };

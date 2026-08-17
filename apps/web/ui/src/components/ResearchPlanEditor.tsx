@@ -99,15 +99,25 @@ export function ResearchPlanEditor({ run, busy, onApprove, onSave, onRefine, onC
   const [refineText, setRefineText] = useState('');
 
   // A new plan version from the server (planner finished, refinement landed)
-  // replaces local edits — the durable plan is authoritative.
+  // replaces local edits — the durable plan is authoritative. The plan body
+  // can also arrive AFTER the status flip (live event first, durable reload
+  // second), so the presence of `run.plan` is a sync trigger of its own.
+  const hasPlanBody = run.plan !== undefined;
   useEffect(() => {
     setPlan(parseUiPlan(run.plan));
     setPolicy(parseUiSourcePolicy(run.sourcePolicy));
     setDirty(false);
-  }, [run.planVersion, run.runId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.planVersion, run.runId, hasPlanBody]);
 
   if (!plan) {
-    return <div className="research-plan__empty">{t('research.planMissing')}</div>;
+    // Status can flip to awaiting before the durable reload delivers the
+    // plan body — that window is a loading state, not a missing plan.
+    return (
+      <div className="research-plan__empty">
+        {hasPlanBody ? t('research.planMissing') : t('common.loading')}
+      </div>
+    );
   }
 
   const edit = (mutate: (draft: UiPlan) => void): void => {
