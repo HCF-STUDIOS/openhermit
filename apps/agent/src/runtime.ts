@@ -59,6 +59,12 @@ export interface SessionRuntime {
     sessionId: string,
     message: SessionMessage,
   ): Promise<{ sessionId: string; messageId?: string }>;
+  /**
+   * Deep Research orchestrator for this runner (lazily constructed).
+   * Optional so lightweight SessionRuntime implementations (tests, stubs)
+   * are not forced to provide it; the gateway returns 501 when absent.
+   */
+  research?(): Promise<import('./research/orchestrator.js').ResearchOrchestrator>;
 }
 
 export type SessionSubscriber = (

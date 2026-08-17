@@ -324,3 +324,137 @@ export const renderReportMarkdown = (
 
   return `${lines.join('\n').trim()}\n`;
 };
+
+// ─── Synthesis phase (model call + validate + repair + downgrade) ────────────
+
+import type { LangfuseTurnContext } from '../langfuse.js';
+
+import { researchReportSchema, type ResearchPlan } from './contracts.js';
+import {
+  callPhaseWithRepair,
+  type ResearchPhaseModel,
+} from './model-phase.js';
+import { SYNTHESIS_SYSTEM_PROMPT, buildSynthesisUserPrompt } from './prompts.js';
+
+export interface SynthesisEvidenceCard extends ReportEvidenceRecord {
+  questionIds: string[];
+  claimKey?: string | undefined;
+  stance: string;
+  normalizedValue?: string | undefined;
+  scope?: Record<string, unknown> | undefined;
+}
+
+const buildEvidenceCards = (
+  cards: readonly SynthesisEvidenceCard[],
+  sourceById: ReadonlyMap<string, ReportSourceRecord>,
+): string =>
+  cards
+    .map((c) => {
+      const source = sourceById.get(c.sourceId);
+      const fields = [
+        `[${c.evidenceId}]`,
+        `source=${c.sourceId}`,
+        source?.sourceClass ? `class=${source.sourceClass}` : undefined,
+        source?.domain ? `domain=${source.domain}` : undefined,
+        `q=${c.questionIds.join(',')}`,
+        `stance=${c.stance}`,
+        c.claimKey ? `claimKey=${c.claimKey}` : undefined,
+        c.normalizedValue ? `value=${JSON.stringify(c.normalizedValue)}` : undefined,
+        c.scope && Object.keys(c.scope).length > 0 ? `scope=${JSON.stringify(c.scope)}` : undefined,
+      ]
+        .filter((f): f is string => f !== undefined)
+        .join(' ');
+      return `${fields}\n  "${c.excerpt}"`;
+    })
+    .join('\n');
+
+export interface SynthesisPhaseResult {
+  report: ResearchReport;
+  markdown: string;
+  modelCalls: number;
+  usage: { inputTokens: number; outputTokens: number };
+  /** Findings downgraded to caveats after the repair attempt. */
+  downgradedFindings: number;
+}
+
+/**
+ * Full synthesis flow (§11): evidence cards in, validated report out. Claim →
+ * evidence → source ownership is validated server-side; violations trigger
+ * one semantic repair round; anything still unsupported is downgraded to a
+ * labeled caveat, never silently emitted. The rendered Markdown resolves all
+ * citations from durable records — the model never supplies URLs.
+ */
+export const runSynthesisPhase = async (input: {
+  model: ResearchPhaseModel;
+  runId: string;
+  sessionId: string;
+  plan: ResearchPlan;
+  evidence: readonly SynthesisEvidenceCard[];
+  sourceById: ReadonlyMap<string, ReportSourceRecord>;
+  contradictionsSummary: string;
+  gapsSummary: string;
+  partial: boolean;
+  signal?: AbortSignal | undefined;
+  langfuseTurnContext?: LangfuseTurnContext | undefined;
+}): Promise<SynthesisPhaseResult> => {
+  const evidenceById = new Map<string, ReportEvidenceRecord>(
+    input.evidence.map((c) => [c.evidenceId, c]),
+  );
+  const phaseInput = {
+    runId: input.runId,
+    sessionId: input.sessionId,
+    phase: 'synthesis' as const,
+    systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+    signal: input.signal,
+    langfuseTurnContext: input.langfuseTurnContext,
+  };
+  const userPrompt = buildSynthesisUserPrompt({
+    plan: input.plan,
+    evidenceCards: buildEvidenceCards(input.evidence, input.sourceById),
+    contradictionsSummary: input.contradictionsSummary,
+    gapsSummary: input.gapsSummary,
+    partial: input.partial,
+  });
+
+  const first = await callPhaseWithRepair(input.model, researchReportSchema, {
+    ...phaseInput,
+    userPrompt,
+  });
+  let report = first.value;
+  let modelCalls = first.modelCalls;
+  const usage = { ...first.usage };
+
+  let violations = validateReportEvidence(report, input.runId, evidenceById);
+  if (violations.length > 0) {
+    const second = await callPhaseWithRepair(input.model, researchReportSchema, {
+      ...phaseInput,
+      userPrompt: [
+        userPrompt,
+        '',
+        'Your previous report was rejected — these claims cite missing or invalid evidence ids:',
+        ...violations.map((v) => `- ${v.claimId}: ${v.reason}${v.evidenceIds.length ? ` (${v.evidenceIds.join(', ')})` : ''}`),
+        'Fix them by citing valid evidenceIds from the ledger, or change the statement kind to "caveat".',
+        'Return the corrected full report JSON only.',
+      ].join('\n'),
+    });
+    report = second.value;
+    modelCalls += second.modelCalls;
+    usage.inputTokens += second.usage.inputTokens;
+    usage.outputTokens += second.usage.outputTokens;
+    violations = validateReportEvidence(report, input.runId, evidenceById);
+  }
+
+  let downgradedFindings = 0;
+  if (violations.length > 0) {
+    downgradedFindings = violations.filter((v) => v.reason === 'finding_without_evidence').length;
+    report = downgradeUnsupportedFindings(report, input.runId, evidenceById);
+    const remaining = validateReportEvidence(report, input.runId, evidenceById);
+    downgradedFindings = Math.max(downgradedFindings, violations.length - remaining.length);
+  }
+
+  const markdown = renderReportMarkdown(report, evidenceById, input.sourceById, {
+    partial: input.partial,
+  });
+
+  return { report, markdown, modelCalls, usage, downgradedFindings };
+};

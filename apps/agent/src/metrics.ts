@@ -1,5 +1,6 @@
 import {
   Counter,
+  Gauge,
   Histogram,
   Registry,
   collectDefaultMetrics,
@@ -62,6 +63,67 @@ export const agentMessagesTotal = new Counter({
   name: `${PREFIX}agent_messages_total`,
   help: 'Total inbound user messages received by the agent (per source).',
   labelNames: ['agent_id', 'source'] as const,
+  registers: [metricsRegistry],
+});
+
+// ── Deep Research (docs/deep-research-design.md §19) ──────────────────────
+// Low-cardinality labels only: agent_id plus small enums. Never run, source,
+// query, URL, or domain.
+
+export const researchRunsTotal = new Counter({
+  name: `${PREFIX}research_runs_total`,
+  help: 'Research runs reaching a terminal or stopped status.',
+  labelNames: ['agent_id', 'status'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchActiveRuns = new Gauge({
+  name: `${PREFIX}research_active_runs`,
+  help: 'Research runs currently executing on this runner.',
+  labelNames: ['agent_id'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchRunDuration = new Histogram({
+  name: `${PREFIX}research_run_duration_seconds`,
+  help: 'Execution wall-clock of a research run at terminal status.',
+  labelNames: ['agent_id', 'terminal_status'] as const,
+  buckets: [30, 60, 120, 300, 600, 1200, 2700],
+  registers: [metricsRegistry],
+});
+
+export const researchActionsTotal = new Counter({
+  name: `${PREFIX}research_actions_total`,
+  help: 'Research workflow actions executed.',
+  labelNames: ['agent_id', 'kind', 'outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchSourcesTotal = new Counter({
+  name: `${PREFIX}research_sources_total`,
+  help: 'Research sources by kind and resulting status.',
+  labelNames: ['agent_id', 'kind', 'status'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchRetriesTotal = new Counter({
+  name: `${PREFIX}research_retries_total`,
+  help: 'Retries performed by research operations.',
+  labelNames: ['agent_id', 'operation'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchTokensTotal = new Counter({
+  name: `${PREFIX}research_tokens_total`,
+  help: 'Model tokens consumed by research phase calls.',
+  labelNames: ['agent_id', 'phase', 'direction'] as const,
+  registers: [metricsRegistry],
+});
+
+export const researchBudgetExhaustionsTotal = new Counter({
+  name: `${PREFIX}research_budget_exhaustions_total`,
+  help: 'Research runs stopped by a hard budget dimension.',
+  labelNames: ['agent_id', 'reason'] as const,
   registers: [metricsRegistry],
 });
 

@@ -1,8 +1,17 @@
-import type {
-  EvidenceStance,
-  ResearchLocator,
+import type { LangfuseTurnContext } from '../langfuse.js';
+
+import {
+  extractionOutputSchema,
+  type EvidenceStance,
+  type ExtractedEvidence,
+  type ResearchLocator,
 } from './contracts.js';
 import { sha256Hex } from './guards.js';
+import {
+  callPhaseWithRepair,
+  type ResearchPhaseModel,
+} from './model-phase.js';
+import { EXTRACTOR_SYSTEM_PROMPT, buildExtractorUserPrompt } from './prompts.js';
 
 /**
  * Deterministic evidence primitives: snapshot normalization, exact excerpt
@@ -240,4 +249,93 @@ export const detectContradictions = (
     }
   }
   return candidates;
+};
+
+// ─── Extraction phase (model call + server-side verification) ───────────────
+
+export interface VerifiedExtraction {
+  evidence: ExtractedEvidence;
+  locator: ResearchLocator;
+  normalizedExcerpt: string;
+  evidenceHash: string;
+}
+
+export interface ExtractionPhaseResult {
+  verified: VerifiedExtraction[];
+  /** Model-proposed excerpts that did not exist in the snapshot. */
+  rejectedExcerpts: number;
+  quality: (typeof extractionOutputSchema)['_output']['quality'];
+  note?: string | undefined;
+  modelCalls: number;
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Run the no-tools extractor over one bounded snapshot, then verify every
+ * proposed excerpt against the stored snapshot (§10). Unverifiable excerpts
+ * are dropped and counted — they can never support a final claim. Question
+ * ids outside the plan are stripped; items left with none are dropped too.
+ */
+export const runExtractionPhase = async (input: {
+  model: ResearchPhaseModel;
+  runId: string;
+  sessionId: string;
+  sourceId: string;
+  title?: string | undefined;
+  url?: string | undefined;
+  snapshotText: string;
+  questions: Array<{ id: string; question: string }>;
+  signal?: AbortSignal | undefined;
+  langfuseTurnContext?: LangfuseTurnContext | undefined;
+}): Promise<ExtractionPhaseResult> => {
+  const outcome = await callPhaseWithRepair(input.model, extractionOutputSchema, {
+    runId: input.runId,
+    sessionId: input.sessionId,
+    phase: 'extract_evidence',
+    systemPrompt: EXTRACTOR_SYSTEM_PROMPT,
+    userPrompt: buildExtractorUserPrompt({
+      sourceId: input.sourceId,
+      title: input.title,
+      url: input.url,
+      questions: input.questions,
+      snapshotText: input.snapshotText,
+    }),
+    signal: input.signal,
+    langfuseTurnContext: input.langfuseTurnContext,
+  });
+
+  const validQuestionIds = new Set(input.questions.map((q) => q.id));
+  const verified: VerifiedExtraction[] = [];
+  let rejectedExcerpts = 0;
+
+  for (const item of outcome.value.evidence) {
+    const questionIds = item.questionIds.filter((id) => validQuestionIds.has(id));
+    if (questionIds.length === 0) continue;
+    const verification = verifyExcerpt(input.snapshotText, item.excerpt);
+    if (!verification.verified || !verification.locator) {
+      rejectedExcerpts += 1;
+      continue;
+    }
+    const evidence: ExtractedEvidence = { ...item, questionIds };
+    verified.push({
+      evidence,
+      locator: verification.locator,
+      normalizedExcerpt: verification.normalizedExcerpt,
+      evidenceHash: evidenceHash({
+        sourceId: input.sourceId,
+        excerpt: verification.normalizedExcerpt,
+        claimKey: item.claimKey,
+        stance: item.stance,
+      }),
+    });
+  }
+
+  return {
+    verified,
+    rejectedExcerpts,
+    quality: outcome.value.quality,
+    note: outcome.value.note,
+    modelCalls: outcome.modelCalls,
+    usage: outcome.usage,
+  };
 };

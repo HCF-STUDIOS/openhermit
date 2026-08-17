@@ -15,7 +15,7 @@ type AfterToolCallHook = (
   signal?: AbortSignal,
 ) => Promise<AfterToolCallResult | undefined>;
 import type { MessageSender, SessionAttachment, SessionHistoryMessage, SessionListQuery, SessionMessage, SessionSpec, SessionSummary } from '@openhermit/protocol';
-import { NotFoundError, ValidationError, getErrorMessage } from '@openhermit/shared';
+import { ConflictError, NotFoundError, ValidationError, getErrorMessage } from '@openhermit/shared';
 import {
   type InternalStateStore,
   type StoreScope,
@@ -108,6 +108,11 @@ import {
 } from './agent-runner/context-compaction.js';
 import { buildToolResultPreview, persistToolResult } from './agent-runner/tool-result-persistence.js';
 import { createWebProvider, type WebProvider } from './web/index.js';
+import { ResearchOrchestrator } from './research/index.js';
+import type { ResearchPhaseCallInput } from './research/model-phase.js';
+import { createWebSearchTool } from './tools/web-search.js';
+import { createWebFetchTool } from './tools/web-fetch.js';
+import type { ToolContext } from './tools/shared.js';
 import { runIntrospection } from './introspection/index.js';
 import { isSkillReadResult, loadSkillIndex } from './skills.js';
 import type { ScheduleRecord } from '@openhermit/store';
@@ -159,6 +164,8 @@ export class AgentRunner implements SessionRuntime {
   private workspaceIdleTimer: ReturnType<typeof setTimeout> | undefined;
 
   private mcpClientManager: McpClientManager | undefined;
+
+  private researchOrchestrator: ResearchOrchestrator | undefined;
 
   private static DEBUG = false;
 
@@ -548,6 +555,14 @@ export class AgentRunner implements SessionRuntime {
 
   /** Stop workspace container, scheduler, and clean up exec backend state. */
   async shutdown(): Promise<void> {
+    // Graceful shutdown pauses active research runs first so their
+    // checkpoints commit before anything else tears down (§15).
+    if (this.researchOrchestrator) {
+      await this.researchOrchestrator.shutdown().catch((err) => {
+        this.logRuntime(`[research] shutdown pause failed: ${getErrorMessage(err)}`);
+      });
+    }
+
     // Fire session.closed@v1 for every still-active session before tearing
     // down. Plugins can use this to flush session-scoped state.
     for (const sessionId of [...this.sessions.keys()]) {
@@ -880,7 +895,13 @@ export class AgentRunner implements SessionRuntime {
     if (persisted.status === 'running') {
       throw new Error('Cannot delete a running session.');
     }
+    if (this.researchOrchestrator?.getActiveExecution(sessionId)) {
+      throw new ConflictError('Cannot delete a session with actively executing research.');
+    }
     this.sessions.delete(sessionId);
+    // Research data is session-bound: evidence → sources → steps → runs go
+    // before session rows (§18).
+    await this.store.research.deleteBySession(this.scope, sessionId);
     await this.store.sessions.delete(this.scope, sessionId);
     await this.bus.emit('session.closed@v1', {
       agentId: this.scope.agentId,
@@ -973,6 +994,141 @@ export class AgentRunner implements SessionRuntime {
     await session.sideEffects;
     await session.backgroundTasks;
     await this.store.sessions.waitForIdle();
+  }
+
+  // ─── Deep Research (docs/deep-research-design.md) ─────────────────────────
+
+  /**
+   * Lazily construct the ResearchOrchestrator. The algorithm lives under
+   * `src/research/`; the runner supplies its runtime edges: the no-tools
+   * internal model turn, the web provider, session events, report delivery,
+   * and the eviction busy fence. Reconciles stale runs from an unclean
+   * restart on first access (§15).
+   */
+  async research(): Promise<ResearchOrchestrator> {
+    if (this.researchOrchestrator) return this.researchOrchestrator;
+    const config = await this.options.security.readConfig();
+    const webProvider = this.resolveWebProvider(config);
+    const webAllowed = await this.evaluateResearchWebAccess();
+
+    this.researchOrchestrator = new ResearchOrchestrator({
+      agentId: this.scope.agentId,
+      scope: this.scope,
+      research: this.store.research,
+      model: (input) => this.runResearchPhaseCall(input),
+      webSearch:
+        webProvider && webAllowed.search
+          ? (query, options) => webProvider.search(query, options)
+          : undefined,
+      webFetch:
+        webProvider && webAllowed.fetch
+          ? (url, options) => webProvider.fetch(url, options)
+          : undefined,
+      publishEvent: (event) => {
+        void this.events.publish(event);
+      },
+      deliverReport: (sessionId, markdown, runId) =>
+        this.deliverResearchReport(sessionId, markdown, runId),
+      log: (message) => this.logRuntime(message),
+      langfuse: this.options.langfuse,
+      acquireBusy: this.options.acquireResearchBusy,
+    });
+    await this.researchOrchestrator.reconcileStaleRuns().catch((err) => {
+      this.logRuntime(`[research] stale-run reconciliation failed: ${getErrorMessage(err)}`);
+    });
+    return this.researchOrchestrator;
+  }
+
+  /**
+   * Evaluate agent tool policy for the research web capabilities using the
+   * same primitives as `createConfiguredAgent`'s policy filter, against the
+   * tools' own declared policies. The orchestrator then calls the provider
+   * directly (it needs the typed results, not the chat-formatted tool
+   * output); `deny`/`require_approval` verdicts remove the capability.
+   */
+  private async evaluateResearchWebAccess(): Promise<{ search: boolean; fetch: boolean }> {
+    const policyRows: PolicyRow[] | undefined = this.options.policyStore
+      ? await this.options.policyStore.list(this.scope.agentId, 'tool')
+      : undefined;
+    const principal = buildPrincipal(this.scope.agentId, undefined, undefined);
+    const toolContext = { security: this.options.security } as ToolContext;
+    const verdict = (name: 'web_search' | 'web_fetch'): boolean => {
+      const tool = name === 'web_search'
+        ? createWebSearchTool(toolContext)
+        : createWebFetchTool(toolContext);
+      const matches = resolveToolMatches(policyRows, name, tool.policy);
+      return evaluateAccess(principal, matches) === 'allow';
+    };
+    return { search: verdict('web_search'), fetch: verdict('web_fetch') };
+  }
+
+  /**
+   * One bounded, stateless research model turn. Same internal-turn path as
+   * compaction/introspection: curated (empty) tool list, agent-session id
+   * suffix, per-run Langfuse trace via `langfuseTurnContext`. The research
+   * phase prompt arrives as `extraSystemPrompt`; retrieved page content only
+   * ever appears inside the user prompt's untrusted envelope.
+   */
+  private async runResearchPhaseCall(
+    input: ResearchPhaseCallInput,
+  ): Promise<{ text: string; usage?: { inputTokens: number; outputTokens: number } }> {
+    const config = await this.options.security.readConfig();
+    this.ensureProviderApiKey(config.model.provider);
+    const agent = await this.createConfiguredAgent({
+      config,
+      agentSessionId: `${input.sessionId}:research`,
+      contextSessionId: input.sessionId,
+      extraSystemPrompt: input.systemPrompt,
+      tools: [],
+      ...(input.langfuseTurnContext ? { langfuseTurnContext: input.langfuseTurnContext } : {}),
+    });
+    const onAbort = (): void => agent.abort();
+    input.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      await agent.prompt({
+        role: 'user',
+        content: [{ type: 'text', text: input.userPrompt }],
+        timestamp: Date.now(),
+      });
+      await agent.waitForIdle();
+    } finally {
+      input.signal?.removeEventListener('abort', onAbort);
+    }
+    const assistantMessage = [...agent.state.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    if (!assistantMessage || !isAssistantMessage(assistantMessage)) {
+      return { text: '' };
+    }
+    const usage = assistantMessage.usage;
+    return {
+      text: extractAssistantText(assistantMessage),
+      ...(usage
+        ? { usage: { inputTokens: usage.input ?? 0, outputTokens: usage.output ?? 0 } }
+        : {}),
+    };
+  }
+
+  /** Final report delivery (§13): durable assistant entry + live text_final. */
+  private async deliverResearchReport(
+    sessionId: string,
+    markdown: string,
+    runId: string,
+  ): Promise<void> {
+    await this.store.messages.appendLogEntry(this.scope, sessionId, {
+      ts: new Date().toISOString(),
+      role: 'assistant',
+      content: markdown,
+      metadata: { research: true, runId },
+    });
+    void this.events.publish({ type: 'text_final', sessionId, text: markdown });
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.latestAssistantText = markdown;
+      session.updatedAt = new Date().toISOString();
+      session.lastMessagePreview = markdown.slice(0, 200);
+      await this.persistSessionIndex(session).catch(() => {});
+    }
   }
 
   private getIdleSummaryTimeoutMs(config?: AgentConfig): number {
@@ -1114,6 +1270,16 @@ export class AgentRunner implements SessionRuntime {
     message: SessionMessage,
   ): Promise<{ sessionId: string; messageId?: string; triggered: boolean }> {
     const session = this.getRequiredSession(sessionId);
+
+    // Active research execution owns the session's turn ordering and tool
+    // safety: reject conflicting chat turns while planning/researching/
+    // synthesizing. Chat resumes while the run awaits approval or is paused.
+    const activeResearchRunId = this.researchOrchestrator?.getActiveExecution(sessionId);
+    if (activeResearchRunId) {
+      throw new ConflictError(
+        `research_run_active: run ${activeResearchRunId} is executing in this session`,
+      );
+    }
 
     // Plugin transform hook — plugins may rewrite (or scrub) the
     // incoming text before it lands in the session log.
