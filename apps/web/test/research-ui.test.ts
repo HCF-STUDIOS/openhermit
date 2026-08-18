@@ -172,3 +172,38 @@ test('pickCurrentRun prefers the nonterminal run; isResearchExecuting gates chat
   assert.equal(isResearchExecuting(run({ status: 'paused' })), false);
   assert.equal(isResearchExecuting(null), false);
 });
+
+test('reducer: a new run resets run-scoped rows; the same run only updates', () => {
+  let state: ResearchState = reduceResearch(initialResearchState, {
+    type: 'loaded',
+    run: run({ runId: 'rr_old', status: 'completed' }),
+    steps: [step('rs_old', { runId: 'rr_old' })],
+    sources: [],
+  });
+  state = reduceResearch(state, {
+    type: 'event',
+    event: { type: 'research_progress', runId: 'rr_old', message: 'done', phase: 'synthesizing', counts: { searches: 3, fetchedSources: 2, evidenceItems: 5, coveredQuestions: 2 } },
+  });
+  assert.ok(state.counts);
+  const nonce = state.refreshNonce;
+
+  // Starting a new run must not show it over the old run's rows.
+  state = reduceResearch(state, { type: 'run', run: run({ runId: 'rr_new', status: 'planning' }) });
+  assert.equal(state.run?.runId, 'rr_new');
+  assert.deepEqual(state.steps, []);
+  assert.deepEqual(state.sources, []);
+  assert.deepEqual(state.activity, []);
+  assert.equal(state.counts, null);
+  assert.equal(state.refreshNonce, nonce);
+  assert.equal(state.loaded, true);
+
+  // Same-run control response keeps existing rows.
+  state = reduceResearch(state, {
+    type: 'event',
+    event: { type: 'research_progress', runId: 'rr_new', stepId: 'rs_n1', phase: 'searching', message: 'Searching' },
+  });
+  const activityBefore = state.activity;
+  state = reduceResearch(state, { type: 'run', run: run({ runId: 'rr_new', status: 'paused' }) });
+  assert.equal(state.run?.status, 'paused');
+  assert.equal(state.activity, activityBefore);
+});

@@ -442,14 +442,15 @@ export interface ResearchStore {
   /**
    * Insert candidate sources, idempotent per (run_id, canonical_url_hash),
    * and mark the discovering step completed — one transaction (§15).
-   * Returns the effective source rows (existing rows for duplicates).
+   * Returns the effective source rows; `created` is false for duplicates
+   * that resolved to an existing row, so callers can count only new ones.
    */
   completeSearchStep(
     scope: StoreScope,
     stepId: string,
     stepPatch: ResearchStepPatch,
     candidates: ResearchSourceCreateInput[],
-  ): Promise<ResearchSourceRecord[]>;
+  ): Promise<Array<{ source: ResearchSourceRecord; created: boolean }>>;
   getSource(scope: StoreScope, runId: string, sourceId: string): Promise<ResearchSourceRecord | undefined>;
   listSources(scope: StoreScope, runId: string, options?: { status?: string; limit?: number }): Promise<ResearchSourceRecord[]>;
   updateSource(scope: StoreScope, sourceId: string, patch: ResearchSourcePatch): Promise<void>;

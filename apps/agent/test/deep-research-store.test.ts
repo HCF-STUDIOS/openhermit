@@ -222,6 +222,7 @@ test('research sources: completeSearchStep is transactional and hash-idempotent'
     ],
   );
   assert.equal(sources.length, 2);
+  assert.ok(sources.every((s) => s.created));
 
   // a second search discovering the same URL returns the existing row
   const step2 = await research.insertStep({
@@ -237,9 +238,11 @@ test('research sources: completeSearchStep is transactional and hash-idempotent'
     ],
   );
   assert.equal(again.length, 2);
-  const irRows = again.filter((s) => s.canonicalUrlHash === 'hash-ir');
+  const irRows = again.filter((r) => r.source.canonicalUrlHash === 'hash-ir');
   assert.equal(irRows.length, 1);
-  assert.equal(irRows[0]!.title, 'IR page'); // original row, not duplicated
+  assert.equal(irRows[0]!.source.title, 'IR page'); // original row, not duplicated
+  assert.equal(irRows[0]!.created, false);
+  assert.equal(again.find((r) => r.source.canonicalUrlHash === 'hash-other')!.created, true);
 
   assert.equal((await research.listSources(scope, run.runId)).length, 3);
   assert.equal(
@@ -254,14 +257,15 @@ test('research sources: update, content-hash lookup, status filter', async (t) =
   const step = await research.insertStep({
     runId: run.runId, agentId: scope.agentId, iteration: 1, kind: 'search', dedupeKey: 's1',
   });
-  const [src] = await research.completeSearchStep(scope, step.step.stepId, { status: 'completed' }, [
+  const [first] = await research.completeSearchStep(scope, step.step.stepId, { status: 'completed' }, [
     {
       runId: run.runId, agentId: scope.agentId, url: 'https://a.example/x',
       canonicalUrlHash: 'h1', discoveredByStepId: step.step.stepId,
     },
   ]);
+  const src = first!.source;
 
-  await research.updateSource(scope, src!.sourceId, {
+  await research.updateSource(scope, src.sourceId, {
     status: 'fetched',
     snapshotText: 'normalized snapshot text',
     contentHash: 'content-h',
@@ -270,16 +274,16 @@ test('research sources: update, content-hash lookup, status filter', async (t) =
     sourceClass: 'official',
     qualityJson: { authority: 'high' },
   });
-  const fetched = await research.getSource(scope, run.runId, src!.sourceId);
+  const fetched = await research.getSource(scope, run.runId, src.sourceId);
   assert.equal(fetched?.status, 'fetched');
   assert.equal(fetched?.sourceClass, 'official');
 
   assert.equal(
     (await research.findSourceByContentHash(scope, run.runId, 'content-h'))?.sourceId,
-    src!.sourceId,
+    src.sourceId,
   );
   assert.equal(
-    await research.findSourceByContentHash(scope, run.runId, 'content-h', src!.sourceId),
+    await research.findSourceByContentHash(scope, run.runId, 'content-h', src.sourceId),
     undefined,
   );
   assert.equal((await research.listSources(scope, run.runId, { status: 'fetched' })).length, 1);
@@ -351,7 +355,7 @@ test('research cleanup: deleteBySession removes evidence → sources → steps �
   ]);
   await research.insertEvidence([
     {
-      runId: run.runId, agentId: scope.agentId, sourceId: src!.sourceId,
+      runId: run.runId, agentId: scope.agentId, sourceId: src!.source.sourceId,
       extractionStepId: step.step.stepId, questionIds: ['q1'], excerpt: 'x',
       locatorJson: {}, stance: 'context', evidenceHash: 'eh',
     },

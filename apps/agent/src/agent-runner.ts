@@ -166,6 +166,7 @@ export class AgentRunner implements SessionRuntime {
   private mcpClientManager: McpClientManager | undefined;
 
   private researchOrchestrator: ResearchOrchestrator | undefined;
+  private researchOrchestratorInit: Promise<ResearchOrchestrator> | undefined;
 
   private static DEBUG = false;
 
@@ -1003,10 +1004,19 @@ export class AgentRunner implements SessionRuntime {
    * `src/research/`; the runner supplies its runtime edges: the no-tools
    * internal model turn, the web provider, session events, report delivery,
    * and the eviction busy fence. Reconciles stale runs from an unclean
-   * restart on first access (§15).
+   * restart on first access (§15). Concurrent first callers share one
+   * in-flight initialization so only a single orchestrator (and its
+   * active-execution registry) ever exists per runner.
    */
   async research(): Promise<ResearchOrchestrator> {
     if (this.researchOrchestrator) return this.researchOrchestrator;
+    this.researchOrchestratorInit ??= this.buildResearchOrchestrator().finally(() => {
+      this.researchOrchestratorInit = undefined;
+    });
+    return this.researchOrchestratorInit;
+  }
+
+  private async buildResearchOrchestrator(): Promise<ResearchOrchestrator> {
     const config = await this.options.security.readConfig();
     const webProvider = this.resolveWebProvider(config);
     const webAllowed = await this.evaluateResearchWebAccess();

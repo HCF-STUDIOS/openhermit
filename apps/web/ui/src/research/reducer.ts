@@ -121,8 +121,18 @@ export const reduceResearch = (
     }
 
     case 'run': {
-      // Control responses return the latest run representation.
-      return { ...state, run: action.run, loaded: true };
+      // Same run: control responses return its latest representation.
+      if (state.run && state.run.runId === action.run.runId) {
+        return { ...state, run: action.run, loaded: true };
+      }
+      // Different run: a newly created run starts with empty run-scoped rows
+      // — never show it over the previous run's steps/sources/counts.
+      return {
+        ...initialResearchState,
+        run: action.run,
+        refreshNonce: state.refreshNonce,
+        loaded: true,
+      };
     }
 
     case 'event': {

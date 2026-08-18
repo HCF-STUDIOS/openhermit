@@ -47,6 +47,17 @@ import {
 
 type FetchLike = typeof fetch;
 
+/** Preserve response statuses the error type models; anything else is a server error. */
+const toOpenHermitStatusCode = (status: number): OpenHermitStatusCode =>
+  status === 400 ||
+  status === 401 ||
+  status === 403 ||
+  status === 404 ||
+  status === 409 ||
+  status === 500
+    ? status
+    : 500;
+
 const bytesToBase64 = (bytes: Uint8Array): string => {
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(bytes).toString('base64');
@@ -223,13 +234,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
         'agent_api_error',
@@ -310,13 +315,7 @@ export class AgentLocalClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Attachment bytes download failed (${response.status}) for ${attachmentId}: ${responseText || response.statusText}`,
         'agent_api_error',
@@ -595,13 +594,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -632,13 +625,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -668,13 +655,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -852,13 +833,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `issueUserToken failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -911,13 +886,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `exchangeConnectToken failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -978,13 +947,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `linkUserIdentity failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1132,13 +1095,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1535,13 +1492,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1576,13 +1527,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1617,13 +1562,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1656,13 +1595,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1689,13 +1622,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',

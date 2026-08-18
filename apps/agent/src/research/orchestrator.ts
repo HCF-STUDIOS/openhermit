@@ -206,6 +206,9 @@ export class ResearchOrchestrator {
   /** Per-run serialization of the content-hash dedupe critical section. */
   private readonly dedupeChains = new Map<string, Promise<void>>();
 
+  /** Serialization of queued-run scheduling passes (see maybeStartQueued). */
+  private schedulerChain: Promise<void> = Promise.resolve();
+
   constructor(private readonly deps: ResearchOrchestratorDeps) {}
 
   /**
@@ -729,26 +732,34 @@ export class ResearchOrchestrator {
     }
   }
 
-  /** queued → researching for as many runs as concurrency allows. */
+  /**
+   * queued → researching for as many runs as concurrency allows. Passes are
+   * chained: overlapping triggers (approve/resume/run-completion) would
+   * otherwise each pass the capacity check while suspended on the store, and
+   * with several queued runs the CAS loser on one run could claim another
+   * before the winner's startDetached registers — exceeding maxConcurrent.
+   */
   private maybeStartQueued(): void {
-    void (async () => {
-      if (this.executions.size >= this.maxConcurrent) return;
-      const queued = await this.deps.research.listRunsByStatus(this.deps.scope, ['queued']);
-      for (const run of queued) {
-        if (this.executions.size >= this.maxConcurrent) break;
-        if (this.executions.has(run.runId)) continue;
-        const claimed = await this.deps.research.transitionRun(
-          this.deps.scope,
-          run.runId,
-          ['queued'],
-          { status: 'researching', startedAt: run.startedAt ?? new Date(this.now).toISOString() },
-        );
-        if (!claimed) continue;
-        this.startDetached(claimed, (signal, lf) => this.runResearchLoop(claimed, signal, lf));
-      }
-    })().catch((err) => {
-      this.deps.log(`[research] failed to start queued run: ${sanitizeError(err)}`);
-    });
+    this.schedulerChain = this.schedulerChain
+      .then(async () => {
+        if (this.executions.size >= this.maxConcurrent) return;
+        const queued = await this.deps.research.listRunsByStatus(this.deps.scope, ['queued']);
+        for (const run of queued) {
+          if (this.executions.size >= this.maxConcurrent) break;
+          if (this.executions.has(run.runId)) continue;
+          const claimed = await this.deps.research.transitionRun(
+            this.deps.scope,
+            run.runId,
+            ['queued'],
+            { status: 'researching', startedAt: run.startedAt ?? new Date(this.now).toISOString() },
+          );
+          if (!claimed) continue;
+          this.startDetached(claimed, (signal, lf) => this.runResearchLoop(claimed, signal, lf));
+        }
+      })
+      .catch((err) => {
+        this.deps.log(`[research] failed to start queued run: ${sanitizeError(err)}`);
+      });
   }
 
   private startDetached(
@@ -1398,7 +1409,7 @@ export class ResearchOrchestrator {
         })
         .filter((c): c is NonNullable<typeof c> => c !== null);
 
-      const inserted = await this.deps.research.completeSearchStep(
+      const sourceRows = await this.deps.research.completeSearchStep(
         this.deps.scope,
         step.step.stepId,
         {
@@ -1408,14 +1419,17 @@ export class ResearchOrchestrator {
         },
         candidates,
       );
-      budget.spend({ searches: 1, sources: inserted.length });
+      // Only newly discovered sources count against the budget/metric; a
+      // re-discovery by a later search resolves to the existing row.
+      const createdCount = sourceRows.filter((r) => r.created).length;
+      budget.spend({ searches: 1, sources: createdCount });
       state.queryHistory.push(action.query);
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'search', outcome: 'ok' });
       researchSourcesTotal.inc(
         { agent_id: this.deps.agentId, kind: 'web', status: 'candidate' },
-        inserted.length,
+        createdCount,
       );
-      this.publishProgress(run, 'reviewing_sources', `Reviewing ${inserted.length} candidate sources`, {
+      this.publishProgress(run, 'reviewing_sources', `Reviewing ${sourceRows.length} candidate sources`, {
         stepId: step.step.stepId,
         counts: this.counts(budget, state),
       });

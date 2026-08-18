@@ -407,13 +407,16 @@ export const classifyFailure = (input: {
 
 export const MAX_ACTION_RETRIES = 3;
 
+/** Ceiling for any retry wait, including server-requested Retry-After. */
+export const MAX_RETRY_DELAY_MS = 15_000;
+
 /** Exponential backoff with injectable jitter for deterministic tests. */
 export const retryDelayMs = (
   attempt: number,
   options?: { baseMs?: number; capMs?: number; random?: () => number },
 ): number => {
   const base = options?.baseMs ?? 500;
-  const cap = options?.capMs ?? 15_000;
+  const cap = options?.capMs ?? MAX_RETRY_DELAY_MS;
   const random = options?.random ?? Math.random;
   const exp = Math.min(cap, base * 2 ** Math.max(0, attempt - 1));
   return Math.round(exp / 2 + random() * (exp / 2));

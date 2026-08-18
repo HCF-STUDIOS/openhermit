@@ -14,6 +14,7 @@ import type {
 } from './contracts.js';
 import {
   MAX_ACTION_RETRIES,
+  MAX_RETRY_DELAY_MS,
   classifyFailure,
   isDuplicateQuery,
   retryDelayMs,
@@ -179,12 +180,26 @@ export const validateActions = (
 export interface ExecutorDeps {
   webSearch: (query: string, options: WebSearchOptions) => Promise<WebSearchResult[]>;
   webFetch: (url: string, options: WebFetchOptions) => Promise<WebFetchResult>;
-  sleep?: ((ms: number) => Promise<void>) | undefined;
+  sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
   random?: (() => number) | undefined;
 }
 
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+// Resolves (rather than rejects) on abort so the retry loop's own abort check
+// surfaces the typed ResearchActionError instead of a raw AbortError.
+const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 
 /** Pull status/Retry-After hints off arbitrary provider/fetch errors. */
 const describeError = (
@@ -241,8 +256,10 @@ const withRetries = async <T>(
       }
       retries += 1;
       const delay =
-        decision.retryAfterMs ?? retryDelayMs(attempt, { random: deps.random ?? Math.random });
-      await sleep(delay);
+        decision.retryAfterMs !== undefined
+          ? Math.min(decision.retryAfterMs, MAX_RETRY_DELAY_MS)
+          : retryDelayMs(attempt, { random: deps.random ?? Math.random });
+      await sleep(delay, signal);
     }
   }
 };

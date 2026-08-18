@@ -99,11 +99,20 @@ export const EXTRACTOR_SYSTEM_PROMPT = [
 export const UNTRUSTED_CONTENT_BEGIN = '<<<BEGIN UNTRUSTED SOURCE CONTENT';
 export const UNTRUSTED_CONTENT_END = 'END UNTRUSTED SOURCE CONTENT>>>';
 
-/** Wrap retrieved content in an explicit untrusted-data envelope. */
+/**
+ * Wrap retrieved content in an explicit untrusted-data envelope. Marker
+ * strings embedded in the content itself are defanged first — otherwise a
+ * hostile page could close the envelope early (escaping the untrusted-data
+ * framing) and truncate the Langfuse redaction, leaking raw page content
+ * into telemetry. Excerpts drawn from a defanged region will fail verbatim
+ * verification against the raw snapshot, which is the safe direction.
+ */
 export const wrapUntrustedContent = (sourceId: string, content: string): string =>
   [
     `${UNTRUSTED_CONTENT_BEGIN} source=${sourceId}`,
-    content,
+    content
+      .replaceAll(UNTRUSTED_CONTENT_BEGIN, '[escaped envelope begin marker]')
+      .replaceAll(UNTRUSTED_CONTENT_END, '[escaped envelope end marker]'),
     UNTRUSTED_CONTENT_END,
   ].join('\n');
 

@@ -284,7 +284,7 @@ export class DbResearchStore implements ResearchStore {
     stepId: string,
     stepPatch: ResearchStepPatch,
     candidates: ResearchSourceCreateInput[],
-  ): Promise<ResearchSourceRecord[]> {
+  ): Promise<Array<{ source: ResearchSourceRecord; created: boolean }>> {
     return this.db.transaction(async (tx) => {
       await tx
         .update(researchSteps)
@@ -351,9 +351,13 @@ export class DbResearchStore implements ResearchStore {
         : [];
 
       const insertedNoHash = inserted.filter((r) => !r.canonicalUrlHash);
-      return [...inserted.filter((r) => r.canonicalUrlHash), ...insertedNoHash, ...existing].map(
-        toSourceRecord,
-      );
+      return [
+        ...[...inserted.filter((r) => r.canonicalUrlHash), ...insertedNoHash].map((r) => ({
+          source: toSourceRecord(r),
+          created: true,
+        })),
+        ...existing.map((r) => ({ source: toSourceRecord(r), created: false })),
+      ];
     });
   }
 

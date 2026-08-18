@@ -69,7 +69,9 @@ export function Composer({
   const submit = () => {
     const trimmed = text.trim();
     if (researchMode && researchAvailable && onStartResearch) {
-      if (!trimmed || disabled) return;
+      // Research runs take no attachments; refuse to start while any are
+      // queued so they can't silently ride along on a later normal message.
+      if (!trimmed || disabled || anyUploading || readyAttachments.length > 0) return;
       onStartResearch({
         objective: trimmed,
         depth,
@@ -139,7 +141,7 @@ export function Composer({
     setUploads((prev) => prev.filter((u) => u.key !== key));
   };
 
-  const canPickFiles = !!sessionId && !running;
+  const canPickFiles = !!sessionId && !running && !(researchMode && researchAvailable);
   const sendDisabled =
     disabled
     || anyUploading
@@ -262,7 +264,9 @@ export function Composer({
               : anyUploading
                 ? t('composer.hintUploading')
                 : researchMode && researchAvailable
-                  ? t('research.hint')
+                  ? (readyAttachments.length > 0
+                    ? t('research.hintAttachmentsBlocked')
+                    : t('research.hint'))
                   : t('composer.hintIdle')}
           </p>
         </div>
@@ -274,7 +278,9 @@ export function Composer({
           <button
             className="btn btn--primary"
             type="submit"
-            disabled={researchMode && researchAvailable ? disabled || !text.trim() : sendDisabled}
+            disabled={researchMode && researchAvailable
+              ? disabled || !text.trim() || anyUploading || readyAttachments.length > 0
+              : sendDisabled}
           >
             {researchMode && researchAvailable ? t('research.start') : t('composer.send')}
           </button>

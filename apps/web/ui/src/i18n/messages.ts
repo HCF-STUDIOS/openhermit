@@ -565,6 +565,10 @@ export const messages = {
     en: 'Describe the research objective; a plan will be prepared for your review.',
     zh: '描述研究目标；系统将生成计划供您审核。',
   },
+  'research.hintAttachmentsBlocked': {
+    en: 'Research runs do not take attachments — remove them or send them as a message first.',
+    zh: '研究不支持附件——请先移除附件或将其作为消息发送。',
+  },
   'research.objectivePlaceholder': {
     en: 'What should be researched?',
     zh: '需要研究什么？',
