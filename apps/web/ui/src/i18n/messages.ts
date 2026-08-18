@@ -574,9 +574,9 @@ export const messages = {
     zh: '需要研究什么？',
   },
   'research.depth': { en: 'Depth', zh: '深度' },
-  'research.depthQuick': { en: 'Quick', zh: '快速' },
-  'research.depthStandard': { en: 'Standard', zh: '标准' },
-  'research.depthThorough': { en: 'Thorough', zh: '深入' },
+  'research.depthQuick': { en: 'Quick (~2–4 min)', zh: '快速（约 2–4 分钟）' },
+  'research.depthStandard': { en: 'Standard (~4–8 min)', zh: '标准（约 4–8 分钟）' },
+  'research.depthThorough': { en: 'Thorough (~7–14 min)', zh: '深入（约 7–14 分钟）' },
   'research.sourceMode': { en: 'Sources', zh: '信息来源' },
   'research.sourceModeFull': { en: 'Full web', zh: '整个网络' },
   'research.sourceModeOnly': { en: 'Only these domains', zh: '仅限这些域名' },
@@ -599,6 +599,10 @@ export const messages = {
   'research.budgetSummary': {
     en: 'Depth {depth} · up to {searches} searches, {sources} sources',
     zh: '深度 {depth} · 最多 {searches} 次搜索、{sources} 个来源',
+  },
+  'research.timeEstimate': {
+    en: 'estimated ~{low}–{high} min',
+    zh: '预计约 {low}–{high} 分钟',
   },
   'research.saveChanges': { en: 'Save changes', zh: '保存修改' },
   'research.approve': { en: 'Approve & start', zh: '批准并开始' },

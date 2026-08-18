@@ -233,7 +233,7 @@ test('finish gate: fails on uncovered required question', () => {
   assert.match(result.reasons[0]!, /q2/);
 });
 
-test('finish gate: contradiction without follow-up blocks; strict mode requires resolution', () => {
+test('finish gate: contradiction without follow-up blocks; a followed-up conflict never deadlocks the gate', () => {
   const noFollowUp = evaluateFinishGate({
     requiredQuestionIds: [],
     coveredQuestionIds: [],
@@ -242,13 +242,16 @@ test('finish gate: contradiction without follow-up blocks; strict mode requires 
   });
   assert.equal(noFollowUp.pass, false);
 
-  const strict = evaluateFinishGate({
+  // Nothing can mark a contradiction resolved, so once a follow-up has been
+  // attempted the gate must pass even under a strict plan — the conflict is
+  // reported with both sides cited rather than blocking finish forever.
+  const followedUpStrict = evaluateFinishGate({
     requiredQuestionIds: [],
     coveredQuestionIds: [],
     contradictions: [{ claimKey: 'rev', resolved: false, followUpAttempted: true }],
     unresolvedContradictionsAllowed: false,
   });
-  assert.equal(strict.pass, false);
+  assert.equal(followedUpStrict.pass, true);
 });
 
 test('gain tracker: three consecutive zero-gain iterations trip the stop', () => {

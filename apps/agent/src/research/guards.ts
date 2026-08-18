@@ -307,6 +307,12 @@ export interface FinishGateInput {
   requiredQuestionIds: readonly string[];
   coveredQuestionIds: readonly string[];
   contradictions: readonly ContradictionStatus[];
+  /**
+   * Advisory only: no decision action can mark a contradiction resolved, so
+   * gating on resolution would make finish unreachable for any run whose
+   * sources disagree on a value. A followed-up conflict is reported with
+   * citations to both sides instead (design §10).
+   */
   unresolvedContradictionsAllowed: boolean;
 }
 
@@ -325,9 +331,6 @@ export const evaluateFinishGate = (input: FinishGateInput): FinishGateResult => 
   for (const c of input.contradictions) {
     if (!c.resolved && !c.followUpAttempted) {
       reasons.push(`contradiction "${c.claimKey}" has no follow-up attempt`);
-    }
-    if (!c.resolved && !input.unresolvedContradictionsAllowed) {
-      reasons.push(`contradiction "${c.claimKey}" unresolved and not allowed`);
     }
   }
   return { pass: reasons.length === 0, reasons };

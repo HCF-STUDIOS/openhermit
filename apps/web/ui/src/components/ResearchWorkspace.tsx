@@ -6,6 +6,7 @@ import {
   type ResearchRunActionRequest,
 } from '../api';
 import type { ResearchState } from '../research/reducer';
+import { estimateResearchMinutes } from '../research/estimate';
 import { useTranslation } from '../i18n';
 import { ResearchPlanEditor, type UiPlan, type UiSourcePolicy } from './ResearchPlanEditor';
 import { ResearchReport, parseUiReport } from './ResearchReport';
@@ -114,6 +115,7 @@ export function ResearchWorkspace({ sessionId, state, onRefresh, onError }: Prop
   const executing = status === 'planning' || status === 'researching' || status === 'synthesizing';
   const terminal = status === 'completed' || status === 'cancelled';
   const statusLabel = t((STATUS_LABEL_KEYS[status] ?? 'research.status.created') as never) || status;
+  const timeEstimate = estimateResearchMinutes(run.budget);
 
   return (
     <div className="research-workspace">
@@ -128,6 +130,14 @@ export function ResearchWorkspace({ sessionId, state, onRefresh, onError }: Prop
               searches: String(state.counts.searches),
               sources: String(state.counts.fetchedSources),
               evidence: String(state.counts.evidenceItems),
+            })}
+          </span>
+        )}
+        {(executing || status === 'queued') && timeEstimate && (
+          <span className="research-workspace__estimate">
+            {t('research.timeEstimate', {
+              low: String(timeEstimate.lowMinutes),
+              high: String(timeEstimate.highMinutes),
             })}
           </span>
         )}

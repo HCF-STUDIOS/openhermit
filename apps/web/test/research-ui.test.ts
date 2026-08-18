@@ -207,3 +207,28 @@ test('reducer: a new run resets run-scoped rows; the same run only updates', () 
   assert.equal(state.run?.status, 'paused');
   assert.equal(state.activity, activityBefore);
 });
+
+test('estimateResearchMinutes: budget-derived approximation, capped by elapsed budget', async () => {
+  const { estimateResearchMinutes } = await import('../ui/src/research/estimate.js');
+
+  // Default presets: quick 6 iterations → ~2–4 min; standard 12 → ~4–8 min.
+  assert.deepEqual(
+    estimateResearchMinutes({ iterations: 6, elapsedMs: 10 * 60_000 }),
+    { lowMinutes: 2, highMinutes: 4 },
+  );
+  assert.deepEqual(
+    estimateResearchMinutes({ iterations: 12, elapsedMs: 20 * 60_000 }),
+    { lowMinutes: 4, highMinutes: 8 },
+  );
+
+  // A tight elapsed budget caps the upper bound.
+  assert.deepEqual(
+    estimateResearchMinutes({ iterations: 20, elapsedMs: 5 * 60_000 }),
+    { lowMinutes: 5, highMinutes: 5 },
+  );
+
+  // Missing or empty budgets produce no estimate rather than a bogus one.
+  assert.equal(estimateResearchMinutes(undefined), null);
+  assert.equal(estimateResearchMinutes({}), null);
+  assert.equal(estimateResearchMinutes({ iterations: 0 }), null);
+});

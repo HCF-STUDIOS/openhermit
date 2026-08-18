@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   getResearchSource,
   type ResearchEvidenceWire,
@@ -35,11 +35,7 @@ export function ResearchSources({ sessionId, runId, sources, focusSourceId }: Pr
   const [evidence, setEvidence] = useState<Record<string, ResearchEvidenceWire[]>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
 
-  const toggle = async (sourceId: string): Promise<void> => {
-    if (openId === sourceId) {
-      setOpenId(null);
-      return;
-    }
+  const open = async (sourceId: string): Promise<void> => {
     setOpenId(sourceId);
     if (!evidence[sourceId]) {
       setLoadingId(sourceId);
@@ -53,6 +49,21 @@ export function ResearchSources({ sessionId, runId, sources, focusSourceId }: Pr
       }
     }
   };
+
+  const toggle = async (sourceId: string): Promise<void> => {
+    if (openId === sourceId) {
+      setOpenId(null);
+      return;
+    }
+    await open(sourceId);
+  };
+
+  // Citation click-through: focusing a source expands it and loads its
+  // evidence; manual collapse still works until the focus changes again.
+  useEffect(() => {
+    if (focusSourceId) void open(focusSourceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSourceId]);
 
   if (sources.length === 0) {
     return <p className="research-sources__empty">{t('research.sourcesEmpty')}</p>;

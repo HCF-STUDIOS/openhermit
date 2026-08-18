@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ResearchRunWire } from '../api';
+import { estimateResearchMinutes } from '../research/estimate';
 import { useTranslation } from '../i18n';
 
 /** Structural view of the plan object (validated server-side). */
@@ -139,6 +140,8 @@ export function ResearchPlanEditor({ run, busy, onApprove, onSave, onRefine, onC
     setDirty(true);
   };
 
+  const timeEstimate = estimateResearchMinutes(run.budget);
+
   return (
     <div className="research-plan">
       <h3 className="research-plan__title">
@@ -255,6 +258,15 @@ export function ResearchPlanEditor({ run, busy, onApprove, onSave, onRefine, onC
             searches: String(run.budget?.searches ?? '—'),
             sources: String(run.budget?.fetchedSources ?? '—'),
           })}
+          {timeEstimate && (
+            <>
+              {' · '}
+              {t('research.timeEstimate', {
+                low: String(timeEstimate.lowMinutes),
+                high: String(timeEstimate.highMinutes),
+              })}
+            </>
+          )}
         </p>
       </div>
 

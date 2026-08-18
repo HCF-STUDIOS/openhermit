@@ -1636,6 +1636,7 @@ h2 { font-size: 14px; font-weight: 600; }
 }
 
 .research-workspace__counts { color: var(--text-secondary); white-space: nowrap; }
+.research-workspace__estimate { color: var(--text-secondary); white-space: nowrap; font-style: italic; }
 .research-workspace__controls { display: flex; gap: 6px; margin-left: auto; }
 .research-workspace__error { color: var(--danger); margin: 8px 0 0; }
 
