@@ -465,6 +465,12 @@ export interface ResearchStore {
   /**
    * Insert evidence idempotently by (run_id, evidence_hash). Returns the
    * effective records (existing rows where hashes already existed).
+   *
+   * All inputs must belong to a single run, and every sourceId must name a
+   * source of that same run/agent — rejected otherwise, so a dangling
+   * sourceId can never enter the citations ledger. Verbatim excerpt
+   * verification is the extraction pipeline's job (evidence-ledger.ts), not
+   * the store's.
    */
   insertEvidence(inputs: ResearchEvidenceCreateInput[]): Promise<ResearchEvidenceRecord[]>;
   listEvidence(

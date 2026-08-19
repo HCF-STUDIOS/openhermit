@@ -59,6 +59,36 @@ test('isBlockedAddress: allows public v6 and mapped-public-v4', () => {
   assert.equal(isBlockedAddress('::ffff:8.8.8.8'), false);
 });
 
+test('isBlockedAddress: decodes v4 embedded in NAT64 / 6to4 / transition prefixes', () => {
+  for (const ip of [
+    '64:ff9b::7f00:1', // NAT64 well-known prefix → 127.0.0.1
+    '64:ff9b::a00:8', // NAT64 well-known prefix → 10.0.0.8
+    '64:ff9b::169.254.169.254', // NAT64, dotted tail → cloud metadata
+    '64:ff9b:1::a00:1', // RFC 8215 local-use NAT64 space
+    '2002:7f00:1::', // 6to4 → 127.0.0.1
+    '2001:0:503:ba3e::1', // Teredo
+  ]) {
+    assert.equal(isBlockedAddress(ip), true, `${ip} should be blocked`);
+  }
+  // DNS64 networks legitimately return public addresses inside the well-known
+  // prefix — only the embedded v4 decides.
+  assert.equal(isBlockedAddress('64:ff9b::808:808'), false); // 8.8.8.8
+  assert.equal(isBlockedAddress('2002:808:808::'), false); // 6to4 of 8.8.8.8
+});
+
+test('isBlockedAddress: non-canonical textual v6 forms hit the same checks', () => {
+  for (const ip of [
+    '0::1', // loopback, alternate compression
+    '0:0:0:0:0:0:0:1', // loopback, full form
+    '0:0:0:0:0:ffff:127.0.0.1', // mapped, full form
+    '0::ffff:7f00:1', // mapped, alternate compression
+    '::ffff:0:7f00:1', // SIIT "IPv4-translated"
+  ]) {
+    assert.equal(isBlockedAddress(ip), true, `${ip} should be blocked`);
+  }
+  assert.equal(isBlockedAddress('0:0:0:0:0:ffff:8.8.8.8'), false);
+});
+
 test('isBlockedAddress: fails closed on garbage', () => {
   assert.equal(isBlockedAddress('not-an-ip'), true);
   assert.equal(isBlockedAddress(''), true);

@@ -237,12 +237,17 @@ const citationMarks = (
   return numbers.map((n) => `[${n}]`).join('');
 };
 
+// Statement text is synthesis-model output derived from untrusted web
+// excerpts, and the rendered report lands in the main session as a durable
+// assistant entry — sanitize it so the model cannot smuggle links, images, or
+// HTML past the citation resolver. Citation marks are appended afterwards, so
+// the renderer's own `[n]` marks survive.
 const renderStatement = (
   statement: ResearchStatement,
   index: CitationIndex,
 ): string => {
   const marks = citationMarks(statement.evidenceIds, index);
-  const text = statement.text.trim();
+  const text = sanitizeInline(statement.text);
   return marks.length > 0 ? `${text} ${marks}` : text;
 };
 
@@ -287,23 +292,23 @@ export const renderReportMarkdown = (
     for (const c of report.contradictions) {
       const marks = citationMarks(c.evidenceIds, index);
       const resolution = c.resolution
-        ? `Resolution: ${c.resolution.trim()}`
+        ? `Resolution: ${sanitizeInline(c.resolution)}`
         : 'Unresolved — both sides are cited.';
-      lines.push(`- ${c.summary.trim()} ${marks} ${resolution}`.trim());
+      lines.push(`- ${sanitizeInline(c.summary)} ${marks} ${resolution}`.trim());
     }
   }
 
   if (report.gaps.length > 0) {
     lines.push('', '## Gaps', '');
     for (const g of report.gaps) {
-      lines.push(`- ${g.description.trim()}`);
+      lines.push(`- ${sanitizeInline(g.description)}`);
     }
   }
 
   if (report.methodology.length > 0) {
     lines.push('', '## Methodology', '');
     for (const m of report.methodology) {
-      lines.push(`- ${m.trim()}`);
+      lines.push(`- ${sanitizeInline(m)}`);
     }
   }
 

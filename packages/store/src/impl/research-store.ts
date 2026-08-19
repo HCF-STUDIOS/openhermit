@@ -29,6 +29,13 @@ import {
 } from '../schema.js';
 import type { DrizzleDb } from './index.js';
 
+// Only completed/cancelled are terminal (design §7). failed is retryable and
+// budget_exhausted is resumable, so both deliberately stay "active": the run
+// keeps the session's one-nonterminal-run slot until the user resumes,
+// retries, or cancels it. Freeing the slot earlier would let a new run start
+// and a later resume of the old one break the one-run-per-session invariant.
+// Must stay in sync with the research_runs_one_active_per_session partial
+// unique index predicate in schema.ts.
 const TERMINAL_STATUSES: ResearchRunStatus[] = ['completed', 'cancelled'];
 
 const now = (): string => new Date().toISOString();
@@ -440,6 +447,40 @@ export class DbResearchStore implements ResearchStore {
   ): Promise<ResearchEvidenceRecord[]> {
     if (inputs.length === 0) return [];
     const ts = now();
+
+    // One run per batch — the hash-recovery query below and the source check
+    // both key off the first input's run.
+    const { runId, agentId } = inputs[0]!;
+    for (const e of inputs) {
+      if (e.runId !== runId || e.agentId !== agentId) {
+        throw new Error('insertEvidence batch must belong to a single run');
+      }
+    }
+
+    // Citations resolve evidenceId → sourceId → source metadata (design §11:
+    // "server validates IDs and source ownership") and there is no FK to
+    // catch a dangling or cross-run sourceId, so reject it here. Verbatim
+    // excerpt verification intentionally stays in the extraction pipeline
+    // (evidence-ledger.ts), which owns the snapshot-normalization rules that
+    // check depends on.
+    const sourceIds = [...new Set(inputs.map((e) => e.sourceId))];
+    const knownRows = await this.db
+      .select({ sourceId: researchSources.sourceId })
+      .from(researchSources)
+      .where(
+        and(
+          eq(researchSources.agentId, agentId),
+          eq(researchSources.runId, runId),
+          inArray(researchSources.sourceId, sourceIds),
+        ),
+      );
+    const knownIds = new Set(knownRows.map((r) => r.sourceId));
+    const unknownIds = sourceIds.filter((id) => !knownIds.has(id));
+    if (unknownIds.length > 0) {
+      throw new Error(
+        `evidence rejected: source(s) not in run ${runId}: ${unknownIds.join(', ')}`,
+      );
+    }
 
     const seen = new Set<string>();
     const values = [];

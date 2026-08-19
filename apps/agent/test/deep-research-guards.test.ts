@@ -19,6 +19,7 @@ import {
   canonicalUrlHash,
   classifyFailure,
   evaluateFinishGate,
+  budgetIncreaseCaps,
   increaseBudgetLimits,
   isDuplicateQuery,
   isTerminalStatus,
@@ -64,6 +65,8 @@ test('state machine: illegal transitions throw', () => {
   assert.equal(canTransition('completed', 'queued'), false);
   assert.equal(canTransition('cancelled', 'planning'), false);
   assert.equal(canTransition('queued', 'synthesizing'), false);
+  // budget exhaustion always routes through synthesizing (partial report).
+  assert.equal(canTransition('researching', 'budget_exhausted'), false);
   assert.throws(
     () => assertTransition('completed', 'queued'),
     InvalidResearchTransitionError,
@@ -82,6 +85,12 @@ test('state machine: recovery paths', () => {
   // budget_exhausted resumes only via queued after a budget increase
   assert.equal(canTransition('budget_exhausted', 'queued'), true);
   assert.equal(canTransition('budget_exhausted', 'synthesizing'), false);
+  // refine revises the plan directly from queued / budget_exhausted
+  assert.equal(canTransition('queued', 'planning'), true);
+  assert.equal(canTransition('budget_exhausted', 'planning'), true);
+  // legacy rows with no recorded resume phase return to plan review
+  assert.equal(canTransition('failed', 'awaiting_plan_approval'), true);
+  assert.equal(canTransition('budget_exhausted', 'awaiting_plan_approval'), true);
   assert.equal(isTerminalStatus('completed'), true);
   assert.equal(isTerminalStatus('budget_exhausted'), false);
 });
@@ -117,6 +126,25 @@ test('budget: reservation, consumption, and synthesis reserve', () => {
   assert.equal(budget.canSpendModelCall('synthesis'), false);
 });
 
+test('budget: tryReserveModelCall is atomic — the last slot goes to exactly one caller', () => {
+  const budget = new ResearchBudget({
+    ...RESEARCH_BUDGET_PRESETS.quick,
+    modelCalls: 4,
+  });
+  // 4 model calls with a reserve of 2 → research may reserve 2. Concurrent
+  // extraction tasks reserve synchronously, so the event loop serializes them
+  // exactly like these sequential calls: no two can win the same slot.
+  assert.equal(budget.tryReserveModelCall('research'), true);
+  assert.equal(budget.tryReserveModelCall('research'), true);
+  assert.equal(budget.tryReserveModelCall('research'), false);
+  assert.equal(budget.usage.modelCalls, 2); // failed attempt reserved nothing
+  // Synthesis may consume the reserve.
+  assert.equal(budget.tryReserveModelCall('synthesis'), true);
+  assert.equal(budget.tryReserveModelCall('synthesis'), true);
+  assert.equal(budget.tryReserveModelCall('synthesis'), false);
+  assert.equal(budget.usage.modelCalls, 4);
+});
+
 test('budget: per-source and per-run snapshot byte caps', () => {
   const budget = new ResearchBudget({
     ...RESEARCH_BUDGET_PRESETS.quick,
@@ -136,13 +164,22 @@ test('budget: elapsed-time check', () => {
   assert.equal(budget.exhaustedDimension(1000), 'elapsed');
 });
 
-test('budget: increase raises but never lowers limits', () => {
+test('budget: increase raises but never lowers limits, clamped to the hard ceiling', () => {
+  const caps = budgetIncreaseCaps();
+  assert.equal(caps.searches, RESEARCH_BUDGET_PRESETS.thorough.searches * 3);
+
   const next = increaseBudgetLimits(RESEARCH_BUDGET_PRESETS.quick, {
     searches: 50,
     modelCalls: 1, // attempt to lower — ignored
+    elapsedMs: 1e15, // absurd raise — clamped
   });
-  assert.equal(next.searches, 50);
+  assert.equal(next.searches, 50); // below cap → lands exactly
   assert.equal(next.modelCalls, RESEARCH_BUDGET_PRESETS.quick.modelCalls);
+  assert.equal(next.elapsedMs, caps.elapsedMs);
+
+  // A current limit already above the cap is never lowered by a raise attempt.
+  const high = { ...RESEARCH_BUDGET_PRESETS.quick, searches: caps.searches + 10 };
+  assert.equal(increaseBudgetLimits(high, { searches: 1e15 }).searches, high.searches);
 });
 
 test('budget: usage starts at zero', () => {

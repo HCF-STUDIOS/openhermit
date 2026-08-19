@@ -61,12 +61,28 @@ type LangfuseStreamMetadataOptions = {
 const UNTRUSTED_ENVELOPE_PATTERN =
   /(<<<BEGIN UNTRUSTED SOURCE CONTENT[^\n]*\n)([\s\S]*?)(\nEND UNTRUSTED SOURCE CONTENT>>>)/g;
 
+/**
+ * Research model answers carry verbatim source excerpts as JSON "excerpt"
+ * fields (extractor output, echoed JSON in repair prompts) — the envelope
+ * can't cover the model's own output, so redact the field value wherever it
+ * appears. Over-matching an unrelated "excerpt" field merely redacts
+ * telemetry, which is the safe direction. Escape-aware so an excerpt
+ * containing \" doesn't end the match early.
+ */
+const EXCERPT_FIELD_PATTERN = /"excerpt"(\s*:\s*)"((?:[^"\\]|\\[\s\S])*)"/g;
+
 export const redactUntrustedSourceContent = (text: string): string =>
-  text.replace(
-    UNTRUSTED_ENVELOPE_PATTERN,
-    (_all, begin: string, body: string, end: string) =>
-      `${begin}[source content redacted from telemetry: ${body.length} chars]${end}`,
-  );
+  text
+    .replace(
+      UNTRUSTED_ENVELOPE_PATTERN,
+      (_all, begin: string, body: string, end: string) =>
+        `${begin}[source content redacted from telemetry: ${body.length} chars]${end}`,
+    )
+    .replace(
+      EXCERPT_FIELD_PATTERN,
+      (_all, sep: string, body: string) =>
+        `"excerpt"${sep}"[excerpt redacted from telemetry: ${body.length} chars]"`,
+    );
 
 const sanitizeMessageContent = (content: Message['content']) => {
   if (typeof content === 'string') {

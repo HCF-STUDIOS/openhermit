@@ -14,7 +14,7 @@ import type {
   ResearchSourceRecord,
   ResearchStepRecord,
 } from '@openhermit/store';
-import { ValidationError } from '@openhermit/shared';
+import { NotFoundError, ValidationError } from '@openhermit/shared';
 
 import type { AgentRunner } from '@openhermit/agent/agent-runner';
 import type { Hono } from 'hono';
@@ -173,7 +173,10 @@ export const registerResearchRoutes = (app: Hono, deps: ResearchRoutesDeps): voi
   ): Promise<ReturnType<RouteContext['orchestrator']['getRun']>> => {
     const run = await ctx.orchestrator.getRun(ctx.runId);
     if (run.sessionId !== ctx.sessionId) {
-      throw new ValidationError(`Research run ${ctx.runId} does not belong to this session.`);
+      // Same status and message as a nonexistent run: a 400/404 split (or a
+      // "belongs to another session" message) would let any authenticated
+      // session probe which runIds exist.
+      throw new NotFoundError(`Research run not found: ${ctx.runId}`);
     }
     return run;
   };

@@ -241,3 +241,43 @@ test('safeFetch: sends caller headers and surfaces response headers', async (t) 
   assert.equal(sawUa, 'OpenHermit-Test/1.0');
   assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
 });
+
+test('safeFetch: cross-origin redirect drops caller headers except content negotiation', async (t) => {
+  const seen: Record<string, Headers> = {};
+  stubFetch(t, async (url, init) => {
+    seen[url] = new Headers(init.headers);
+    if (url === 'https://a.example/start') {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://b.example/next' },
+      });
+    }
+    return new Response('ok', { status: 200 });
+  });
+  const res = await safeFetch('https://a.example/start', {
+    headers: {
+      'X-Api-Key': 'secret',
+      'User-Agent': 'OpenHermit-Test/1.0',
+      'Accept': 'text/html',
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(seen['https://a.example/start']!.get('x-api-key'), 'secret');
+  const hop = seen['https://b.example/next']!;
+  assert.equal(hop.get('x-api-key'), null, 'credential must not cross origins');
+  assert.equal(hop.get('user-agent'), 'OpenHermit-Test/1.0');
+  assert.equal(hop.get('accept'), 'text/html');
+});
+
+test('safeFetch: same-origin redirect keeps caller headers', async (t) => {
+  const seen: Record<string, Headers> = {};
+  stubFetch(t, async (url, init) => {
+    seen[url] = new Headers(init.headers);
+    if (url === 'https://a.example/one') {
+      return new Response(null, { status: 302, headers: { location: '/two' } });
+    }
+    return new Response('ok', { status: 200 });
+  });
+  await safeFetch('https://a.example/one', { headers: { 'X-Api-Key': 'secret' } });
+  assert.equal(seen['https://a.example/two']!.get('x-api-key'), 'secret');
+});

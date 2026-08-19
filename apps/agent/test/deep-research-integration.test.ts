@@ -796,6 +796,12 @@ test('deep research: mirrored content marked duplicate, never independent corrob
   assert.equal(duplicates[0]!.duplicateOfSourceId, fetched[0]!.sourceId);
   // Only one extraction ran (the duplicate is never extracted).
   assert.equal(h.model.calls.filter((c) => c.phase === 'extract_evidence').length, 1);
+
+  // The per-run dedupe chain is freed once it drains — the map would
+  // otherwise hold one entry per run for the orchestrator's lifetime.
+  const chains = (h.orchestrator as unknown as { dedupeChains: Map<string, unknown> })
+    .dedupeChains;
+  assert.equal(chains.size, 0);
 });
 
 test('deep research: 429 with Retry-After is retried and succeeds', async (t) => {
@@ -855,6 +861,63 @@ test('deep research: systemic provider failures stop the loop with a partial rep
   assert.equal(stopped.status, 'budget_exhausted', `lastError=${stopped.lastError}`);
   assert.equal(stopped.terminalReason, 'provider_failures');
   assert.match(h.reports[0]!.markdown, /Partial report/);
+});
+
+test('deep research: content failures (404s, empty pages) do not trip the systemic-failure stop', async (t) => {
+  const h = await openHarness(t);
+
+  // Healthy search: four candidates, but only one has usable content. The two
+  // dead*.example URLs have no fake page (webFetch throws HTTP 404 → fatal) and
+  // empty.example returns an empty body — content-level failures, not provider
+  // failures.
+  h.web.searchResults.set('acme revenue', [
+    { title: 'ACME 2025 Annual Report', url: 'https://good.example/ir/2025', snippet: 'Official filing' },
+    { title: 'Dead link one', url: 'https://dead1.example/gone', snippet: 'stale' },
+    { title: 'Empty page', url: 'https://empty.example/blank', snippet: 'blank' },
+    { title: 'Dead link two', url: 'https://dead2.example/gone', snippet: 'stale' },
+  ]);
+  h.web.pages.set('https://good.example/ir/2025', { content: IR_PAGE, title: 'ACME 2025 Annual Report' });
+  h.web.pages.set('https://empty.example/blank', { content: '', title: 'Empty page' });
+
+  h.model.queue('planner', () => PLAN);
+  const readByDomain = (domain: string) => (input: { userPrompt: string }) => {
+    const m = input.userPrompt.match(new RegExp(`(rsrc_[a-f0-9-]+) \\[${domain.replace(/\./g, '\\.')}\\]`));
+    assert.ok(m, `brief lists the ${domain} candidate`);
+    return { actions: [read(m![1]!, ['q1'])] };
+  };
+  // Iteration 1: search (healthy). Iteration 2: a successful read with evidence
+  // resets both the zero-gain and systemic streaks. Iterations 3-5: three
+  // consecutive all-content-failed read iterations — enough to trip the old
+  // (mislabeled) systemic stop while search stays perfectly healthy.
+  h.model.queue('decision', () => ({ actions: [search('ACME revenue 2025 annual report')] }));
+  h.model.queue('decision', readByDomain('good.example'));
+  h.model.queue('extract_evidence', () => ({
+    evidence: [
+      evidenceItem({ questionIds: ['q1'], excerpt: 'Total revenue was $4.2 billion in fiscal 2025.' }),
+    ],
+    quality: { sourceClass: 'official', authority: 'high', proximityToClaim: 'direct' },
+  }));
+  h.model.queue('decision', readByDomain('dead1.example'));
+  h.model.queue('decision', readByDomain('empty.example'));
+  h.model.queue('decision', readByDomain('dead2.example'));
+  h.model.queue('synthesis', () => ({
+    schemaVersion: 1,
+    title: 'Partial coverage',
+    executiveSummary: [],
+    sections: [],
+    contradictions: [],
+    gaps: [{ description: 'Several candidate sources were dead links.' }],
+    methodology: [],
+  }));
+
+  const run = await h.orchestrator.createRun({ sessionId: h.sessionId, objective: 'ACME' });
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(run.runId, 1);
+  const stopped = await waitForStatus(h, run.runId, ['budget_exhausted', 'failed', 'completed']);
+  assert.equal(stopped.status, 'budget_exhausted', `lastError=${stopped.lastError}`);
+  // The run stops via the zero-gain tracker, not a mislabeled provider failure.
+  assert.notEqual(stopped.terminalReason, 'provider_failures');
+  assert.equal(stopped.terminalReason, 'no_information_gain');
 });
 
 // ─── Synthesis provenance enforcement ────────────────────────────────────────
@@ -973,4 +1036,237 @@ test('deep research: only_domains policy filters searches and blocks off-policy 
   const finished = await waitForStatus(h, run.runId, ['completed', 'failed', 'budget_exhausted']);
   assert.equal(finished.status, 'completed', `lastError=${finished.lastError}`);
   assert.deepEqual(h.web.searchCalls[0]!.includeDomains, ['sec.example']);
+});
+
+// ─── Lifecycle recovery ──────────────────────────────────────────────────────
+
+test('deep research: elapsed-time exhaustion blocks resume until the time budget is raised', async (t) => {
+  let fakeNow = Date.now();
+  const h = await openHarness(t, {
+    now: () => fakeNow,
+    budgetPresets: {
+      quick: { ...RESEARCH_BUDGET_PRESETS.quick, elapsedMs: 1_000 },
+    },
+  });
+  h.web.searchResults.set('acme', [
+    { title: 'A', url: 'https://acme.example/a', snippet: 's' },
+  ]);
+
+  h.model.queue('planner', () => PLAN);
+  // The decision callback pushes the clock past the 1s time budget — the loop
+  // stops on 'elapsed' after this iteration; required questions are uncovered,
+  // so the stop yields a partial report and budget_exhausted.
+  h.model.queue('decision', () => {
+    fakeNow += 5_000;
+    return { actions: [search('acme revenue')] };
+  });
+  const partial = () => ({
+    schemaVersion: 1, title: 'Partial', executiveSummary: [], sections: [],
+    contradictions: [], gaps: [{ description: 'Out of time.' }], methodology: [],
+  });
+  h.model.queue('synthesis', partial);
+
+  const run = await h.orchestrator.createRun({
+    sessionId: h.sessionId, objective: 'ACME', depth: 'quick',
+  });
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(run.runId, 1);
+  const exhausted = await waitForStatus(h, run.runId, ['budget_exhausted', 'failed', 'completed']);
+  assert.equal(exhausted.status, 'budget_exhausted', `lastError=${exhausted.lastError}`);
+  assert.equal(exhausted.terminalReason, 'elapsed');
+
+  // Resuming without more time must be rejected — not silently burn synthesis
+  // calls re-rendering the same partial report.
+  await assert.rejects(
+    () => h.orchestrator.resume(run.runId),
+    (err: unknown) => err instanceof ConflictError && /elapsed.*exhausted/.test(err.message),
+  );
+
+  await h.orchestrator.increaseBudget(run.runId, { elapsedMs: 60 * 60_000 });
+  h.model.queue('decision', () => {
+    fakeNow += 2 * 60 * 60_000; // exceed even the raised budget after one more search
+    return { actions: [search('acme margin filings', ['q2'])] };
+  });
+  h.model.queue('synthesis', partial);
+  await h.orchestrator.resume(run.runId);
+  const again = await waitForStatus(h, run.runId, ['budget_exhausted', 'failed', 'completed']);
+  assert.equal(again.status, 'budget_exhausted', `lastError=${again.lastError}`);
+  // The resumed leg actually researched before stopping again.
+  assert.equal((again.usageJson as Record<string, number>).searches, 2);
+});
+
+test('deep research: a scaffolding error during planning is retryable (resume phase = planning)', async (t) => {
+  // A store hiccup in runPlanning's preamble escapes to the detached-execution
+  // last-resort catch. That catch must stamp the phase actually running —
+  // hardcoding 'researching' would route the retry into the research loop,
+  // which throws for lack of a plan, permanently bricking the run.
+  let realResearch: ResearchStore | undefined;
+  let failNextInsertStep = false;
+  const flaky = new Proxy({} as ResearchStore, {
+    get: (_target, prop) => {
+      const store = realResearch as unknown as Record<PropertyKey, unknown>;
+      const value = store[prop];
+      if (prop === 'insertStep') {
+        return async (...args: unknown[]) => {
+          if (failNextInsertStep) {
+            failNextInsertStep = false;
+            throw new Error('transient store outage');
+          }
+          return (value as (...a: unknown[]) => unknown).apply(realResearch, args);
+        };
+      }
+      return typeof value === 'function'
+        ? (value as (...a: unknown[]) => unknown).bind(realResearch)
+        : value;
+    },
+  });
+  const h = await openHarness(t, { research: flaky });
+  realResearch = h.research;
+
+  failNextInsertStep = true;
+  const run = await h.orchestrator.createRun({ sessionId: h.sessionId, objective: 'ACME' });
+  const failed = await waitForStatus(h, run.runId, ['failed']);
+  assert.equal(failed.resumePhase, 'planning');
+  assert.match(failed.lastError ?? '', /transient store outage/);
+
+  h.model.queue('planner', () => PLAN);
+  await h.orchestrator.retry(run.runId);
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+});
+
+test('deep research: legacy failed rows with no resume phase still resume', async (t) => {
+  const h = await openHarness(t);
+
+  // (a) Failed during planning, no plan on record → resume re-plans.
+  h.model.queue('planner', () => 'garbage');
+  h.model.queue('planner', () => 'still garbage');
+  const planless = await h.orchestrator.createRun({ sessionId: h.sessionId, objective: 'ACME' });
+  await waitForStatus(h, planless.runId, ['failed']);
+  await h.research.patchRun(h.scope, planless.runId, { resumePhase: null });
+  h.model.queue('planner', () => PLAN);
+  await h.orchestrator.resume(planless.runId);
+  await waitForStatus(h, planless.runId, ['awaiting_plan_approval']);
+
+  // (b) Failed mid-research with a plan on record → resume returns to plan
+  // review (never auto-runs a plan we can't prove was approved).
+  const session2 = `s-${randomUUID().slice(0, 8)}`;
+  h.model.queue('planner', () => ({
+    ...PLAN,
+    questions: PLAN.questions.map((q) => ({ ...q, priority: 'supporting' })),
+    completionCriteria: { requiredQuestionIds: [], unresolvedContradictionsAllowed: true },
+  }));
+  const withPlan = await h.orchestrator.createRun({ sessionId: session2, objective: 'ACME' });
+  await waitForStatus(h, withPlan.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(withPlan.runId, 1);
+  // No decision queued → the research loop's model call throws → failed.
+  const failed = await waitForStatus(h, withPlan.runId, ['failed']);
+  assert.equal(failed.resumePhase, 'researching');
+  await h.research.patchRun(h.scope, withPlan.runId, { resumePhase: null });
+
+  const reviewing = await h.orchestrator.resume(withPlan.runId);
+  assert.equal(reviewing.status, 'awaiting_plan_approval');
+  h.model.queue('decision', () => ({ actions: [{ type: 'finish', rationale: 'done' }] }));
+  h.model.queue('synthesis', () => ({
+    schemaVersion: 1, title: 'OK', executiveSummary: [], sections: [],
+    contradictions: [], gaps: [], methodology: [],
+  }));
+  await h.orchestrator.approvePlan(withPlan.runId, 1);
+  const finished = await waitForStatus(h, withPlan.runId, ['completed', 'failed', 'budget_exhausted']);
+  assert.equal(finished.status, 'completed', `lastError=${finished.lastError}`);
+});
+
+test('deep research: a transiently failed search query can be retried', async (t) => {
+  const h = await openHarness(t);
+  // First attempt fails fatally (HTTP 400 → no internal retry); the model
+  // repeats the exact query next iteration and it must execute — recording
+  // the failed attempt in the query history would make it a permanent dupe.
+  h.web.searchFailures.push(Object.assign(new Error('HTTP 400 — bad request'), { status: 400 }));
+  h.web.searchResults.set('acme', [
+    { title: 'A', url: 'https://acme.example/a', snippet: 's' },
+  ]);
+
+  h.model.queue('planner', () => ({
+    ...PLAN,
+    questions: PLAN.questions.map((q) => ({ ...q, priority: 'supporting' })),
+    completionCriteria: { requiredQuestionIds: [], unresolvedContradictionsAllowed: true },
+  }));
+  h.model.queue('decision', () => ({ actions: [search('ACME revenue 2025')] }));
+  h.model.queue('decision', (input) => {
+    assert.match(input.userPrompt, /Search failed/);
+    return { actions: [search('ACME revenue 2025')] };
+  });
+  h.model.queue('decision', () => ({ actions: [{ type: 'finish', rationale: 'done' }] }));
+  h.model.queue('synthesis', () => ({
+    schemaVersion: 1, title: 'R', executiveSummary: [], sections: [], contradictions: [], gaps: [], methodology: [],
+  }));
+
+  const run = await h.orchestrator.createRun({ sessionId: h.sessionId, objective: 'ACME' });
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(run.runId, 1);
+  const finished = await waitForStatus(h, run.runId, ['completed', 'failed', 'budget_exhausted']);
+  assert.equal(finished.status, 'completed', `lastError=${finished.lastError}`);
+  assert.equal(h.web.searchCalls.length, 2); // failed once, retried once
+  assert.equal((finished.usageJson as Record<string, number>).searches, 2);
+  const sources = await h.research.listSources(h.scope, run.runId);
+  assert.equal(sources.length, 1);
+});
+
+test('deep research: concurrent reads cannot overshoot the per-run snapshot byte budget', async (t) => {
+  const pageA = `AAAA ${'ACME alpha division report. '.repeat(20)}`;
+  const pageB = `BBBB ${'ACME beta division report. '.repeat(20)}`;
+  // Room for either page alone, never both.
+  const bytesPerRun = Math.max(Buffer.byteLength(pageA), Buffer.byteLength(pageB)) + 50;
+  const h = await openHarness(t, {
+    budgetPresets: {
+      quick: { ...RESEARCH_BUDGET_PRESETS.quick, bytesPerRun },
+    },
+  });
+  h.web.searchResults.set('acme', [
+    { title: 'Alpha', url: 'https://alpha.example/report', snippet: 'a' },
+    { title: 'Beta', url: 'https://beta.example/report', snippet: 'b' },
+  ]);
+  h.web.pages.set('https://alpha.example/report', { content: pageA, title: 'Alpha' });
+  h.web.pages.set('https://beta.example/report', { content: pageB, title: 'Beta' });
+
+  h.model.queue('planner', () => ({
+    ...PLAN,
+    questions: [{ ...PLAN.questions[0], priority: 'supporting' }],
+    completionCriteria: { requiredQuestionIds: [], unresolvedContradictionsAllowed: true },
+  }));
+  h.model.queue('decision', () => ({ actions: [search('acme reports')] }));
+  // Read both candidates in one iteration — different domains run in parallel.
+  h.model.queue('decision', (input) => {
+    const ids = [...input.userPrompt.matchAll(/(rsrc_[a-f0-9-]+) \[/g)].map((m) => m[1]!);
+    assert.equal(ids.length, 2);
+    return { actions: [read(ids[0]!, ['q1']), read(ids[1]!, ['q1'])] };
+  });
+  // Only the read that won the byte reservation extracts. The excerpt appears
+  // in both pages, so the test is deterministic whichever read wins.
+  h.model.queue('extract_evidence', () => ({
+    evidence: [evidenceItem({ questionIds: ['q1'], excerpt: 'division report.' })],
+    quality: { sourceClass: 'reputable_secondary' },
+  }));
+  h.model.queue('decision', () => ({ actions: [{ type: 'finish', rationale: 'done' }] }));
+  h.model.queue('synthesis', () => ({
+    schemaVersion: 1, title: 'Bytes', executiveSummary: [], sections: [], contradictions: [], gaps: [], methodology: [],
+  }));
+
+  const run = await h.orchestrator.createRun({
+    sessionId: h.sessionId, objective: 'ACME', depth: 'quick',
+  });
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(run.runId, 1);
+  const finished = await waitForStatus(h, run.runId, ['completed', 'failed', 'budget_exhausted']);
+  assert.equal(finished.status, 'completed', `lastError=${finished.lastError}`);
+
+  const sources = await h.research.listSources(h.scope, run.runId);
+  assert.equal(sources.filter((s) => s.status === 'fetched').length, 1);
+  const overBudget = sources.filter((s) => s.status === 'failed');
+  assert.equal(overBudget.length, 1);
+  assert.match(overBudget[0]!.lastError ?? '', /snapshot byte budget exhausted/);
+  const usage = finished.usageJson as Record<string, number>;
+  assert.ok(
+    usage.snapshotBytes! <= bytesPerRun,
+    `snapshotBytes ${usage.snapshotBytes} exceeds bytesPerRun ${bytesPerRun}`,
+  );
 });

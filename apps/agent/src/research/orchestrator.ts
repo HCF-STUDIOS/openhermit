@@ -44,6 +44,7 @@ import {
   assertTransition,
   canonicalUrlHash,
   evaluateFinishGate,
+  budgetIncreaseCaps,
   increaseBudgetLimits,
   isTerminalStatus,
   normalizeUrl,
@@ -220,7 +221,14 @@ export class ResearchOrchestrator {
   private withDedupeLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.dedupeChains.get(runId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    this.dedupeChains.set(runId, next.then(() => undefined, () => undefined));
+    const tail = next.then(() => undefined, () => undefined);
+    this.dedupeChains.set(runId, tail);
+    // Free the entry once the chain drains. The identity check keeps an entry
+    // a newer waiter already replaced — without this, the map holds one entry
+    // per run for the orchestrator's (process-long) lifetime.
+    void tail.then(() => {
+      if (this.dedupeChains.get(runId) === tail) this.dedupeChains.delete(runId);
+    });
     return next;
   }
 
@@ -412,7 +420,13 @@ export class ResearchOrchestrator {
         : zeroResearchUsage(),
     );
     if (run.status === 'budget_exhausted') {
-      const exhausted = budget.exhaustedDimension();
+      // Elapsed is checked by the caller (guards.ts), so feed it the persisted
+      // execution time — otherwise a time-exhausted run resumes straight into
+      // another elapsed stop and burns synthesis calls re-rendering the same
+      // partial report instead of demanding a bigger elapsedMs budget.
+      const exhausted = budget.exhaustedDimension(
+        parseWorkingState(run.workingStateJson).elapsedMsBefore,
+      );
       if (exhausted) {
         throw new ConflictError(
           `budget dimension "${exhausted}" is still exhausted — increase the budget first`,
@@ -437,7 +451,9 @@ export class ResearchOrchestrator {
         lastError: null,
       });
       // `partial` is recomputed from the finish gate inside runSynthesis.
-      this.startDetached(updated, (signal, lf) => this.runSynthesis(updated, signal, lf, undefined));
+      this.startDetached(updated, 'synthesizing', (signal, lf) =>
+        this.runSynthesis(updated, signal, lf, undefined),
+      );
       return updated;
     }
     if (phase === null) {
@@ -479,6 +495,9 @@ export class ResearchOrchestrator {
     }
     await this.deps.research.markRunningStepsInterrupted(this.deps.scope, runId);
     await this.deps.research.invalidatePendingSteps(this.deps.scope, runId);
+    // failed/budget_exhausted are nonterminal (retryable/resumable, §7) and
+    // keep occupying the session's one-run slot; cancel from those states is
+    // the escape hatch that frees it for a fresh run.
     const updated = await this.deps.research.transitionRun(
       this.deps.scope,
       runId,
@@ -535,6 +554,7 @@ export class ResearchOrchestrator {
     const next = increaseBudgetLimits(
       run.budgetJson as unknown as ResearchBudgetLimits,
       limits,
+      budgetIncreaseCaps(this.presets('thorough')),
     );
     await this.deps.research.patchRun(this.deps.scope, runId, {
       budgetJson: next as unknown as Record<string, unknown>,
@@ -601,6 +621,12 @@ export class ResearchOrchestrator {
         return 'researching';
       case 'synthesizing':
         return 'synthesizing';
+      case 'failed':
+      case 'budget_exhausted':
+        // Legacy rows predating resumePhase stamping. With a plan on record,
+        // return to plan review (never auto-run a plan we can't prove was
+        // approved); with no plan yet, re-plan.
+        return run.planJson ? null : 'planning';
       default:
         return null; // awaiting_plan_approval → back to review
     }
@@ -643,7 +669,7 @@ export class ResearchOrchestrator {
   }
 
   private startPlanning(runId: string, sessionId: string, refinement?: string): void {
-    void this.startDetachedById(runId, sessionId, async (signal, lf) => {
+    void this.startDetachedById(runId, sessionId, 'planning', async (signal, lf) => {
       const run = await this.getRun(runId);
       const running =
         run.status === 'planning'
@@ -754,7 +780,9 @@ export class ResearchOrchestrator {
             { status: 'researching', startedAt: run.startedAt ?? new Date(this.now).toISOString() },
           );
           if (!claimed) continue;
-          this.startDetached(claimed, (signal, lf) => this.runResearchLoop(claimed, signal, lf));
+          this.startDetached(claimed, 'researching', (signal, lf) =>
+            this.runResearchLoop(claimed, signal, lf),
+          );
         }
       })
       .catch((err) => {
@@ -764,14 +792,17 @@ export class ResearchOrchestrator {
 
   private startDetached(
     run: ResearchRunRecord,
+    phase: ResearchResumePhase,
     fn: (signal: AbortSignal, langfuseTurnContext: LangfuseTurnContext | undefined) => Promise<void>,
   ): void {
-    void this.startDetachedById(run.runId, run.sessionId, fn);
+    void this.startDetachedById(run.runId, run.sessionId, phase, fn);
   }
 
   private startDetachedById(
     runId: string,
     sessionId: string,
+    /** Phase this execution runs — stamped as resumePhase by the last-resort catch. */
+    phase: ResearchResumePhase,
     fn: (signal: AbortSignal, langfuseTurnContext: LangfuseTurnContext | undefined) => Promise<void>,
   ): Promise<void> {
     const controller = new AbortController();
@@ -801,9 +832,12 @@ export class ResearchOrchestrator {
         await fn(controller.signal, langfuseTurnContext);
       } catch (err) {
         // Last-resort catch: phase handlers persist their own failures; this
-        // guards the orchestration scaffolding itself.
+        // guards the orchestration scaffolding itself. It must stamp the phase
+        // actually running: hardcoding 'researching' would send a failed
+        // planning run's retry into the research loop, which throws for lack
+        // of a plan — an unrecoverable retry loop.
         this.deps.log(`[research] run ${runId} execution error: ${sanitizeError(err)}`);
-        await this.handlePhaseFailure(runId, 'researching', undefined, err).catch(() => {});
+        await this.handlePhaseFailure(runId, phase, undefined, err).catch(() => {});
       } finally {
         this.executions.delete(runId);
         if (this.executionsBySession.get(sessionId) === runId) {
@@ -1260,7 +1294,10 @@ export class ResearchOrchestrator {
     );
 
     // Reads: parallel across domains, sequential per domain.
-    const readTasks: Array<{ domain: string; run: () => Promise<'ok' | 'failed' | 'skipped'> }> = [];
+    const readTasks: Array<{
+      domain: string;
+      run: () => Promise<'ok' | 'failed' | 'content_failed' | 'skipped'>;
+    }> = [];
     for (const action of reads) {
       const source = await this.deps.research.getSource(this.deps.scope, run.runId, action.sourceId);
       if (!source?.url) continue;
@@ -1279,6 +1316,12 @@ export class ResearchOrchestrator {
       });
     }
     const readResults = await runReadsWithDomainLimit(readTasks);
+    // `failed` (and thus allFailed) drives the design-§9 *systemic provider
+    // failure* streak, so only infrastructure-level failures count toward it.
+    // 'content_failed' (404-class, empty page, byte budget) still counts as
+    // executed — the provider answered, proof the pipeline works — but yields
+    // zero gain, so persistent bad content ends the run via the zero-gain
+    // tracker ('no_information_gain'), correctly labeled.
     for (const r of readResults) {
       if (r.status === 'fulfilled' && r.value !== 'skipped') {
         executed += 1;
@@ -1443,7 +1486,11 @@ export class ResearchOrchestrator {
         budget.spend({ retries });
       }
       budget.spend({ searches: 1 });
-      state.queryHistory.push(action.query);
+      // Deliberately NOT pushed to queryHistory: that history feeds the
+      // validation dedupe, which would make a transiently-failed query
+      // permanently unretryable. The failure reaches the model via
+      // state.notes, the search budget is still spent, and the
+      // systemic-failure streak bounds repeated failures.
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'search', outcome: 'failed' });
       await this.deps.research.updateStep(this.deps.scope, step.step.stepId, {
         status: 'failed',
@@ -1470,7 +1517,13 @@ export class ResearchOrchestrator {
     action: Extract<ResearchAction, { type: 'read_source' }>,
     source: ResearchSourceRecord,
   ): Promise<{
-    outcome: 'ok' | 'failed' | 'skipped';
+    // 'failed' means the fetch pipeline looks unhealthy (retries exhausted on
+    // 5xx/timeout/network/rate-limit) and feeds the systemic-failure streak.
+    // 'content_failed' means this URL yielded nothing (404-class response,
+    // empty page, snapshot byte budget) while the provider itself answered —
+    // it must NOT count as systemic, or healthy runs reading a few dead links
+    // would abort with a mislabeled provider_failures partial report.
+    outcome: 'ok' | 'failed' | 'content_failed' | 'skipped';
     newEvidence: number;
     newCoveredQuestions: number;
     newSourceClass: boolean;
@@ -1539,24 +1592,27 @@ export class ResearchOrchestrator {
       if (snapshot.length === 0) {
         await this.markSourceState(run, source, step.step.stepId, 'failed', 'empty content');
         budget.spend({ fetchedSources: 1 });
-        return { outcome: 'failed', ...none };
+        return { outcome: 'content_failed', ...none };
       }
       const snapshotBytes = Buffer.byteLength(snapshot, 'utf8');
-      if (!budget.canStoreSnapshot(snapshotBytes)) {
-        await this.markSourceState(run, source, step.step.stepId, 'failed', 'snapshot byte budget exhausted');
-        budget.spend({ fetchedSources: 1 });
-        return { outcome: 'failed', ...none };
-      }
 
       const hash = contentHash(snapshot);
-      const mirror = await this.withDedupeLock(run.runId, async () => {
+      const stored = await this.withDedupeLock(run.runId, async () => {
         const existing = await this.deps.research.findSourceByContentHash(
           this.deps.scope,
           run.runId,
           hash,
           source.sourceId,
         );
-        if (existing) return existing;
+        if (existing) return { kind: 'mirror' as const, mirror: existing };
+        // Check-and-reserve with no await in between (and serialized with the
+        // run's other readers by this lock): reads on other domains run
+        // concurrently, so a check outside the lock would let every in-flight
+        // read pass against the same remaining bytesPerRun and collectively
+        // overshoot it. No refund if the store write below throws — the same
+        // conservative over-count convention as model-call reservation.
+        if (!budget.canStoreSnapshot(snapshotBytes)) return { kind: 'over_budget' as const };
+        budget.spend({ snapshotBytes });
         await this.deps.research.updateSource(this.deps.scope, source.sourceId, {
           status: 'fetched',
           snapshotText: snapshot,
@@ -1571,9 +1627,15 @@ export class ResearchOrchestrator {
           retrievedAt: acquired.retrievedAt,
           mimeType: acquired.mimeType ?? null,
         });
-        return undefined;
+        return { kind: 'stored' as const };
       });
-      if (mirror) {
+      if (stored.kind === 'over_budget') {
+        await this.markSourceState(run, source, step.step.stepId, 'failed', 'snapshot byte budget exhausted');
+        budget.spend({ fetchedSources: 1 });
+        return { outcome: 'content_failed', ...none };
+      }
+      if (stored.kind === 'mirror') {
+        const mirror = stored.mirror;
         await this.deps.research.updateSource(this.deps.scope, source.sourceId, {
           status: 'duplicate',
           duplicateOfSourceId: mirror.sourceId,
@@ -1591,7 +1653,8 @@ export class ResearchOrchestrator {
         this.publishSourceUpdate(run, source.sourceId, 'duplicate', source);
         return { outcome: 'ok', ...none };
       }
-      budget.spend({ fetchedSources: 1, snapshotBytes });
+      // snapshotBytes were reserved inside the dedupe lock above.
+      budget.spend({ fetchedSources: 1 });
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'ok' });
       researchSourcesTotal.inc({ agent_id: this.deps.agentId, kind: 'web', status: 'fetched' });
       this.publishSourceUpdate(run, source.sourceId, 'fetched', {
@@ -1599,9 +1662,14 @@ export class ResearchOrchestrator {
         title: acquired.title ?? source.title,
       });
 
-      // Extraction (no tools; untrusted envelope).
+      // Extraction (no tools; untrusted envelope). Reads on different domains
+      // run concurrently, so the model-call slot must be reserved atomically
+      // here — a check-only gate would let every in-flight extraction pass on
+      // the same last slot and overspend into the synthesis reserve. No refund
+      // if the phase call throws: it may still have reached the provider, and
+      // over-counting a capped budget is the conservative direction.
       this.throwIfControlRequested(ctx.signal);
-      if (!budget.canSpendModelCall('research')) {
+      if (!budget.tryReserveModelCall('research')) {
         await this.deps.research.updateStep(this.deps.scope, step.step.stepId, {
           status: 'completed',
           completedAt: new Date(this.now).toISOString(),
@@ -1628,7 +1696,8 @@ export class ResearchOrchestrator {
       });
       this.recordPhaseUsage('extract_evidence', extraction.usage);
       budget.spend({
-        modelCalls: extraction.modelCalls,
+        // One call was reserved up front; only the repair call (if any) remains.
+        modelCalls: extraction.modelCalls - 1,
         inputTokens: extraction.usage.inputTokens,
         outputTokens: extraction.usage.outputTokens,
       });
@@ -1693,7 +1762,12 @@ export class ResearchOrchestrator {
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'failed' });
       await this.markSourceState(run, source, step.step.stepId, 'failed', sanitizeError(err));
       state.notes.push(`Read failed (${source.domain ?? source.url}): ${sanitizeError(err)}`.slice(0, 300));
-      return { outcome: 'failed', ...none };
+      // A 'fatal' classification means the provider answered definitively for
+      // this URL (404-class response; retrying won't help) — content-level,
+      // not systemic. Exhausted retries (5xx/timeout/network/429) and
+      // unexpected internal errors stay systemic.
+      const contentLevel = err instanceof ResearchActionError && err.classification === 'fatal';
+      return { outcome: contentLevel ? 'content_failed' : 'failed', ...none };
     }
   }
 

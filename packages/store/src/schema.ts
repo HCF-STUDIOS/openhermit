@@ -496,7 +496,11 @@ export const researchRuns = pgTable('research_runs', {
   uniqueIndex('research_runs_client_request_unique')
     .on(table.agentId, table.sessionId, table.clientRequestId)
     .where(sql`client_request_id IS NOT NULL`),
-  // One nonterminal run per session (§7).
+  // One nonterminal run per session (§7). failed/budget_exhausted are
+  // deliberately absent from the predicate: they are retryable/resumable and
+  // must keep holding the slot until the user resumes, retries, or cancels
+  // (cancel accepts both, so the session is never stuck). Must stay in sync
+  // with TERMINAL_STATUSES in impl/research-store.ts.
   uniqueIndex('research_runs_one_active_per_session')
     .on(table.agentId, table.sessionId)
     .where(sql`status NOT IN ('completed', 'cancelled')`),

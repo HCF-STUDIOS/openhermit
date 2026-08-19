@@ -289,6 +289,39 @@ test('research routes: steps and sources listings; snapshot text never leaves th
   assert.doesNotMatch(JSON.stringify(detailBody), /SECRET SNAPSHOT CONTENT/);
 });
 
+test('research routes: a run from another session is indistinguishable from a nonexistent run', async () => {
+  const h = makeHarness();
+  // rr_1 belongs to web:s1; the harness fakes admit any session, so this
+  // exercises the requireRunInSession guard itself.
+  const OTHER = '/api/agents/agent-a/sessions/web:s2/research-runs';
+
+  const cross = await h.app.request(`${OTHER}/rr_1`);
+  assert.equal(cross.status, 404);
+  const crossBody = (await cross.json()) as Record<string, unknown>;
+
+  const missing = await h.app.request(`${BASE}/rr_nope`);
+  assert.equal(missing.status, 404);
+  const missingBody = JSON.parse(
+    (await missing.text()).replaceAll('rr_nope', 'rr_1'),
+  ) as Record<string, unknown>;
+  // Identical error code and message shape — a difference would let any
+  // authenticated session probe which runIds exist.
+  assert.deepEqual(crossBody, missingBody);
+
+  // The guard stops downstream work, not just the GET.
+  const steps = await h.app.request(`${OTHER}/rr_1/steps`);
+  assert.equal(steps.status, 404);
+  assert.equal(h.calls.some((c) => c.method === 'listSteps'), false);
+
+  const action = await h.app.request(`${OTHER}/rr_1/actions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'cancel' }),
+  });
+  assert.equal(action.status, 404);
+  assert.equal(h.calls.some((c) => c.method === 'cancel'), false);
+});
+
 test('research routes: session access failures stop the request before the orchestrator', async () => {
   const h = makeHarness();
   const res = await h.app.request(

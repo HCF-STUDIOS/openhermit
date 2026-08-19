@@ -206,6 +206,39 @@ test('renderReportMarkdown: malicious titles cannot inject markdown or links', (
   assert.doesNotMatch(md, /javascript:/);
 });
 
+test('renderReportMarkdown: model-authored body text cannot inject links or HTML', () => {
+  // Statement/contradiction/gap/methodology text is synthesis-model output
+  // derived from untrusted web excerpts and lands in the main session — the
+  // renderer must neutralize markdown/HTML so the model cannot smuggle in a
+  // clickable URL the citation resolver didn't vouch for.
+  const report = makeReport({
+    executiveSummary: [
+      {
+        claimId: 'c1',
+        kind: 'finding',
+        text: 'Revenue [details](https://evil.example/x) <img src=x onerror=alert(1)> javascript:alert(1)',
+        evidenceIds: ['ev1'],
+        confidence: 'high',
+      },
+    ],
+    contradictions: [
+      {
+        summary: 'A says [1B](https://evil.example) — B says 2B',
+        evidenceIds: ['ev1'],
+        resolution: 'trust <script>alert(1)</script>',
+      },
+    ],
+    gaps: [{ description: 'gap with ![beacon](https://evil.example/p.png)' }],
+    methodology: ['ran `curl` | [notes](https://evil.example)'],
+  });
+  const md = renderReportMarkdown(report, evidence, sources);
+  assert.ok(!md.includes(']('), 'no markdown links outside the citation resolver');
+  assert.ok(!md.includes('<'), 'no raw HTML');
+  assert.doesNotMatch(md, /javascript:/i);
+  // Citation marks are appended after sanitization and survive.
+  assert.ok(md.includes('[1]'));
+});
+
 test('renderReportMarkdown: report schema round-trips defaults', () => {
   const parsed = researchReportSchema.parse({ title: 'T' });
   const md = renderReportMarkdown(parsed, new Map(), new Map());

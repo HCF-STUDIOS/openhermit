@@ -295,12 +295,21 @@ test('research sources: update, content-hash lookup, status filter', async (t) =
 test('research evidence: hash-idempotent insert, listing, out-of-scope marking', async (t) => {
   const { research, scope, sessionId } = await openResearch(t);
   const run = await createRun(research, scope, sessionId);
+  const step = await research.insertStep({
+    runId: run.runId, agentId: scope.agentId, iteration: 1, kind: 'search', dedupeKey: 's1',
+  });
+  const [src] = await research.completeSearchStep(scope, step.step.stepId, { status: 'completed' }, [
+    {
+      runId: run.runId, agentId: scope.agentId, url: 'https://a.example/x',
+      canonicalUrlHash: 'h1', discoveredByStepId: step.step.stepId,
+    },
+  ]);
 
   const base = {
     runId: run.runId,
     agentId: scope.agentId,
-    sourceId: 'rsrc_x',
-    extractionStepId: 'rs_x',
+    sourceId: src!.source.sourceId,
+    extractionStepId: step.step.stepId,
     questionIds: ['q1'],
     excerpt: 'revenue was $4.2B',
     locatorJson: { kind: 'web_snapshot', startChar: 0, endChar: 17 },
@@ -327,7 +336,10 @@ test('research evidence: hash-idempotent insert, listing, out-of-scope marking',
   assert.equal(new Set(all.map((e) => e.evidenceId)).size, 3);
 
   // scope filter
-  assert.equal((await research.listEvidence(scope, run.runId, { sourceId: 'rsrc_x' })).length, 3);
+  assert.equal(
+    (await research.listEvidence(scope, run.runId, { sourceId: src!.source.sourceId })).length,
+    3,
+  );
   assert.equal((await research.listEvidence(scope, run.runId, { sourceId: 'nope' })).length, 0);
 
   // refinement marks out-of-scope; default listing hides it, audit view keeps it
@@ -337,6 +349,60 @@ test('research evidence: hash-idempotent insert, listing, out-of-scope marking',
   const audit = await research.listEvidence(scope, run.runId, { includeOutOfScope: true });
   assert.equal(audit.length, 3);
   assert.equal(audit.find((e) => e.evidenceId === target)!.outOfScope, true);
+});
+
+test('research evidence: sourceIds outside the run are rejected', async (t) => {
+  const { research, scope, sessionId } = await openResearch(t);
+  const run = await createRun(research, scope, sessionId);
+  const step = await research.insertStep({
+    runId: run.runId, agentId: scope.agentId, iteration: 1, kind: 'search', dedupeKey: 's1',
+  });
+  const [src] = await research.completeSearchStep(scope, step.step.stepId, { status: 'completed' }, [
+    {
+      runId: run.runId, agentId: scope.agentId, url: 'https://a.example/x',
+      canonicalUrlHash: 'h1', discoveredByStepId: step.step.stepId,
+    },
+  ]);
+
+  const item = (overrides = {}) => ({
+    runId: run.runId, agentId: scope.agentId, sourceId: src!.source.sourceId,
+    extractionStepId: step.step.stepId, questionIds: ['q1'], excerpt: 'x',
+    locatorJson: {}, stance: 'context', evidenceHash: `eh-${randomUUID().slice(0, 8)}`,
+    ...overrides,
+  });
+
+  // nonexistent source
+  await assert.rejects(() => research.insertEvidence([item({ sourceId: 'rsrc_nope' })]), /not in run/);
+
+  // a real source, but belonging to a different run of the same agent
+  const otherRun = await createRun(research, scope, `s-${randomUUID().slice(0, 8)}`);
+  const otherStep = await research.insertStep({
+    runId: otherRun.runId, agentId: scope.agentId, iteration: 1, kind: 'search', dedupeKey: 's2',
+  });
+  const [otherSrc] = await research.completeSearchStep(scope, otherStep.step.stepId, { status: 'completed' }, [
+    {
+      runId: otherRun.runId, agentId: scope.agentId, url: 'https://b.example/y',
+      canonicalUrlHash: 'h2', discoveredByStepId: otherStep.step.stepId,
+    },
+  ]);
+  await assert.rejects(
+    () => research.insertEvidence([item({ sourceId: otherSrc!.source.sourceId })]),
+    /not in run/,
+  );
+
+  // mixed-run batches are rejected outright
+  await assert.rejects(
+    () =>
+      research.insertEvidence([
+        item(),
+        item({ runId: otherRun.runId, sourceId: otherSrc!.source.sourceId }),
+      ]),
+    /single run/,
+  );
+
+  // rejections are all-or-nothing: nothing landed, and a valid insert still works
+  assert.equal((await research.listEvidence(scope, run.runId)).length, 0);
+  assert.equal((await research.insertEvidence([item()])).length, 1);
 });
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────

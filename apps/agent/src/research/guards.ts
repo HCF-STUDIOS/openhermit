@@ -18,19 +18,26 @@ import { TERMINAL_RESEARCH_STATUSES, zeroResearchUsage } from './contracts.js';
 
 // ─── State machine (§7) ─────────────────────────────────────────────────────
 
+// Must stay a superset of every from → to pair the orchestrator's
+// transitionRun calls perform — direct calls bypass assertTransition, so a
+// missing entry here silently makes the matching resume/refine path throw.
 const TRANSITIONS: Record<ResearchRunStatus, readonly ResearchRunStatus[]> = {
   created: ['planning', 'paused', 'cancelled'],
   planning: ['awaiting_plan_approval', 'failed', 'paused', 'cancelled'],
   awaiting_plan_approval: ['queued', 'planning', 'paused', 'cancelled'],
-  queued: ['researching', 'paused', 'cancelled'],
-  researching: ['synthesizing', 'failed', 'budget_exhausted', 'paused', 'cancelled'],
+  // queued → planning is refine on a queued run (plan revision before start).
+  queued: ['researching', 'planning', 'paused', 'cancelled'],
+  // Budget exhaustion routes through synthesizing (partial report first).
+  researching: ['synthesizing', 'failed', 'paused', 'cancelled'],
   synthesizing: ['completed', 'failed', 'budget_exhausted', 'paused', 'cancelled'],
   // paused → planning covers refinement (plan revision); queued / synthesizing
   // are resume_phase targets; awaiting_plan_approval is the post-refinement
   // review stop.
   paused: ['planning', 'awaiting_plan_approval', 'queued', 'synthesizing', 'cancelled'],
-  failed: ['planning', 'queued', 'synthesizing', 'cancelled'],
-  budget_exhausted: ['queued', 'cancelled'],
+  // → awaiting_plan_approval: resume of a legacy row with no recorded resume
+  // phase returns to plan review rather than auto-running the plan.
+  failed: ['planning', 'awaiting_plan_approval', 'queued', 'synthesizing', 'cancelled'],
+  budget_exhausted: ['planning', 'awaiting_plan_approval', 'queued', 'cancelled'],
   completed: [],
   cancelled: [],
 };
@@ -145,6 +152,18 @@ export class ResearchBudget {
     return this.usage.modelCalls + 1 <= this.limits.modelCalls - reserve;
   }
 
+  /**
+   * Atomically check and reserve one model call — no await between check and
+   * increment, so concurrent extraction tasks cannot all pass on the same
+   * last slot and overspend into the synthesis reserve. The caller spends the
+   * remainder (tokens, a repair call) after the phase call returns.
+   */
+  tryReserveModelCall(phase: 'research' | 'synthesis' = 'research'): boolean {
+    if (!this.canSpendModelCall(phase)) return false;
+    this.usage.modelCalls += 1;
+    return true;
+  }
+
   canStoreSnapshot(bytes: number): boolean {
     return (
       bytes <= this.limits.bytesPerSource &&
@@ -189,16 +208,36 @@ export class ResearchBudget {
   }
 }
 
-/** Merge a user-requested budget increase; only raises, never lowers. */
+/** Hard ceiling for participant-requested budget increases, as a multiple of
+ *  the (operator-configurable) thorough preset. */
+export const BUDGET_INCREASE_CAP_MULTIPLIER = 3;
+
+export const budgetIncreaseCaps = (
+  thorough: ResearchBudgetLimits = RESEARCH_BUDGET_PRESETS.thorough,
+): ResearchBudgetLimits => {
+  const caps = { ...thorough };
+  for (const key of Object.keys(caps) as (keyof ResearchBudgetLimits)[]) {
+    caps[key] = caps[key] * BUDGET_INCREASE_CAP_MULTIPLIER;
+  }
+  return caps;
+};
+
+/**
+ * Merge a user-requested budget increase; only raises, never lowers. Every
+ * raise is clamped to `caps` — increase_budget is reachable by any session
+ * participant and spends real money (search API calls, model tokens, wall
+ * clock), so an uncapped merge would be a cost amplifier on shared deploys.
+ */
 export const increaseBudgetLimits = (
   current: ResearchBudgetLimits,
   increase: Partial<ResearchBudgetLimits>,
+  caps: ResearchBudgetLimits = budgetIncreaseCaps(),
 ): ResearchBudgetLimits => {
   const next = { ...current };
   for (const key of Object.keys(current) as (keyof ResearchBudgetLimits)[]) {
     const v = increase[key];
     if (typeof v === 'number' && Number.isFinite(v) && v > next[key]) {
-      next[key] = Math.floor(v);
+      next[key] = Math.max(next[key], Math.min(Math.floor(v), caps[key]));
     }
   }
   return next;

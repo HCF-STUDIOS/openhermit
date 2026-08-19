@@ -19,6 +19,8 @@ import {
  *    dispatcher from `../attachments/ssrf.js` (blocks loopback, private,
  *    link-local, metadata, CGNAT, multicast, and DNS-rebinding targets)
  *  - manual redirect following with a hop cap, every hop re-validated
+ *  - caller headers reduced to content-negotiation headers once a redirect
+ *    leaves the original origin (credentials never follow a redirect)
  *  - wall-clock timeout combined with an optional caller AbortSignal
  *  - decompressed-body byte cap, either failing or truncating on overflow
  *
@@ -61,7 +63,12 @@ export interface SafeFetchOptions {
   maxBytes?: number | undefined;
   /** What to do when the body exceeds `maxBytes`. Default `'error'`. */
   onOversize?: 'error' | 'truncate' | undefined;
-  /** Extra request headers. */
+  /**
+   * Extra request headers. On a redirect hop that changes origin, only the
+   * `CROSS_ORIGIN_SAFE_HEADERS` content-negotiation headers are re-sent;
+   * everything else (authorization, cookies, API keys, …) is dropped for the
+   * rest of the chain — the redirect target is chosen by the remote server.
+   */
   headers?: Record<string, string> | undefined;
   /** Injectable resolver for tests; drives the SSRF connection pinning. */
   resolveHost?: HostResolver | undefined;
@@ -98,6 +105,18 @@ export const createSafeDispatcher = (resolveHost?: HostResolver): Agent =>
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_PROTOCOLS: readonly string[] = ['https:'];
+
+/**
+ * The only caller headers that may follow a redirect to a different origin.
+ * An allowlist (rather than stripping known-sensitive names like the fetch
+ * spec does) fails closed for custom credentials such as `x-api-key`.
+ */
+const CROSS_ORIGIN_SAFE_HEADERS: ReadonlySet<string> = new Set([
+  'user-agent',
+  'accept',
+  'accept-language',
+  'accept-encoding',
+]);
 
 const validateHop = (u: URL, allowedProtocols: readonly string[]): void => {
   if (!allowedProtocols.includes(u.protocol)) {
@@ -204,6 +223,11 @@ export const safeFetch = async (
   const ownsDispatcher = options.dispatcher === undefined;
   const dispatcher = options.dispatcher ?? createSsrfSafeAgent(options.resolveHost);
 
+  // Filtered down to CROSS_ORIGIN_SAFE_HEADERS the first time a redirect
+  // leaves the original origin, and kept filtered from then on (an A→B→A
+  // chain never gets its credentials back — B chose the target).
+  let headers = options.headers;
+
   try {
     let res: Response;
     let hops = 0;
@@ -214,7 +238,7 @@ export const safeFetch = async (
           method: 'GET',
           redirect: 'manual',
           signal,
-          ...(options.headers ? { headers: options.headers } : {}),
+          ...(headers ? { headers } : {}),
           // `dispatcher` is an undici extension to RequestInit, not in lib.dom.
           dispatcher,
         } as RequestInit & { dispatcher: unknown });
@@ -236,6 +260,13 @@ export const safeFetch = async (
           throw new SafeFetchError('malformed_redirect', 'malformed redirect target');
         }
         validateHop(next, allowedProtocols);
+        if (headers && next.origin !== current.origin) {
+          headers = Object.fromEntries(
+            Object.entries(headers).filter(([name]) =>
+              CROSS_ORIGIN_SAFE_HEADERS.has(name.toLowerCase()),
+            ),
+          );
+        }
         current = next;
         hops += 1;
         continue;
