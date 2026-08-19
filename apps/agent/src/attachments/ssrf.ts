@@ -127,6 +127,7 @@ export const isBlockedAddress = (raw: string): boolean => {
     if (g[0] === 0x2001 && g[1] === 0) return true; // Teredo 2001::/32 — obsolete relay tunneling, embedded v4 obfuscated
     if ((g[0]! & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
     if ((g[0]! & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((g[0]! & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local (RFC 3879)
     if ((g[0]! & 0xff00) === 0xff00) return true; // ff00::/8 multicast
     return false;
   }

@@ -744,6 +744,62 @@ test('deep research: duplicate queries rejected; three zero-gain iterations stop
   assert.equal((stopped.usageJson as Record<string, number>).searches, 1);
 });
 
+test('deep research: extraction failure after snapshot store keeps the source fetched and charges it once', async (t) => {
+  const h = await openHarness(t);
+  h.web.searchResults.set('acme', [
+    { title: 'A', url: 'https://acme.example/a', snippet: 's' },
+  ]);
+  h.web.pages.set('https://acme.example/a', {
+    content: 'Total revenue was $4.2 billion in fiscal 2025.',
+    title: 'A',
+  });
+
+  h.model.queue('planner', () => ({
+    ...PLAN,
+    questions: PLAN.questions.map((q) => ({ ...q, priority: 'supporting' })),
+    completionCriteria: { requiredQuestionIds: [], unresolvedContradictionsAllowed: true },
+  }));
+  h.model.queue('decision', () => ({ actions: [search('acme')] }));
+  h.model.queue('decision', (input) => {
+    const m = input.userPrompt.match(/(rsrc_[a-f0-9-]+) \[acme\.example\]/);
+    assert.ok(m, 'brief lists the candidate');
+    return { actions: [read(m![1]!, ['q1'])] };
+  });
+  // The snapshot stores fine; the extraction provider call then dies.
+  h.model.queue('extract_evidence', () => {
+    throw new Error('provider unavailable');
+  });
+  h.model.queue('decision', () => ({ actions: [{ type: 'finish', rationale: 'stop' }] }));
+  h.model.queue('synthesis', () => ({
+    schemaVersion: 1,
+    title: 'ACME',
+    executiveSummary: [],
+    sections: [],
+    contradictions: [],
+    gaps: [],
+    methodology: [],
+  }));
+
+  const run = await h.orchestrator.createRun({ sessionId: h.sessionId, objective: 'ACME' });
+  await waitForStatus(h, run.runId, ['awaiting_plan_approval']);
+  await h.orchestrator.approvePlan(run.runId, 1);
+  const finished = await waitForStatus(h, run.runId, ['completed', 'failed', 'budget_exhausted']);
+  assert.equal(finished.status, 'completed', `lastError=${finished.lastError}`);
+
+  // One source, charged once — the extraction catch must not re-charge it.
+  assert.equal((finished.usageJson as Record<string, number>).fetchedSources, 1);
+
+  // The stored snapshot survives: source stays 'fetched'; only the step failed.
+  const sources = await h.research.listSources(h.scope, run.runId);
+  const src = sources.find((s) => s.url === 'https://acme.example/a');
+  assert.ok(src);
+  assert.equal(src.status, 'fetched');
+  const steps = await h.research.listSteps(h.scope, run.runId);
+  const readStep = steps.find((s) => s.kind === 'read_source');
+  assert.ok(readStep);
+  assert.equal(readStep.status, 'failed');
+});
+
 test('deep research: mirrored content marked duplicate, never independent corroboration', async (t) => {
   const h = await openHarness(t);
   h.web.searchResults.set('acme', [

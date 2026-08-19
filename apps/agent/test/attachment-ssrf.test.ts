@@ -45,6 +45,8 @@ test('isBlockedAddress: blocks v6 loopback / ULA / link-local / mapped-v4', () =
     'fd12:3456::1',
     'fe80::1',
     'fe80::1%eth0', // zone id stripped
+    'fec0::1', // deprecated site-local (RFC 3879)
+    'feff::1', // site-local range edge
     '::ffff:127.0.0.1', // IPv4-mapped, dotted
     '::ffff:7f00:1', // IPv4-mapped, hex form (== 127.0.0.1)
     '::ffff:a9fe:a9fe', // 169.254.169.254

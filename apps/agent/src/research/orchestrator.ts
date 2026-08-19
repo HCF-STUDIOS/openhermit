@@ -1554,6 +1554,9 @@ export class ResearchOrchestrator {
       { stepId: step.step.stepId, counts: this.counts(budget, state) },
     );
 
+    // True once the snapshot is persisted as 'fetched' AND fetchedSources is
+    // charged — the catch below must not charge or downgrade the source again.
+    let snapshotStored = false;
     try {
       const maxBytes = Math.min(
         (run.budgetJson as unknown as ResearchBudgetLimits).bytesPerSource,
@@ -1655,6 +1658,7 @@ export class ResearchOrchestrator {
       }
       // snapshotBytes were reserved inside the dedupe lock above.
       budget.spend({ fetchedSources: 1 });
+      snapshotStored = true;
       researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'ok' });
       researchSourcesTotal.inc({ agent_id: this.deps.agentId, kind: 'web', status: 'fetched' });
       this.publishSourceUpdate(run, source.sourceId, 'fetched', {
@@ -1758,10 +1762,22 @@ export class ResearchOrchestrator {
         researchRetriesTotal.inc({ agent_id: this.deps.agentId, operation: 'fetch' }, retries);
         budget.spend({ retries });
       }
-      budget.spend({ fetchedSources: 1 });
-      researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'failed' });
-      await this.markSourceState(run, source, step.step.stepId, 'failed', sanitizeError(err));
-      state.notes.push(`Read failed (${source.domain ?? source.url}): ${sanitizeError(err)}`.slice(0, 300));
+      if (snapshotStored) {
+        // Fetch succeeded: fetchedSources is already charged and the snapshot
+        // is stored as 'fetched'. Only extraction failed — fail the step, keep
+        // the source (and the action's 'ok' metric) intact.
+        await this.deps.research.updateStep(this.deps.scope, step.step.stepId, {
+          status: 'failed',
+          completedAt: new Date(this.now).toISOString(),
+          error: sanitizeError(err).slice(0, 500),
+        });
+        state.notes.push(`Extraction failed (${source.domain ?? source.url}): ${sanitizeError(err)}`.slice(0, 300));
+      } else {
+        budget.spend({ fetchedSources: 1 });
+        researchActionsTotal.inc({ agent_id: this.deps.agentId, kind: 'read_source', outcome: 'failed' });
+        await this.markSourceState(run, source, step.step.stepId, 'failed', sanitizeError(err));
+        state.notes.push(`Read failed (${source.domain ?? source.url}): ${sanitizeError(err)}`.slice(0, 300));
+      }
       // A 'fatal' classification means the provider answered definitively for
       // this URL (404-class response; retrying won't help) — content-level,
       // not systemic. Exhausted retries (5xx/timeout/network/429) and
