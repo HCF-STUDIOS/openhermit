@@ -399,6 +399,7 @@ export const runSynthesisPhase = async (input: {
   contradictionsSummary: string;
   gapsSummary: string;
   partial: boolean;
+  currentDate: string;
   signal?: AbortSignal | undefined;
   langfuseTurnContext?: LangfuseTurnContext | undefined;
 }): Promise<SynthesisPhaseResult> => {
@@ -419,6 +420,7 @@ export const runSynthesisPhase = async (input: {
     contradictionsSummary: input.contradictionsSummary,
     gapsSummary: input.gapsSummary,
     partial: input.partial,
+    currentDate: input.currentDate,
   });
 
   const first = await callPhaseWithRepair(input.model, researchReportSchema, {

@@ -28,6 +28,7 @@ export const runPlannerPhase = async (input: {
   depth: ResearchDepth;
   sourcePolicy: ResearchSourcePolicy;
   budget: ResearchBudgetLimits;
+  currentDate: string;
   refinementInstruction?: string | undefined;
   previousPlan?: ResearchPlan | undefined;
   signal?: AbortSignal | undefined;
@@ -43,6 +44,7 @@ export const runPlannerPhase = async (input: {
       depth: input.depth,
       sourcePolicy: input.sourcePolicy,
       budget: input.budget,
+      currentDate: input.currentDate,
       refinementInstruction: input.refinementInstruction,
       previousPlan: input.previousPlan,
     }),

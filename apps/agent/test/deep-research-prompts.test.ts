@@ -48,7 +48,12 @@ test('buildSynthesisUserPrompt: evidence cards are envelope-wrapped and redactab
     contradictionsSummary: '',
     gapsSummary: '',
     partial: false,
+    currentDate: '2026-08-19',
   });
+
+  // The current date anchors "recent"/timeframe language; it sits outside the
+  // envelope so it stays visible in telemetry.
+  assert.ok(prompt.includes("Today's date is 2026-08-19"));
 
   // Verbatim excerpts are untrusted web content — they must sit inside the
   // envelope so telemetry redacts them (§19) and the model treats them as data.

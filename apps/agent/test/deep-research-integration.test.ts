@@ -269,10 +269,16 @@ test('deep research: full pipeline — plan, approve, adaptive search, contradic
     title: 'Methodology note',
   });
 
-  h.model.queue('planner', () => PLAN);
+  h.model.queue('planner', (input) => {
+    assert.match(input.userPrompt, /Today's date is \d{4}-\d{2}-\d{2}/);
+    return PLAN;
+  });
 
   // Iteration 1: search for revenue.
-  h.model.queue('decision', () => ({ actions: [search('ACME revenue 2025 annual report')] }));
+  h.model.queue('decision', (input) => {
+    assert.match(input.userPrompt, /Today's date is \d{4}-\d{2}-\d{2}/);
+    return { actions: [search('ACME revenue 2025 annual report')] };
+  });
   // Iteration 2: read the official filing (sourceId parsed from the brief).
   h.model.queue('decision', (input) => {
     const m = input.userPrompt.match(/(rsrc_[a-f0-9-]+) \[acme\.example\]/);
@@ -333,6 +339,7 @@ test('deep research: full pipeline — plan, approve, adaptive search, contradic
   });
   // Synthesis cites real evidence ids from the ledger prompt.
   h.model.queue('synthesis', (input) => {
+    assert.match(input.userPrompt, /Today's date is \d{4}-\d{2}-\d{2}/);
     const ids = [...input.userPrompt.matchAll(/\[(rev_[a-f0-9-]+)\]/g)].map((m) => m[1]!);
     assert.ok(ids.length >= 3, `ledger lists evidence ids, got ${ids.length}`);
     return {

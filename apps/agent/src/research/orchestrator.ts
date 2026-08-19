@@ -236,6 +236,11 @@ export class ResearchOrchestrator {
     return (this.deps.now ?? Date.now)();
   }
 
+  /** ISO date (YYYY-MM-DD) for model prompts, from the injectable clock. */
+  private get currentDate(): string {
+    return new Date(this.now).toISOString().slice(0, 10);
+  }
+
   private get maxConcurrent(): number {
     return this.deps.maxConcurrentRuns ?? 1;
   }
@@ -712,6 +717,7 @@ export class ResearchOrchestrator {
         depth: (run.depth as ResearchDepth) ?? 'standard',
         sourcePolicy: run.sourcePolicyJson as unknown as ResearchSourcePolicy,
         budget,
+        currentDate: this.currentDate,
         refinementInstruction: refinement,
         previousPlan: run.planJson
           ? (run.planJson as unknown as ResearchPlan)
@@ -1055,7 +1061,7 @@ export class ResearchOrchestrator {
             sessionId: run.sessionId,
             phase: 'decision',
             systemPrompt: DECISION_SYSTEM_PROMPT,
-            userPrompt: buildDecisionUserPrompt(brief),
+            userPrompt: buildDecisionUserPrompt(brief, this.currentDate),
             signal,
             langfuseTurnContext,
           });
@@ -2002,6 +2008,7 @@ export class ResearchOrchestrator {
         contradictionsSummary,
         gapsSummary,
         partial,
+        currentDate: this.currentDate,
         signal,
         langfuseTurnContext,
       });

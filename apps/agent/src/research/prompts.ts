@@ -20,6 +20,14 @@ const JSON_ONLY = [
   'Do not call tools.',
 ].join(' ');
 
+/**
+ * Shared by the planner/decision/synthesis prompts. Without it the model
+ * anchors "recent"/"latest" (and search-query years) to its training data,
+ * producing stale queries and mislabeled report timeframes.
+ */
+export const currentDateLine = (isoDate: string): string =>
+  `Today's date is ${isoDate}. Interpret "recent", "latest", and relative timeframes against this date, not against your training data.`;
+
 // ─── Planner ────────────────────────────────────────────────────────────────
 
 export const PLANNER_SYSTEM_PROMPT = [
@@ -39,10 +47,12 @@ export const buildPlannerUserPrompt = (input: {
   depth: ResearchDepth;
   sourcePolicy: ResearchSourcePolicy;
   budget: ResearchBudgetLimits;
+  currentDate: string;
   refinementInstruction?: string | undefined;
   previousPlan?: ResearchPlan | undefined;
 }): string => {
   const parts = [
+    currentDateLine(input.currentDate),
     `Research objective:\n${input.objective}`,
     `Depth preset: ${input.depth}`,
     `Source policy (fixed, cannot be loosened): ${JSON.stringify(input.sourcePolicy)}`,
@@ -75,8 +85,8 @@ export const DECISION_SYSTEM_PROMPT = [
   `Return JSON: {"actions":[...]} with 1-3 actions. ${JSON_ONLY}`,
 ].join('\n');
 
-export const buildDecisionUserPrompt = (brief: string): string =>
-  `Current research brief:\n\n${brief}\n\nDecide the next 1-3 actions. Return JSON only.`;
+export const buildDecisionUserPrompt = (brief: string, currentDate: string): string =>
+  `${currentDateLine(currentDate)}\n\nCurrent research brief:\n\n${brief}\n\nDecide the next 1-3 actions. Return JSON only.`;
 
 // ─── Extractor ──────────────────────────────────────────────────────────────
 
@@ -162,8 +172,10 @@ export const buildSynthesisUserPrompt = (input: {
   contradictionsSummary: string;
   gapsSummary: string;
   partial: boolean;
+  currentDate: string;
 }): string =>
   [
+    currentDateLine(input.currentDate),
     `Plan objective: ${input.plan.objective}`,
     `Requested sections: ${input.plan.deliverable.requestedSections.join(', ') || '(author sensible sections)'}`,
     `Questions:`,
