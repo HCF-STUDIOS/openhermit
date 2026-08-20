@@ -8,6 +8,9 @@ import {
   isSessionMessage,
   isToolApprovalRequest,
   isSessionCheckpointRequest,
+  isCreateResearchRunRequest,
+  isResearchRunActionRequest,
+  isUpdateResearchPlanRequest,
   isWsRequest,
   type WsRequest,
   type WsResponseOk,
@@ -26,6 +29,12 @@ import { UnauthorizedError } from '@openhermit/shared';
 import type { AuthContext, AuthResolverOptions } from './auth.js';
 import { enforceSenderIdentity, resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
+import {
+  researchEvidenceToWire,
+  researchRunToWire,
+  researchSourceToWire,
+  researchStepToWire,
+} from './research-routes.js';
 
 const WS_PING_INTERVAL_MS = 30_000;
 
@@ -314,6 +323,125 @@ const handleRequest = async (
         unsub();
         conn.subscriptions.delete(sessionId);
         sendResult(ws, id, { unsubscribed: true });
+        return;
+      }
+
+      // ─── Deep Research (parity with the nested HTTP routes) ─────────────
+      case 'research.start':
+      case 'research.list':
+      case 'research.get':
+      case 'research.plan.update':
+      case 'research.action':
+      case 'research.steps':
+      case 'research.sources': {
+        const sessionId = p.sessionId;
+        if (typeof sessionId !== 'string') {
+          sendError(ws, id, 'INVALID_PARAMS', 'Missing sessionId.');
+          return;
+        }
+        await requireSessionAccess(conn, runtime, callerUserId, sessionId);
+        if (typeof runtime.research !== 'function') {
+          sendError(ws, id, 'INTERNAL_ERROR', 'Deep Research is not available on this runtime.');
+          return;
+        }
+        const orchestrator = await runtime.research();
+
+        if (method === 'research.start') {
+          if (!isCreateResearchRunRequest(p)) {
+            sendError(ws, id, 'INVALID_PARAMS', 'Invalid research.start params (objective required).');
+            return;
+          }
+          const run = await orchestrator.createRun({
+            sessionId,
+            objective: p.objective,
+            depth: p.depth,
+            sourcePolicy: p.sourcePolicy as never,
+            clientRequestId: p.clientRequestId,
+            requestedByUserId: callerUserId,
+          });
+          sendResult(ws, id, { run: researchRunToWire(run) });
+          return;
+        }
+
+        if (method === 'research.list') {
+          const runs = await orchestrator.listRuns(sessionId);
+          sendResult(ws, id, { runs: runs.map(researchRunToWire) });
+          return;
+        }
+
+        // Remaining methods target one run in this session.
+        const runId = p.runId;
+        if (typeof runId !== 'string' || runId.length === 0) {
+          sendError(ws, id, 'INVALID_PARAMS', 'Missing runId.');
+          return;
+        }
+        const target = await orchestrator.getRun(runId);
+        if (target.sessionId !== sessionId) {
+          sendError(ws, id, 'INVALID_PARAMS', `Research run ${runId} does not belong to this session.`);
+          return;
+        }
+
+        if (method === 'research.get') {
+          sendResult(ws, id, { run: researchRunToWire(target) });
+          return;
+        }
+        if (method === 'research.plan.update') {
+          const body = { expectedVersion: p.expectedVersion, plan: p.plan, sourcePolicy: p.sourcePolicy };
+          if (!isUpdateResearchPlanRequest(body)) {
+            sendError(ws, id, 'INVALID_PARAMS', 'Invalid plan update params.');
+            return;
+          }
+          const run = await orchestrator.updatePlan(
+            runId,
+            body.expectedVersion,
+            body.plan,
+            body.sourcePolicy as never,
+          );
+          sendResult(ws, id, { run: researchRunToWire(run) });
+          return;
+        }
+        if (method === 'research.action') {
+          if (!isResearchRunActionRequest(p)) {
+            sendError(ws, id, 'INVALID_PARAMS', 'Invalid research action params.');
+            return;
+          }
+          const run = await (() => {
+            switch (p.action) {
+              case 'approve_plan':
+                return orchestrator.approvePlan(runId, p.expectedPlanVersion as number);
+              case 'pause':
+                return orchestrator.pause(runId);
+              case 'resume':
+                return orchestrator.resume(runId);
+              case 'cancel':
+                return orchestrator.cancel(runId);
+              case 'refine':
+                return orchestrator.refine(runId, p.instruction as string);
+              case 'retry':
+                return orchestrator.retry(runId);
+              default:
+                return orchestrator.increaseBudget(runId, p.limits as Record<string, number>);
+            }
+          })();
+          sendResult(ws, id, { run: researchRunToWire(run) });
+          return;
+        }
+        if (method === 'research.steps') {
+          const steps = await orchestrator.listSteps(runId);
+          sendResult(ws, id, { steps: steps.map(researchStepToWire) });
+          return;
+        }
+        // research.sources
+        if (typeof p.sourceId === 'string' && p.sourceId.length > 0) {
+          const detail = await orchestrator.getSourceDetail(runId, p.sourceId);
+          sendResult(ws, id, {
+            source: researchSourceToWire(detail.source),
+            evidence: detail.evidence.map(researchEvidenceToWire),
+          });
+          return;
+        }
+        const sources = await orchestrator.listSources(runId);
+        sendResult(ws, id, { sources: sources.map(researchSourceToWire) });
         return;
       }
 

@@ -9,10 +9,26 @@ import {
   createLangfuseClientFromEnv,
   createLangfuseTracedStreamFn,
   loadEnvironmentFile,
+  redactUntrustedSourceContent,
   type LangfuseClientLike,
   type LangfuseTraceLike,
 } from '../src/langfuse.js';
 import { createTempDir } from './helpers.js';
+
+test('redactUntrustedSourceContent: JSON "excerpt" field values are redacted', () => {
+  // Extractor answers (and repair echoes of them) carry verbatim source
+  // excerpts as "excerpt" fields — telemetry must not record them (§19).
+  const text =
+    '{"evidence":[{"excerpt":"secret page text with \\"escaped quotes\\"","stance":"supports"},'
+    + '{"excerpt":"more secret text"}],"note":"keep this"}';
+  const redacted = redactUntrustedSourceContent(text);
+  assert.ok(!redacted.includes('secret page text'));
+  assert.ok(!redacted.includes('more secret text'));
+  assert.match(redacted, /"excerpt":"\[excerpt redacted from telemetry: \d+ chars\]"/);
+  // Non-excerpt fields stay intact for observability.
+  assert.ok(redacted.includes('"stance":"supports"'));
+  assert.ok(redacted.includes('"note":"keep this"'));
+});
 
 test('loadEnvironmentFile reads .env values without overriding existing env', async (t) => {
   const tempDir = await createTempDir(t, 'openhermit-langfuse-env-');

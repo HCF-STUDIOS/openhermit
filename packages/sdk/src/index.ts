@@ -17,12 +17,28 @@ import {
   type SandboxType,
   type SyncResponse,
   type ToolApprovalRequest,
+  type CreateResearchRunRequest,
+  type UpdateResearchPlanRequest,
+  type ResearchRunActionRequest,
+  type ResearchRunWire,
+  type ResearchStepWire,
+  type ResearchSourceWire,
+  type ResearchSourceDetailWire,
   type WsRequest,
   type WsEvent,
   type WsServerMessage,
 } from '@openhermit/protocol';
 
 export type { SessionAttachment, AttachmentMaterializationState };
+export type {
+  CreateResearchRunRequest,
+  UpdateResearchPlanRequest,
+  ResearchRunActionRequest,
+  ResearchRunWire,
+  ResearchStepWire,
+  ResearchSourceWire,
+  ResearchSourceDetailWire,
+};
 import {
   OpenHermitError,
   type OpenHermitStatusCode,
@@ -30,6 +46,17 @@ import {
 } from '@openhermit/shared';
 
 type FetchLike = typeof fetch;
+
+/** Preserve response statuses the error type models; anything else is a server error. */
+const toOpenHermitStatusCode = (status: number): OpenHermitStatusCode =>
+  status === 400 ||
+  status === 401 ||
+  status === 403 ||
+  status === 404 ||
+  status === 409 ||
+  status === 500
+    ? status
+    : 500;
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   if (typeof Buffer !== 'undefined') {
@@ -207,13 +234,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
         'agent_api_error',
@@ -294,13 +315,7 @@ export class AgentLocalClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Attachment bytes download failed (${response.status}) for ${attachmentId}: ${responseText || response.statusText}`,
         'agent_api_error',
@@ -485,6 +500,84 @@ export class AgentLocalClient {
     );
   }
 
+  // ─── Deep Research (docs/deep-research-design.md §16) ────────────────────
+
+  /** Start a research run. Returns the durable run, already `planning`. */
+  async createResearchRun(
+    sessionId: string,
+    request: CreateResearchRunRequest,
+  ): Promise<ResearchRunWire> {
+    const body = await this.postJson<{ run: ResearchRunWire }>(
+      agentLocalRoutes.sessionResearchRuns(sessionId),
+      request,
+    );
+    return body.run;
+  }
+
+  async listResearchRuns(sessionId: string): Promise<ResearchRunWire[]> {
+    const body = await this.getJson<{ runs: ResearchRunWire[] }>(
+      agentLocalRoutes.sessionResearchRuns(sessionId),
+    );
+    return body.runs;
+  }
+
+  async getResearchRun(sessionId: string, runId: string): Promise<ResearchRunWire> {
+    const body = await this.getJson<{ run: ResearchRunWire }>(
+      agentLocalRoutes.sessionResearchRunById(sessionId, runId),
+    );
+    return body.run;
+  }
+
+  /** Optimistic plan edit; the gateway 409s on a stale expectedVersion. */
+  async updateResearchPlan(
+    sessionId: string,
+    runId: string,
+    request: UpdateResearchPlanRequest,
+  ): Promise<ResearchRunWire> {
+    const body = await this.patchJson<{ run: ResearchRunWire }>(
+      agentLocalRoutes.sessionResearchRunPlan(sessionId, runId),
+      request,
+    );
+    return body.run;
+  }
+
+  /** approve_plan / pause / resume / cancel / refine / retry / increase_budget. */
+  async researchRunAction(
+    sessionId: string,
+    runId: string,
+    action: ResearchRunActionRequest,
+  ): Promise<ResearchRunWire> {
+    const body = await this.postJson<{ run: ResearchRunWire }>(
+      agentLocalRoutes.sessionResearchRunActions(sessionId, runId),
+      action,
+    );
+    return body.run;
+  }
+
+  async listResearchSteps(sessionId: string, runId: string): Promise<ResearchStepWire[]> {
+    const body = await this.getJson<{ steps: ResearchStepWire[] }>(
+      agentLocalRoutes.sessionResearchRunSteps(sessionId, runId),
+    );
+    return body.steps;
+  }
+
+  async listResearchSources(sessionId: string, runId: string): Promise<ResearchSourceWire[]> {
+    const body = await this.getJson<{ sources: ResearchSourceWire[] }>(
+      agentLocalRoutes.sessionResearchRunSources(sessionId, runId),
+    );
+    return body.sources;
+  }
+
+  async getResearchSource(
+    sessionId: string,
+    runId: string,
+    sourceId: string,
+  ): Promise<ResearchSourceDetailWire> {
+    return this.getJson<ResearchSourceDetailWire>(
+      agentLocalRoutes.sessionResearchRunSourceById(sessionId, runId, sourceId),
+    );
+  }
+
   private async getJson<T>(path: string): Promise<T> {
     let response: Response;
 
@@ -501,13 +594,7 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -538,13 +625,37 @@ export class AgentLocalClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
+
+      throw new OpenHermitError(
+        `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
+        'agent_api_error',
+        statusCode,
+      );
+    }
+
+    return (await response.json()) as T;
+  }
+
+  private async patchJson<T>(path: string, body: unknown): Promise<T> {
+    let response: Response;
+
+    try {
+      response = await this.fetchImpl(joinUrl(this.options.baseUrl, path), {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${this.options.token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      throw this.buildFetchFailedError(path, error);
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Agent local API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -722,13 +833,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `issueUserToken failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -781,13 +886,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `exchangeConnectToken failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -848,13 +947,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `linkUserIdentity failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1002,13 +1095,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `uploadAttachment failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1405,13 +1492,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1446,13 +1527,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1487,13 +1562,7 @@ export class GatewayClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
 
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
@@ -1526,13 +1595,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1559,13 +1622,7 @@ export class GatewayClient {
     }
     if (!response.ok) {
       const responseText = await response.text();
-      const statusCode: OpenHermitStatusCode =
-        response.status === 400 ||
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status === 500
-          ? response.status
-          : 500;
+      const statusCode = toOpenHermitStatusCode(response.status);
       throw new OpenHermitError(
         `Gateway API request failed (${response.status}): ${responseText || response.statusText}`,
         'gateway_api_error',
@@ -1763,5 +1820,53 @@ export class AgentWsClient {
 
   async unsubscribe(sessionId: string): Promise<void> {
     await this.request('session.unsubscribe', { sessionId });
+  }
+
+  // ─── Deep Research (parity with the HTTP routes) ──────────────────────────
+
+  async researchStart(
+    params: { sessionId: string } & CreateResearchRunRequest,
+  ): Promise<{ run: ResearchRunWire }> {
+    return this.request('research.start', params as unknown as Record<string, unknown>) as Promise<{
+      run: ResearchRunWire;
+    }>;
+  }
+
+  async researchList(params: { sessionId: string }): Promise<{ runs: ResearchRunWire[] }> {
+    return this.request('research.list', params) as Promise<{ runs: ResearchRunWire[] }>;
+  }
+
+  async researchGet(params: { sessionId: string; runId: string }): Promise<{ run: ResearchRunWire }> {
+    return this.request('research.get', params) as Promise<{ run: ResearchRunWire }>;
+  }
+
+  async researchPlanUpdate(
+    params: { sessionId: string; runId: string } & UpdateResearchPlanRequest,
+  ): Promise<{ run: ResearchRunWire }> {
+    return this.request('research.plan.update', params as unknown as Record<string, unknown>) as Promise<{
+      run: ResearchRunWire;
+    }>;
+  }
+
+  async researchAction(
+    params: { sessionId: string; runId: string } & ResearchRunActionRequest,
+  ): Promise<{ run: ResearchRunWire }> {
+    return this.request('research.action', params as unknown as Record<string, unknown>) as Promise<{
+      run: ResearchRunWire;
+    }>;
+  }
+
+  async researchSteps(
+    params: { sessionId: string; runId: string },
+  ): Promise<{ steps: ResearchStepWire[] }> {
+    return this.request('research.steps', params) as Promise<{ steps: ResearchStepWire[] }>;
+  }
+
+  async researchSources(
+    params: { sessionId: string; runId: string; sourceId?: string },
+  ): Promise<{ sources: ResearchSourceWire[] } | ResearchSourceDetailWire> {
+    return this.request('research.sources', params) as Promise<
+      { sources: ResearchSourceWire[] } | ResearchSourceDetailWire
+    >;
   }
 }

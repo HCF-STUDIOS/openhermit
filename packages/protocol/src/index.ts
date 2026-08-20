@@ -332,6 +332,47 @@ export type OutboundEventBody =
       sessionId: string;
       correlationId: string;
       kind: 'image' | 'audio' | 'video' | 'document';
+    }
+  | {
+      /**
+       * Live Deep Research progress. Operational state only — never model
+       * chain-of-thought. `stepId` lets clients deduplicate live events
+       * against durable timeline rows reloaded on reconnect.
+       */
+      type: 'research_progress';
+      sessionId: string;
+      runId: string;
+      stepId?: string;
+      phase: ResearchProgressPhase;
+      status: ResearchRunStatus;
+      message: string;
+      counts?: {
+        searches: number;
+        fetchedSources: number;
+        evidenceItems: number;
+        coveredQuestions: number;
+      };
+    }
+  | {
+      type: 'research_plan_ready';
+      sessionId: string;
+      runId: string;
+      planVersion: number;
+    }
+  | {
+      type: 'research_source_update';
+      sessionId: string;
+      runId: string;
+      sourceId: string;
+      status: ResearchSourceWireStatus;
+      title?: string;
+      domain?: string;
+    }
+  | {
+      type: 'research_report_ready';
+      sessionId: string;
+      runId: string;
+      terminalStatus: 'completed' | 'budget_exhausted';
     };
 
 export type OutboundEvent = OutboundEventBody & { eventId: string };
@@ -908,6 +949,32 @@ export const agentLocalRoutes = {
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
+  sessionResearchRunsPattern: '/sessions/:sessionId/research-runs',
+  sessionResearchRuns: (sessionId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs`,
+  sessionResearchRunByIdPattern: '/sessions/:sessionId/research-runs/:runId',
+  sessionResearchRunById: (sessionId: string, runId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}`,
+  sessionResearchRunPlanPattern: '/sessions/:sessionId/research-runs/:runId/plan',
+  sessionResearchRunPlan: (sessionId: string, runId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/plan`,
+  sessionResearchRunActionsPattern: '/sessions/:sessionId/research-runs/:runId/actions',
+  sessionResearchRunActions: (sessionId: string, runId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/actions`,
+  sessionResearchRunStepsPattern: '/sessions/:sessionId/research-runs/:runId/steps',
+  sessionResearchRunSteps: (sessionId: string, runId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/steps`,
+  sessionResearchRunSourcesPattern: '/sessions/:sessionId/research-runs/:runId/sources',
+  sessionResearchRunSources: (sessionId: string, runId: string): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources`,
+  sessionResearchRunSourceByIdPattern:
+    '/sessions/:sessionId/research-runs/:runId/sources/:sourceId',
+  sessionResearchRunSourceById: (
+    sessionId: string,
+    runId: string,
+    sourceId: string,
+  ): string =>
+    `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources/${encodeURIComponent(sourceId)}`,
   voiceStt: '/voice/stt',
   voiceTts: '/voice/tts',
   ws: '/ws',
@@ -1028,6 +1095,41 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/members/${encodeURIComponent(userId)}`,
   /** List the current JWT subject's agent memberships. */
   meAgents: '/api/users/me/agents',
+
+  /** Deep Research runs, nested under sessions (docs/deep-research-design.md §16). */
+  agentSessionResearchRuns: (agentId: string, sessionId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs`,
+  agentSessionResearchRunsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs',
+  agentSessionResearchRunById: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}`,
+  agentSessionResearchRunByIdPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId',
+  agentSessionResearchRunPlan: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/plan`,
+  agentSessionResearchRunPlanPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/plan',
+  agentSessionResearchRunActions: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/actions`,
+  agentSessionResearchRunActionsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/actions',
+  agentSessionResearchRunSteps: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/steps`,
+  agentSessionResearchRunStepsPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/steps',
+  agentSessionResearchRunSources: (agentId: string, sessionId: string, runId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources`,
+  agentSessionResearchRunSourcesPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources',
+  agentSessionResearchRunSourceById: (
+    agentId: string,
+    sessionId: string,
+    runId: string,
+    sourceId: string,
+  ): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources/${encodeURIComponent(sourceId)}`,
+  agentSessionResearchRunSourceByIdPattern:
+    '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources/:sourceId',
 } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -1314,7 +1416,14 @@ export type WsMethod =
   | 'session.list'
   | 'session.history'
   | 'session.subscribe'
-  | 'session.unsubscribe';
+  | 'session.unsubscribe'
+  | 'research.start'
+  | 'research.list'
+  | 'research.get'
+  | 'research.plan.update'
+  | 'research.action'
+  | 'research.steps'
+  | 'research.sources';
 
 export interface WsRequest {
   kind: 'request';
@@ -1381,4 +1490,241 @@ export const isSessionCheckpointRequest = (
     value.reason === 'turn_limit' ||
     value.reason === 'idle'
   );
+};
+
+// ---------------------------------------------------------------------------
+// Deep Research (docs/deep-research-design.md §13/§16)
+// ---------------------------------------------------------------------------
+
+export type ResearchRunStatus =
+  | 'created'
+  | 'planning'
+  | 'awaiting_plan_approval'
+  | 'queued'
+  | 'researching'
+  | 'synthesizing'
+  | 'paused'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+  | 'budget_exhausted';
+
+export type ResearchDepth = 'quick' | 'standard' | 'thorough';
+
+export type ResearchProgressPhase =
+  | 'planning'
+  | 'plan_ready'
+  | 'queued'
+  | 'searching'
+  | 'reviewing_sources'
+  | 'reading_source'
+  | 'extracting_evidence'
+  | 'comparing_evidence'
+  | 'synthesizing'
+  | 'paused'
+  | 'completed'
+  | 'failed';
+
+export type ResearchSourceWireStatus =
+  | 'candidate'
+  | 'fetched'
+  | 'blocked'
+  | 'failed'
+  | 'unsupported'
+  | 'duplicate';
+
+export type ResearchWebSourceMode = 'full_web' | 'only_domains' | 'prefer_domains';
+
+export interface ResearchSourcePolicyWire {
+  web: {
+    mode: ResearchWebSourceMode;
+    domains: string[];
+    excludedDomains: string[];
+  };
+  /** Accepted by contract; activated in a later phase. */
+  attachmentIds: string[];
+  /** Accepted by contract; activated in a later phase. */
+  mcpServerIds: string[];
+  allowCodeAnalysis: boolean;
+}
+
+/**
+ * Wire view of a research run. Plan and report are structured objects owned
+ * and validated by the agent runtime; the wire treats them as opaque JSON.
+ */
+export interface ResearchRunWire {
+  runId: string;
+  sessionId: string;
+  status: ResearchRunStatus;
+  depth: ResearchDepth | string;
+  objective: string;
+  planVersion: number;
+  plan?: unknown;
+  sourcePolicy?: unknown;
+  budget?: Record<string, number>;
+  usage?: Record<string, unknown>;
+  report?: unknown;
+  resumePhase?: string;
+  terminalReason?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchStepWire {
+  stepId: string;
+  runId: string;
+  iteration: number;
+  attempt: number;
+  kind: string;
+  status: string;
+  questionIds: string[];
+  summary?: string;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchSourceWire {
+  sourceId: string;
+  runId: string;
+  kind: string;
+  status: ResearchSourceWireStatus;
+  url?: string;
+  canonicalUrl?: string;
+  title?: string;
+  publisher?: string;
+  domain?: string;
+  author?: string;
+  publishedAt?: string;
+  retrievedAt?: string;
+  mimeType?: string;
+  sourceClass: string;
+  quality?: unknown;
+  contentBytes?: number;
+  truncated: boolean;
+  duplicateOfSourceId?: string;
+  lastError?: string;
+  createdAt: string;
+}
+
+export interface ResearchEvidenceWire {
+  evidenceId: string;
+  sourceId: string;
+  questionIds: string[];
+  excerpt: string;
+  locator?: unknown;
+  claimKey?: string;
+  stance: string;
+  normalizedValue?: string;
+  relevanceBasisPoints: number;
+  confidenceBasisPoints: number;
+  outOfScope: boolean;
+}
+
+export interface ResearchSourceDetailWire {
+  source: ResearchSourceWire;
+  evidence: ResearchEvidenceWire[];
+}
+
+export interface CreateResearchRunRequest {
+  /** Idempotency key: retrying the same create returns the same run. */
+  clientRequestId?: string;
+  objective: string;
+  depth?: ResearchDepth;
+  sourcePolicy?: Partial<ResearchSourcePolicyWire>;
+}
+
+export interface UpdateResearchPlanRequest {
+  expectedVersion: number;
+  plan: unknown;
+  sourcePolicy?: ResearchSourcePolicyWire;
+}
+
+export type ResearchRunActionRequest =
+  | { action: 'approve_plan'; expectedPlanVersion: number }
+  | { action: 'pause' }
+  | { action: 'resume' }
+  | { action: 'cancel' }
+  | { action: 'refine'; instruction: string }
+  | { action: 'retry' }
+  | { action: 'increase_budget'; limits: Record<string, number> };
+
+const RESEARCH_DEPTHS: readonly string[] = ['quick', 'standard', 'thorough'];
+const RESEARCH_WEB_MODES: readonly string[] = ['full_web', 'only_domains', 'prefer_domains'];
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
+
+const isPartialSourcePolicy = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  if (value.web !== undefined) {
+    if (!isRecord(value.web)) return false;
+    if (value.web.mode !== undefined && !RESEARCH_WEB_MODES.includes(value.web.mode as string)) {
+      return false;
+    }
+    if (value.web.domains !== undefined && !isStringArray(value.web.domains)) return false;
+    if (value.web.excludedDomains !== undefined && !isStringArray(value.web.excludedDomains)) {
+      return false;
+    }
+  }
+  if (value.attachmentIds !== undefined && !isStringArray(value.attachmentIds)) return false;
+  if (value.mcpServerIds !== undefined && !isStringArray(value.mcpServerIds)) return false;
+  if (value.allowCodeAnalysis !== undefined && typeof value.allowCodeAnalysis !== 'boolean') {
+    return false;
+  }
+  return true;
+};
+
+export const isCreateResearchRunRequest = (
+  value: unknown,
+): value is CreateResearchRunRequest => {
+  if (!isRecord(value)) return false;
+  if (typeof value.objective !== 'string' || value.objective.trim().length === 0) return false;
+  if (value.clientRequestId !== undefined && typeof value.clientRequestId !== 'string') {
+    return false;
+  }
+  if (value.depth !== undefined && !RESEARCH_DEPTHS.includes(value.depth as string)) return false;
+  if (value.sourcePolicy !== undefined && !isPartialSourcePolicy(value.sourcePolicy)) return false;
+  return true;
+};
+
+export const isUpdateResearchPlanRequest = (
+  value: unknown,
+): value is UpdateResearchPlanRequest => {
+  if (!isRecord(value)) return false;
+  if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) {
+    return false;
+  }
+  if (!isRecord(value.plan)) return false;
+  if (value.sourcePolicy !== undefined && !isPartialSourcePolicy(value.sourcePolicy)) return false;
+  return true;
+};
+
+export const isResearchRunActionRequest = (
+  value: unknown,
+): value is ResearchRunActionRequest => {
+  if (!isRecord(value)) return false;
+  switch (value.action) {
+    case 'approve_plan':
+      return typeof value.expectedPlanVersion === 'number'
+        && Number.isInteger(value.expectedPlanVersion);
+    case 'pause':
+    case 'resume':
+    case 'cancel':
+    case 'retry':
+      return true;
+    case 'refine':
+      return typeof value.instruction === 'string' && value.instruction.trim().length > 0;
+    case 'increase_budget':
+      return (
+        isRecord(value.limits) &&
+        Object.values(value.limits).every((v) => typeof v === 'number' && Number.isFinite(v))
+      );
+    default:
+      return false;
+  }
 };

@@ -2,6 +2,14 @@ import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent 
 import { uploadAttachment, type SessionAttachment } from '../api';
 import { useTranslation } from '../i18n';
 
+export interface StartResearchInput {
+  objective: string;
+  depth: 'quick' | 'standard' | 'thorough';
+  sourceMode: 'full_web' | 'only_domains' | 'prefer_domains';
+  domains: string[];
+  excludedDomains: string[];
+}
+
 interface Props {
   onSend: (text: string, attachments?: SessionAttachment[]) => void;
   disabled: boolean;
@@ -10,6 +18,9 @@ interface Props {
   onInterrupt?: () => void;
   /** Active session id. Required for uploads; when null, file picker hides. */
   sessionId: string | null;
+  /** Show the Deep Research toggle (web session, no run in flight). */
+  researchAvailable?: boolean;
+  onStartResearch?: (input: StartResearchInput) => void;
 }
 
 interface PendingUpload {
@@ -27,10 +38,23 @@ const formatBytes = (n: number): string => {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-export function Composer({ onSend, disabled, running = false, onInterrupt, sessionId }: Props) {
+export function Composer({
+  onSend,
+  disabled,
+  running = false,
+  onInterrupt,
+  sessionId,
+  researchAvailable = false,
+  onStartResearch,
+}: Props) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
+  const [researchMode, setResearchMode] = useState(false);
+  const [depth, setDepth] = useState<StartResearchInput['depth']>('standard');
+  const [sourceMode, setSourceMode] = useState<StartResearchInput['sourceMode']>('full_web');
+  const [domainsText, setDomainsText] = useState('');
+  const [excludedText, setExcludedText] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -39,8 +63,26 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
     .filter((u) => u.status === 'done' && u.attachment)
     .map((u) => u.attachment!) as SessionAttachment[];
 
+  const splitDomains = (value: string): string[] =>
+    value.split(/[,\s]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+
   const submit = () => {
     const trimmed = text.trim();
+    if (researchMode && researchAvailable && onStartResearch) {
+      // Research runs take no attachments; refuse to start while any are
+      // queued so they can't silently ride along on a later normal message.
+      if (!trimmed || disabled || anyUploading || readyAttachments.length > 0) return;
+      onStartResearch({
+        objective: trimmed,
+        depth,
+        sourceMode,
+        domains: splitDomains(domainsText),
+        excludedDomains: splitDomains(excludedText),
+      });
+      setText('');
+      setResearchMode(false);
+      return;
+    }
     // Allow sending attachments without text (model still gets the references).
     if ((!trimmed && readyAttachments.length === 0) || disabled || anyUploading) return;
     onSend(trimmed, readyAttachments.length > 0 ? readyAttachments : undefined);
@@ -99,7 +141,7 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
     setUploads((prev) => prev.filter((u) => u.key !== key));
   };
 
-  const canPickFiles = !!sessionId && !running;
+  const canPickFiles = !!sessionId && !running && !(researchMode && researchAvailable);
   const sendDisabled =
     disabled
     || anyUploading
@@ -135,10 +177,46 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
           ))}
         </div>
       )}
+      {researchMode && researchAvailable && (
+        <div className="composer__research-options">
+          <label>
+            {t('research.depth')}
+            <select value={depth} onChange={(e) => setDepth(e.target.value as StartResearchInput['depth'])}>
+              <option value="quick">{t('research.depthQuick')}</option>
+              <option value="standard">{t('research.depthStandard')}</option>
+              <option value="thorough">{t('research.depthThorough')}</option>
+            </select>
+          </label>
+          <label>
+            {t('research.sourceMode')}
+            <select value={sourceMode} onChange={(e) => setSourceMode(e.target.value as StartResearchInput['sourceMode'])}>
+              <option value="full_web">{t('research.sourceModeFull')}</option>
+              <option value="only_domains">{t('research.sourceModeOnly')}</option>
+              <option value="prefer_domains">{t('research.sourceModePrefer')}</option>
+            </select>
+          </label>
+          {sourceMode !== 'full_web' && (
+            <input
+              type="text"
+              placeholder={t('research.domainsPlaceholder')}
+              value={domainsText}
+              onChange={(e) => setDomainsText(e.target.value)}
+            />
+          )}
+          <input
+            type="text"
+            placeholder={t('research.excludedPlaceholder')}
+            value={excludedText}
+            onChange={(e) => setExcludedText(e.target.value)}
+          />
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         rows={3}
-        placeholder={t('composer.placeholder')}
+        placeholder={researchMode && researchAvailable
+          ? t('research.objectivePlaceholder')
+          : t('composer.placeholder')}
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={handleKeyDown}
@@ -164,12 +242,32 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
               <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
           </button>
+          {researchAvailable && !!onStartResearch && (
+            <button
+              type="button"
+              className={`composer__research-btn${researchMode ? ' is-active' : ''}`}
+              disabled={running}
+              onClick={() => setResearchMode((v) => !v)}
+              title={t('research.toggle')}
+              aria-pressed={researchMode}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m21 21-4.35-4.35" />
+              </svg>
+              <span>{t('research.toggle')}</span>
+            </button>
+          )}
           <p className="composer__hint">
             {running
               ? t('composer.hintRunning')
               : anyUploading
                 ? t('composer.hintUploading')
-                : t('composer.hintIdle')}
+                : researchMode && researchAvailable
+                  ? (readyAttachments.length > 0
+                    ? t('research.hintAttachmentsBlocked')
+                    : t('research.hint'))
+                  : t('composer.hintIdle')}
           </p>
         </div>
         {running ? (
@@ -177,8 +275,14 @@ export function Composer({ onSend, disabled, running = false, onInterrupt, sessi
             {t('composer.stop')}
           </button>
         ) : (
-          <button className="btn btn--primary" type="submit" disabled={sendDisabled}>
-            {t('composer.send')}
+          <button
+            className="btn btn--primary"
+            type="submit"
+            disabled={researchMode && researchAvailable
+              ? disabled || !text.trim() || anyUploading || readyAttachments.length > 0
+              : sendDisabled}
+          >
+            {researchMode && researchAvailable ? t('research.start') : t('composer.send')}
           </button>
         )}
       </div>

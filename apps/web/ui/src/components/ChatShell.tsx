@@ -1,21 +1,33 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { AgentWsClient, apiFetch, fetchAgentInfo, getDisplayName, getUserId, type Connection, type SessionSummary, type HistoryMessage, type OutboundEvent, type SessionAttachment } from '../api';
+import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { AgentWsClient, apiFetch, createResearchRun, fetchAgentInfo, getDisplayName, getUserId, listResearchRuns, listResearchSources, listResearchSteps, type Connection, type SessionSummary, type HistoryMessage, type OutboundEvent, type SessionAttachment } from '../api';
 import { useTranslation } from '../i18n';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { SessionList } from './SessionList';
 import { ChatMessages, type ChatItem } from './ChatMessages';
-import { Composer } from './Composer';
+import { Composer, type StartResearchInput } from './Composer';
+import {
+  initialResearchState,
+  isResearchEvent,
+  isResearchExecuting,
+  pickCurrentRun,
+  reduceResearch,
+} from '../research/reducer';
 // ManagePanel only needed when user opens /manage — keep it out of the
 // hot chat path.
 const ManagePanel = lazy(() => import('./ManagePanel').then((m) => ({ default: m.ManagePanel })));
+// The research workspace is only needed once a session actually has a run —
+// keep it out of the ordinary chat bundle.
+const ResearchWorkspace = lazy(() =>
+  import('./ResearchWorkspace').then((m) => ({ default: m.ResearchWorkspace })),
+);
 
 type View = 'chat' | 'manage' | 'observe';
-type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'voice' | 'policies';
+type ManageTab = 'basic' | 'secrets' | 'skills' | 'mcp' | 'schedules' | 'channels' | 'voice' | 'policies' | 'approvals';
 
 const createSessionId = () =>
   `web:${new Date().toISOString().slice(0, 10)}-${crypto.randomUUID().slice(0, 8)}`;
 
-const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'voice', 'skills', 'mcp', 'schedules', 'policies'];
+const MANAGE_TABS: ManageTab[] = ['basic', 'secrets', 'channels', 'voice', 'skills', 'mcp', 'schedules', 'policies', 'approvals'];
 
 type Route =
   | { view: 'chat'; sessionId: string | null }
@@ -119,6 +131,64 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
   currentSessionRef.current = currentSessionId;
   viewRef.current = view;
 
+  // ─── Deep Research state (durable-reload-then-live-events, §13) ──────────
+  const [research, dispatchResearch] = useReducer(reduceResearch, initialResearchState);
+  const researchRunIdRef = useRef<string | null>(null);
+  researchRunIdRef.current = research.run?.runId ?? null;
+
+  const refreshResearch = useCallback(async (sessionId: string) => {
+    try {
+      const runs = await listResearchRuns(sessionId);
+      const run = pickCurrentRun(runs);
+      if (!run) {
+        dispatchResearch({ type: 'loaded', run: null });
+        return;
+      }
+      const [steps, sources] = await Promise.all([
+        listResearchSteps(sessionId, run.runId),
+        listResearchSources(sessionId, run.runId),
+      ]);
+      dispatchResearch({ type: 'loaded', run, steps, sources });
+    } catch {
+      // Older gateways without research routes: leave the workspace hidden.
+      dispatchResearch({ type: 'loaded', run: null });
+    }
+  }, []);
+
+  // Live events that imply new durable rows bump refreshNonce → refetch.
+  useEffect(() => {
+    if (research.refreshNonce === 0) return;
+    const sessionId = currentSessionRef.current;
+    if (!sessionId) return;
+    void refreshResearch(sessionId);
+  }, [research.refreshNonce, refreshResearch]);
+
+  const startResearch = useCallback(async (input: StartResearchInput) => {
+    const sessionId = currentSessionRef.current;
+    if (!sessionId) return;
+    try {
+      const run = await createResearchRun(sessionId, {
+        objective: input.objective,
+        depth: input.depth,
+        clientRequestId: crypto.randomUUID(),
+        sourcePolicy: {
+          web: {
+            mode: input.sourceMode,
+            domains: input.domains,
+            excludedDomains: input.excludedDomains,
+          },
+        },
+      });
+      dispatchResearch({ type: 'run', run });
+    } catch (error) {
+      setItems(prev => [...prev, {
+        type: 'event',
+        text: error instanceof Error ? error.message : String(error),
+        isError: true,
+      }]);
+    }
+  }, []);
+
   // Sync URL when view/session/tab changes
   useEffect(() => {
     if (skipPushRef.current) { skipPushRef.current = false; return; }
@@ -158,6 +228,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
 
   const loadSession = useCallback(async (ws: AgentWsClient, sessionId: string) => {
     setCurrentSessionId(sessionId);
+    dispatchResearch({ type: 'clear' });
     // Preserve observe view so opening a session from the observation
     // list stays under /observe/:id and keeps the sidebar pointed at the
     // observed-sessions set rather than snapping back to the owner's own.
@@ -305,8 +376,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     const allSessions = await ws.listSessions(inObserve ? { observe: true } : undefined);
     const sess = allSessions.find(s => s.sessionId === sessionId);
     await ws.subscribe(sessionId, sess?.lastEventId ?? 0);
+    // Durable research reload happens after subscribe (replay-then-live):
+    // events arriving in between only bump refreshNonce and re-trigger it.
+    if (sessionId !== 'inbox') void refreshResearch(sessionId);
     if (sessionId === 'inbox') markInboxSeen();
-  }, [markInboxSeen]);
+  }, [markInboxSeen, refreshResearch]);
 
   const selectSessionById = useCallback(async (sessionId: string) => {
     const ws = wsRef.current;
@@ -342,6 +416,11 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
       }
     }
     if (sessionId !== currentSessionRef.current) return;
+
+    if (isResearchEvent(event)) {
+      dispatchResearch({ type: 'event', event: event as never });
+      return;
+    }
 
     const dropPlaceholder = (items: ChatItem[]) => items.filter(i => !(i.type === 'thinking' && !i.text));
 
@@ -609,6 +688,7 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     if (prev) await ws.unsubscribe(prev).catch(() => {});
     setCurrentSessionId(sessionId);
     setItems([]);
+    dispatchResearch({ type: 'clear' });
     streamingTextRef.current = '';
     streamingThinkingRef.current = '';
     thinkingAsAssistantRef.current = false;
@@ -648,9 +728,12 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
     } catch (error) {
       setSending(false);
       setStatus('Connected');
-      setItems(prev => [...prev, { type: 'event', text: error instanceof Error ? error.message : String(error), isError: true }]);
+      const raw = error instanceof Error ? error.message : String(error);
+      // 409 research_run_active: chat is blocked while research executes.
+      const message = raw.includes('research_run_active') ? t('research.chatBlocked') : raw;
+      setItems(prev => [...prev, { type: 'event', text: message, isError: true }]);
     }
-  }, []);
+  }, [t]);
 
   const interruptTurn = useCallback(async () => {
     const ws = wsRef.current;
@@ -998,6 +1081,22 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
               </div>
             </header>
 
+            {!isInbox && currentSessionId && research.run && (
+              <Suspense fallback={null}>
+                <ResearchWorkspace
+                  sessionId={currentSessionId}
+                  state={research}
+                  onRefresh={() => {
+                    const sid = currentSessionRef.current;
+                    if (sid) void refreshResearch(sid);
+                  }}
+                  onError={(message) =>
+                    setItems(prev => [...prev, { type: 'event', text: message, isError: true }])
+                  }
+                />
+              </Suspense>
+            )}
+
             <ChatMessages
               items={items}
               agentName={agentName ?? undefined}
@@ -1017,6 +1116,10 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                       : t('chatShell.readOnlyExternal', { source: currentSession?.source?.platform || currentSession?.source?.kind || t('chatShell.sourceUnknown') })}
                 </span>
               </div>
+            ) : isResearchExecuting(research.run) ? (
+              <div className="composer composer--readonly">
+                <span>{t('research.chatBlocked')}</span>
+              </div>
             ) : (
               <Composer
                 onSend={sendMessage}
@@ -1024,6 +1127,14 @@ export function ChatShell({ connection, role, onDisconnect }: Props) {
                 running={sending}
                 onInterrupt={interruptTurn}
                 sessionId={currentSessionId}
+                researchAvailable={
+                  !!currentSessionId
+                  && isWebSession
+                  && (research.run === null
+                    || research.run.status === 'completed'
+                    || research.run.status === 'cancelled')
+                }
+                onStartResearch={(input) => void startResearch(input)}
               />
             )}
           </>

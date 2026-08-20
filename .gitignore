@@ -11,3 +11,6 @@ TODO.md
 apps/cli/public/
 pnpm-lock.yaml
 *.traineddata
+.agents
+.claude
+skills-lock.json

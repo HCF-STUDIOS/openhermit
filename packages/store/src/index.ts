@@ -16,6 +16,7 @@ export type {
   ApprovalRequestStore,
   AttachmentStore,
   AttachmentStorage,
+  ResearchStore,
 } from './interfaces.js';
 
 export type {
@@ -63,6 +64,21 @@ export type {
   AttachmentMaterializationPatch,
   AttachmentMaterializationState,
   AttachmentStorageProvider,
+  ResearchRunStatus,
+  ResearchResumePhase,
+  ResearchStepStatus,
+  ResearchSourceStatus,
+  ResearchRunRecord,
+  ResearchRunCreateInput,
+  ResearchRunPatch,
+  ResearchStepRecord,
+  ResearchStepCreateInput,
+  ResearchStepPatch,
+  ResearchSourceRecord,
+  ResearchSourceCreateInput,
+  ResearchSourcePatch,
+  ResearchEvidenceRecord,
+  ResearchEvidenceCreateInput,
 } from './types.js';
 
 export { STANDALONE_AGENT_ID, standaloneScope, skillStorageId } from './types.js';
@@ -108,6 +124,7 @@ export {
   DbPolicyStore,
   DbApprovalRequestStore,
   DbAttachmentStore,
+  DbResearchStore,
   LocalAttachmentStorage,
   type LocalAttachmentStorageOptions,
   S3AttachmentStorage,

@@ -65,6 +65,7 @@ import {
   registerAttachmentRoutes,
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
+import { registerResearchRoutes } from './research-routes.js';
 import {
   registerSessionPublishRoute,
   type AttachmentIngestResult,
@@ -1548,6 +1549,17 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       logger: log,
     });
   }
+
+  // --- deep research ---
+
+  registerResearchRoutes(app, {
+    instances,
+    requireAuth,
+    enforceSessionNamespace,
+    resolveRunner,
+    requireSessionAccessHttp,
+    logger: log,
+  });
 
   // --- checkpoint ---
 

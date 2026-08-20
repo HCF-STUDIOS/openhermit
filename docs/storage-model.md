@@ -55,6 +55,15 @@ Agent-scoped tables:
 | `agent_secrets` | Per-agent provider/integration secrets, encrypted with `OPENHERMIT_SECRETS_KEY` |
 | `schedules` | Cron and one-shot schedule definitions |
 | `schedule_runs` | Schedule execution history |
+| `research_runs` | Deep Research runs: plan (versioned), source policy, budgets/usage, working state, final `report_json`. Partial unique indexes enforce one nonterminal run per session and idempotent creation by `client_request_id`. |
+| `research_steps` | Durable, idempotent workflow steps (unique `(run_id, dedupe_key)`); the execution cursor and audit timeline |
+| `research_sources` | Normalized source candidates and acquired snapshots; unique canonical-URL hash per run, content hash for mirror detection |
+| `research_evidence` | Verified evidence excerpts with locators; unique `(run_id, evidence_hash)` makes inserts idempotent |
+
+Research data is session-bound: session deletion removes evidence → sources →
+steps → runs transactionally before the session rows. Source snapshots
+(`snapshot_text`) never leave the server; API responses expose metadata and
+evidence excerpts only.
 
 ## Wildcard assignments (`agent_id = '*'`)
 

@@ -107,8 +107,39 @@ Agents hydrate on demand: the first request that targets an agent constructs its
 - schedule execution host callbacks
 - MCP tool discovery and namespacing
 - channel outbound adapters for proactive `session_send`
+- the Deep Research orchestrator (see below)
 
 The main model loop is backed by `@mariozechner/pi-agent-core` and `@mariozechner/pi-ai`.
+
+## Deep Research
+
+Deep Research is a durable, session-attached workflow — not a tool and not a
+separate app. A `ResearchOrchestrator` (owned by `AgentRunner`, algorithm in
+`apps/agent/src/research/`) drives a bounded plan → approve → search/read/
+extract → synthesize loop:
+
+- Models run as stateless phase calls (planner, action decider, per-source
+  evidence extractor, synthesizer) with no tools; output is Zod-validated JSON
+  with one repair attempt. The orchestrator — not the model — decides whether
+  proposed actions are allowed and affordable (source policy, hard budgets
+  with a synthesis reserve, duplicate-query and canonical-URL dedupe,
+  concurrency caps, a deterministic finish gate, and a zero-information-gain
+  stop).
+- Every external action is a durable, idempotent `research_steps` row written
+  before execution; sources keep normalized text snapshots and hashes;
+  evidence excerpts are verified verbatim against snapshots before insert.
+  Report claims cite evidence IDs, validated server-side — unsupported
+  findings downgrade to labeled caveats and citations render from durable
+  records, never from model-supplied URLs.
+- Retrieved page content is untrusted data: it reaches only the no-tools
+  extractor inside an explicit envelope, and direct page fetches go through
+  the shared SSRF-safe fetch (`apps/agent/src/network/safe-fetch.ts`).
+- Runs pause on graceful shutdown; stale active runs reconcile to
+  `paused(runtime_restart)` on hydration and resume manually. Chat turns in a
+  session with an actively executing run are rejected with
+  `409 research_run_active`.
+
+Authoritative design: [`deep-research-design.md`](./deep-research-design.md).
 
 ## Execution Backends
 

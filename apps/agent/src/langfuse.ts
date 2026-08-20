@@ -51,12 +51,49 @@ type LangfuseStreamMetadataOptions = {
   sessionId?: string;
 };
 
+/**
+ * Deep-research extraction prompts carry a full untrusted source snapshot
+ * inside an explicit envelope (see research/prompts.ts). Telemetry must not
+ * record raw source content by default (§19) — replace the envelope body
+ * with a length placeholder while keeping the source id line for
+ * correlation with the research_sources rows.
+ */
+const UNTRUSTED_ENVELOPE_PATTERN =
+  /(<<<BEGIN UNTRUSTED SOURCE CONTENT[^\n]*\n)([\s\S]*?)(\nEND UNTRUSTED SOURCE CONTENT>>>)/g;
+
+/**
+ * Research model answers carry verbatim source excerpts as JSON "excerpt"
+ * fields (extractor output, echoed JSON in repair prompts) — the envelope
+ * can't cover the model's own output, so redact the field value wherever it
+ * appears. Over-matching an unrelated "excerpt" field merely redacts
+ * telemetry, which is the safe direction. Escape-aware so an excerpt
+ * containing \" doesn't end the match early.
+ */
+const EXCERPT_FIELD_PATTERN = /"excerpt"(\s*:\s*)"((?:[^"\\]|\\[\s\S])*)"/g;
+
+export const redactUntrustedSourceContent = (text: string): string =>
+  text
+    .replace(
+      UNTRUSTED_ENVELOPE_PATTERN,
+      (_all, begin: string, body: string, end: string) =>
+        `${begin}[source content redacted from telemetry: ${body.length} chars]${end}`,
+    )
+    .replace(
+      EXCERPT_FIELD_PATTERN,
+      (_all, sep: string, body: string) =>
+        `"excerpt"${sep}"[excerpt redacted from telemetry: ${body.length} chars]"`,
+    );
+
 const sanitizeMessageContent = (content: Message['content']) => {
   if (typeof content === 'string') {
-    return content;
+    return redactUntrustedSourceContent(content);
   }
 
   return content.map((item) => {
+    if (item.type === 'text') {
+      return { type: item.type, text: redactUntrustedSourceContent(item.text) };
+    }
+
     if (item.type === 'image') {
       return {
         type: item.type,

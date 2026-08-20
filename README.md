@@ -54,6 +54,87 @@ hermit config secrets set OPENROUTER_API_KEY sk-... --agent main  # rotate a sec
 - ⏱ **Schedules & automation** — cron and one-shot jobs with timeout, concurrency policy, and error backoff.
 - 👥 **Multi-user with roles** — owner / user / guest. Identity reconciliation across CLI, web, and channels.
 - 🔌 **Multi-protocol transport** — HTTP sync, inline SSE streaming, durable SSE, WebSocket RPC.
+- 🔬 **Deep Research** — durable, session-attached research runs: an LLM-drafted plan you review and approve, a bounded search/read/extract loop with hard budgets, and a final report whose every finding cites server-verified evidence excerpts. Pause, refine, resume; runs survive restarts. Requires a configured web provider (Tavily or Exa recommended; the default Defuddle provider works but scrapes Google results). Current limitations: HTML/text sources only (PDFs are reported as unsupported), web-only sources (no uploaded files or MCP yet), manual resume after an unclean restart. **Note: research runs are model-intensive — see [cost and model selection](#deep-research-cost-and-model-selection) before your first run.** Design: [Deep Research Design](docs/deep-research-design.md).
+
+---
+
+## Deep Research: cost and model selection
+
+A research run is a pipeline of model calls — planner, per-iteration action
+decisions, one evidence extraction per source read (these are the big ones:
+each carries up to a 200 KB page snapshot ≈ 50k input tokens), and synthesis.
+Budgets are hard caps per depth; typical runs land well under them, but plan
+for the worst case:
+
+| Depth | Model calls | Input tokens | Output tokens | e.g. gpt-5-mini | e.g. gemini-3-flash | e.g. claude-sonnet-4-5 |
+|---|---:|---:|---:|---:|---:|---:|
+| `quick` | ≤ 22 | ≤ 250k | ≤ 40k | ~$0.14 | ~$0.25 | ~$1.35 |
+| `standard` | ≤ 40 | ≤ 500k | ≤ 80k | ~$0.29 | ~$0.49 | ~$2.70 |
+| `thorough` | ≤ 72 | ≤ 900k | ≤ 120k | ~$0.47 | ~$0.81 | ~$4.50 |
+
+Dollar figures are worst-case at list prices. Search costs are separate but
+small (Tavily's free tier of ~1,000 credits/month easily covers testing).
+
+**Free model tiers are usually not enough.** The binding constraint is
+per-minute/per-day token quotas, not intelligence — a single extraction call
+can be ~50k input tokens, which blows through e.g. Google AI Studio's free
+tier mid-run (you'll see a 429 quota error surfaced on the run). Use a paid
+key, or a topped-up OpenRouter account (~$5 covers many standard runs).
+
+**What a model needs to handle research well:** disciplined JSON output
+(every phase is validated, with one repair attempt), a context window of
+64k+ tokens for extraction, and `model.max_tokens` of at least ~16k so long
+extraction/synthesis answers don't truncate. Suggested configurations
+(verified registry ids; prices per Mtok in/out):
+
+| Provider / model | Price | Notes |
+|---|---|---|
+| `openai` / `gpt-5-mini` | $0.25 / $2 | Best price/reliability balance for research phases |
+| `google` / `gemini-3-flash-preview` | $0.50 / $3 | Fast; needs a **paid-tier** key; keep `thinking low` |
+| `anthropic` / `claude-haiku-4-5` | $1 / $5 | Very reliable JSON discipline |
+| `anthropic` / `claude-sonnet-4-5` | $3 / $15 | Highest report quality; use for runs that matter |
+| `openrouter` / `deepseek/deepseek-chat-v3.1` | $0.15 / $0.75 | Cheapest credible option; 32k context is tight for big pages |
+
+Set with:
+
+```bash
+hermit config set model.provider openai
+hermit config set model.model gpt-5-mini
+hermit config set model.max_tokens 16384
+hermit config secrets set OPENAI_API_KEY sk-...
+```
+
+### Local models (no subscription)
+
+Any OpenAI-compatible local server works — Ollama, LM Studio, llama.cpp
+`--server`, vLLM — via a custom endpoint:
+
+```bash
+# Ollama example. Research needs long context: raise it from Ollama's default.
+OLLAMA_CONTEXT_LENGTH=65536 ollama serve   # in another terminal: ollama pull qwen3:32b
+
+hermit config set model.provider ollama
+hermit config set model.model qwen3:32b
+hermit config set model.base_url http://127.0.0.1:11434/v1
+hermit config set model.api openai-completions
+hermit config set model.max_tokens 16384
+hermit config secrets set OLLAMA_API_KEY ollama   # any non-empty value; local servers ignore it
+```
+
+Honest expectations for local runs:
+
+- **Model size matters.** The phases demand strict JSON against non-trivial
+  schemas. 27B+ models (`qwen3:32b`, `gemma3:27b`, `llama3.3:70b`) are
+  workable; 7–8B models fail validation often enough to be frustrating even
+  with the built-in repair attempt and advisory-field tolerance.
+- **Context is the hard requirement.** Extraction feeds up to ~50k tokens of
+  page snapshot; with a small context window the page gets cut and evidence
+  quality drops. Configure 64k+ (`OLLAMA_CONTEXT_LENGTH`, `--ctx-size`, …).
+- **Time adds up.** A quick-depth run is ~15–25 sequential-ish calls, several
+  with huge prompts. On CPU-only or modest-GPU hardware expect a run to take
+  an hour or more where a hosted model takes minutes.
+- Web search is unaffected — pair a local model with Tavily's free tier (or
+  the keyless default provider) for a fully subscription-free setup.
 
 ---
 
@@ -304,6 +385,7 @@ Optional `attachments.limits.maxBytes` overrides the default 25 MB cap. Every su
 - [MCP Servers](docs/mcp-servers.md)
 - [Channel Adapters](docs/channel-adapter.md)
 - [Introspection Design](docs/introspection-design.md)
+- [Deep Research Design](docs/deep-research-design.md)
 - [Architecture Decisions](docs/decisions.md)
 - [Shipped Features](docs/plan.md)
 - [Roadmap](docs/roadmap.md)

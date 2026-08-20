@@ -10,12 +10,10 @@ import type {
 
 import type { AgentRunner } from '../agent-runner.js';
 
+import { SafeFetchError, safeFetch } from '../network/safe-fetch.js';
+
 import { resolveMimeType, sanitizeName } from './helpers.js';
-import {
-  createSsrfSafeAgent,
-  isBlockedLiteralHost,
-  type HostResolver,
-} from './ssrf.js';
+import { type HostResolver } from './ssrf.js';
 
 /**
  * URL-passthrough resolver for inbound `postMessage` attachments shaped as
@@ -35,7 +33,7 @@ import {
  */
 const ATTACHMENT_FETCH_TIMEOUT_MS = 30_000;
 
-const ALLOWED_PROTOCOLS = new Set(['https:']);
+const ALLOWED_PROTOCOLS: readonly string[] = ['https:'];
 
 const MAX_REDIRECT_HOPS = 5;
 
@@ -83,104 +81,46 @@ export const resolveAttachmentByUrl = async (
     fail(`attachment_fetch_failed: malformed URL`);
     throw new Error('unreachable');
   }
-  // Manual redirect follow so the SSRF protocol+host guards run on *every*
-  // hop. `redirect: 'follow'` would only validate the initial URL — a 302 to
-  // http://169.254.169.254/ would otherwise sneak past. The literal-host check
-  // is a cheap pre-filter; the authoritative resolve-validate-pin happens in
-  // the dispatcher's lookup (see ./ssrf.ts), which also covers hostnames that
-  // only reveal a blocked address once resolved.
-  const validateHop = (u: URL): void => {
-    if (!ALLOWED_PROTOCOLS.has(u.protocol)) {
-      fail(
-        `attachment_fetch_failed: protocol "${u.protocol}" not allowed (https only)`,
-      );
-    }
-    if (isBlockedLiteralHost(u.hostname)) {
-      fail(
-        `attachment_fetch_failed: host "${u.hostname}" is not allowed (SSRF guard)`,
-      );
-    }
-  };
-  validateHop(parsed);
 
-  // Dispatcher resolves every connection (initial + redirect hops) through the
-  // SSRF lookup and pins the validated address — no second, unvalidated DNS
-  // resolution at connect time, so DNS rebinding can't smuggle past.
-  const dispatcher = createSsrfSafeAgent(input.resolveHost);
-  const signal = AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS);
-  let res: Response;
-  let current = parsed;
-  let hops = 0;
+  // The shared SSRF-safe fetch primitive re-validates protocol + host on every
+  // redirect hop and pins DNS resolution to the validated address (see
+  // ../network/safe-fetch.ts and ./ssrf.ts). Attachments stay https-only.
+  let fetched: Awaited<ReturnType<typeof safeFetch>>;
   try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      try {
-        res = await fetch(current.toString(), {
-          method: 'GET',
-          redirect: 'manual',
-          signal,
-          // `dispatcher` is an undici extension to RequestInit, not in lib.dom.
-          dispatcher,
-        } as RequestInit & { dispatcher: unknown });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        fail(`attachment_fetch_failed: ${msg} (url=${current.toString()})`);
-        throw new Error('unreachable');
+    fetched = await safeFetch(input.url, {
+      allowedProtocols: ALLOWED_PROTOCOLS,
+      maxRedirects: MAX_REDIRECT_HOPS,
+      timeoutMs: ATTACHMENT_FETCH_TIMEOUT_MS,
+      maxBytes: input.maxBytes,
+      onOversize: 'error',
+      resolveHost: input.resolveHost,
+    });
+  } catch (err) {
+    if (err instanceof SafeFetchError) {
+      if (err.reason === 'body_too_large') {
+        fail(`attachment_fetch_failed: ${err.message}`, 'attachment_too_large');
       }
-      if (
-        res.status >= 300 &&
-        res.status < 400 &&
-        res.headers.has('location')
-      ) {
-        if (hops >= MAX_REDIRECT_HOPS) {
-          fail(
-            `attachment_fetch_failed: too many redirects (>${MAX_REDIRECT_HOPS})`,
-          );
-        }
-        let next: URL;
-        try {
-          next = new URL(res.headers.get('location')!, current);
-        } catch {
-          fail(`attachment_fetch_failed: malformed redirect target`);
-          throw new Error('unreachable');
-        }
-        validateHop(next);
-        current = next;
-        hops += 1;
-        continue;
+      if (err.reason === 'protocol_not_allowed') {
+        fail(
+          `attachment_fetch_failed: protocol "${parsed.protocol}" not allowed (https only)`,
+        );
       }
-      break;
+      fail(`attachment_fetch_failed: ${err.message}`);
     }
-  } finally {
-    void dispatcher.close().catch(() => {});
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(`attachment_fetch_failed: ${msg}`);
+    throw new Error('unreachable');
   }
-  if (!res.ok) {
+
+  if (fetched.status < 200 || fetched.status >= 300) {
     fail(
-      `attachment_fetch_failed: upstream returned ${res.status} (url=${current.toString()})`,
+      `attachment_fetch_failed: upstream returned ${fetched.status} (url=${fetched.finalUrl})`,
     );
   }
 
-  const contentLength = res.headers.get('content-length');
-  if (contentLength) {
-    const n = Number(contentLength);
-    if (Number.isFinite(n) && n > input.maxBytes) {
-      fail(
-        `attachment_fetch_failed: content-length ${n} exceeds limit ${input.maxBytes}`,
-        'attachment_too_large',
-      );
-    }
-  }
-
-  const arrayBuffer = await res.arrayBuffer();
-  const bytes = Buffer.from(arrayBuffer);
+  const bytes = fetched.body;
   if (bytes.length === 0) {
     fail(`attachment_fetch_failed: empty response body`);
-  }
-  if (bytes.length > input.maxBytes) {
-    fail(
-      `attachment_fetch_failed: body ${bytes.length} exceeds limit ${input.maxBytes}`,
-      'attachment_too_large',
-    );
   }
 
   const originalName =
@@ -188,7 +128,7 @@ export const resolveAttachmentByUrl = async (
   const safeName = sanitizeName(originalName);
   // Strip `; charset=...` so MIME-only regex in resolveMimeType accepts the
   // server-declared type (e.g. `text/plain; charset=utf-8` → `text/plain`).
-  const serverContentType = res.headers
+  const serverContentType = fetched.headers
     .get('content-type')
     ?.split(';')[0]
     ?.trim();

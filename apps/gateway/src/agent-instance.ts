@@ -210,6 +210,20 @@ export class AgentInstanceManager {
       ...(this.approvalRequestStore ? { approvalRequestStore: this.approvalRequestStore } : {}),
       ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
       ...(this.attachmentStorage ? { attachmentStorage: this.attachmentStorage } : {}),
+      // Detached research phases run after their HTTP request returns 202;
+      // holding the busy counter for their whole execution keeps the idle-LRU
+      // sweep from evicting a runner mid-plan/mid-loop/mid-synthesis.
+      acquireResearchBusy: () => {
+        this.busy.set(agentId, (this.busy.get(agentId) ?? 0) + 1);
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          const n = this.busy.get(agentId) ?? 0;
+          if (n <= 1) this.busy.delete(agentId);
+          else this.busy.set(agentId, n - 1);
+        };
+      },
     });
 
     this.runners.set(agentId, runner);

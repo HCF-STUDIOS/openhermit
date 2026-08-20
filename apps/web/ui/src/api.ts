@@ -407,11 +407,19 @@ type WsMethod =
   | 'session.message'
   | 'session.approve'
   | 'session.checkpoint'
+  | 'session.interrupt'
   | 'session.delete'
   | 'session.list'
   | 'session.history'
   | 'session.subscribe'
-  | 'session.unsubscribe';
+  | 'session.unsubscribe'
+  | 'research.start'
+  | 'research.list'
+  | 'research.get'
+  | 'research.plan.update'
+  | 'research.action'
+  | 'research.steps'
+  | 'research.sources';
 
 interface PendingRequest {
   resolve: (result: unknown) => void;
@@ -981,3 +989,112 @@ export const deleteAgentSecret = (name: string) =>
   apiFetch<{ ok: boolean }>(`/secrets/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   });
+
+// ─── Deep Research (docs/deep-research-design.md §16) ───────────────────────
+// Types come from @openhermit/protocol as a type-only dependency; all imports
+// below are erased at build time so the browser bundle stays protocol-free.
+
+import type {
+  CreateResearchRunRequest,
+  ResearchEvidenceWire,
+  ResearchRunActionRequest,
+  ResearchRunWire,
+  ResearchSourceDetailWire,
+  ResearchSourceWire,
+  ResearchStepWire,
+  UpdateResearchPlanRequest,
+} from '@openhermit/protocol';
+
+export type {
+  CreateResearchRunRequest,
+  ResearchEvidenceWire,
+  ResearchRunActionRequest,
+  ResearchRunWire,
+  ResearchSourceDetailWire,
+  ResearchSourceWire,
+  ResearchStepWire,
+  UpdateResearchPlanRequest,
+};
+
+const researchBase = (sessionId: string): string =>
+  `/sessions/${encodeURIComponent(sessionId)}/research-runs`;
+
+export async function createResearchRun(
+  sessionId: string,
+  request: CreateResearchRunRequest,
+): Promise<ResearchRunWire> {
+  const body = await apiFetch<{ run: ResearchRunWire }>(researchBase(sessionId), {
+    method: 'POST',
+    body: request,
+  });
+  return body.run;
+}
+
+export async function listResearchRuns(sessionId: string): Promise<ResearchRunWire[]> {
+  const body = await apiFetch<{ runs: ResearchRunWire[] }>(researchBase(sessionId));
+  return body.runs;
+}
+
+export async function getResearchRun(
+  sessionId: string,
+  runId: string,
+): Promise<ResearchRunWire> {
+  const body = await apiFetch<{ run: ResearchRunWire }>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}`,
+  );
+  return body.run;
+}
+
+export async function updateResearchPlan(
+  sessionId: string,
+  runId: string,
+  request: UpdateResearchPlanRequest,
+): Promise<ResearchRunWire> {
+  const body = await apiFetch<{ run: ResearchRunWire }>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}/plan`,
+    { method: 'PATCH', body: request },
+  );
+  return body.run;
+}
+
+export async function researchRunAction(
+  sessionId: string,
+  runId: string,
+  action: ResearchRunActionRequest,
+): Promise<ResearchRunWire> {
+  const body = await apiFetch<{ run: ResearchRunWire }>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}/actions`,
+    { method: 'POST', body: action },
+  );
+  return body.run;
+}
+
+export async function listResearchSteps(
+  sessionId: string,
+  runId: string,
+): Promise<ResearchStepWire[]> {
+  const body = await apiFetch<{ steps: ResearchStepWire[] }>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}/steps`,
+  );
+  return body.steps;
+}
+
+export async function listResearchSources(
+  sessionId: string,
+  runId: string,
+): Promise<ResearchSourceWire[]> {
+  const body = await apiFetch<{ sources: ResearchSourceWire[] }>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}/sources`,
+  );
+  return body.sources;
+}
+
+export async function getResearchSource(
+  sessionId: string,
+  runId: string,
+  sourceId: string,
+): Promise<ResearchSourceDetailWire> {
+  return apiFetch<ResearchSourceDetailWire>(
+    `${researchBase(sessionId)}/${encodeURIComponent(runId)}/sources/${encodeURIComponent(sourceId)}`,
+  );
+}

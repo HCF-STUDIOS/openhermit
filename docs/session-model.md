@@ -103,3 +103,15 @@ Direct sessions can be deleted when they are not running. Group sessions are ret
 ## Access Control
 
 Session access is participant-based for non-owners. `verifySessionAccess()` allows owners, then checks in-memory or persisted session participant IDs. Channel tokens are additionally constrained to their namespace prefix.
+
+## Deep Research Runs
+
+A session owns at most one nonterminal research run
+(`research_runs.session_id`, enforced by a partial unique index). While the
+run is actively executing (planning / researching / synthesizing),
+`postMessage` returns `409 research_run_active`; ordinary chat continues while
+the run awaits plan approval or is paused. The final report is delivered as a
+normal assistant entry (plus a `research_report_ready` event) and remains
+authoritative in `research_runs.report_json` even after transcript
+compaction. Deleting a session removes its research data first; deletion is
+refused while a run is actively executing.

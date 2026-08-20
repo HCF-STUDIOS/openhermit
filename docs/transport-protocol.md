@@ -166,8 +166,38 @@ Current event types:
 - `agent_start`
 - `agent_end`
 - `error`
+- `research_progress` — Deep Research operational progress (`phase`, `status`, `message`, optional `stepId` for deduplication against durable timeline rows and `counts`)
+- `research_plan_ready` — a research plan version is awaiting review
+- `research_source_update` — a research source changed state (`candidate`/`fetched`/`blocked`/`failed`/`unsupported`/`duplicate`)
+- `research_report_ready` — final report persisted (`terminalStatus: 'completed' | 'budget_exhausted'`)
 
 Events are persisted in `session_events` and broadcast through the in-memory `SessionEventBroker`.
+
+Research events are live-only (the broker keeps a 100-event backlog per
+session): on reconnect, clients reload the durable run/steps/sources over HTTP
+first, then subscribe — live events only patch state and signal when to
+refetch.
+
+## Deep Research Routes
+
+Nested under sessions; the same auth and participant checks apply:
+
+```
+POST   /api/agents/:agentId/sessions/:sessionId/research-runs            # 202, idempotent via clientRequestId
+GET    /api/agents/:agentId/sessions/:sessionId/research-runs
+GET    /api/agents/:agentId/sessions/:sessionId/research-runs/:runId
+PATCH  /api/agents/:agentId/sessions/:sessionId/research-runs/:runId/plan     # optimistic expectedVersion; 409 on conflict
+POST   /api/agents/:agentId/sessions/:sessionId/research-runs/:runId/actions  # approve_plan | pause | resume | cancel | refine | retry | increase_budget
+GET    /api/agents/:agentId/sessions/:sessionId/research-runs/:runId/steps
+GET    /api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources
+GET    /api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources/:sourceId  # metadata + evidence excerpts
+```
+
+`POST /messages` returns `409 research_run_active` while the session's run is
+actively planning/researching/synthesizing; chat resumes while the run awaits
+plan approval or is paused. WebSocket parity methods: `research.start`,
+`research.list`, `research.get`, `research.plan.update`, `research.action`,
+`research.steps`, `research.sources` — streaming stays on `session.subscribe`.
 
 ## WebSocket
 

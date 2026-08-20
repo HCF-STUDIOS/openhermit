@@ -452,6 +452,168 @@ export const scheduleRuns = pgTable('schedule_runs', {
   index('idx_schedule_runs_schedule').on(table.agentId, table.scheduleId, table.startedAt),
 ]);
 
+/**
+ * Deep Research runs — one durable workflow resource per research request,
+ * attached to a normal session. Plan, source policy, budgets, usage, working
+ * state, and the final report are all JSONB blobs owned by the agent runtime
+ * (validated there; opaque here). See docs/deep-research-design.md §18.
+ *
+ * No FKs by repo convention — run/source/step links are plain text columns
+ * and cascade is explicit code (`deleteBySession`).
+ */
+export const researchRuns = pgTable('research_runs', {
+  runId: text('run_id').primaryKey(),
+  agentId: text('agent_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  requestedByUserId: text('requested_by_user_id'),
+  /** Client-supplied idempotency key for run creation, unique per session. */
+  clientRequestId: text('client_request_id'),
+  status: text('status').default('created').notNull(),
+  /** Phase to re-enter on resume/retry: 'planning' | 'researching' | 'synthesizing'. */
+  resumePhase: text('resume_phase'),
+  /** Why the run stopped: budget dimension, failure category, user action. */
+  terminalReason: text('terminal_reason'),
+  depth: text('depth').default('standard').notNull(),
+  objective: text('objective').notNull(),
+  planJson: jsonb('plan_json').$type<Record<string, unknown>>(),
+  planVersion: integer('plan_version').default(0).notNull(),
+  sourcePolicyJson: jsonb('source_policy_json').$type<Record<string, unknown>>().default({}).notNull(),
+  budgetJson: jsonb('budget_json').$type<Record<string, unknown>>().default({}).notNull(),
+  usageJson: jsonb('usage_json').$type<Record<string, unknown>>().default({}).notNull(),
+  /** Coverage/contradiction ledger etc. Carries its own schemaVersion. */
+  workingStateJson: jsonb('working_state_json').$type<Record<string, unknown>>().default({}).notNull(),
+  reportJson: jsonb('report_json').$type<Record<string, unknown>>(),
+  pauseRequested: boolean('pause_requested').default(false).notNull(),
+  cancelRequested: boolean('cancel_requested').default(false).notNull(),
+  lastError: text('last_error'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
+}, (table) => [
+  index('idx_research_runs_session').on(table.agentId, table.sessionId, table.createdAt),
+  index('idx_research_runs_status').on(table.agentId, table.status, table.updatedAt),
+  uniqueIndex('research_runs_client_request_unique')
+    .on(table.agentId, table.sessionId, table.clientRequestId)
+    .where(sql`client_request_id IS NOT NULL`),
+  // One nonterminal run per session (§7). failed/budget_exhausted are
+  // deliberately absent from the predicate: they are retryable/resumable and
+  // must keep holding the slot until the user resumes, retries, or cancels
+  // (cancel accepts both, so the session is never stuck). Must stay in sync
+  // with TERMINAL_STATUSES in impl/research-store.ts.
+  uniqueIndex('research_runs_one_active_per_session')
+    .on(table.agentId, table.sessionId)
+    .where(sql`status NOT IN ('completed', 'cancelled')`),
+]);
+
+/**
+ * Durable, idempotent research workflow steps — the execution cursor. Every
+ * external action (search, fetch, model phase call) gets a row with a
+ * deterministic dedupe key BEFORE execution; retries bump `attempt` on the
+ * same row instead of duplicating work.
+ */
+export const researchSteps = pgTable('research_steps', {
+  stepId: text('step_id').primaryKey(),
+  runId: text('run_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  iteration: integer('iteration').default(0).notNull(),
+  attempt: integer('attempt').default(1).notNull(),
+  /** 'planning' | 'decision' | 'search' | 'read_source' | 'extract' | 'synthesis' | 'refinement' | 'control'. */
+  kind: text('kind').notNull(),
+  /** 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'invalidated'. */
+  status: text('status').default('pending').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  questionIds: jsonb('question_ids').$type<string[]>().default([]).notNull(),
+  inputJson: jsonb('input_json').$type<Record<string, unknown>>().default({}).notNull(),
+  outputJson: jsonb('output_json').$type<Record<string, unknown>>().default({}).notNull(),
+  usageJson: jsonb('usage_json').$type<Record<string, unknown>>().default({}).notNull(),
+  /** Operational one-liner safe to show as progress ("Searching official filings…"). */
+  summary: text('summary'),
+  error: text('error'),
+  createdAt: text('created_at').notNull(),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
+}, (table) => [
+  index('idx_research_steps_run').on(table.runId, table.createdAt),
+  index('idx_research_steps_iteration').on(table.runId, table.iteration),
+  uniqueIndex('research_steps_dedupe_unique').on(table.runId, table.dedupeKey),
+]);
+
+/**
+ * Normalized research sources: candidates from search plus acquired
+ * snapshots. `snapshot_text` is the bounded whitespace-normalized text all
+ * evidence locators index into; hashes drive duplicate/mirror detection.
+ */
+export const researchSources = pgTable('research_sources', {
+  sourceId: text('source_id').primaryKey(),
+  runId: text('run_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  /** 'web' | 'attachment' | 'mcp' | 'api' | 'analysis' (web-only in MVP). */
+  kind: text('kind').default('web').notNull(),
+  /** 'candidate' | 'fetched' | 'blocked' | 'failed' | 'unsupported' | 'duplicate'. */
+  status: text('status').default('candidate').notNull(),
+  url: text('url'),
+  canonicalUrl: text('canonical_url'),
+  canonicalUrlHash: text('canonical_url_hash'),
+  title: text('title'),
+  publisher: text('publisher'),
+  domain: text('domain'),
+  author: text('author'),
+  publishedAt: text('published_at'),
+  retrievedAt: text('retrieved_at'),
+  mimeType: text('mime_type'),
+  sourceClass: text('source_class').default('unknown').notNull(),
+  qualityJson: jsonb('quality_json').$type<Record<string, unknown>>().default({}).notNull(),
+  metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>().default({}).notNull(),
+  discoveredByStepId: text('discovered_by_step_id').notNull(),
+  snapshotText: text('snapshot_text'),
+  contentHash: text('content_hash'),
+  contentBytes: integer('content_bytes'),
+  truncated: boolean('truncated').default(false).notNull(),
+  duplicateOfSourceId: text('duplicate_of_source_id'),
+  lastError: text('last_error'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_research_sources_run_status').on(table.runId, table.status),
+  index('idx_research_sources_run_domain').on(table.runId, table.domain),
+  index('idx_research_sources_run_content_hash').on(table.runId, table.contentHash),
+  // Prevents repeat acquisition of the same canonical URL within a run.
+  uniqueIndex('research_sources_canonical_unique')
+    .on(table.runId, table.canonicalUrlHash)
+    .where(sql`canonical_url_hash IS NOT NULL`),
+]);
+
+/**
+ * Verified evidence excerpts — the durable ledger citations resolve through.
+ * `evidence_hash` makes inserts idempotent across retries/re-extractions.
+ */
+export const researchEvidence = pgTable('research_evidence', {
+  evidenceId: text('evidence_id').primaryKey(),
+  runId: text('run_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  sourceId: text('source_id').notNull(),
+  extractionStepId: text('extraction_step_id').notNull(),
+  questionIds: jsonb('question_ids').$type<string[]>().default([]).notNull(),
+  excerpt: text('excerpt').notNull(),
+  locatorJson: jsonb('locator_json').$type<Record<string, unknown>>().default({}).notNull(),
+  claimKey: text('claim_key'),
+  /** 'supports' | 'contradicts' | 'context'. */
+  stance: text('stance').default('context').notNull(),
+  normalizedValue: text('normalized_value'),
+  scopeJson: jsonb('scope_json').$type<Record<string, unknown>>().default({}).notNull(),
+  relevanceBasisPoints: integer('relevance_basis_points').default(5000).notNull(),
+  confidenceBasisPoints: integer('confidence_basis_points').default(5000).notNull(),
+  /** Marked (not deleted) when a plan refinement narrows scope (§13). */
+  outOfScope: boolean('out_of_scope').default(false).notNull(),
+  evidenceHash: text('evidence_hash').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_research_evidence_run_source').on(table.runId, table.sourceId),
+  index('idx_research_evidence_run_claim').on(table.runId, table.claimKey),
+  uniqueIndex('research_evidence_hash_unique').on(table.runId, table.evidenceHash),
+]);
+
 export const consumedJtis = pgTable('consumed_jtis', {
   jti: text('jti').primaryKey(),
   expiresAt: integer('expires_at').notNull(),

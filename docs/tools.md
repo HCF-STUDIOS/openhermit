@@ -13,8 +13,8 @@ OpenHermit builds toolsets per turn from available runtime capabilities and the 
 | `file_list` | List directory entries (files + subdirectories) |
 | `file_stat` | Stat a path: type, size, mtime (returns null if missing) |
 | `file_delete` | Delete a single file (no recursive) |
-| `web_search` | Search the web through the configured web provider |
-| `web_fetch` | Fetch and extract web page content |
+| `web_search` | Search the web through the configured web provider (`include_domains` / `exclude_domains` filters; strictly post-filtered on every provider) |
+| `web_fetch` | Fetch and extract web page content (returns typed acquisition metadata: canonical URL, MIME type, status, publisher/author/dates; honors the turn's abort signal) |
 | `memory_get` | Read one memory by ID |
 | `memory_list` | List memories by prefix |
 | `memory_recall` | Search memories |
@@ -96,3 +96,24 @@ When a policy row has `effect: 'require_approval'`, the system supports two mode
 Approved requests are cached with a TTL (default 60 minutes). Owners can grant `persistent` approval to auto-create a permanent allow policy row.
 
 See [access-policy.md](./access-policy.md) for full details on the approval flow and policy configuration.
+
+## Web Acquisition Safety
+
+Direct page fetches (the Defuddle provider and Deep Research acquisition) go
+through the shared SSRF-safe fetch primitive
+(`apps/agent/src/network/safe-fetch.ts`): protocol allowlist, rejection of
+embedded credentials, DNS resolve-validate-pin against loopback / private /
+link-local / metadata / CGNAT ranges, per-hop redirect validation with a hop
+cap, wall-clock timeouts, and decompressed-body byte caps. Attachment URL
+passthrough uses the same primitive with an https-only allowlist.
+
+## Deep Research and Tools
+
+Deep Research does not give any model an open tool loop. Its phase calls
+(planner / decision / extractor / synthesizer) run with an empty tool list on
+the internal-turn path; the orchestrator executes validated `search` /
+`read_source` actions itself through web capabilities whose access is
+evaluated against the same tool policy rows as `web_search` / `web_fetch` —
+a `deny` (or `require_approval`) verdict removes the capability from research
+entirely. Retrieved page content is wrapped in an untrusted-data envelope and
+only ever shown to the no-tools evidence extractor.

@@ -81,4 +81,11 @@ export interface AgentRunnerOptions {
   approvalRequestStore?: ApprovalRequestStore;
   attachmentStore?: AttachmentStore;
   attachmentStorage?: AttachmentStorage;
+  /**
+   * Eviction fence for detached research phases: acquire before a phase
+   * starts executing, release when it settles. Wired by the gateway's
+   * AgentInstanceManager so an idle-LRU sweep cannot evict a runner that is
+   * actively planning/researching/synthesizing.
+   */
+  acquireResearchBusy?: () => () => void;
 }

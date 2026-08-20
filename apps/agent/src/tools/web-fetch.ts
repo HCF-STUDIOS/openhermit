@@ -41,7 +41,7 @@ export const createWebFetchTool = ({
   description:
     'Fetch a web page and return its content. Use output "markdown" (default) to extract main article content as Markdown, or "raw" for the unprocessed HTTP body. Responses are truncated at max_bytes to avoid flooding the context window.',
   parameters: WebFetchParams,
-  execute: async (_toolCallId, args: WebFetchArgs) => {
+  execute: async (_toolCallId, args: WebFetchArgs, signal?: AbortSignal) => {
     if (!webProvider) {
       return {
         content: asTextContent('Web provider is not available.'),
@@ -64,7 +64,7 @@ export const createWebFetchTool = ({
     const maxBytes = Math.min(Math.floor(requestedBytes), MAX_RESPONSE_BYTES);
     const output = args.output ?? 'markdown';
 
-    const result = await webProvider.fetch(args.url, { maxBytes, output });
+    const result = await webProvider.fetch(args.url, { maxBytes, output, signal });
 
     const meta: string[] = [];
     if (result.title) meta.push(`Title: ${result.title}`);
@@ -91,6 +91,7 @@ export const createWebFetchTool = ({
         title: result.title,
         contentBytes: result.contentBytes,
         truncated: result.truncated,
+        ...(result.acquisition ? { acquisition: result.acquisition } : {}),
         ...result.metadata,
       },
     };
