@@ -25,7 +25,7 @@ const CLASSIFIERS: Array<{ kind: ModelErrorKind; pattern: RegExp }> = [
   { kind: 'quota', pattern: /key limit exceeded|insufficient[\s\w]{0,20}credit|out of credit|quota exceeded|spend(ing)? limit|payment required|\b402\b/i },
   { kind: 'rate_limit', pattern: /\b429\b|rate.?limit|too many requests/i },
   { kind: 'auth', pattern: /invalid.{0,10}(api.?key|token)|unauthorized|authentication|\b401\b|no auth credentials/i },
-  { kind: 'unavailable', pattern: /\b5\d\d\b|overloaded|service unavailable|timed?.?out|econn|network error|internal (server )?error|bad gateway/i },
+  { kind: 'unavailable', pattern: /\b5\d\d\b|overloaded|service unavailable|timed?.?out|econn|network error|internal (server )?error|bad gateway|no endpoints found|\b404\b/i },
 ];
 
 export const classifyModelError = (raw: string): ModelErrorKind => {

@@ -6,6 +6,7 @@ import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
 import type { ReasoningTagStreamState, SpeakerTagStreamState } from './message-utils.js';
+import type { ModelErrorKind } from './user-facing-error.js';
 
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
@@ -56,6 +57,13 @@ export interface RunnerSession extends SessionDescriptor {
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
    *  model from looping forever against a broken tool. */
   consecutiveToolFailures: number;
+  /** Set at message_end when the turn ended in a model error
+   *  (`stopReason==='error'`), cleared at turn start. `runScheduledJob` reads
+   *  it so a cron run that produced no reply is recorded as a *failed* run
+   *  (→ scheduler exponential backoff, auto-recovering on the next success)
+   *  instead of a silent success that keeps re-firing at full cadence — the
+   *  behaviour that turned an account-wide 402 outage into a per-tick storm. */
+  lastTurnModelError?: { kind: ModelErrorKind; message: string };
 }
 
 export interface AgentRunnerOptions {
