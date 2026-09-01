@@ -78,6 +78,33 @@ test('arbitrary custom providers do not borrow OpenRouter pricing', () => {
   assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
+test('amiko models pin OpenRouter reasoning format so thoughts do not leak into content', () => {
+  // The router's base URL is api.heyamiko.com, not openrouter.ai, so pi-ai would
+  // auto-detect thinkingFormat="openai" and never emit the nested `reasoning`
+  // object. Without it, no `reasoning:{effort:"none"}` is sent and models like
+  // gemini-3 return "thought summaries" inline in the reply text.
+  const m = resolveModel(modelConfig('amiko', 'google/gemini-3-flash-preview')) as {
+    compat?: { thinkingFormat?: string };
+  };
+  assert.equal(m.compat?.thinkingFormat, 'openrouter');
+});
+
+test('non-OpenRouter-proxying custom providers are left to pi-ai auto-detection', () => {
+  // No priceCatalog => we must not force a reasoning format the gateway may not
+  // speak; pi-ai detects it from the provider/URL instead.
+  const m = resolveModel(
+    ({
+      model: {
+        provider: 'my-vllm',
+        model: 'some/model',
+        api: 'openai-completions',
+        base_url: 'http://localhost:8000/v1',
+      },
+    } as unknown) as AgentConfig,
+  ) as { compat?: unknown };
+  assert.equal(m.compat, undefined);
+});
+
 // --- dynamic catalog ---
 
 const ROUTER_MODELS_BODY = {
