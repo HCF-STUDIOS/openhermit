@@ -143,6 +143,16 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
       ? (tryRegistry(priceCatalog, config.model.model) ??
         tryRegistry(priceCatalog, config.model.model.replace(/-\d{8}$/, '')))
       : undefined;
+    // Gateways that proxy OpenRouter (priceCatalog='openrouter') also speak
+    // OpenRouter's reasoning param semantics, but their base URL isn't
+    // openrouter.ai — so pi-ai's compat auto-detection classifies them as plain
+    // "openai" and never emits the nested `reasoning` object. Pin the format so
+    // pi-ai sends `reasoning:{effort:"none"}` when thinking is off (OpenRouter
+    // then suppresses reasoning instead of letting a model's "thought summaries"
+    // bleed into the reply text, e.g. gemini-3) and `reasoning:{effort}` when
+    // it's on (reasoning comes back in its own field → a real thinking block).
+    const compat =
+      priceCatalog === 'openrouter' ? { thinkingFormat: 'openrouter' as const } : undefined;
     return {
       id: config.model.model,
       name: config.model.model,
@@ -154,6 +164,7 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
       cost: priceRef?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: priceRef?.contextWindow ?? 128000,
       maxTokens: config.model.max_tokens ?? priceRef?.maxTokens,
+      ...(compat ? { compat } : {}),
     } as Model<any>;
   }
 
