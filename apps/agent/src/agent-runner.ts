@@ -57,6 +57,7 @@ import {
   isAssistantMessage,
   isEmptyAssistantTurn,
   normalizeMessageAlternation,
+  downgradeImagesForTextModel,
   stripEmptyAssistantTurns,
   stripLeadingSpeakerTag,
   transcodeGroupMentions,
@@ -3104,6 +3105,23 @@ export class AgentRunner implements SessionRuntime {
     // request payload, never the persisted history (same request-only contract
     // as truncateToolResults and the rolling window).
     finalMessages = normalizeMessageAlternation(finalMessages);
+
+    // Text-only models (e.g. MiniMax-M3) reject any request carrying an image
+    // content block — MiniMax 400s with `invalid params (2013)`. Images can
+    // enter a live session mid-turn via a tool result (`attachment_fetch` in
+    // image mode, a `doc_read` image page), a path the attachment-prepare
+    // downgrade never covers, so strip every image block down to a text
+    // placeholder here when the target model can't see images. REQUEST-ONLY
+    // (applied after the live-state write-back, like normalizeMessageAlternation):
+    // the stored history keeps the image bytes, so this also auto-unwedges a
+    // session that already baked an image into its persisted history — no DB
+    // surgery needed — and full fidelity returns if the agent moves back to a
+    // multimodal model.
+    const modelInputs = (model as { input?: string[] }).input;
+    const supportsImageInput = Array.isArray(modelInputs)
+      ? modelInputs.includes('image')
+      : true;
+    finalMessages = downgradeImagesForTextModel(finalMessages, supportsImageInput);
 
     if (AgentRunner.DEBUG) {
       const budget = getContextCompactionMaxTokens(config, {
