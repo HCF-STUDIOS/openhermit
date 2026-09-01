@@ -32,6 +32,13 @@ test('classifies auth failures', () => {
   assert.equal(classifyModelError('Invalid API key provided'), 'auth');
 });
 
+test('classifies a 404 dead-model / no-endpoints error as unavailable, not generic', () => {
+  assert.equal(
+    classifyModelError('404 No endpoints found for anthropic/claude-3.5-haiku.'),
+    'unavailable',
+  );
+});
+
 test('classifies context overflow before quota-ish words', () => {
   assert.equal(
     classifyModelError('This model\'s maximum context length is 128000 tokens'),

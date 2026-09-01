@@ -82,7 +82,8 @@ import {
   startTurnTrace,
 } from './langfuse.js';
 import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
-import { buildUserFacingModelError } from './agent-runner/user-facing-error.js';
+import { buildUserFacingModelError, classifyModelError } from './agent-runner/user-facing-error.js';
+import type { ModelErrorKind } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import {
   awaitTriggeredTurn,
@@ -141,6 +142,22 @@ const addUserIdToList = (existing: string[], userId: string | undefined): string
   if (!userId) return existing;
   return existing.includes(userId) ? existing : [...existing, userId];
 };
+
+/**
+ * Raised by `runScheduledJob` when a cron firing's turn ended in a model error
+ * (`stopReason==='error'`). A model error means the run produced no reply, so
+ * it must be recorded as a *failed* run — the central scheduler then applies
+ * exponential backoff and auto-recovers on the next success, instead of
+ * treating the empty turn as success and re-firing at full cadence (which, on
+ * an account-wide 402 credit outage, turned every frequent schedule into a
+ * per-tick error storm). The `kind` classifies the underlying provider error.
+ */
+export class ScheduledRunModelError extends Error {
+  constructor(readonly kind: ModelErrorKind, rawMessage: string) {
+    super(`scheduled run failed (${kind}): ${rawMessage}`);
+    this.name = 'ScheduledRunModelError';
+  }
+}
 
 export class AgentRunner implements SessionRuntime {
   readonly events = new SessionEventBroker();
@@ -254,6 +271,18 @@ export class AgentRunner implements SessionRuntime {
         () => this.postMessage(sessionId, { text: transformed.prompt, metadata }),
         () => this.waitForSessionIdle(sessionId),
       );
+
+      // A model error leaves the turn with stopReason==='error' instead of
+      // throwing, so without this the run would be recorded as a success and
+      // the schedule would keep firing at full cadence while every firing
+      // fails (an account-wide 402 credit outage then storms every tick).
+      // Surface it as a failed run so the central scheduler backs off and
+      // auto-recovers. Scoped to cron: `once` firings don't re-fire, so their
+      // completion semantics are left unchanged.
+      const turnError = this.sessions.get(sessionId)?.lastTurnModelError;
+      if (turnError && schedule.type === 'cron') {
+        throw new ScheduledRunModelError(turnError.kind, turnError.message);
+      }
     } catch (error) {
       runFailed = true;
       throw error;
@@ -1444,6 +1473,7 @@ export class AgentRunner implements SessionRuntime {
         session.reasoningTagStream = undefined;
         session.reasoningCarryTagName = undefined;
         session.consecutiveToolFailures = 0;
+        delete session.lastTurnModelError;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
         } else {
@@ -3386,6 +3416,10 @@ export class AgentRunner implements SessionRuntime {
         // Handle error responses from the model provider.
         if (assistantMessage.stopReason === 'error') {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
+          // Record the failure synchronously (not via a side-effect) so it is
+          // visible the moment the turn's queue settles — runScheduledJob reads
+          // it right after waitForSessionIdle to decide success vs. failed run.
+          session.lastTurnModelError = { kind: classifyModelError(errorMsg), message: errorMsg };
           const ts = new Date().toISOString();
           session.updatedAt = ts;
           void this.queueSideEffect(session, () => this.persistSessionIndex(session));

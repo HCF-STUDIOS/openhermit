@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ScheduleRecord } from '@openhermit/store';
 
-import { AgentRunner } from '../src/agent-runner.js';
+import { AgentRunner, ScheduledRunModelError } from '../src/agent-runner.js';
 import {
   awaitTriggeredTurn,
   surfaceRunError,
@@ -231,6 +231,94 @@ test('runScheduledJob preserves the run error when ephemeral teardown also fails
     ),
     runError,
   );
+});
+
+test('runScheduledJob fails a cron run whose turn ended in a model error (in-band, no throw)', async () => {
+  // A 402 leaves the turn with stopReason==='error' — the turn "completes"
+  // (waitForSessionIdle resolves) but produced no reply. Without surfacing it,
+  // the scheduler records success and re-fires at full cadence. lastTurnModelError
+  // is what handleAgentEvent stamps on the session at message_end.
+  const schedule: ScheduleRecord = {
+    agentId: 'agent-1',
+    scheduleId: 'schedule-1',
+    type: 'cron',
+    status: 'active',
+    cronExpression: '* * * * *',
+    prompt: 'scan feed',
+    sessionMode: { kind: 'dedicated' },
+    delivery: { kind: 'silent' },
+    policy: {},
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    runCount: 0,
+    consecutiveErrors: 0,
+  };
+  const sessionId = 'schedule:schedule-1';
+  const session = {
+    status: 'running',
+    queue: Promise.resolve(),
+    lastTurnModelError: { kind: 'quota' as const, message: '402 Insufficient credits' },
+  };
+  const fakeRunner = {
+    scope: { agentId: 'agent-1' },
+    sessions: new Map([[sessionId, session]]),
+    bus: {
+      transform: async (_event: string, payload: Record<string, unknown>) => payload,
+    },
+    openSession: async () => undefined,
+    postMessage: async () => ({ sessionId, triggered: true }),
+    // Turn completes normally; the error is in-band, not thrown.
+    waitForSessionIdle: async () => undefined,
+  };
+
+  await assert.rejects(
+    (AgentRunner.prototype.runScheduledJob as Function).call(fakeRunner, schedule, sessionId),
+    (err: unknown) => err instanceof ScheduledRunModelError && err.kind === 'quota',
+  );
+  // Dedicated cron: the queue is healed so later checkpoints aren't skipped.
+  await assert.doesNotReject(session.queue);
+});
+
+test('runScheduledJob leaves a once run untouched on a model error', async () => {
+  // once firings never re-fire, so their completion semantics must not change.
+  const schedule = {
+    agentId: 'agent-1',
+    scheduleId: 'schedule-1',
+    type: 'once',
+    status: 'active',
+    prompt: 'one-shot',
+    sessionMode: { kind: 'dedicated' },
+    delivery: { kind: 'silent' },
+    policy: {},
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    runCount: 0,
+    consecutiveErrors: 0,
+  } as unknown as ScheduleRecord;
+  const sessionId = 'schedule:schedule-1';
+  const session = {
+    status: 'running',
+    lastTurnModelError: { kind: 'quota' as const, message: '402 Insufficient credits' },
+  };
+  const fakeRunner = {
+    scope: { agentId: 'agent-1' },
+    sessions: new Map([[sessionId, session]]),
+    bus: {
+      transform: async (_event: string, payload: Record<string, unknown>) => payload,
+      emit: async () => undefined,
+    },
+    openSession: async () => undefined,
+    postMessage: async () => ({ sessionId, triggered: true }),
+    waitForSessionIdle: async () => undefined,
+    clearIdleSummaryTimer: () => undefined,
+    persistSessionIndex: async () => undefined,
+  };
+
+  await assert.doesNotReject(
+    (AgentRunner.prototype.runScheduledJob as Function).call(fakeRunner, schedule, sessionId),
+  );
+  // once => teardown drops the in-memory session.
+  assert.equal(fakeRunner.sessions.has(sessionId), false);
 });
 
 test('runScheduledJob propagates an ephemeral teardown failure after a successful run', async () => {
