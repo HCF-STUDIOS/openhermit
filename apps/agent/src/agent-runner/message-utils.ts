@@ -161,6 +161,70 @@ export const normalizeMessageAlternation = (
   return out;
 };
 
+/**
+ * Downgrade every `image` content block to a text placeholder when the target
+ * model cannot accept image input. Text-only providers (e.g. MiniMax-M3) reject
+ * a request that carries an image block outright — MiniMax 400s with
+ * `invalid params (2013)` — and once such a block is in a session's history
+ * every following turn re-sends it, wedging the session forever.
+ *
+ * Images reach a text-only model by two routes:
+ *  1. A user-message attachment. `prepareAttachmentContent` already downgrades
+ *     these at prepare time when `supportsImageInput` is false.
+ *  2. A tool result (`attachment_fetch` in image mode, a `doc_read` image page)
+ *     that inlines `{ type: 'image', data }` on a LIVE turn — where the
+ *     attachment-prepare downgrade never runs. This is the gap that wedged
+ *     Somiko's session after the key swap moved it onto text-only MiniMax-M3.
+ *
+ * Applying this on the wire payload closes route 2 (and re-covers route 1 for
+ * reconstructed history). REQUEST-ONLY: callers run it after the live-state
+ * write-back, so the persisted history keeps the original image bytes — moving
+ * the agent back to a multimodal model restores full fidelity, and a session
+ * that already baked an image into its stored history auto-unwedges on its next
+ * turn without any DB surgery. Same contract as `normalizeMessageAlternation`.
+ *
+ * Returns the input array unchanged (same reference) when the model is
+ * multimodal or no image block is present.
+ */
+export const downgradeImagesForTextModel = (
+  messages: AgentMessage[],
+  supportsImageInput: boolean,
+): AgentMessage[] => {
+  if (supportsImageInput) return messages;
+
+  let changed = false;
+  const out = messages.map((message) => {
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) return message;
+
+    let blockChanged = false;
+    const nextContent = content.map((block) => {
+      if (
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'image'
+      ) {
+        blockChanged = true;
+        const mime = (block as { mimeType?: unknown }).mimeType;
+        const label = typeof mime === 'string' && mime ? ` (${mime})` : '';
+        return {
+          type: 'text' as const,
+          text:
+            `[image omitted${label}: an image was here, but the active model is ` +
+            'text-only and cannot view images. Switch to a multimodal model to see it.]',
+        };
+      }
+      return block;
+    });
+
+    if (!blockChanged) return message;
+    changed = true;
+    return { ...message, content: nextContent } as AgentMessage;
+  });
+
+  return changed ? out : messages;
+};
+
 // Innermost pair only: body may not contain another reasoning open tag. Used
 // iteratively so nested same-name tags do not leave residual close markup.
 const REASONING_INNERMOST_RE =
