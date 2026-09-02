@@ -71,6 +71,25 @@ const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
 } as Model<any>);
 
 const LOCAL_MODELS: Record<string, Model<any>> = {
+  // Confidential Google EAP model served ONLY by the Interactions API
+  // (/v1beta/interactions) with client-side tool_search. The 'google-interactions'
+  // api value routes it through the dedicated adapter in
+  // providers/google-interactions-tool-retrieval.ts instead of pi-ai's
+  // generateContent path (issue #262). Secrets: GEMINI_API_KEY / GOOGLE_API_KEY.
+  // The EAP endpoint host is NOT public — it must be supplied per deployment
+  // via config.model.base_url or GOOGLE_INTERACTIONS_BASE_URL; the adapter
+  // refuses to guess.
+  'google/gemini-flash-tool-retrieval': {
+    id: 'gemini-flash-tool-retrieval',
+    name: 'Gemini Flash (Tool Retrieval EAP)',
+    api: 'google-interactions',
+    provider: 'google',
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 8192,
+  } as Model<any>,
   'minimax/MiniMax-M3': minimaxM3('minimax', 'https://api.minimax.io/anthropic'),
   'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
   // OpenRouter routes MiniMax under the lowercase, slashed id and an

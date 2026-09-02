@@ -85,6 +85,11 @@ import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution
 import { buildUserFacingModelError } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import {
+  createAmikoToolRetrievalToolset,
+  isToolRetrievalModel,
+  withGoogleInteractionsToolRetrieval,
+} from './providers/google-interactions-tool-retrieval.js';
+import {
   awaitTriggeredTurn,
   surfaceRunError,
 } from './agent-runner/scheduled-turn.js';
@@ -2343,6 +2348,23 @@ export class AgentRunner implements SessionRuntime {
       }
 
       tools = toolsFromToolsets(toolsets);
+
+      // Gemini Tool Retrieval models (api: 'google-interactions') must NOT
+      // receive the full OpenHermit toolset — the whole point of tool_search
+      // is a search-gated catalog. Replace the built-in toolsets with the
+      // curated Amiko CLI catalog toolset (tool_search + catalog tools).
+      // Approval wrapping and the policy filter below still apply.
+      let isRetrievalModel = false;
+      try {
+        isRetrievalModel = isToolRetrievalModel(resolveModel(input.config));
+      } catch {
+        isRetrievalModel = false;
+      }
+      if (isRetrievalModel) {
+        const amikoToolset = wrapToolset(createAmikoToolRetrievalToolset());
+        toolsets = [amikoToolset];
+        tools = toolsFromToolsets(toolsets);
+      }
     }
 
     const principal = buildPrincipal(this.scope.agentId, input.userId, input.userRole);
@@ -2563,9 +2585,14 @@ export class AgentRunner implements SessionRuntime {
     const systemPrompt = input.extraSystemPrompt
       ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
       : baseSystemPrompt;
+    // Tool-retrieval models are re-routed to the Google Interactions API by
+    // the outermost wrapper; every other model passes through untouched.
+    // Langfuse still wraps the whole chain so those turns are traced too.
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
-      withOpenRouterAttribution(withAmikoTwinAttribution(this.options.streamFn)),
+      withGoogleInteractionsToolRetrieval(
+        withOpenRouterAttribution(withAmikoTwinAttribution(this.options.streamFn)),
+      ),
       input.langfuseTurnContext ?? { currentTrace: undefined },
     );
 
