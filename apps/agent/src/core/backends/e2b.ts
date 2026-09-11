@@ -167,10 +167,19 @@ class E2BExecBackend implements ExecBackend {
       }
     }
 
-    this.sandbox = await Sandbox.create(this.template, {
+    // `betaCreate` + `onTimeout: 'pause'` makes the sandbox *pause* (a
+    // resumable snapshot) when its timeout wall is reached, instead of the
+    // SDK default `'kill'` which destroys the filesystem. This is what keeps
+    // agent-installed packages and files alive across an ungraceful gateway
+    // restart/redeploy that never got to call shutdown()→pause(): the orphaned
+    // sandbox pauses at the wall rather than being killed. `autoResume` lets
+    // connect()/exec transparently wake a paused sandbox (only valid when
+    // onTimeout is 'pause').
+    this.sandbox = await Sandbox.betaCreate(this.template, {
       apiKey,
       timeoutMs: this.sandboxTimeoutMs,
       metadata: { agentId: this.context.agentId },
+      lifecycle: { onTimeout: 'pause', autoResume: true },
     });
 
     await this.sandbox.commands.run(`mkdir -p ${this.agentHome}`);
