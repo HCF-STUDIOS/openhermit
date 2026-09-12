@@ -33,6 +33,7 @@ import { CDN_BASE_URL, downloadAndDecrypt, resolveCdnUrl } from './ilink/media.j
 import { SILK_SAMPLE_RATE, silkToWav } from './ilink/silk.js';
 import { oggOpusPlaytimeMs } from './ilink/opus.js';
 import { uploadMediaToCdn, uploadVoiceToCdn } from './ilink/upload.js';
+import { sanitizeOutboundText } from './sanitize.js';
 
 /**
  * Outbound voice replies are OFF by default: iLink silently drops bot→user
@@ -194,7 +195,7 @@ export class WechatBridge implements ChannelOutbound {
     text: string,
     turnContextToken?: string,
   ): Promise<ChannelOutboundResult> {
-    const trimmed = text.trim();
+    const trimmed = sanitizeOutboundText(text);
     if (!trimmed) return { success: true };
 
     // Replies pass the token snapshotted at their turn's start so a newer
