@@ -148,6 +148,12 @@ const addUserIdToList = (existing: string[], userId: string | undefined): string
  *  normal model stream gap, so it only trips on a genuinely wedged turn. */
 const DEFAULT_TURN_WATCHDOG_MS = 10 * 60_000;
 
+/** After the watchdog aborts a presumed-wedged turn, wait this long for it to
+ *  settle. If it hasn't (the wedged await ignored the abort signal), the turn
+ *  is force-released so the serial queue unblocks without a process restart.
+ *  Only ever runs for turns the watchdog already declared wedged. */
+const TURN_FORCE_RELEASE_GRACE_MS = 60_000;
+
 /**
  * Parse `OPENHERMIT_TURN_WATCHDOG_MS`. Falls back to the default when unset or
  * malformed; `0` (or negative) explicitly disables the watchdog.
@@ -156,6 +162,17 @@ function parseTurnWatchdogMs(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_TURN_WATCHDOG_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_TURN_WATCHDOG_MS;
+  return Math.floor(parsed);
+}
+
+/**
+ * Parse `OPENHERMIT_TURN_FORCE_RELEASE_MS`. Falls back to the default when unset
+ * or malformed; `0` (or negative) disables force-release (abort-only behavior).
+ */
+function parseTurnForceReleaseMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return TURN_FORCE_RELEASE_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return TURN_FORCE_RELEASE_GRACE_MS;
   return Math.floor(parsed);
 }
 
@@ -208,6 +225,9 @@ export class AgentRunner implements SessionRuntime {
    * override with `OPENHERMIT_TURN_WATCHDOG_MS`.
    */
   private readonly turnWatchdogMs: number;
+  /** Grace after a watchdog abort before force-releasing a still-wedged turn.
+   *  Override with `OPENHERMIT_TURN_FORCE_RELEASE_MS`. */
+  private readonly turnForceReleaseMs: number;
 
   private mcpClientManager: McpClientManager | undefined;
 
@@ -235,6 +255,9 @@ export class AgentRunner implements SessionRuntime {
     this.workspace = options.workspace;
     this.scope = { agentId: options.security.agentId };
     this.turnWatchdogMs = parseTurnWatchdogMs(process.env.OPENHERMIT_TURN_WATCHDOG_MS);
+    this.turnForceReleaseMs = parseTurnForceReleaseMs(
+      process.env.OPENHERMIT_TURN_FORCE_RELEASE_MS,
+    );
     this.containerManager =
       options.containerManager
       ?? new DockerContainerManager(options.workspace, {
@@ -676,6 +699,8 @@ export class AgentRunner implements SessionRuntime {
     // Fire session.closed@v1 for every still-active session before tearing
     // down. Plugins can use this to flush session-scoped state.
     for (const sessionId of [...this.sessions.keys()]) {
+      const session = this.sessions.get(sessionId);
+      if (session) this.clearTurnWatchdog(session);
       try {
         await this.bus.emit('session.closed@v1', {
           agentId: this.scope.agentId,
@@ -1323,6 +1348,38 @@ export class AgentRunner implements SessionRuntime {
           }`,
         );
       }
+      // If the wedged await honors the abort, the turn settles and its finally
+      // clears this timer. If it doesn't (e.g. an MCP tool call that never
+      // returns), `agent.prompt()` never resolves, the serial `session.queue`
+      // stays blocked forever, and the session status is stuck `running` —
+      // previously only a process restart could recover it. Give the abort a
+      // grace period, then force-release: reset the queue + status so later
+      // messages run. Capture the wedged turn's start so we never release a
+      // newer turn (the blocked queue means none can start until we do this).
+      if (this.turnForceReleaseMs <= 0) return; // abort-only mode
+      const wedgedTurnStart = session.turnStartMs;
+      session.turnForceReleaseTimer = setTimeout(() => {
+        session.turnForceReleaseTimer = undefined;
+        if (session.status !== 'running' || session.turnStartMs !== wedgedTurnStart) {
+          return; // settled after the abort — nothing to force-release
+        }
+        this.logRuntime(
+          `turn watchdog: abort did not settle session ${session.spec.sessionId} within ` +
+            `${Math.round(this.turnForceReleaseMs / 1000)}s — force-releasing the serial queue`,
+        );
+        agentErrorsTotal.inc({ agent_id: this.scope.agentId, source: 'watchdog_force_release' });
+        session.status = 'idle';
+        session.queue = Promise.resolve();
+        void this.store.sessions
+          .updateStatus(this.scope, session.spec.sessionId, 'idle')
+          .catch((error) =>
+            this.logRuntime(
+              `turn watchdog: force-release persist idle failed for ${session.spec.sessionId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
+          );
+      }, this.turnForceReleaseMs);
     }, this.turnWatchdogMs);
   }
 
@@ -1334,6 +1391,13 @@ export class AgentRunner implements SessionRuntime {
   }
 
   private clearTurnWatchdog(session: RunnerSession): void {
+    // Cancel the post-abort grace timer first: after the watchdog fires,
+    // turnWatchdogTimer is already undefined but the force-release may be
+    // pending — if the turn then settles normally, we must not force-release.
+    if (session.turnForceReleaseTimer) {
+      clearTimeout(session.turnForceReleaseTimer);
+      session.turnForceReleaseTimer = undefined;
+    }
     if (!session.turnWatchdogTimer) return;
     clearTimeout(session.turnWatchdogTimer);
     session.turnWatchdogTimer = undefined;

@@ -64,6 +64,13 @@ export interface RunnerSession extends SessionDescriptor {
    *  the serial `session.queue`, which a hung turn would otherwise block
    *  forever. Undefined when no turn is in flight. */
   turnWatchdogTimer?: ReturnType<typeof setTimeout> | undefined;
+  /** Grace timer armed when the watchdog fires `agent.abort()`. If the wedged
+   *  await ignores the abort signal (e.g. an MCP tool call that never returns),
+   *  the turn never settles and the serial `session.queue` stays blocked
+   *  forever — previously unrecoverable without a process restart. When this
+   *  fires and the turn is still running, the session is force-released (queue
+   *  reset, status → idle) so later messages can run. Undefined otherwise. */
+  turnForceReleaseTimer?: ReturnType<typeof setTimeout> | undefined;
   /** Consecutive failed tool results in the current turn. Resets at turn
    *  start and on any successful tool result. The agent aborts the turn
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
