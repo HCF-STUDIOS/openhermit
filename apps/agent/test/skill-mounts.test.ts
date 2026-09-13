@@ -39,18 +39,50 @@ test('host backend syncSkills copies skill directories into agentHome', async (t
   assert.equal(copied, 'content');
 });
 
-test('host backend syncSkills removes stale entries', async (t) => {
+test('host backend syncSkills removes skills it previously synced', async (t) => {
   const home = await createTempDir(t, 'home-');
-  const dir = systemDir(home);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.mkdir(path.join(dir, 'old-skill'));
-  await fs.writeFile(path.join(dir, 'old-skill', 'SKILL.md'), 'stale');
+  const sourceDir = await createTempDir(t, 'source-');
+  const skillSrc = path.join(sourceDir, 'old-skill');
+  await fs.mkdir(skillSrc);
+  await fs.writeFile(path.join(skillSrc, 'SKILL.md'), 'stale');
+
+  const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
+  await backend.syncSkills([{ id: 'old-skill', sourcePath: skillSrc, source: 'system' }]);
+  await backend.syncSkills([]);
+
+  assert.deepEqual(await fs.readdir(systemDir(home)), []);
+});
+
+test('host backend syncSkills keeps directories it never synced', async (t) => {
+  const home = await createTempDir(t, 'home-');
+  const scratch = path.join(userDir(home), 'agent-scratch-skill');
+  await fs.mkdir(scratch, { recursive: true });
+  await fs.writeFile(path.join(scratch, 'SKILL.md'), 'hand-written');
 
   const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
   await backend.syncSkills([]);
 
-  const entries = await fs.readdir(dir);
-  assert.equal(entries.length, 0);
+  assert.equal(await fs.readFile(path.join(scratch, 'SKILL.md'), 'utf8'), 'hand-written');
+});
+
+test('host backend syncSkills prunes its own skill without touching a neighbour', async (t) => {
+  const home = await createTempDir(t, 'home-');
+  const sourceDir = await createTempDir(t, 'source-');
+  const skillSrc = path.join(sourceDir, 'managed-skill');
+  await fs.mkdir(skillSrc);
+  await fs.writeFile(path.join(skillSrc, 'SKILL.md'), 'managed');
+
+  const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
+  await backend.syncSkills([{ id: 'managed-skill', sourcePath: skillSrc, source: 'user' }]);
+
+  const scratch = path.join(userDir(home), 'agent-scratch-skill');
+  await fs.mkdir(scratch, { recursive: true });
+  await fs.writeFile(path.join(scratch, 'SKILL.md'), 'hand-written');
+
+  await backend.syncSkills([]);
+
+  assert.deepEqual(await fs.readdir(userDir(home)), ['agent-scratch-skill']);
+  assert.equal(await fs.readFile(path.join(scratch, 'SKILL.md'), 'utf8'), 'hand-written');
 });
 
 test('host backend syncSkills creates system dir if missing', async (t) => {
@@ -130,13 +162,21 @@ test('host backend syncSkills dispatches by source: user → user/, system → s
 
 test('host backend syncSkills removes stale entries from both source subdirs', async (t) => {
   const home = await createTempDir(t, 'home-');
-  // Pre-seed an old user skill that should be cleaned up.
-  await fs.mkdir(path.join(userDir(home), 'old-user-skill'), { recursive: true });
-  await fs.writeFile(path.join(userDir(home), 'old-user-skill', 'SKILL.md'), 'stale');
+  const sourceDir = await createTempDir(t, 'source-');
+  const sysSrc = path.join(sourceDir, 'old-system-skill');
+  const userSrc = path.join(sourceDir, 'old-user-skill');
+  for (const src of [sysSrc, userSrc]) {
+    await fs.mkdir(src);
+    await fs.writeFile(path.join(src, 'SKILL.md'), 'stale');
+  }
 
   const backend = createExecBackend({ type: 'host', id: 'host', cwd: home }, fakeContext(home));
+  await backend.syncSkills([
+    { id: 'old-system-skill', sourcePath: sysSrc, source: 'system' },
+    { id: 'old-user-skill', sourcePath: userSrc, source: 'user' },
+  ]);
   await backend.syncSkills([]);
 
-  // user/ is created and the stale entry is gone.
+  assert.deepEqual(await fs.readdir(systemDir(home)), []);
   assert.deepEqual(await fs.readdir(userDir(home)), []);
 });

@@ -5,6 +5,14 @@ import { ValidationError } from '@openhermit/shared';
 
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, E2BExecBackendConfig } from '../exec-backend.js';
 import { E2BFileBackend } from './file-backend.js';
+import {
+  buildSkillManifestReadScript,
+  buildSkillSyncCommitScript,
+  buildSkillSyncPrepareScript,
+  parseSkillManifest,
+  planSkillSync,
+  type ManagedSkillIds,
+} from './shared.js';
 import { registerExecBackend } from '../exec-backend.js';
 
 const E2B_DEFAULT_USERNAME = 'user';
@@ -262,18 +270,33 @@ class E2BExecBackend implements ExecBackend {
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.sandbox) return;
-    // Always reset both subdirs so uninstalling the last skill of a source
-    // actually clears it remotely.
-    const systemDir = `${this.agentHome}/.openhermit/skills/system`;
-    const userDir = `${this.agentHome}/.openhermit/skills/user`;
-    await this.sandbox.commands.run(
-      `rm -rf ${systemDir} ${userDir} && mkdir -p ${systemDir} ${userDir}`,
-    );
-    for (const skill of skills) {
-      const baseDir = skill.source === 'user' ? userDir : systemDir;
-      const remoteSkillDir = `${baseDir}/${skill.id}`;
+    // Prune against the manifest this backend wrote last time rather than
+    // resetting both subdirs: uninstalling the last skill of a source still
+    // clears it remotely, but a directory openhermit never synced (an agent's
+    // own scratch skill) is not collateral damage.
+    const skillsRoot = `${this.agentHome}/.openhermit/skills`;
+    const previous = await this.readSkillManifest(skillsRoot);
+    const plan = planSkillSync(skills, previous);
+
+    await this.sandbox.commands.run(buildSkillSyncPrepareScript(skillsRoot, plan));
+    for (const skill of plan.install) {
+      const remoteSkillDir = `${skillsRoot}/${skill.source}/${skill.id}`;
       await this.sandbox.files.makeDir(remoteSkillDir);
       await uploadDirToE2B(this.sandbox, skill.sourcePath, remoteSkillDir);
+    }
+    await this.sandbox.commands.run(buildSkillSyncCommitScript(skillsRoot, plan));
+  }
+
+  private async readSkillManifest(skillsRoot: string): Promise<ManagedSkillIds> {
+    if (!this.sandbox) return parseSkillManifest(null);
+    try {
+      const result = await this.sandbox.commands.run(
+        buildSkillManifestReadScript(skillsRoot),
+      );
+      return parseSkillManifest(result.stdout);
+    } catch {
+      // Unreadable manifest means "nothing is managed" — prune nothing.
+      return parseSkillManifest(null);
     }
   }
 

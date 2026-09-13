@@ -145,7 +145,8 @@ test('Tenki sessionless skill sync executes immediately without persistence hook
   );
 
   await backend.syncSkills([]);
-  assert.equal(swaps, 2);
+  // ensure(), then the manifest read and the commit that applySkillSync runs.
+  assert.equal(swaps, 3);
 });
 
 test('Tenki shutdown keeps live handle when pause fails', async () => {

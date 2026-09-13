@@ -1,47 +1,210 @@
-import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, cp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { SyncSkillEntry } from '../exec-backend.js';
 
+export type SkillSource = 'system' | 'user';
+
+const SKILL_SOURCES: readonly SkillSource[] = ['system', 'user'];
+
+/**
+ * Basename of the manifest openhermit writes next to `system/` and `user/`.
+ *
+ * It records exactly which skill directories this sync created, so the next
+ * sync can delete the ones that went away without touching anything else that
+ * happens to live under `skills/`. Agents do create directories there by hand
+ * (a scratch skill, a work-in-progress SKILL.md), and before the manifest
+ * existed every sync wiped both subdirs wholesale and took that work with it.
+ */
+export const SKILL_MANIFEST_BASENAME = '.openhermit-skills.json';
+
+interface SkillManifest {
+  version: 1;
+  managed: Record<SkillSource, string[]>;
+  updatedAt: string;
+}
+
+export type ManagedSkillIds = Record<SkillSource, string[]>;
+
+const emptyManaged = (): ManagedSkillIds => ({ system: [], user: [] });
+
+/**
+ * Read the managed-id sets out of a manifest body. Anything unreadable —
+ * missing file, truncated write, a manifest from a future version — degrades
+ * to "nothing is managed", which prunes nothing. Erring that way loses a stale
+ * skill directory; erring the other way loses the agent's files.
+ */
+export const parseSkillManifest = (raw: string | null | undefined): ManagedSkillIds => {
+  if (!raw?.trim()) return emptyManaged();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return emptyManaged();
+  }
+  const managed = (parsed as Partial<SkillManifest> | null)?.managed;
+  if (!managed || typeof managed !== 'object') return emptyManaged();
+  const out = emptyManaged();
+  for (const source of SKILL_SOURCES) {
+    const ids = (managed as Record<string, unknown>)[source];
+    if (Array.isArray(ids)) {
+      out[source] = ids.filter((id): id is string => typeof id === 'string' && id.length > 0);
+    }
+  }
+  return out;
+};
+
+export interface SkillSyncPlan {
+  /** Directories to delete: previously synced skills that are no longer desired. */
+  prune: Array<{ source: SkillSource; id: string }>;
+  /** Skills to (re)upload, deduplicated by source+id. */
+  install: SyncSkillEntry[];
+  /** Manifest body to persist once the install lands. */
+  manifest: string;
+}
+
+/**
+ * Diff the desired skill set against the previously managed one.
+ *
+ * `previous` comes from the manifest, so a directory openhermit never synced is
+ * absent from both sides of the diff and is left alone.
+ */
+export const planSkillSync = (
+  skills: SyncSkillEntry[],
+  previous: ManagedSkillIds,
+): SkillSyncPlan => {
+  const desired = new Map<SkillSource, Map<string, SyncSkillEntry>>(
+    SKILL_SOURCES.map((source) => [source, new Map<string, SyncSkillEntry>()]),
+  );
+  for (const skill of skills) {
+    desired.get(skill.source)?.set(skill.id, skill);
+  }
+
+  const prune: SkillSyncPlan['prune'] = [];
+  for (const source of SKILL_SOURCES) {
+    const keep = desired.get(source)!;
+    for (const id of previous[source] ?? []) {
+      if (!keep.has(id)) prune.push({ source, id });
+    }
+  }
+
+  const install: SyncSkillEntry[] = [];
+  for (const source of SKILL_SOURCES) {
+    for (const skill of desired.get(source)!.values()) install.push(skill);
+  }
+
+  const manifest: SkillManifest = {
+    version: 1,
+    managed: {
+      system: [...desired.get('system')!.keys()].sort(),
+      user: [...desired.get('user')!.keys()].sort(),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  return { prune, install, manifest: `${JSON.stringify(manifest, null, 2)}\n` };
+};
+
+// ── Host-side sync (host / docker backends) ──────────────────────────────
+
 /**
  * Copy enabled skills into the host-side `<skillsRoot>/{system,user}/` layout,
- * removing stale entries within each subdir. Always walks both subdirs even
- * when one is empty, so uninstalling the last skill of a source actually
- * deletes its dir contents on disk.
+ * removing the skill directories a previous sync created that are no longer
+ * enabled. Directories openhermit did not create are left in place.
  */
 export const syncSkillsToHostDir = async (
   skillsRoot: string,
   skills: SyncSkillEntry[],
 ): Promise<void> => {
-  const bySource = new Map<'system' | 'user', Map<string, string>>([
-    ['system', new Map()],
-    ['user', new Map()],
-  ]);
-  for (const s of skills) {
-    bySource.get(s.source)!.set(s.id, s.sourcePath);
+  const manifestPath = path.join(skillsRoot, SKILL_MANIFEST_BASENAME);
+  let raw: string | null = null;
+  try {
+    raw = await readFile(manifestPath, 'utf8');
+  } catch {
+    raw = null;
   }
+  const plan = planSkillSync(skills, parseSkillManifest(raw));
 
-  for (const [source, desired] of bySource) {
-    const dir = path.join(skillsRoot, source);
-    await mkdir(dir, { recursive: true });
+  for (const source of SKILL_SOURCES) {
+    await mkdir(path.join(skillsRoot, source), { recursive: true });
+  }
+  for (const { source, id } of plan.prune) {
+    await rm(path.join(skillsRoot, source, id), { recursive: true, force: true });
+  }
+  for (const skill of plan.install) {
+    const destPath = path.join(skillsRoot, skill.source, skill.id);
+    await rm(destPath, { recursive: true, force: true });
+    await cp(skill.sourcePath, destPath, { recursive: true });
+  }
+  await writeFile(manifestPath, plan.manifest, 'utf8');
+};
 
-    let existing: string[];
-    try {
-      existing = await readdir(dir);
-    } catch {
-      existing = [];
+// ── Remote sync (e2b / daytona / tenki backends) ─────────────────────────
+
+const shQuote = (value: string): string => `'${value.split("'").join(`'\\''`)}'`;
+
+const skillDirPath = (skillsRoot: string, source: SkillSource, id: string): string =>
+  `${skillsRoot}/${source}/${id}`;
+
+export const skillManifestPath = (skillsRoot: string): string =>
+  `${skillsRoot}/${SKILL_MANIFEST_BASENAME}`;
+
+/** `sh -c` body that prints the manifest, or nothing when it does not exist. */
+export const buildSkillManifestReadScript = (skillsRoot: string): string =>
+  `cat ${shQuote(skillManifestPath(skillsRoot))} 2>/dev/null || true`;
+
+/**
+ * `sh -c` body to run before uploading: create both subdirs, drop the skill
+ * directories that are no longer enabled, and clear the ones about to be
+ * re-uploaded so a shrinking skill does not keep its deleted files.
+ */
+export const buildSkillSyncPrepareScript = (
+  skillsRoot: string,
+  plan: SkillSyncPlan,
+): string => {
+  const lines = ['set -eu'];
+  lines.push(
+    `mkdir -p ${shQuote(`${skillsRoot}/system`)} ${shQuote(`${skillsRoot}/user`)}`,
+  );
+  for (const { source, id } of plan.prune) {
+    lines.push(`rm -rf ${shQuote(skillDirPath(skillsRoot, source, id))}`);
+  }
+  for (const skill of plan.install) {
+    lines.push(`rm -rf ${shQuote(skillDirPath(skillsRoot, skill.source, skill.id))}`);
+  }
+  return lines.join('\n');
+};
+
+/**
+ * `sh -c` body to run after uploading. Writes the manifest, and — when the
+ * upload went to a staging directory — swaps each staged skill into place
+ * first, so a half-finished upload never replaces a working skill.
+ */
+export const buildSkillSyncCommitScript = (
+  skillsRoot: string,
+  plan: SkillSyncPlan,
+  stageRoot?: string,
+): string => {
+  const lines = ['set -eu'];
+  if (stageRoot) {
+    lines.push(
+      `mkdir -p ${shQuote(`${skillsRoot}/system`)} ${shQuote(`${skillsRoot}/user`)}`,
+    );
+    for (const { source, id } of plan.prune) {
+      lines.push(`rm -rf ${shQuote(skillDirPath(skillsRoot, source, id))}`);
     }
-
-    for (const name of existing) {
-      if (!desired.has(name)) {
-        await rm(path.join(dir, name), { recursive: true, force: true });
-      }
-    }
-
-    for (const [id, sourcePath] of desired) {
-      const destPath = path.join(dir, id);
-      await rm(destPath, { recursive: true, force: true });
-      await cp(sourcePath, destPath, { recursive: true });
+    for (const skill of plan.install) {
+      const target = skillDirPath(skillsRoot, skill.source, skill.id);
+      lines.push(`rm -rf ${shQuote(target)}`);
+      lines.push(
+        `mv ${shQuote(skillDirPath(stageRoot, skill.source, skill.id))} ${shQuote(target)}`,
+      );
     }
   }
+  const encoded = Buffer.from(plan.manifest, 'utf8').toString('base64');
+  lines.push(
+    `printf %s ${shQuote(encoded)} | base64 -d > ${shQuote(skillManifestPath(skillsRoot))}`,
+  );
+  if (stageRoot) lines.push(`rm -rf ${shQuote(stageRoot)}`);
+  return lines.join('\n');
 };
