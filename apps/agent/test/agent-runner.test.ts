@@ -1856,3 +1856,51 @@ test('turn watchdog aborts a wedged turn so the session queue is released', asyn
     'idle',
   );
 });
+
+test('turn watchdog force-releases a turn whose wedged await ignores the abort', async (t) => {
+  const prevW = process.env.OPENHERMIT_TURN_WATCHDOG_MS;
+  const prevF = process.env.OPENHERMIT_TURN_FORCE_RELEASE_MS;
+  process.env.OPENHERMIT_TURN_WATCHDOG_MS = '80';
+  process.env.OPENHERMIT_TURN_FORCE_RELEASE_MS = '80';
+  t.after(() => {
+    if (prevW === undefined) delete process.env.OPENHERMIT_TURN_WATCHDOG_MS;
+    else process.env.OPENHERMIT_TURN_WATCHDOG_MS = prevW;
+    if (prevF === undefined) delete process.env.OPENHERMIT_TURN_FORCE_RELEASE_MS;
+    else process.env.OPENHERMIT_TURN_FORCE_RELEASE_MS = prevF;
+  });
+
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  // A stream that never yields AND never honors the abort signal — the real
+  // failure shape from a hung MCP tool call. abort() is a no-op here, so the
+  // run promise never settles; only the force-release can free the queue.
+  const unabortableStreamFn = (() =>
+    new Promise(() => {
+      /* never resolves, never listens for abort */
+    })) as unknown as StreamFn;
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: unabortableStreamFn,
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:unabortable-turn',
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage('cli:unabortable-turn', { text: 'this turn hangs and ignores abort' });
+
+  // Watchdog aborts at ~80ms (no-op), force-release fires ~80ms later and marks
+  // the session idle so the serial queue is freed — without a process restart.
+  await runner.waitForSessionIdle('cli:unabortable-turn');
+
+  const sessions = await runner.listSessions({ kind: 'cli' });
+  assert.equal(
+    sessions.find((s) => s.sessionId === 'cli:unabortable-turn')?.status,
+    'idle',
+  );
+});
