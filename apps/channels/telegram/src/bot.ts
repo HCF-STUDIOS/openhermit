@@ -4,6 +4,8 @@
  * `handleWebhookRequest` for the gateway dispatcher to call.
  */
 
+import { computeBackoffMs } from '@openhermit/shared';
+
 import { TelegramApi, type TelegramUpdate } from './telegram-api.js';
 import type { TelegramBridge } from './bridge.js';
 
@@ -15,7 +17,17 @@ export interface BotOptions {
   webhookUrl?: string;
   /** Secret expected in `X-Telegram-Bot-Api-Secret-Token`; we set this on Telegram and verify on incoming. */
   webhookSecret?: string;
+  /** Base delay after the first polling failure (ms). Doubles per consecutive failure. */
   pollingInterval?: number;
+  /**
+   * Ceiling for the exponential backoff after consecutive polling errors
+   * (ms). A persistently failing poll (e.g. a Debox bot returning "Bad
+   * Request" every call, or a revoked token) otherwise re-polls every
+   * `pollingInterval` forever — across many channels that storms the
+   * gateway. Backing off to this ceiling caps a stuck channel to one poll
+   * per interval. Defaults to 60s.
+   */
+  maxRetryDelayMs?: number;
   logger?: (message: string) => void;
   /**
    * Surface persistent polling-loop errors to the gateway so they show
@@ -43,11 +55,22 @@ export class TelegramBot {
   private running = false;
   private pollOffset: number | undefined;
   private pollAbort: AbortController | undefined;
+  /** Consecutive failed polls; drives the exponential backoff, reset on success. */
+  private consecutiveErrors = 0;
 
   constructor(private readonly options: BotOptions) {
     this.api = new TelegramApi(options.botToken);
     this.bridge = options.bridge;
     this.log = options.logger ?? ((msg: string) => console.log(`[telegram-bot] ${msg}`));
+  }
+
+  /** Exponential backoff with jitter for the current failure streak. */
+  private backoffMs(): number {
+    return computeBackoffMs(
+      this.consecutiveErrors,
+      this.options.pollingInterval ?? 1000,
+      this.options.maxRetryDelayMs ?? 60_000,
+    );
   }
 
   async start(): Promise<void> {
@@ -102,6 +125,7 @@ export class TelegramBot {
     while (this.running) {
       try {
         const updates = await this.api.getUpdates(this.pollOffset, 30, this.pollAbort.signal);
+        this.consecutiveErrors = 0;
         this.options.reportRuntimeError?.(null);
         for (const update of updates) {
           // Fire-and-forget so callback_query updates aren't blocked behind
@@ -112,11 +136,13 @@ export class TelegramBot {
       } catch (error) {
         if (!this.running) break;
         if (error instanceof DOMException && error.name === 'AbortError') break;
+        this.consecutiveErrors += 1;
+        const delay = this.backoffMs();
         const message =
           error instanceof Error ? error.message : String(error);
-        this.log(`polling error: ${message}`);
+        this.log(`polling error: ${message} (retry in ${delay}ms, streak ${this.consecutiveErrors})`);
         this.options.reportRuntimeError?.(`polling error: ${message}`);
-        await new Promise((resolve) => setTimeout(resolve, this.options.pollingInterval ?? 1000));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
