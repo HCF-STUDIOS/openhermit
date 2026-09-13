@@ -6,6 +6,8 @@
  * — only sleeping briefly on transport errors — and persist the opaque
  * `get_updates_buf` cursor between calls.
  */
+import { computeBackoffMs } from '@openhermit/shared';
+
 import { getUpdates, notifyStart, notifyStop } from './ilink/api.js';
 import type { GetUpdatesResp } from './ilink/types.js';
 import type { WechatBridge } from './bridge.js';
@@ -15,8 +17,16 @@ export interface WechatBotOptions {
   botToken: string;
   bridge: WechatBridge;
   logger?: (message: string) => void;
-  /** Retry delay after a transport failure (ms). */
+  /** Base retry delay after the first failure (ms). Doubles per consecutive failure. */
   retryDelayMs?: number;
+  /**
+   * Ceiling for the exponential backoff (ms). A dead session (errcode -14
+   * after a WeChat logout) otherwise re-polls every `retryDelayMs` forever —
+   * across many agents that becomes a request storm that saturates the
+   * gateway. Backing off to this ceiling cuts a stuck channel to one poll
+   * per interval while still recovering within it once the user re-logs in.
+   */
+  maxRetryDelayMs?: number;
   /**
    * Surface persistent runtime failures (auth/transport errors, server
    * errcodes) to the gateway so they appear in the channels list. Pass
@@ -29,13 +39,22 @@ export interface WechatBotOptions {
 export class WechatBot {
   private readonly log: (msg: string) => void;
   private readonly retryDelayMs: number;
+  private readonly maxRetryDelayMs: number;
   private running = false;
   private getUpdatesBuf = '';
+  /** Consecutive failed polls; drives the exponential backoff, reset on success. */
+  private consecutiveErrors = 0;
   private currentRun: Promise<void> | undefined;
 
   constructor(private readonly opts: WechatBotOptions) {
     this.log = opts.logger ?? ((m) => console.log(`[wechat-bot] ${m}`));
     this.retryDelayMs = opts.retryDelayMs ?? 2_000;
+    this.maxRetryDelayMs = opts.maxRetryDelayMs ?? 60_000;
+  }
+
+  /** Exponential backoff with jitter for the current failure streak. */
+  private backoffMs(): number {
+    return computeBackoffMs(this.consecutiveErrors, this.retryDelayMs, this.maxRetryDelayMs);
   }
 
   async start(): Promise<void> {
@@ -78,10 +97,12 @@ export class WechatBot {
         });
       } catch (err) {
         if (!this.running) break;
+        this.consecutiveErrors += 1;
+        const delay = this.backoffMs();
         const msg = `getUpdates failed: ${err instanceof Error ? err.message : String(err)}`;
-        this.log(msg);
+        this.log(`${msg} (retry in ${delay}ms, streak ${this.consecutiveErrors})`);
         this.opts.reportRuntimeError?.(msg);
-        await this.sleep(this.retryDelayMs);
+        await this.sleep(delay);
         continue;
       }
 
@@ -90,16 +111,19 @@ export class WechatBot {
       if (resp.get_updates_buf !== undefined) this.getUpdatesBuf = resp.get_updates_buf;
 
       if (resp.errcode && resp.errcode !== 0) {
+        this.consecutiveErrors += 1;
+        const delay = this.backoffMs();
         const msg = `getUpdates errcode=${resp.errcode} ${resp.errmsg ?? ''}`.trim();
-        this.log(msg);
+        this.log(`${msg} (retry in ${delay}ms, streak ${this.consecutiveErrors})`);
         this.opts.reportRuntimeError?.(msg);
         // -14 is documented as "session timeout" — reset cursor and retry.
         if (resp.errcode === -14) this.getUpdatesBuf = '';
-        await this.sleep(this.retryDelayMs);
+        await this.sleep(delay);
         continue;
       }
 
-      // Healthy response — clear any prior runtime error.
+      // Healthy response — clear any prior runtime error and the backoff streak.
+      this.consecutiveErrors = 0;
       this.opts.reportRuntimeError?.(null);
 
       const msgs = resp.msgs ?? [];

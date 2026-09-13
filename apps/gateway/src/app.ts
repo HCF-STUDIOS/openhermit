@@ -46,6 +46,7 @@ import {
   ConflictError,
   NotFoundError,
   OpenHermitError,
+  ServiceUnavailableError,
   UnauthorizedError,
   ValidationError,
   getErrorMessage,
@@ -111,6 +112,39 @@ const waitForAbort = async (signal: AbortSignal): Promise<void> => {
     signal.addEventListener('abort', () => resolve(), { once: true });
   });
 };
+
+/**
+ * Read-endpoint timeout: agent-config reads hit the config store / a hot
+ * runner, both of which can hang when the event loop or the DB pool is
+ * saturated (e.g. a channel-poll storm). A hung read holds the request open
+ * and, multiplied by amiko-web's polling of voice-capability/model, snowballs
+ * into an outage. Racing the read against this deadline turns a hang into a
+ * fast 503 the caller can retry. Override via OPENHERMIT_CONFIG_READ_TIMEOUT_MS.
+ */
+const CONFIG_READ_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.OPENHERMIT_CONFIG_READ_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 8_000;
+})();
+
+async function withTimeout<T>(
+  work: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new ServiceUnavailableError(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 const parseBooleanQuery = (value: string | undefined): boolean | undefined => {
   if (value === undefined) return undefined;
@@ -2080,17 +2114,27 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   app.get('/api/agents/:agentId/config', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
     await requireOwnerOrAdmin(c, agentId);
-    const runner = instances.getRunner(agentId);
-    if (runner) {
-      return c.json(await runner.security.readRawConfig());
-    }
-    // Stopped agent — read directly from the config store so admin UI can
-    // inspect/edit before the agent has ever been started.
-    if (!configStore) {
-      throw new NotFoundError(`Agent ${agentId} is not running and no config store is available.`);
-    }
-    const config = await configStore.getConfig(agentId);
-    if (!config) throw new NotFoundError(`Agent ${agentId} not found.`);
+    // Bounded so a saturated event loop / DB pool returns a fast 503 instead
+    // of hanging the request (which amiko-web polls for voice-capability,
+    // model, etc.) — see CONFIG_READ_TIMEOUT_MS.
+    const config = await withTimeout(
+      (async () => {
+        const runner = instances.getRunner(agentId);
+        if (runner) return runner.security.readRawConfig();
+        // Stopped agent — read directly from the config store so admin UI can
+        // inspect/edit before the agent has ever been started.
+        if (!configStore) {
+          throw new NotFoundError(
+            `Agent ${agentId} is not running and no config store is available.`,
+          );
+        }
+        const stored = await configStore.getConfig(agentId);
+        if (!stored) throw new NotFoundError(`Agent ${agentId} not found.`);
+        return stored;
+      })(),
+      CONFIG_READ_TIMEOUT_MS,
+      `agent ${agentId} config read`,
+    );
     return c.json(config);
   });
 
