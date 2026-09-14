@@ -6,6 +6,13 @@ import { ValidationError } from '@openhermit/shared';
 
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, TenkiExecBackendConfig } from '../exec-backend.js';
 import { ensureTenkiDirectories, TenkiFileBackend, toTenkiFsPath } from './file-backend.js';
+import {
+  buildSkillManifestReadScript,
+  buildSkillSyncCommitScript,
+  parseSkillManifest,
+  planSkillSync,
+  type ManagedSkillIds,
+} from './shared.js';
 import { registerExecBackend } from '../exec-backend.js';
 
 const TENKI_DEFAULT_USERNAME = 'tenki';
@@ -256,47 +263,49 @@ export class TenkiExecBackend implements ExecBackend {
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.session) return;
-    const skillsDir = `${this.agentHome}/.openhermit/skills`;
+    // Stage the uploads, then swap them in one skill at a time. Earlier this
+    // replaced the whole `system`/`user` pair, which also deleted directories
+    // openhermit never synced; the manifest names the ones it did sync, and
+    // only those are pruned.
+    const skillsRoot = `${this.agentHome}/.openhermit/skills`;
+    const previous = await this.readSkillManifest(skillsRoot);
+    const plan = planSkillSync(skills, previous);
+
     const nonce = randomUUID();
-    const stageDir = `${skillsDir}/.tenki-stage-${nonce}`;
-    const backupDir = `${skillsDir}/.tenki-backup-${nonce}`;
-    await ensureTenkiDirectories(this.session, [`${stageDir}/system`, `${stageDir}/user`]);
+    const stageRoot = `${skillsRoot}/.tenki-stage-${nonce}`;
+    await ensureTenkiDirectories(this.session, [`${stageRoot}/system`, `${stageRoot}/user`]);
     try {
-      for (const skill of skills) {
-        const baseDir = skill.source === 'user' ? `${stageDir}/user` : `${stageDir}/system`;
-        await uploadDirToTenki(this.session, skill.sourcePath, `${baseDir}/${skill.id}`, this.agentHome);
+      for (const skill of plan.install) {
+        await uploadDirToTenki(
+          this.session,
+          skill.sourcePath,
+          `${stageRoot}/${skill.source}/${skill.id}`,
+          this.agentHome,
+        );
       }
       const result = await this.session.run([
-        'sh', '-c',
-        `set -eu
-mkdir -p "$1" "$3"
-system_backed=0
-user_backed=0
-system_installed=0
-user_installed=0
-rollback() {
-  [ "$system_installed" -eq 0 ] || rm -rf "$1/system"
-  [ "$user_installed" -eq 0 ] || rm -rf "$1/user"
-  [ "$system_backed" -eq 0 ] || mv "$3/system" "$1/system"
-  [ "$user_backed" -eq 0 ] || mv "$3/user" "$1/user"
-}
-trap rollback EXIT
-[ ! -e "$1/system" ] || { mv "$1/system" "$3/system"; system_backed=1; }
-[ ! -e "$1/user" ] || { mv "$1/user" "$3/user"; user_backed=1; }
-mv "$2/system" "$1/system"
-system_installed=1
-mv "$2/user" "$1/user"
-user_installed=1
-trap - EXIT
-rm -rf "$2" "$3"`,
-        '--', skillsDir, stageDir, backupDir,
+        'sh', '-c', buildSkillSyncCommitScript(skillsRoot, plan, stageRoot),
       ]);
       if (result.exitCode !== 0) {
         throw new Error(`Tenki skill swap failed: ${new TextDecoder().decode(result.stderr)}`);
       }
     } catch (error) {
-      await this.session.run(['rm', '-rf', stageDir]).then(() => undefined, () => undefined);
+      await this.session.run(['rm', '-rf', stageRoot]).then(() => undefined, () => undefined);
       throw error;
+    }
+  }
+
+  private async readSkillManifest(skillsRoot: string): Promise<ManagedSkillIds> {
+    if (!this.session) return parseSkillManifest(null);
+    try {
+      const result = await this.session.run([
+        'sh', '-c', buildSkillManifestReadScript(skillsRoot),
+      ]);
+      if (result.exitCode !== 0) return parseSkillManifest(null);
+      return parseSkillManifest(new TextDecoder().decode(result.stdout));
+    } catch {
+      // Unreadable manifest means "nothing is managed" — prune nothing.
+      return parseSkillManifest(null);
     }
   }
 
