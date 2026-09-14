@@ -2113,12 +2113,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   app.get('/api/agents/:agentId/config', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    await requireOwnerOrAdmin(c, agentId);
-    // Bounded so a saturated event loop / DB pool returns a fast 503 instead
-    // of hanging the request (which amiko-web polls for voice-capability,
-    // model, etc.) — see CONFIG_READ_TIMEOUT_MS.
+    // Bounded end-to-end, INCLUDING auth. requireOwnerOrAdmin hydrates the
+    // agent and DB-checks the caller role, and the read hits the config store /
+    // hot runner — all of which hang when the DB pool is saturated. The
+    // previous version timed out only the read, so a hung auth still held the
+    // request (and a DB connection) open for ~29s+ and amiko-web's
+    // voice-capability/model polls 500'd. Racing the whole handler returns a
+    // fast 503 the caller can retry. See CONFIG_READ_TIMEOUT_MS.
     const config = await withTimeout(
       (async () => {
+        await requireOwnerOrAdmin(c, agentId);
         const runner = instances.getRunner(agentId);
         if (runner) return runner.security.readRawConfig();
         // Stopped agent — read directly from the config store so admin UI can
@@ -2133,7 +2137,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         return stored;
       })(),
       CONFIG_READ_TIMEOUT_MS,
-      `agent ${agentId} config read`,
+      `agent ${agentId} config`,
     );
     return c.json(config);
   });
