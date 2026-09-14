@@ -15,6 +15,7 @@
  * `session_list.canSend` reports true.
  */
 import type { ChannelHandle, ChannelOutbound, ChannelOutboundResult, OutboundSession } from '@openhermit/protocol';
+import { sanitizeOutboundText } from '@openhermit/shared';
 
 /** Timeout for the outbound delivery POST. */
 const DELIVERY_TIMEOUT_MS = 15_000;
@@ -54,6 +55,10 @@ export class HttpChannelOutbound implements ChannelOutbound {
     to: string;
     text: string;
   }): Promise<ChannelOutboundResult> {
+    // MiniMax models served without the OpenRouter reasoning-format compat can
+    // stream one word per line and leak reasoning wrappers as body text; reflow
+    // that into legible text before it leaves for the integrator (e.g. amiko).
+    const text = sanitizeOutboundText(params.text);
     try {
       const res = await fetch(this.cfg.outboundUrl, {
         method: 'POST',
@@ -61,7 +66,7 @@ export class HttpChannelOutbound implements ChannelOutbound {
           'Content-Type': 'application/json',
           authorization: `Bearer ${this.token}`,
         },
-        body: JSON.stringify({ sessionId: params.sessionId, to: params.to, text: params.text }),
+        body: JSON.stringify({ sessionId: params.sessionId, to: params.to, text }),
         signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
       });
       if (!res.ok) {
