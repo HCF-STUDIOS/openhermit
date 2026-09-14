@@ -88,6 +88,31 @@ const LOCAL_MODELS: Record<string, Model<any>> = {
     contextWindow: 1000000,
     maxTokens: 131072,
   } as Model<any>,
+  // DeepSeek renamed its Flash tier: `deepseek-flash` (→ DeepSeek-V4.1-Flash,
+  // now vision-capable) is the current canonical id. The old `deepseek-v4-flash`
+  // /`deepseek-v4-flash-vision-exp` are retired aliases — still accepted and
+  // served by V4.1-Flash at the Flash price, but no longer the name to use.
+  // pi-ai's registry still carries only the legacy `deepseek-v4-flash` (through
+  // 0.73.1), so add the new id locally. compat/pricing mirror pi-ai's deepseek
+  // entry; input adds `image` since V4.1-Flash is multimodal. Drop once pi-ai
+  // registers `deepseek-flash`. (`deepseek-v4-pro` is unchanged — registry-served.)
+  'deepseek/deepseek-flash': {
+    id: 'deepseek-flash',
+    name: 'DeepSeek Flash (V4.1)',
+    api: 'openai-completions',
+    provider: 'deepseek',
+    baseUrl: 'https://api.deepseek.com',
+    compat: {
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: 'deepseek',
+      reasoningEffortMap: { minimal: 'high', low: 'high', medium: 'high', high: 'high', xhigh: 'max' },
+    },
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 384000,
+  } as Model<any>,
 };
 
 export const listLocalModels = (provider: string): Model<any>[] =>
