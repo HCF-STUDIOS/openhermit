@@ -19,6 +19,8 @@ export {
 } from './silence-tokens.js';
 export type { StripSilenceResult } from './silence-tokens.js';
 
+export { sanitizeOutboundText } from './outbound-text.js';
+
 export interface JsonErrorBody {
   error: {
     code: string;
