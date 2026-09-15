@@ -35,14 +35,30 @@ const resolveMigrationsFolder = (): string => {
 let runOnce: Promise<void> | null = null;
 
 /**
- * Apply pending drizzle migrations against DATABASE_URL. Idempotent — safe to
- * call from multiple boot paths; only runs once per process.
+ * Apply pending drizzle migrations. Idempotent — safe to call from multiple
+ * boot paths; only runs once per process.
+ *
+ * Connection precedence: an explicit `databaseUrl` argument, else `DIRECT_URL`,
+ * else `DATABASE_URL`. `migrate()` runs its DDL inside a transaction and takes a
+ * migration lock, which a transaction-mode connection pooler (e.g. Supabase
+ * Supavisor on port 6543 with `pgbouncer=true`) does not support — it
+ * multiplexes backends per statement, so the lock and the DDL can land on
+ * different sessions. When runtime traffic moves to the transaction pooler,
+ * `DATABASE_URL` points at 6543; set `DIRECT_URL` to a session-mode/direct
+ * connection (port 5432) so migrations keep running on a single backend. If
+ * `DIRECT_URL` is unset (dev, or still on a session pooler) this transparently
+ * falls back to `DATABASE_URL`, so existing environments are unaffected.
  */
 export const runMigrations = async (databaseUrl?: string): Promise<void> => {
   if (runOnce) return runOnce;
   runOnce = (async () => {
-    const url = databaseUrl ?? process.env.DATABASE_URL;
-    if (!url) throw new Error('DATABASE_URL environment variable is required');
+    const url =
+      databaseUrl ?? process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+    if (!url) {
+      throw new Error(
+        'a database connection string is required (DIRECT_URL or DATABASE_URL)',
+      );
+    }
     const pool = new pg.Pool({ connectionString: url });
     try {
       const db = drizzle(pool);
