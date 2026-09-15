@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, inArray, asc } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import type { SkillStore } from '../interfaces.js';
 import type { AgentSkillRecord, SkillRecord } from '../types.js';
@@ -16,7 +17,7 @@ export class DbSkillStore implements SkillStore {
   static async open(databaseUrl?: string): Promise<DbSkillStore> {
     const url = databaseUrl ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbSkillStore(db);

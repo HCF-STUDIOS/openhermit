@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, desc, eq, lt } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import type { ApprovalRequestStore } from '../interfaces.js';
 import type {
@@ -23,7 +24,7 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
   static async open(databaseUrl?: string): Promise<DbApprovalRequestStore> {
     const url = databaseUrl ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbApprovalRequestStore(db);

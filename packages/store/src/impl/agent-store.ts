@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import type { AgentStore } from '../interfaces.js';
 import type { AgentRecord, AgentStatus } from '../types.js';
@@ -65,7 +66,7 @@ export class DbAgentStore implements AgentStore {
     if (!url) {
       throw new Error('DATABASE_URL environment variable is required');
     }
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbAgentStore(db);
