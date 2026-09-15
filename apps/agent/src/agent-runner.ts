@@ -58,6 +58,7 @@ import {
   isEmptyAssistantTurn,
   normalizeMessageAlternation,
   repairToolCallPairing,
+  repairInterleavedToolResults,
   downgradeImagesForTextModel,
   stripEmptyAssistantTurns,
   stripLeadingSpeakerTag,
@@ -3344,6 +3345,17 @@ export class AgentRunner implements SessionRuntime {
     // gets its same-role neighbours coalesced. Request-only, like the guards
     // below (never touches persisted history).
     finalMessages = repairToolCallPairing(finalMessages);
+
+    // Reorder a call-less assistant message that a tool posted (an
+    // `attachment_send` caption) between the tool results of a single preceding
+    // assistant's parallel tool calls — which splits the result run and 400s
+    // MiniMax with `invalid params (2013)`. `repairToolCallPairing` above leaves
+    // it alone (nothing is orphaned — only the order is wrong) and alternation
+    // below can't reach it (a toolResult sits between the two assistants, so
+    // they're never adjacent). Runs BEFORE alternation so the hoisted assistant
+    // gets coalesced with the following turn. Request-only, like the guards
+    // around it (never touches persisted history).
+    finalMessages = repairInterleavedToolResults(finalMessages);
 
     // Final wire-shape guard: coalesce any consecutive same-role messages so
     // the transcript strictly alternates user/assistant. Strict providers
