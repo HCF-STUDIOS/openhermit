@@ -86,6 +86,7 @@ import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution
 import { buildUserFacingModelError, classifyModelError } from './agent-runner/user-facing-error.js';
 import type { ModelErrorKind } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
+import { withStreamIdleTimeout } from './agent-runner/stream-idle-timeout.js';
 import {
   awaitTriggeredTurn,
   surfaceRunError,
@@ -2799,7 +2800,13 @@ export class AgentRunner implements SessionRuntime {
       : baseSystemPrompt;
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
-      withOpenRouterAttribution(withAmikoTwinAttribution(this.options.streamFn)),
+      // Idle timeout is innermost so it guards the raw provider stream (a
+      // hung SSE that never emits a byte) directly; the attribution wrappers
+      // only decorate headers and the langfuse wrapper only re-yields events,
+      // so a stall throws up through both as a normal, bounded turn error.
+      withOpenRouterAttribution(
+        withAmikoTwinAttribution(withStreamIdleTimeout(this.options.streamFn)),
+      ),
       input.langfuseTurnContext ?? { currentTrace: undefined },
     );
 
