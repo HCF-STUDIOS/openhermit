@@ -389,6 +389,14 @@ export const completeWithLangfuseTrace = async (
     request,
   );
 
+  // Flush the generation-create immediately (fire-and-forget, off the request
+  // critical path) so the observation lands even if the request below never
+  // completes. Without this, a hung provider stream reaches neither
+  // recordLangfuseSuccess nor recordLangfuseError — the only flush points — so
+  // the buffered create is never sent and the wedged call is invisible in
+  // Langfuse (exactly how the minimax-cn hang left no trace).
+  void flushLangfuse(langfuse);
+
   try {
     const message = await complete(model, context, options);
     return await recordLangfuseSuccess(
@@ -455,6 +463,12 @@ export const createLangfuseTracedStreamFn = (
           name: 'openhermit.llm_step',
         });
 
+    // Flush the generation-create immediately (fire-and-forget) so a request
+    // whose stream connects and then hangs — never emitting an event and never
+    // reaching finalize() — still leaves an in-progress observation. This is
+    // how the minimax-cn post-compaction hang was diagnosed as invisible.
+    void flushLangfuse(langfuse);
+
     let finalized: Promise<AssistantMessage> | undefined;
     const finalize = () => {
       if (!finalized) {
@@ -483,8 +497,20 @@ export const createLangfuseTracedStreamFn = (
 
     return {
       async *[Symbol.asyncIterator]() {
-        for await (const event of original) {
-          yield event;
+        try {
+          for await (const event of original) {
+            yield event;
+          }
+        } catch (error) {
+          // A stream that throws mid-iteration (e.g. the idle-timeout guard, or
+          // a provider error surfaced while streaming) may never have result()
+          // called on it by the consumer. Record + flush the error here so the
+          // observation is completed rather than left dangling in-progress.
+          // finalize() rejects with the same error (recordLangfuseError
+          // rethrows); swallow that — we re-throw the original below — so it
+          // doesn't surface as an unhandled rejection.
+          finalize().catch(() => {});
+          throw error;
         }
       },
       result: () => finalize(),
