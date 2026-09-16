@@ -457,16 +457,25 @@ export const runCompactionSummaryTurn = async (input: {
     ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
     : joined;
 
-  const promptParts = [
-    'Internal compaction turn:',
-    '- This is an internal runtime turn, not a user-facing reply.',
-    '- Summarize the compacted conversation below into a coherent narrative.',
-    '- Capture: key topics discussed, decisions made, important file paths or data, outstanding tasks or questions.',
-    '- Be concise but preserve important context that will help the agent continue the conversation.',
-    '- Return JSON only with key "compactionSummary".',
-    '- Do not call tools.',
-    '- Do not wrap the JSON in markdown fences.',
-  ];
+  // Fixed section template — a structured summary preserves far more actionable
+  // state than a free narrative for a coding/tool agent (mirrors pi/opencode/
+  // codex). The hard rules (verbatim fidelity, JSON envelope, "don't continue")
+  // live in the dedicated summarizer system prompt on the compaction agent.
+  const summaryTemplate = [
+    'Summarize the conversation into a SINGLE JSON object: {"compactionSummary": "<markdown>"}.',
+    'The markdown value MUST use these sections (omit one only if it is truly empty):',
+    '',
+    "## Objective — the user's overall goal and the current task",
+    '## Constraints & Preferences — standing rules and how the user wants work done',
+    '## Progress',
+    '- Done: completed work',
+    '- In progress: what is underway',
+    '- Blocked: anything stuck and why',
+    '## Key Decisions — what was decided and the reasoning',
+    '## Next Steps — concrete outstanding actions',
+    '## Relevant Files — file paths touched (read/modified) and why they matter',
+    '## Critical Context — data, values, IDs, error strings the agent must not lose verbatim',
+  ].join('\n');
 
   const userParts = [
     `Session: ${input.sessionId}`,
@@ -474,13 +483,20 @@ export const runCompactionSummaryTurn = async (input: {
 
   if (input.previousCompactionSummary) {
     userParts.push(
-      'Previous compaction summary (incorporate and update):',
-      input.previousCompactionSummary,
+      [
+        'A previous summary is provided. Produce a NEW, complete summary that SUPERSEDES it:',
+        'the old summary will be DISCARDED, so anything you do not carry forward is permanently lost.',
+        'Fold in new events, move finished work into Progress → Done, and drop what is no longer relevant.',
+        '',
+        'Previous summary:',
+        input.previousCompactionSummary,
+      ].join('\n'),
     );
   }
 
   userParts.push(
-    'Compacted messages to summarize:',
+    summaryTemplate,
+    'Conversation to summarize:',
     transcript,
   );
 

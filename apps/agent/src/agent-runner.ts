@@ -2520,6 +2520,13 @@ export class AgentRunner implements SessionRuntime {
     approvedCache?: Set<string>;
     onToolCall?: ToolCallCallback;
     extraSystemPrompt?: string;
+    /**
+     * Replace the agent's system prompt entirely instead of appending to the
+     * persona (identity/soul/rules). Used by internal utility turns — e.g.
+     * compaction — that must NOT behave like the user-facing agent. Takes
+     * precedence over `extraSystemPrompt`.
+     */
+    systemPromptOverride?: string;
     tools?: any[];
     langfuseTurnContext?: LangfuseTurnContext;
     userRole?: UserRole;
@@ -2884,9 +2891,11 @@ export class AgentRunner implements SessionRuntime {
       },
       input.customInstruction,
     );
-    const systemPrompt = input.extraSystemPrompt
-      ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
-      : baseSystemPrompt;
+    const systemPrompt = input.systemPromptOverride
+      ? input.systemPromptOverride
+      : input.extraSystemPrompt
+        ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
+        : baseSystemPrompt;
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
       // Idle timeout is innermost so it guards the raw provider stream (a
@@ -3527,15 +3536,24 @@ export class AgentRunner implements SessionRuntime {
       config,
       agentSessionId: `${sessionId}:compaction`,
       contextSessionId: sessionId,
-      extraSystemPrompt: [
-        'Internal compaction turn:',
-        '- This is an internal runtime turn, not a user-facing reply.',
-        '- Summarize the compacted conversation below into a coherent narrative.',
-        '- Capture: key topics discussed, decisions made, important file paths or data, outstanding tasks or questions.',
-        '- Be concise but preserve important context that will help the agent continue the conversation.',
-        '- Return JSON only with key "compactionSummary".',
-        '- Do not call tools.',
-        '- Do not wrap the JSON in markdown fences.',
+      // Dedicated summarizer prompt — REPLACES the persona so this internal
+      // turn can't drift into answering the user or calling tools. The section
+      // template and progressive instructions live in the user message
+      // (runCompactionSummaryTurn); these are the hard, always-on rules.
+      systemPromptOverride: [
+        'You are a context-summarization assistant embedded in an agent runtime.',
+        'Your ONLY job is to compress the conversation you are given into a structured',
+        'summary so the agent can continue seamlessly. You are NOT the agent, and this',
+        'is NOT a user-facing reply.',
+        '',
+        'Hard rules:',
+        '- Do NOT continue the conversation, answer the user, or perform the task.',
+        '- Do NOT call any tool.',
+        '- Do NOT mention the summarization or compaction process itself.',
+        '- Preserve VERBATIM: exact file paths, symbols, function/class names, commands,',
+        '  flags, error strings, IDs, URLs, and numeric values — never paraphrase these.',
+        '- Output a SINGLE JSON object with one key, "compactionSummary", whose value is',
+        '  the Markdown summary. Output nothing else, and do NOT wrap it in markdown fences.',
       ].join('\n'),
       tools: [],
       ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
