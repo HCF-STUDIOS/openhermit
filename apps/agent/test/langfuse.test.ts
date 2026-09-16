@@ -222,3 +222,80 @@ test('missing totalTokens falls back to the component sum', async () => {
 
   assert.equal((ends[0]!.usageDetails as { total: number }).total, 36);
 });
+
+// --- trace-on-start: a hung/erroring request must still leave an observation ---
+
+const makeMockLangfuse = () => {
+  const ends: Record<string, unknown>[] = [];
+  let flushCount = 0;
+  const trace: LangfuseTraceLike = {
+    generation: () => ({
+      end: (body: Record<string, unknown>) => {
+        ends.push(body);
+      },
+    }),
+    update: () => undefined,
+  };
+  const langfuse: LangfuseClientLike = {
+    trace: () => trace,
+    flushAsync: async () => {
+      flushCount += 1;
+    },
+  };
+  return { langfuse, trace, ends, flushCount: () => flushCount };
+};
+
+const model = { id: 'm', provider: 'minimax-cn', api: 'anthropic-messages' } as Model<any>;
+
+test('the generation-create is flushed at start, before the stream completes', async () => {
+  const mock = makeMockLangfuse();
+  // A stream that connects and then hangs: never yields, result never resolves.
+  const hangingBase = () =>
+    ({
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
+      result: () => new Promise<never>(() => {}),
+    } as never);
+
+  const streamFn = createLangfuseTracedStreamFn(mock.langfuse, hangingBase, {
+    currentTrace: mock.trace,
+  });
+  // Obtaining the stream runs the wrapper body (which fires the start flush)
+  // but does NOT iterate or await result() — mirroring a request that then hangs.
+  await streamFn!(model, { messages: [] }, undefined);
+  // Give the fire-and-forget flush a microtask/macrotask to be invoked.
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(mock.flushCount(), 1, 'start flush ran even though the stream never completed');
+  assert.equal(mock.ends.length, 0, 'generation not ended yet (still in-progress)');
+});
+
+test('a stream that throws mid-iteration records the error even if result() is never called', async () => {
+  const mock = makeMockLangfuse();
+  const boom = new Error('provider blew up mid-stream');
+  const throwingBase = () =>
+    ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'text_delta', delta: 'hi' } as never;
+        throw boom;
+      },
+      result: async () => {
+        throw boom;
+      },
+    } as never);
+
+  const streamFn = createLangfuseTracedStreamFn(mock.langfuse, throwingBase, {
+    currentTrace: mock.trace,
+  });
+  const stream = await streamFn!(model, { messages: [] }, undefined);
+
+  await assert.rejects(async () => {
+    for await (const _ of stream as AsyncIterable<unknown>) {
+      // drain until it throws
+    }
+  }, /provider blew up mid-stream/);
+
+  // finalize() ran from the iterator's catch, recording + flushing the error.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(mock.ends.length, 1, 'generation.end recorded on iteration error');
+  assert.deepEqual(mock.ends[0]!.output, { error: 'provider blew up mid-stream' });
+});
