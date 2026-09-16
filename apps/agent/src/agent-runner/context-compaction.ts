@@ -457,24 +457,30 @@ export const runCompactionSummaryTurn = async (input: {
     ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
     : joined;
 
-  // Fixed section template — a structured summary preserves far more actionable
-  // state than a free narrative for a coding/tool agent (mirrors pi/opencode/
-  // codex). The hard rules (verbatim fidelity, JSON envelope, "don't continue")
-  // live in the dedicated summarizer system prompt on the compaction agent.
+  // Adaptive section template. A structured summary preserves far more
+  // actionable state than a free narrative, but this agent is general-purpose
+  // (chat/social twins in group channels, media generation, scheduling — not
+  // just coding), so the template is a MENU, not a fixed form: the summarizer
+  // uses only the sections that fit the conversation. A task/coding session
+  // uses most of them; a casual chat may use only two. The task-oriented
+  // sections (Progress, Next Steps) must not be forced onto a conversation that
+  // has no task. The hard rules (verbatim fidelity, JSON envelope, "don't
+  // continue") live in the dedicated summarizer system prompt.
   const summaryTemplate = [
     'Summarize the conversation into a SINGLE JSON object: {"compactionSummary": "<markdown>"}.',
-    'The markdown value MUST use these sections (omit one only if it is truly empty):',
+    'Use ONLY the sections below that actually fit THIS conversation. A task or',
+    'coding session will use most of them; a casual, social, or open-ended chat',
+    'may need only a couple. Do NOT invent task structure (progress, blockers,',
+    'next steps) for a conversation that has none, and do NOT emit empty sections.',
     '',
-    "## Objective — the user's overall goal and the current task",
-    '## Constraints & Preferences — standing rules and how the user wants work done',
-    '## Progress',
-    '- Done: completed work',
-    '- In progress: what is underway',
-    '- Blocked: anything stuck and why',
-    '## Key Decisions — what was decided and the reasoning',
-    '## Next Steps — concrete outstanding actions',
-    '## Relevant Files — file paths touched (read/modified) and why they matter',
-    '## Critical Context — data, values, IDs, error strings the agent must not lose verbatim',
+    'Available sections:',
+    '## Overview — what this conversation is about and where it currently stands',
+    '## Participants & Relationships — who is involved (esp. in group chats) and how they relate to the user',
+    '## Key Facts & Preferences — durable facts about the user/topic and how they like things done',
+    '## Decisions — what was decided and why',
+    '## Progress — Done / In progress / Blocked (only for task-oriented work)',
+    '## Open Threads & Next Steps — anything expected to continue or awaiting follow-up',
+    '## Critical Details — data to keep exactly: names, dates, IDs, URLs, file paths, numbers, exact quotes',
   ].join('\n');
 
   const userParts = [
@@ -486,7 +492,8 @@ export const runCompactionSummaryTurn = async (input: {
       [
         'A previous summary is provided. Produce a NEW, complete summary that SUPERSEDES it:',
         'the old summary will be DISCARDED, so anything you do not carry forward is permanently lost.',
-        'Fold in new events, move finished work into Progress → Done, and drop what is no longer relevant.',
+        'Fold in what has happened since, update items whose state changed (e.g. finished work),',
+        'and drop what is no longer relevant.',
         '',
         'Previous summary:',
         input.previousCompactionSummary,
