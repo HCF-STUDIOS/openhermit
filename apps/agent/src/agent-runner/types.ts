@@ -10,6 +10,11 @@ import type { ModelErrorKind } from './user-facing-error.js';
 
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
+  /** Detaches the current `agent`'s event listener (the return of
+   *  `agent.subscribe`). Called before swapping in a rebuilt agent on
+   *  force-release, so a late-firing event from the abandoned (hung) agent
+   *  can never mutate the new turn's state. */
+  agentUnsubscribe?: () => void;
   queue: Promise<void>;
   sideEffects: Promise<void>;
   backgroundTasks: Promise<void>;
