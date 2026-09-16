@@ -5,6 +5,9 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL!,
+    // drizzle-kit (generate/push/studio) issues DDL and introspection that a
+    // transaction-mode pooler can't serve reliably; prefer a direct/session
+    // connection when one is configured, falling back to DATABASE_URL.
+    url: (process.env.DIRECT_URL ?? process.env.DATABASE_URL)!,
   },
 });
