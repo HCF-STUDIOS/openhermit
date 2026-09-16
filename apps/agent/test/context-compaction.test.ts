@@ -21,11 +21,14 @@ import {
   getContextCompactionMaxTokens,
   getContextCompactionMaxMessages,
   getContextCompactionRecentMessageCount,
+  getContextCompactionKeepRecentTokens,
   getContextCompactionSummaryMaxChars,
   DEFAULT_CONTEXT_COMPACTION_RECENT_MESSAGE_COUNT,
   DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS,
   DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS,
   DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES,
+  DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING,
+  DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS,
   runCompactionSummaryTurn,
   type CompactionDeps,
   type CompactionOptions,
@@ -497,6 +500,23 @@ test('getContextCompactionSummaryMaxChars returns default when unset', () => {
   assert.equal(getContextCompactionSummaryMaxChars({}), DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS);
 });
 
+test('getContextCompactionKeepRecentTokens returns option when set', () => {
+  assert.equal(getContextCompactionKeepRecentTokens({ contextCompactionKeepRecentTokens: 12_000 }), 12_000);
+});
+
+test('getContextCompactionKeepRecentTokens returns default when unset', () => {
+  assert.equal(getContextCompactionKeepRecentTokens({}), DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS);
+});
+
+test('compaction defaults match the token-based redesign', () => {
+  // Locks in the redesigned defaults: a 320K absolute ceiling, a 32K
+  // token-based retention target, and a message count that is a high safety
+  // net (not the primary trigger it used to be).
+  assert.equal(DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING, 320_000);
+  assert.equal(DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS, 32_000);
+  assert.equal(DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES, 500);
+});
+
 test('getContextCompactionMaxTokens returns option when explicitly set', () => {
   assert.equal(getContextCompactionMaxTokens(stubConfig, { contextCompactionMaxTokens: 5000 }), 5000);
 });
@@ -776,8 +796,8 @@ test('compactContextIfNeeded falls back to text extraction when LLM agent throws
   );
 });
 
-test('compactContextIfNeeded shrink-expand finds optimal retain count', async () => {
-  const longText = 'word '.repeat(300).trim();
+test('compactContextIfNeeded retains recent messages by token budget and summarizes the rest', async () => {
+  const longText = 'word '.repeat(300).trim(); // ~375 tokens each
   const messages = [
     makeUserMessage(longText),
     makeAssistantMessage(longText),
@@ -792,13 +812,23 @@ test('compactContextIfNeeded shrink-expand finds optimal retain count', async ()
   const deps = createStubDeps({
     options: {
       contextCompactionMaxTokens: 600,
-      contextCompactionRecentMessageCount: 8,
+      contextCompactionRecentMessageCount: 2,
+      // keepRecent is clamped to budget*0.5 (=300) here, so retention walks
+      // back only a couple of the ~375-token messages before stopping.
+      contextCompactionKeepRecentTokens: 500,
     },
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
-  assert.ok(result.length < messages.length, 'should compact some messages');
-  assert.ok(result.some((m) => m.role === 'assistant' && JSON.stringify(m.content).includes('reply')));
+  assert.ok(result.length < messages.length, 'should compact older messages');
+  assert.ok(
+    result.some((m) => m.role === 'assistant' && JSON.stringify(m.content).includes('reply')),
+    'keeps the most recent messages verbatim',
+  );
+  assert.ok(
+    result.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('Compacted earlier session history')),
+    'prepends a compaction summary for the dropped prefix',
+  );
 });
 
 test('compactContextIfNeeded returns original when compaction does not reduce tokens', async () => {
@@ -881,6 +911,9 @@ test('compactContextIfNeeded compacts when overhead pushes payload past budget',
       contextCompactionRecentMessageCount: 2,
       // 2000 tokens of overhead — easily exceeds the 1500 budget.
       fixedOverheadTokens: 2000,
+      // Small keep target so token-based retention actually drops the older
+      // ~100-token messages instead of holding all six.
+      contextCompactionKeepRecentTokens: 100,
     },
   });
 
@@ -929,6 +962,9 @@ test('compactContextIfNeeded compacts when message count exceeds threshold even 
       contextCompactionMaxTokens: 100_000,
       contextCompactionRecentMessageCount: 3,
       contextCompactionMaxMessages: 5,
+      // Tiny keep target so retention reduces the (tiny) messages once the
+      // count safety-net fires the compaction.
+      contextCompactionKeepRecentTokens: 50,
     },
   });
 
@@ -936,10 +972,10 @@ test('compactContextIfNeeded compacts when message count exceeds threshold even 
   assert.ok(result.length < messages.length, 'message-count trigger must compact');
 });
 
-test('compactContextIfNeeded enforces count cap when recentMessageCount > maxMessages', async () => {
-  // Initial retainCount (10) starts ABOVE the count cap (5). Tokens fit
-  // under budget so the token-only shrink loop would never enter — the
-  // candidate must still come back at or under the cap.
+test('compactContextIfNeeded never retains fewer than the recent-message floor', async () => {
+  // Token-based retention alone would keep ~1 message here (keepRecentTokens
+  // is tiny), but recentMessageCount is a floor — at least that many recent
+  // messages must survive verbatim.
   const messages: AgentMessage[] = [];
   for (let i = 0; i < 14; i += 1) {
     messages.push(makeUserMessage(`q${i}`));
@@ -951,15 +987,21 @@ test('compactContextIfNeeded enforces count cap when recentMessageCount > maxMes
   const deps = createStubDeps({
     options: {
       contextCompactionMaxTokens: 100_000,
-      contextCompactionRecentMessageCount: 10,
-      contextCompactionMaxMessages: 5,
+      contextCompactionRecentMessageCount: 4, // the floor
+      contextCompactionKeepRecentTokens: 1, // token target would keep ~1 msg
+      contextCompactionMaxMessages: 5, // count safety-net fires the compaction
     },
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  // Floor (4) verbatim + one leading summary block = 5; never the full 28.
   assert.ok(
-    result.length <= 5 + 1, // +1 leeway for a leading compaction summary block
-    `result kept ${result.length} retained messages, expected ≤ 6 including summary`,
+    result.length >= 4,
+    `result kept ${result.length} messages, expected ≥ the recent-message floor of 4`,
+  );
+  assert.ok(
+    result.length <= 4 + 1,
+    `result kept ${result.length} messages, expected ≤ floor + summary block`,
   );
 });
 
@@ -984,32 +1026,37 @@ test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context wi
   assert.ok(resultText.includes('[truncated:'));
 });
 
-test('compactContextIfNeeded compacts below the trigger with headroom (hysteresis)', async () => {
-  // Count-triggered compaction must land meaningfully BELOW maxMessages —
-  // landing exactly at the cap re-triggers (with another LLM summary call
-  // and marker) on the very next message once results are persisted.
-  const messages: AgentMessage[] = [];
-  for (let i = 0; i < 113; i += 1) {
-    messages.push(makeUserMessage(`note ${i}`));
-  }
+test('compactContextIfNeeded drops to the retention target and leaves token headroom', async () => {
+  // Token-triggered compaction must land meaningfully BELOW the budget so the
+  // very next message doesn't re-trigger (another LLM summary call + marker).
+  // Under token-based retention, keepRecentTokens (clamped to budget*0.5) sets
+  // that landing point.
+  const longText = 'word '.repeat(150).trim(); // ~190 tokens each
+  const messages: AgentMessage[] = Array.from({ length: 20 }, (_, i) =>
+    i % 2 === 0
+      ? makeUserMessage(`${longText} ${i}`)
+      : makeAssistantMessage(`${longText} ${i}`),
+  );
   const deps = createStubDeps({
     options: {
-      contextCompactionMaxTokens: 1_000_000,
-      contextCompactionRecentMessageCount: 6,
-      contextCompactionMaxMessages: 80,
+      contextCompactionMaxTokens: 2500,
+      contextCompactionRecentMessageCount: 2,
+      contextCompactionKeepRecentTokens: 1200,
     },
   });
 
   const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
-  // target = floor(80 * 0.75) = 60 (+1 leeway for the summary block)
+  assert.ok(result.length < messages.length, `should compact; got ${result.length}`);
+  const resultTokens = estimateAgentMessagesTokens(result);
   assert.ok(
-    result.length <= 61,
-    `compacted to ${result.length} messages — expected ≤ 61 (75% of the 80 cap + summary block)`,
+    resultTokens < 2500,
+    `compacted payload is ${resultTokens} tokens — expected below the 2500 budget`,
   );
-  // Adding a handful of new messages must NOT re-trigger.
-  const afterGrowth = result.concat(
-    Array.from({ length: 5 }, (_, i) => makeUserMessage(`new ${i}`)),
-  );
+  // Adding a couple of new messages stays within headroom → no re-trigger.
+  const afterGrowth = result.concat([
+    makeUserMessage('new one'),
+    makeAssistantMessage('new two'),
+  ]);
   const second = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
   assert.equal(second.length, afterGrowth.length, 'no re-compaction within the headroom window');
 });

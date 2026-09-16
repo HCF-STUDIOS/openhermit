@@ -17,23 +17,39 @@ export const DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS = 2_048;
 // Hard ceiling on the auto-derived compaction threshold. Without this,
 // models with huge context windows (e.g. Gemini's 1M) would only compact
 // at ~1M input tokens — single turns hit 700K+ tokens before kicking in.
-// Users with explicit `contextCompactionMaxTokens` set can still raise it.
-export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
+// The wider ecosystem compacts at ~90% of the context window (codex) or
+// window − ~16-20K (pi, opencode), but those are single-user CLIs; we run
+// an always-on multi-tenant fleet where per-turn cost and latency scale
+// with the prompt size across many agents, so we deliberately cap the
+// absolute context lower. Users with explicit `contextCompactionMaxTokens`
+// set can still raise it.
+export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 320_000;
 
-// Secondary trigger: regardless of token estimate, compact when the
-// message list grows past this count. A long history of small messages
-// (tool ping-pong, image attachments, etc.) can stay below the token
-// ceiling and never trigger compaction, leaving 400+ messages on the
-// wire — which kills prompt caching and inflates per-turn latency.
-export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 80;
+// Token-based retention target. After compaction, keep the most recent
+// messages whose estimated tokens sum to about this much verbatim, and
+// summarize everything older. Matches the ecosystem default (pi 20K,
+// codex 20K, opencode 2-15K), set a little higher because our agents are
+// tool-heavy and benefit from more recent verbatim context. This is what
+// creates hysteresis: compaction drops the live context to ~this size, so
+// it only re-triggers after the context grows back to the token budget
+// (~288K of headroom), rather than on the next message.
+export const DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS = 32_000;
 
-/**
- * Hysteresis ratio: when compaction triggers (at the token budget or the
- * message-count cap), shrink down to this fraction of the threshold so the
- * session has headroom before the next compaction. Without it, a compaction
- * that lands exactly at the cap re-triggers on the very next message.
- */
-export const COMPACTION_TARGET_RATIO = 0.75;
+// Upper bound on the retention target as a fraction of the token budget, so
+// a compaction always leaves at least this much headroom before the next one
+// (mirrors opencode clamping its recent tail to a share of usable context).
+export const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
+
+// Safety-net secondary trigger: compact if the message list ever grows past
+// this count regardless of tokens. This is NOT a primary mechanism — the
+// token budget governs normally, and no mainstream agent (pi, opencode,
+// codex) uses a message-count trigger at all. It only guards the degenerate
+// case of a very long history of tiny messages that never trips the token
+// budget. Set high enough that it effectively never fires for real sessions:
+// message count is a poor proxy for context size (the same 80 messages can
+// be ~23K or ~120K tokens depending on tool-result sizes), and a low cap
+// caused compaction thrash (re-firing every 1-2 turns) for tool-heavy agents.
+export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 500;
 
 // ── Token estimation ───────────────────────────────────────────────────
 
@@ -302,11 +318,19 @@ export interface CompactionOptions {
   contextCompactionRecentMessageCount?: number | undefined;
   contextCompactionSummaryMaxChars?: number | undefined;
   /**
-   * Secondary trigger — when the post-context message list grows past
-   * this count, compact even if the token estimate is still under
-   * budget. Default `DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES`.
+   * Safety-net secondary trigger — when the post-context message list grows
+   * past this count, compact even if the token estimate is still under
+   * budget. Guards the degenerate all-tiny-messages case only; the token
+   * budget is the primary trigger. Default
+   * `DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES`.
    */
   contextCompactionMaxMessages?: number | undefined;
+  /**
+   * Token-based retention target. After compaction, keep the most recent
+   * messages whose estimated tokens sum to ~this value verbatim; summarize
+   * the rest. Default `DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS`.
+   */
+  contextCompactionKeepRecentTokens?: number | undefined;
   /**
    * Pre-computed fixed overhead (system prompt + serialized tools) that
    * will be sent on every LLM call. Subtracted from the budget so the
@@ -359,6 +383,12 @@ export const getContextCompactionMaxMessages = (
 ): number =>
   options.contextCompactionMaxMessages
     ?? DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES;
+
+export const getContextCompactionKeepRecentTokens = (
+  options: CompactionOptions,
+): number =>
+  options.contextCompactionKeepRecentTokens
+    ?? DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS;
 
 // ── LLM compaction summary ────────────────────────────────────────────
 
@@ -597,46 +627,43 @@ export const compactContextIfNeeded = async (
     );
   };
 
-  // Hysteresis: compact DOWN TO a target below the trigger thresholds, not
-  // to the thresholds themselves. Compacting to exactly the cap leaves zero
-  // headroom — a couple of new messages re-trip the trigger, and (since the
-  // result is persisted back into the live state) the session pays another
-  // LLM summary + marker on nearly every generation. Targeting ~75% gives
-  // real headroom before the next genuine compaction.
-  const targetTokens = Math.floor(budget * COMPACTION_TARGET_RATIO);
-  // Floor at retainCountOption+1 so a small ratio can't compact below the
-  // configured recent-message retention — but never above the hard cap
-  // (recentMessageCount may legitimately exceed maxMessages in config).
-  const targetMessages = Math.min(
-    maxMessages,
-    Math.max(retainCountOption + 1, Math.floor(maxMessages * COMPACTION_TARGET_RATIO)),
+  // Retention is token-based, matching the compaction approach used across
+  // the ecosystem (pi, opencode, codex): walk backward from the newest
+  // message accumulating token estimates until we've gathered
+  // `keepRecentTokens` of recent history, and keep that tail verbatim. This
+  // is what gives hysteresis — after compacting we sit at ~keepRecentTokens
+  // and must grow by (budget − keepRecentTokens) before re-triggering — with
+  // no message-count proxy that mis-fires by ~10x depending on how large the
+  // individual tool results in the tail happen to be.
+  // Clamp the retention target to at most half the token budget so
+  // compaction always frees ≥50% of the budget as headroom, no matter how
+  // the budget is configured (opencode clamps its recent-tail the same way,
+  // to 25% of usable context). In production budget is ~320K so the 32K
+  // default stands; this only binds for small custom budgets.
+  const keepRecentTokens = Math.min(
+    getContextCompactionKeepRecentTokens(deps.options),
+    Math.floor(budget * COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO),
   );
 
-  // First pass: find the retain count without LLM summary (text-extraction only).
-  let compacted = buildCandidate(retainCount, undefined);
-
-  while (
-    (effectiveTokens(compacted) > targetTokens || compacted.length > targetMessages)
-    && retainCount > 1
-  ) {
-    retainCount -= 1;
-    compacted = buildCandidate(retainCount, undefined);
-  }
-
-  // Expansion phase: grow retainCount as long as we stay under the
-  // token target AND under the message-count target. Without the count
-  // cap, count-only triggers (lots of tiny messages well below budget)
-  // would expand right back to the full list and undo the compaction.
-  while (retainCount < messages.length) {
-    const expanded = buildCandidate(retainCount + 1, undefined);
-
-    if (effectiveTokens(expanded) > targetTokens || expanded.length > targetMessages) {
+  let accumulatedTokens = 0;
+  let tokenDrivenRetain = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    accumulatedTokens += estimateAgentMessageTokens(messages[i]!);
+    tokenDrivenRetain += 1;
+    if (accumulatedTokens >= keepRecentTokens) {
       break;
     }
-
-    retainCount += 1;
-    compacted = expanded;
   }
+
+  // Never retain fewer than the configured recent-message floor, and never
+  // more than the whole list. buildCandidate → getCompactionRetainedStartIndex
+  // then snaps the boundary back off any toolResult so a toolCall/toolResult
+  // pair is never split across the summary/verbatim boundary.
+  retainCount = Math.min(
+    messages.length,
+    Math.max(tokenDrivenRetain, retainCountOption),
+  );
+  let compacted = buildCandidate(retainCount, undefined);
 
   // Determine compacted messages for LLM summary.
   const retainedStartIndex = getCompactionRetainedStartIndex(messages, retainCount);
