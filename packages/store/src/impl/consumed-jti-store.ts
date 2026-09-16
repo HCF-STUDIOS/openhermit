@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { lt } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import * as schema from '../schema.js';
 import { consumedJtis } from '../schema.js';
@@ -23,7 +24,7 @@ export class DbConsumedJtiStore {
     if (!url) {
       throw new Error('DATABASE_URL environment variable is required');
     }
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbConsumedJtiStore(db);

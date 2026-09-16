@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, ne, desc, sql } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 import type { MetadataValue, SessionStatus, SessionType } from '@openhermit/protocol';
 
 import type { SessionStore } from '../interfaces.js';
@@ -19,7 +20,7 @@ export class DbSessionStore implements SessionStore {
     if (!url) {
       throw new Error('DATABASE_URL environment variable is required');
     }
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbSessionStore(db);

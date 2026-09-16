@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, desc, isNull, sql } from 'drizzle-orm';
-import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import type { ScheduleStore } from '../interfaces.js';
 import type {
@@ -27,7 +27,7 @@ export class DbScheduleStore implements ScheduleStore {
   static async open(databaseUrl?: string): Promise<DbScheduleStore> {
     const url = databaseUrl ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     return new DbScheduleStore(db);

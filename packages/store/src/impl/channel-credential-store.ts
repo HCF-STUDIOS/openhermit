@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, asc, eq } from 'drizzle-orm';
 import type { ChannelCredentialStore } from '@openhermit/protocol';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import * as schema from '../schema.js';
 import { agentChannelCredentials } from '../schema.js';
@@ -23,7 +24,7 @@ export class DbChannelCredentialStore {
   static async open(databaseUrl?: string): Promise<DbChannelCredentialStore> {
     const url = databaseUrl ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     try {
       await pool.query('SELECT 1');
       const db = drizzle(pool, { schema });

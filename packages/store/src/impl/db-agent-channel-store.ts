@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import pg from 'pg';
+import { createStorePool } from './pool.js';
 
 import * as schema from '../schema.js';
 import { agentChannels } from '../schema.js';
@@ -85,7 +86,7 @@ export class DbAgentChannelStore {
   static async open(databaseUrl?: string): Promise<DbAgentChannelStore> {
     const url = databaseUrl ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL environment variable is required');
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = createStorePool(url);
     await pool.query('SELECT 1');
     const db = drizzle(pool, { schema });
     const store = new DbAgentChannelStore(db, secretsKeyFromEnv());
