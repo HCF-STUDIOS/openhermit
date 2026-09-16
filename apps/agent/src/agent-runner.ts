@@ -875,21 +875,7 @@ export class AgentRunner implements SessionRuntime {
       resolvedUserName,
       resolvedChannel,
       resolvedChannelUserId,
-      async (ctx) => {
-        if (!session) return undefined;
-        if (ctx.isError) {
-          session.consecutiveToolFailures += 1;
-          if (session.consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
-            this.logRuntime(
-              `session ${session.spec.sessionId}: aborting turn after ${session.consecutiveToolFailures} consecutive tool failures`,
-            );
-            session.agent.abort();
-          }
-        } else {
-          session.consecutiveToolFailures = 0;
-        }
-        return undefined;
-      },
+      async (ctx) => (session ? this.makeAfterToolCallHook(session)(ctx) : undefined),
     );
     session = {
       spec: effectiveSpec,
@@ -924,7 +910,7 @@ export class AgentRunner implements SessionRuntime {
       ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
     };
 
-    agent.subscribe((event) => {
+    session.agentUnsubscribe = agent.subscribe((event) => {
       this.handleAgentEvent(session, event);
     });
 
@@ -1371,16 +1357,36 @@ export class AgentRunner implements SessionRuntime {
         );
         agentErrorsTotal.inc({ agent_id: this.scope.agentId, source: 'watchdog_force_release' });
         session.status = 'idle';
-        session.queue = Promise.resolve();
-        void this.store.sessions
-          .updateStatus(this.scope, session.spec.sessionId, 'idle')
-          .catch((error) =>
-            this.logRuntime(
-              `turn watchdog: force-release persist idle failed for ${session.spec.sessionId}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+        // Resetting the runner queue alone is NOT enough: the wedged
+        // `agent.prompt()` never settled, so the SDK agent's `activeRun` is
+        // still set and every subsequent `prompt()` throws "Agent is already
+        // processing a prompt" — the wedge would survive the force-release and
+        // even `/new`. Rebuild the SDK agent (fresh, `activeRun === undefined`)
+        // so the next message runs on a healthy agent. Point `session.queue` at
+        // the rebuild itself: a message that arrives mid-rebuild then chains
+        // onto its completion (and the fresh agent) instead of racing the old
+        // one or the blocked queue. On rebuild failure we still resolve so the
+        // queue unblocks — degrading to the pre-rebuild behavior rather than
+        // wedging the queue forever.
+        const rebuilt = this.rebuildSessionAgent(session).catch((error) =>
+          this.logRuntime(
+            `turn watchdog: force-release agent rebuild failed for ${session.spec.sessionId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+        );
+        session.queue = rebuilt;
+        void rebuilt.then(() =>
+          this.store.sessions
+            .updateStatus(this.scope, session.spec.sessionId, 'idle')
+            .catch((error) =>
+              this.logRuntime(
+                `turn watchdog: force-release persist idle failed for ${session.spec.sessionId}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              ),
             ),
-          );
+        );
       }, this.turnForceReleaseMs);
     }, this.turnWatchdogMs);
   }
@@ -1403,6 +1409,65 @@ export class AgentRunner implements SessionRuntime {
     if (!session.turnWatchdogTimer) return;
     clearTimeout(session.turnWatchdogTimer);
     session.turnWatchdogTimer = undefined;
+  }
+
+  /**
+   * Replace a session's underlying SDK agent with a fresh one, preserving the
+   * conversation transcript and re-wiring events. Used by the watchdog
+   * force-release when a hung provider read has left the old agent's
+   * `activeRun` permanently set (its `prompt()` never settled and `abort()` is
+   * a no-op on a blocked socket) — the only escape short of a process restart.
+   *
+   * The old agent is deliberately abandoned, not reset: `reset()` clears the
+   * transcript but not `activeRun`, and we can't safely settle a promise that's
+   * blocked on a dead socket. Its hung promise/socket linger until GC or
+   * restart; the provider-stream idle timeout (companion PR) is what prevents
+   * the hang from recurring in the first place. We detach the old listener
+   * first so a late event from that zombie stream can never mutate the new turn.
+   */
+  private async rebuildSessionAgent(session: RunnerSession): Promise<void> {
+    const config = await this.options.security.readConfig();
+    this.ensureProviderApiKey(config.model.provider);
+
+    const isOwnerInteractive =
+      session.spec.source.interactive && session.resolvedUserRole === 'owner';
+    const approvalCallback = isOwnerInteractive
+      ? this.makeApprovalCallback(session.spec.sessionId, session.approvalGate)
+      : undefined;
+
+    // Snapshot the transcript from the wedged agent (authoritative + matches
+    // what a DB resume would rebuild); the hung turn produced no assistant
+    // reply, so nothing is lost.
+    const previousMessages = session.agent.state.messages.slice();
+
+    const freshAgent = await this.createAgent(
+      session.spec,
+      config,
+      approvalCallback,
+      this.makeToolCallCallback(session),
+      undefined,
+      session.langfuseTurnContext,
+      session.resolvedUserRole,
+      session.resolvedUserId,
+      session.resolvedUserName,
+      session.resolvedChannel,
+      session.resolvedChannelUserId,
+      this.makeAfterToolCallHook(session),
+    );
+    freshAgent.state.messages.push(...previousMessages);
+
+    // Detach the abandoned agent's listener, then wire and swap in the fresh
+    // one. Order matters: swap `session.agent` before any new prompt can run.
+    session.agentUnsubscribe?.();
+    session.agentUnsubscribe = freshAgent.subscribe((event) => {
+      this.handleAgentEvent(session, event);
+    });
+    session.agent = freshAgent;
+    // The wedged turn is over; the next message starts a clean turn.
+    session.consecutiveToolFailures = 0;
+    this.logRuntime(
+      `turn watchdog: rebuilt SDK agent for session ${session.spec.sessionId} after force-release`,
+    );
   }
 
   private scheduleIdleSummary(session: RunnerSession): void {
@@ -1936,6 +2001,29 @@ export class AgentRunner implements SessionRuntime {
       } catch {
         // Best-effort — don't break the tool call if notification fails.
       }
+    };
+  }
+
+  /**
+   * Per-tool-result hook: track consecutive failures and abort the turn once
+   * they reach {@link MAX_CONSECUTIVE_TOOL_FAILURES}, so the model can't loop
+   * forever against a broken tool. Extracted so both the session-open path and
+   * {@link rebuildSessionAgent} wire identical behavior onto the agent.
+   */
+  private makeAfterToolCallHook(session: RunnerSession): AfterToolCallHook {
+    return async (ctx) => {
+      if (ctx.isError) {
+        session.consecutiveToolFailures += 1;
+        if (session.consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          this.logRuntime(
+            `session ${session.spec.sessionId}: aborting turn after ${session.consecutiveToolFailures} consecutive tool failures`,
+          );
+          session.agent.abort();
+        }
+      } else {
+        session.consecutiveToolFailures = 0;
+      }
+      return undefined;
     };
   }
 
