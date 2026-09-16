@@ -3382,6 +3382,9 @@ export class AgentRunner implements SessionRuntime {
     // `fetch_full_history`. With the flag off this branch is not taken and the
     // compaction path below is byte-identical to before.
     let finalMessages: AgentMessage[];
+    // Whether an actual compaction was accepted this turn (drives the live-state
+    // write-back below). The rolling window is request-only and never compacts.
+    let compactionAccepted = false;
     if (rolling) {
       finalMessages = [...contextBlocks, ...windowedMessages];
     } else {
@@ -3402,7 +3405,7 @@ export class AgentRunner implements SessionRuntime {
         tools: agentState?.tools,
       });
 
-      finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
+      const compaction = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
         store: this.store,
         scope: this.scope,
         options: {
@@ -3417,6 +3420,8 @@ export class AgentRunner implements SessionRuntime {
           : undefined,
         logRuntime: (msg) => this.logRuntime(msg),
       });
+      finalMessages = compaction.messages;
+      compactionAccepted = compaction.didCompact;
     }
 
     // Persist a compaction back into the session's live state. The hook's
@@ -3435,12 +3440,11 @@ export class AgentRunner implements SessionRuntime {
     //   freshly prepended on every generation and would otherwise stack up.
     // - Mutate in place to preserve the array reference pi-ai holds, so the
     //   in-flight generation's appends land on the compacted list.
-    const didCompact = finalMessages.length !== contextBlocks.length + windowedMessages.length;
     // The rolling window is request-only: when it is active we never persist
     // the truncated view back into live state (that would drop older turns
     // the agent can still pull via `fetch_full_history`). With the flag off
     // this guard is a no-op and the write-back path is unchanged.
-    if (isMainSessionAgent && didCompact && !rolling) {
+    if (isMainSessionAgent && compactionAccepted && !rolling) {
       const liveState = this.sessions.get(sessionId)?.agent.state.messages;
       if (liveState) {
         const core = finalMessages.slice(contextBlocks.length);

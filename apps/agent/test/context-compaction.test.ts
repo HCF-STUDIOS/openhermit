@@ -268,7 +268,7 @@ test('compactContextIfNeeded returns combined when under budget', async () => {
     options: { contextCompactionMaxTokens: 100_000 },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, context, messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, context, messages, deps);
   assert.equal(result.length, 3);
 });
 
@@ -279,7 +279,7 @@ test('compactContextIfNeeded returns combined when only 1 message', async () => 
     options: { contextCompactionMaxTokens: 10 },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, context, messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, context, messages, deps);
   assert.equal(result.length, 1);
 });
 
@@ -304,7 +304,7 @@ test('compactContextIfNeeded compacts when over budget', async () => {
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   // Should have fewer messages than original.
   assert.ok(result.length < messages.length);
   // Should include the compaction summary block.
@@ -342,7 +342,7 @@ test('compactContextIfNeeded uses persisted summary when no agent factory', asyn
     createCompactionAgent: undefined,
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   const compactionBlock = result.find(
     (m) => m.role === 'user' && JSON.stringify(m.content).includes('Previously generated LLM summary'),
   );
@@ -371,7 +371,7 @@ test('compactContextIfNeeded falls back to text extraction when compaction summa
     createCompactionAgent: undefined,
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   // Should still produce a compaction block with text extraction.
   assert.ok(
     result.some(
@@ -774,7 +774,8 @@ test('compactContextIfNeeded uses LLM summary when createCompactionAgent is prov
     createCompactionAgent: async () => mockAgent as any,
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result, didCompact } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  assert.equal(didCompact, true, 'accepted compaction reports didCompact=true');
   assert.ok(
     result.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('LLM generated summary')),
   );
@@ -782,6 +783,72 @@ test('compactContextIfNeeded uses LLM summary when createCompactionAgent is prov
   // The verbatim-tail boundary returned by findRetainBoundaryEventId must be
   // forwarded to setCompactionSummary so resume can restore the recent tail.
   assert.equal(retainBoundaryPersisted, 42);
+});
+
+test('compactContextIfNeeded persists nothing and reports didCompact=false when the candidate is rejected', async () => {
+  // Over budget, so we enter compaction and run the LLM summary — but the
+  // summary is enormous, so the rebuilt candidate is NOT smaller than the
+  // original and must be rejected. A rejected candidate must leave the store
+  // untouched (no summary, no marker, no boundary lookup) so the next resume
+  // can't apply a boundary the live state never adopted.
+  const longText = 'word '.repeat(200).trim();
+  const messages = [
+    makeUserMessage(longText),
+    makeAssistantMessage(longText),
+    makeUserMessage('recent'),
+    makeAssistantMessage('reply'),
+  ];
+
+  const hugeSummary = 'x'.repeat(200_000);
+  const mockAgent = {
+    prompt: async () => {},
+    waitForIdle: async () => {},
+    state: {
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: JSON.stringify({ compactionSummary: hugeSummary }) }],
+          ...assistantDefaults,
+          timestamp: Date.now(),
+        },
+      ],
+    },
+  };
+
+  let setCalled = false;
+  let boundaryLookupCalled = false;
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 800,
+      contextCompactionRecentMessageCount: 2,
+    },
+    store: {
+      messages: {
+        getCompactionSummary: async () => undefined,
+        setCompactionSummary: async () => {
+          setCalled = true;
+        },
+        findRetainBoundaryEventId: async () => {
+          boundaryLookupCalled = true;
+          return 42;
+        },
+      },
+    } as unknown as CompactionDeps['store'],
+    createCompactionAgent: async () => mockAgent as any,
+  });
+
+  const { messages: result, didCompact } = await compactContextIfNeeded(
+    's1',
+    stubConfig,
+    [],
+    messages,
+    deps,
+  );
+
+  assert.equal(didCompact, false, 'rejected compaction must report didCompact=false');
+  assert.deepEqual(result, messages, 'returns the original context unchanged');
+  assert.equal(setCalled, false, 'no summary/marker persisted on rejection');
+  assert.equal(boundaryLookupCalled, false, 'no retain-boundary lookup on rejection');
 });
 
 test('compactContextIfNeeded falls back to text extraction when LLM agent throws', async () => {
@@ -803,7 +870,7 @@ test('compactContextIfNeeded falls back to text extraction when LLM agent throws
     createCompactionAgent: async () => { throw new Error('model unavailable'); },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   assert.ok(result.length < messages.length, 'should compact');
   assert.ok(
     result.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('Compacted earlier session history')),
@@ -833,7 +900,7 @@ test('compactContextIfNeeded retains recent messages by token budget and summari
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   assert.ok(result.length < messages.length, 'should compact older messages');
   assert.ok(
     result.some((m) => m.role === 'assistant' && JSON.stringify(m.content).includes('reply')),
@@ -859,7 +926,7 @@ test('compactContextIfNeeded returns original when compaction does not reduce to
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   // When compacted >= original, should return original combined
   assert.ok(result.length >= 2);
 });
@@ -936,7 +1003,7 @@ test('compactContextIfNeeded counts overhead in the trigger decision', async () 
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   assert.ok(result.length < messages.length, 'overhead must be counted and trigger compaction');
 });
 
@@ -951,7 +1018,7 @@ test('compactContextIfNeeded skips compaction when overhead absent and messages 
       contextCompactionRecentMessageCount: 2,
     },
   });
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   assert.equal(result.length, messages.length);
 });
 
@@ -976,7 +1043,7 @@ test('compactContextIfNeeded never retains fewer than the recent-message floor',
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   // Floor (4) verbatim + one leading summary block = 5; never the full 28.
   assert.ok(
     result.length >= 4,
@@ -1051,7 +1118,7 @@ test('compactContextIfNeeded drops to the retention target and leaves token head
     },
   });
 
-  const result = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+  const { messages: result } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
   assert.ok(result.length < messages.length, `should compact; got ${result.length}`);
   const resultTokens = estimateAgentMessagesTokens(result);
   assert.ok(
@@ -1063,7 +1130,7 @@ test('compactContextIfNeeded drops to the retention target and leaves token head
     makeUserMessage('new one'),
     makeAssistantMessage('new two'),
   ]);
-  const second = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
+  const { messages: second } = await compactContextIfNeeded('s1', stubConfig, [], afterGrowth, deps);
   assert.equal(second.length, afterGrowth.length, 'no re-compaction within the headroom window');
 });
 

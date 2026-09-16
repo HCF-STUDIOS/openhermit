@@ -590,13 +590,26 @@ export interface CompactionDeps {
   logRuntime: (message: string) => void;
 }
 
+export interface CompactionResult {
+  /** The context to send to the model this turn (compacted or not). */
+  messages: AgentMessage[];
+  /**
+   * True only when a compaction was actually accepted (the summary/marker were
+   * persisted and the caller should write the compacted core back into live
+   * state). A length comparison is not enough: replacing a single oversized
+   * prefix message with one summary block keeps the array length identical, so
+   * the caller would otherwise skip the write-back and re-compact every turn.
+   */
+  didCompact: boolean;
+}
+
 export const compactContextIfNeeded = async (
   sessionId: string,
   config: AgentConfig,
   contextBlocks: AgentMessage[],
   messages: AgentMessage[],
   deps: CompactionDeps,
-): Promise<AgentMessage[]> => {
+): Promise<CompactionResult> => {
   const combined = contextBlocks.concat(messages);
   const budget = getContextCompactionMaxTokens(config, deps.options);
   const overhead = deps.options.fixedOverheadTokens ?? 0;
@@ -610,7 +623,7 @@ export const compactContextIfNeeded = async (
   const overflowTokens = effectiveTokens(combined) > budget;
 
   if (messages.length <= 1 || !overflowTokens) {
-    return combined;
+    return { messages: combined, didCompact: false };
   }
 
   const retainCountOption = getContextCompactionRecentMessageCount(deps.options);
@@ -699,36 +712,11 @@ export const compactContextIfNeeded = async (
         previousCompactionSummary: previousSummary,
         createAgent: deps.createCompactionAgent,
       });
-
-      if (llmSummary) {
-        // Record a verbatim-tail boundary in the marker so the next resume
-        // restores the recent tail verbatim (not summary-only). Without this,
-        // the marker sits at the log tail and resume degrades the ~keepRecent
-        // tokens of recent history to its summarized form. Best-effort: if the
-        // boundary lookup fails, we still persist the summary (resume falls
-        // back to summary-only, i.e. today's behaviour).
-        let retainFromEventId: number | undefined;
-        try {
-          retainFromEventId = await deps.store.messages.findRetainBoundaryEventId(
-            deps.scope,
-            sessionId,
-            keepRecentTokens,
-          );
-        } catch (boundaryError) {
-          deps.logRuntime(
-            `compaction retain-boundary lookup failed, resume will be summary-only: ${String(boundaryError)}`,
-          );
-        }
-
-        // Persist for next compaction pass.
-        await deps.store.messages.setCompactionSummary(
-          deps.scope,
-          sessionId,
-          llmSummary,
-          new Date().toISOString(),
-          retainFromEventId,
-        );
-      }
+      // NOTE: persistence is deferred until AFTER the accept check below. A
+      // rejected candidate (summary bigger than the prefix it replaced) must
+      // not write a summary or a context_compaction marker — otherwise the
+      // next resume would apply a verbatim-tail boundary the live state never
+      // actually adopted.
     } catch (error) {
       deps.logRuntime(
         `compaction LLM summary failed, falling back to text extraction: ${String(error)}`,
@@ -752,14 +740,45 @@ export const compactContextIfNeeded = async (
   // Only accept the compaction if it actually reduced the token estimate.
   // A degenerate case (e.g. the summary block costing more than the tiny
   // prefix it replaced) would otherwise make the payload bigger — return
-  // the original instead.
+  // the original instead, and (crucially) persist nothing.
   if (compactedTokens >= beforeTokens) {
-    return combined;
+    return { messages: combined, didCompact: false };
+  }
+
+  // Compaction accepted. Only now persist the summary + verbatim-tail boundary,
+  // so a rejected candidate never mutates the store. The text-extraction
+  // fallback (no createCompactionAgent, or the LLM turn threw) keeps no marker,
+  // matching prior behaviour — only the LLM-summary path writes one.
+  if (llmSummary && deps.createCompactionAgent) {
+    // Record a verbatim-tail boundary in the marker so the next resume restores
+    // the recent tail verbatim (not summary-only). Best-effort: if the boundary
+    // lookup fails, we still persist the summary (resume falls back to
+    // summary-only, i.e. today's behaviour).
+    let retainFromEventId: number | undefined;
+    try {
+      retainFromEventId = await deps.store.messages.findRetainBoundaryEventId(
+        deps.scope,
+        sessionId,
+        keepRecentTokens,
+      );
+    } catch (boundaryError) {
+      deps.logRuntime(
+        `compaction retain-boundary lookup failed, resume will be summary-only: ${String(boundaryError)}`,
+      );
+    }
+
+    await deps.store.messages.setCompactionSummary(
+      deps.scope,
+      sessionId,
+      llmSummary,
+      new Date().toISOString(),
+      retainFromEventId,
+    );
   }
 
   deps.logRuntime(
     `context compacted: ${sessionId} estimated ${beforeTokens} -> ${compactedTokens} tokens, ${combined.length} -> ${compacted.length} msgs, trigger=tokens, overhead=${overhead}${llmSummary ? ' (LLM summary)' : ' (text extraction)'}`,
   );
 
-  return compacted;
+  return { messages: compacted, didCompact: true };
 };
