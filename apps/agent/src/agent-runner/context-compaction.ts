@@ -40,16 +40,14 @@ export const DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS = 32_000;
 // (mirrors opencode clamping its recent tail to a share of usable context).
 export const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
 
-// Safety-net secondary trigger: compact if the message list ever grows past
-// this count regardless of tokens. This is NOT a primary mechanism — the
-// token budget governs normally, and no mainstream agent (pi, opencode,
-// codex) uses a message-count trigger at all. It only guards the degenerate
-// case of a very long history of tiny messages that never trips the token
-// budget. Set high enough that it effectively never fires for real sessions:
-// message count is a poor proxy for context size (the same 80 messages can
-// be ~23K or ~120K tokens depending on tool-result sizes), and a low cap
-// caused compaction thrash (re-firing every 1-2 turns) for tool-heavy agents.
-export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 500;
+// Compaction triggers purely on the token budget, matching the wider
+// ecosystem (pi, opencode, codex) — none of which use a message-count
+// trigger. We used to keep a high count safety-net, but message count is a
+// poor proxy for context size (the same 80 messages can be ~23K or ~120K
+// tokens depending on tool-result sizes) and the net was redundant: a long
+// history of tiny messages eventually trips the token budget and compacts
+// there anyway, so the count trigger only ever fired as a no-op before that
+// point. Removed to keep a single, well-understood trigger.
 
 // ── Token estimation ───────────────────────────────────────────────────
 
@@ -318,14 +316,6 @@ export interface CompactionOptions {
   contextCompactionRecentMessageCount?: number | undefined;
   contextCompactionSummaryMaxChars?: number | undefined;
   /**
-   * Safety-net secondary trigger — when the post-context message list grows
-   * past this count, compact even if the token estimate is still under
-   * budget. Guards the degenerate all-tiny-messages case only; the token
-   * budget is the primary trigger. Default
-   * `DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES`.
-   */
-  contextCompactionMaxMessages?: number | undefined;
-  /**
    * Token-based retention target. After compaction, keep the most recent
    * messages whose estimated tokens sum to ~this value verbatim; summarize
    * the rest. Default `DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS`.
@@ -377,12 +367,6 @@ export const getContextCompactionSummaryMaxChars = (
 ): number =>
   options.contextCompactionSummaryMaxChars
     ?? DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS;
-
-export const getContextCompactionMaxMessages = (
-  options: CompactionOptions,
-): number =>
-  options.contextCompactionMaxMessages
-    ?? DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES;
 
 export const getContextCompactionKeepRecentTokens = (
   options: CompactionOptions,
@@ -588,7 +572,6 @@ export const compactContextIfNeeded = async (
   const combined = contextBlocks.concat(messages);
   const budget = getContextCompactionMaxTokens(config, deps.options);
   const overhead = deps.options.fixedOverheadTokens ?? 0;
-  const maxMessages = getContextCompactionMaxMessages(deps.options);
 
   // Decision sees the real wire payload: messages + system prompt +
   // tools. The previous budget-only check ignored ~20K of overhead and
@@ -597,9 +580,8 @@ export const compactContextIfNeeded = async (
     estimateAgentMessagesTokens(msgs) + overhead;
 
   const overflowTokens = effectiveTokens(combined) > budget;
-  const overflowCount = messages.length > maxMessages;
 
-  if (messages.length <= 1 || (!overflowTokens && !overflowCount)) {
+  if (messages.length <= 1 || !overflowTokens) {
     return combined;
   }
 
@@ -722,23 +704,16 @@ export const compactContextIfNeeded = async (
   const beforeTokens = estimateAgentMessagesTokens(combined);
   const compactedTokens = estimateAgentMessagesTokens(compacted);
 
-  // If compaction was triggered only by message count (tokens still
-  // under budget), accept a wash on tokens as long as message count
-  // actually shrank — the goal there is to bound list length, not
-  // tokens.
-  const tokenWin = compactedTokens < beforeTokens;
-  const countWin = compacted.length < combined.length;
-  if (!tokenWin && !countWin) {
+  // Only accept the compaction if it actually reduced the token estimate.
+  // A degenerate case (e.g. the summary block costing more than the tiny
+  // prefix it replaced) would otherwise make the payload bigger — return
+  // the original instead.
+  if (compactedTokens >= beforeTokens) {
     return combined;
   }
 
-  const reason = overflowTokens && overflowCount
-    ? 'tokens+count'
-    : overflowTokens
-      ? 'tokens'
-      : 'count';
   deps.logRuntime(
-    `context compacted: ${sessionId} estimated ${beforeTokens} -> ${compactedTokens} tokens, ${combined.length} -> ${compacted.length} msgs, trigger=${reason}, overhead=${overhead}${llmSummary ? ' (LLM summary)' : ' (text extraction)'}`,
+    `context compacted: ${sessionId} estimated ${beforeTokens} -> ${compactedTokens} tokens, ${combined.length} -> ${compacted.length} msgs, trigger=tokens, overhead=${overhead}${llmSummary ? ' (LLM summary)' : ' (text extraction)'}`,
   );
 
   return compacted;
