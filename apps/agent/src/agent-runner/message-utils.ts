@@ -262,6 +262,107 @@ export const repairToolCallPairing = (
 };
 
 /**
+ * Reorder a plain assistant message that got serialized *between* the tool
+ * results of a single preceding assistant's parallel tool calls.
+ *
+ * The anthropic-messages wire format (MiniMax's `/anthropic` endpoint) requires
+ * that once an assistant turn issues tool calls, *all* of that turn's tool
+ * results are delivered contiguously before any further assistant turn. When a
+ * tool posts its own assistant message as a side effect — the caption an
+ * `attachment_send` emits after delivering a file — and the turn fired several
+ * such tools at once, that caption lands in the middle of the result run:
+ *
+ *   assistant(toolCall A, toolCall B)
+ *   toolResult B
+ *   assistant(text)          ← illegal: splits the result run
+ *   toolResult A
+ *
+ * MiniMax 400s with `invalid params (2013)`, and because the shape is baked into
+ * the session's stored history every following turn re-sends it — the exact
+ * wedge that hit the Lucky Girl Helen session after an audio + a video
+ * attachment were sent in one turn (two `attachment_send` calls, each with its
+ * own caption).
+ *
+ * Neither existing guard fixes it: `normalizeMessageAlternation` merges only
+ * ADJACENT same-role turns, but here a `toolResult` sits between the two
+ * assistants so they are never adjacent; `repairToolCallPairing` only drops
+ * ORPHANS, but both calls do have a surviving result — only the ORDER is wrong.
+ *
+ * Repair: for each assistant that issues tool calls, gather the run of following
+ * `toolResult` messages that answer those calls, hoisting any interleaved
+ * call-less assistant messages out to *after* the result run (relative order
+ * preserved). `normalizeMessageAlternation`, which runs next, then coalesces the
+ * hoisted assistants with the following turn.
+ *
+ * REQUEST-ONLY — same contract as `repairToolCallPairing` and
+ * `normalizeMessageAlternation`: applied to the wire payload after the live-state
+ * write-back, so a session that baked the bad order in auto-unwedges on its next
+ * turn with no DB surgery. Run it AFTER `repairToolCallPairing` (so every call
+ * already has its result) and BEFORE `normalizeMessageAlternation`. Returns the
+ * input array unchanged (same reference) when no result run is interleaved.
+ */
+export const repairInterleavedToolResults = (
+  messages: AgentMessage[],
+): AgentMessage[] => {
+  const isToolResult = (m: AgentMessage): m is ToolResultMessage =>
+    (m as Message).role === 'toolResult';
+  const toolCallIdsOf = (m: AgentMessage): string[] =>
+    isAssistantMessage(m)
+      ? (m.content.filter((b) => b.type === 'toolCall') as ToolCall[]).map((c) => c.id)
+      : [];
+
+  const out: AgentMessage[] = [];
+  let changed = false;
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i]!;
+    const callIds = toolCallIdsOf(m);
+    if (callIds.length === 0) {
+      out.push(m);
+      i += 1;
+      continue;
+    }
+
+    // Assistant with tool calls: gather its result run, deferring any call-less
+    // assistant messages until we know whether another wanted result follows
+    // them (⇒ they were interleaved and must be hoisted) or not (⇒ they are the
+    // next turn and stay put).
+    const wanted = new Set(callIds);
+    const results: AgentMessage[] = [];
+    const hoisted: AgentMessage[] = [];
+    let pending: AgentMessage[] = [];
+    let j = i + 1;
+    while (j < messages.length) {
+      const mj = messages[j]!;
+      if (isToolResult(mj) && wanted.has(mj.toolCallId)) {
+        if (pending.length > 0) {
+          hoisted.push(...pending);
+          pending = [];
+          changed = true;
+        }
+        results.push(mj);
+        j += 1;
+        continue;
+      }
+      if (isAssistantMessage(mj) && toolCallIdsOf(mj).length === 0) {
+        pending.push(mj);
+        j += 1;
+        continue;
+      }
+      break;
+    }
+
+    // results first (contiguous), then the interleaved assistants we hoisted,
+    // then any trailing call-less assistants (already after the results — order
+    // unchanged for them).
+    out.push(m, ...results, ...hoisted, ...pending);
+    i = j;
+  }
+
+  return changed ? out : messages;
+};
+
+/**
  * Downgrade every `image` content block to a text placeholder when the target
  * model cannot accept image input. Text-only providers (e.g. MiniMax-M3) reject
  * a request that carries an image block outright — MiniMax 400s with

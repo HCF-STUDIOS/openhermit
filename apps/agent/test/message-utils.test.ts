@@ -17,6 +17,7 @@ import {
   flushReasoningTagStream,
   normalizeMessageAlternation,
   repairToolCallPairing,
+  repairInterleavedToolResults,
   downgradeImagesForTextModel,
 } from '../src/agent-runner/message-utils.js';
 
@@ -447,6 +448,91 @@ describe('repairToolCallPairing', () => {
     ] as AgentMessage[];
     const before = JSON.stringify(input);
     repairToolCallPairing(input);
+    assert.equal(JSON.stringify(input), before);
+  });
+});
+
+// An assistant turn that fires several tool calls at once (optionally with a
+// leading caption), mirroring Helen's `attachment_send` × 2 turn.
+const assistantCalls = (
+  calls: Array<{ id: string; name: string }>,
+  text?: string,
+): AssistantMessage =>
+  ({
+    ...assistantText(''),
+    content: [
+      ...(text ? [{ type: 'text', text }] : []),
+      ...calls.map((c) => ({ type: 'toolCall', id: c.id, name: c.name, arguments: {} })),
+    ],
+    stopReason: 'toolUse',
+  }) as AssistantMessage;
+
+describe('repairInterleavedToolResults', () => {
+  test('hoists a caption assistant wedged between two parallel tool results (Helen)', () => {
+    // Lucky Girl Helen: one turn fired attachment_send twice (audio + video),
+    // and the video call's caption serialized between the two toolResults —
+    // splitting the result run, which MiniMax 400s with `invalid params (2013)`.
+    const wedged: AgentMessage[] = [
+      assistantCalls(
+        [
+          { id: 'call_485', name: 'attachment_send' },
+          { id: 'call_6eb', name: 'attachment_send' },
+        ],
+        '🎙️ 完整混音版…仅音频',
+      ),
+      toolResult('call_6eb', 'attachment_send'), // audio
+      assistantText('🎬 朋友圈视频版…'), // ← interleaved caption
+      toolResult('call_485', 'attachment_send'), // video
+      assistantText('两份完整版都发过去了'),
+      user('音频版本…'),
+    ] as AgentMessage[];
+    const out = repairInterleavedToolResults(wedged);
+    // Both toolResults are now contiguous, ahead of the two assistant captions.
+    assert.equal(roles(out), 'ATTAAU');
+    assert.equal((out[1] as ToolResultMessage).toolCallId, 'call_6eb');
+    assert.equal((out[2] as ToolResultMessage).toolCallId, 'call_485');
+    assert.equal((out[3] as AssistantMessage).content[0]!.type, 'text');
+    // And the downstream alternation pass coalesces the two adjacent captions.
+    assert.equal(roles(normalizeMessageAlternation(out)), 'ATTAU');
+  });
+
+  test('leaves a trailing caption after the last result in place', () => {
+    // A caption that lands AFTER the whole result run is the next turn, not an
+    // interleaving — it must not be reordered.
+    const clean: AgentMessage[] = [
+      assistantCalls([
+        { id: 'call_a', name: 'attachment_send' },
+        { id: 'call_b', name: 'attachment_send' },
+      ]),
+      toolResult('call_a', 'attachment_send'),
+      toolResult('call_b', 'attachment_send'),
+      assistantText('都发好了'),
+    ] as AgentMessage[];
+    assert.equal(repairInterleavedToolResults(clean), clean); // same reference
+  });
+
+  test('is a no-op (same reference) on a single call/result pair', () => {
+    const clean: AgentMessage[] = [
+      user('hi'),
+      assistantCall('call_1', 'web_search'),
+      toolResult('call_1', 'web_search'),
+      assistantText('结果如下'),
+    ] as AgentMessage[];
+    assert.equal(repairInterleavedToolResults(clean), clean);
+  });
+
+  test('does not mutate the input messages', () => {
+    const input: AgentMessage[] = [
+      assistantCalls([
+        { id: 'call_a', name: 'x' },
+        { id: 'call_b', name: 'y' },
+      ]),
+      toolResult('call_b', 'y'),
+      assistantText('caption'),
+      toolResult('call_a', 'x'),
+    ] as AgentMessage[];
+    const before = JSON.stringify(input);
+    repairInterleavedToolResults(input);
     assert.equal(JSON.stringify(input), before);
   });
 });
