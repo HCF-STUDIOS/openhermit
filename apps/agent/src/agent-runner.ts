@@ -111,7 +111,7 @@ import {
   getContextCompactionMaxTokens,
   truncateToolResults,
 } from './agent-runner/context-compaction.js';
-import { buildToolResultPreview, persistToolResult } from './agent-runner/tool-result-persistence.js';
+import { buildToolResultPreview, persistToolResult, rehydrateRecentToolResults } from './agent-runner/tool-result-persistence.js';
 import { createWebProvider, type WebProvider } from './web/index.js';
 import { ResearchOrchestrator } from './research/index.js';
 import type { ResearchPhaseCallInput } from './research/model-phase.js';
@@ -2520,6 +2520,13 @@ export class AgentRunner implements SessionRuntime {
     approvedCache?: Set<string>;
     onToolCall?: ToolCallCallback;
     extraSystemPrompt?: string;
+    /**
+     * Replace the agent's system prompt entirely instead of appending to the
+     * persona (identity/soul/rules). Used by internal utility turns — e.g.
+     * compaction — that must NOT behave like the user-facing agent. Takes
+     * precedence over `extraSystemPrompt`.
+     */
+    systemPromptOverride?: string;
     tools?: any[];
     langfuseTurnContext?: LangfuseTurnContext;
     userRole?: UserRole;
@@ -2884,9 +2891,11 @@ export class AgentRunner implements SessionRuntime {
       },
       input.customInstruction,
     );
-    const systemPrompt = input.extraSystemPrompt
-      ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
-      : baseSystemPrompt;
+    const systemPrompt = input.systemPromptOverride
+      ? input.systemPromptOverride
+      : input.extraSystemPrompt
+        ? `${baseSystemPrompt}\n\n${input.extraSystemPrompt}`.trim()
+        : baseSystemPrompt;
     const streamFn = createLangfuseTracedStreamFn(
       this.options.langfuse,
       // Idle timeout is innermost so it guards the raw provider stream (a
@@ -3339,10 +3348,19 @@ export class AgentRunner implements SessionRuntime {
     // can't re-send one (providers 400 on empty content, stranding the session).
     const cleanedMessages = stripEmptyAssistantTurns(allMessages);
 
+    // Rehydrate the most recent tool results from disk to a larger inline
+    // preview: the just-produced outputs are what the model is actively
+    // reasoning about, so keep them near-verbatim (older results stay at the
+    // small production preview, full text always fetchable via read_file).
+    // `protectedIndices` exempts the expanded results from the truncation cap
+    // below so the larger preview survives.
+    const { messages: rehydratedMessages, protectedIndices } =
+      await rehydrateRecentToolResults(this.options.workspace, cleanedMessages);
+
     // Truncate oversized tool results before compaction so that a single
     // huge tool response cannot blow past the entire context window.
     const model = resolveModel(config);
-    const truncatedMessages = truncateToolResults(cleanedMessages, model.contextWindow);
+    const truncatedMessages = truncateToolResults(rehydratedMessages, model.contextWindow, protectedIndices);
 
     // Opt-in rolling context window (default-off). When enabled, cap the
     // per-turn context handed to the model to the last N messages (tool-pair
@@ -3364,6 +3382,9 @@ export class AgentRunner implements SessionRuntime {
     // `fetch_full_history`. With the flag off this branch is not taken and the
     // compaction path below is byte-identical to before.
     let finalMessages: AgentMessage[];
+    // Whether an actual compaction was accepted this turn (drives the live-state
+    // write-back below). The rolling window is request-only and never compacts.
+    let compactionAccepted = false;
     if (rolling) {
       finalMessages = [...contextBlocks, ...windowedMessages];
     } else {
@@ -3384,14 +3405,14 @@ export class AgentRunner implements SessionRuntime {
         tools: agentState?.tools,
       });
 
-      finalMessages = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
+      const compaction = await compactContextIfNeeded(sessionId, config, contextBlocks, windowedMessages, {
         store: this.store,
         scope: this.scope,
         options: {
           contextCompactionMaxTokens: this.options.contextCompactionMaxTokens,
           contextCompactionRecentMessageCount: this.options.contextCompactionRecentMessageCount,
           contextCompactionSummaryMaxChars: this.options.contextCompactionSummaryMaxChars,
-          contextCompactionMaxMessages: this.options.contextCompactionMaxMessages,
+          contextCompactionKeepRecentTokens: this.options.contextCompactionKeepRecentTokens,
           fixedOverheadTokens: overheadTokens,
         },
         createCompactionAgent: canRunLlmCompaction
@@ -3399,6 +3420,8 @@ export class AgentRunner implements SessionRuntime {
           : undefined,
         logRuntime: (msg) => this.logRuntime(msg),
       });
+      finalMessages = compaction.messages;
+      compactionAccepted = compaction.didCompact;
     }
 
     // Persist a compaction back into the session's live state. The hook's
@@ -3417,12 +3440,11 @@ export class AgentRunner implements SessionRuntime {
     //   freshly prepended on every generation and would otherwise stack up.
     // - Mutate in place to preserve the array reference pi-ai holds, so the
     //   in-flight generation's appends land on the compacted list.
-    const didCompact = finalMessages.length !== contextBlocks.length + windowedMessages.length;
     // The rolling window is request-only: when it is active we never persist
     // the truncated view back into live state (that would drop older turns
     // the agent can still pull via `fetch_full_history`). With the flag off
     // this guard is a no-op and the write-back path is unchanged.
-    if (isMainSessionAgent && didCompact && !rolling) {
+    if (isMainSessionAgent && compactionAccepted && !rolling) {
       const liveState = this.sessions.get(sessionId)?.agent.state.messages;
       if (liveState) {
         const core = finalMessages.slice(contextBlocks.length);
@@ -3518,15 +3540,29 @@ export class AgentRunner implements SessionRuntime {
       config,
       agentSessionId: `${sessionId}:compaction`,
       contextSessionId: sessionId,
-      extraSystemPrompt: [
-        'Internal compaction turn:',
-        '- This is an internal runtime turn, not a user-facing reply.',
-        '- Summarize the compacted conversation below into a coherent narrative.',
-        '- Capture: key topics discussed, decisions made, important file paths or data, outstanding tasks or questions.',
-        '- Be concise but preserve important context that will help the agent continue the conversation.',
-        '- Return JSON only with key "compactionSummary".',
-        '- Do not call tools.',
-        '- Do not wrap the JSON in markdown fences.',
+      // Dedicated summarizer prompt — REPLACES the persona so this internal
+      // turn can't drift into answering the user or calling tools. The section
+      // template and progressive instructions live in the user message
+      // (runCompactionSummaryTurn); these are the hard, always-on rules.
+      systemPromptOverride: [
+        'You are a context-summarization assistant embedded in an agent runtime.',
+        'Your ONLY job is to compress the conversation you are given into a structured',
+        'summary so the agent can continue seamlessly. You are NOT the agent, and this',
+        'is NOT a user-facing reply.',
+        '',
+        'Hard rules:',
+        '- Do NOT continue the conversation, answer the user, or perform the task.',
+        '- Do NOT call any tool.',
+        '- Do NOT mention the summarization or compaction process itself.',
+        '- Adapt to the conversation: it may be a task, but it may equally be a casual,',
+        '  social, or open-ended chat — capture what actually matters for continuing it',
+        '  (who the people are, relationships, tone, personal facts and preferences),',
+        '  not just task state.',
+        '- Preserve VERBATIM any detail that must stay exact: names, dates, exact quotes,',
+        '  and identifiers — file paths, symbols, commands, error strings, IDs, URLs,',
+        '  phone numbers, and numeric values. Never paraphrase these.',
+        '- Output a SINGLE JSON object with one key, "compactionSummary", whose value is',
+        '  the Markdown summary. Output nothing else, and do NOT wrap it in markdown fences.',
       ].join('\n'),
       tools: [],
       ...(langfuseTurnContext ? { langfuseTurnContext } : {}),

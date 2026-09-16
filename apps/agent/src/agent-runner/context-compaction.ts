@@ -4,7 +4,7 @@ import type { InternalStateStore, StoreScope } from '@openhermit/store';
 import type { AgentConfig } from '../core/index.js';
 import { extractAssistantText } from './message-utils.js';
 import { resolveModel } from './model-utils.js';
-import { createHeadTailPreview } from './tool-result-persistence.js';
+import { createHeadTailPreview, RECENT_TOOL_RESULT_PREVIEW_CHARS } from './tool-result-persistence.js';
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -17,23 +17,37 @@ export const DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS = 2_048;
 // Hard ceiling on the auto-derived compaction threshold. Without this,
 // models with huge context windows (e.g. Gemini's 1M) would only compact
 // at ~1M input tokens — single turns hit 700K+ tokens before kicking in.
-// Users with explicit `contextCompactionMaxTokens` set can still raise it.
-export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 160_000;
+// The wider ecosystem compacts at ~90% of the context window (codex) or
+// window − ~16-20K (pi, opencode), but those are single-user CLIs; we run
+// an always-on multi-tenant fleet where per-turn cost and latency scale
+// with the prompt size across many agents, so we deliberately cap the
+// absolute context lower. Users with explicit `contextCompactionMaxTokens`
+// set can still raise it.
+export const DEFAULT_CONTEXT_COMPACTION_MAX_TOKENS_CEILING = 320_000;
 
-// Secondary trigger: regardless of token estimate, compact when the
-// message list grows past this count. A long history of small messages
-// (tool ping-pong, image attachments, etc.) can stay below the token
-// ceiling and never trigger compaction, leaving 400+ messages on the
-// wire — which kills prompt caching and inflates per-turn latency.
-export const DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES = 80;
+// Token-based retention target. After compaction, keep the most recent
+// messages whose estimated tokens sum to about this much verbatim, and
+// summarize everything older. Matches the ecosystem default (pi 20K,
+// codex 20K, opencode 2-15K), set a little higher because our agents are
+// tool-heavy and benefit from more recent verbatim context. This is what
+// creates hysteresis: compaction drops the live context to ~this size, so
+// it only re-triggers after the context grows back to the token budget
+// (~288K of headroom), rather than on the next message.
+export const DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS = 32_000;
 
-/**
- * Hysteresis ratio: when compaction triggers (at the token budget or the
- * message-count cap), shrink down to this fraction of the threshold so the
- * session has headroom before the next compaction. Without it, a compaction
- * that lands exactly at the cap re-triggers on the very next message.
- */
-export const COMPACTION_TARGET_RATIO = 0.75;
+// Upper bound on the retention target as a fraction of the token budget, so
+// a compaction always leaves at least this much headroom before the next one
+// (mirrors opencode clamping its recent tail to a share of usable context).
+export const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
+
+// Compaction triggers purely on the token budget, matching the wider
+// ecosystem (pi, opencode, codex) — none of which use a message-count
+// trigger. We used to keep a high count safety-net, but message count is a
+// poor proxy for context size (the same 80 messages can be ~23K or ~120K
+// tokens depending on tool-result sizes) and the net was redundant: a long
+// history of tiny messages eventually trips the token budget and compacts
+// there anyway, so the count trigger only ever fired as a no-op before that
+// point. Removed to keep a single, well-understood trigger.
 
 // ── Token estimation ───────────────────────────────────────────────────
 
@@ -156,16 +170,21 @@ export const TOOL_RESULT_MAX_CHARS_CAP = 8_000;
 export const truncateToolResults = (
   messages: AgentMessage[],
   contextWindow: number,
+  protectedIndices?: Set<number>,
 ): AgentMessage[] => {
-  const maxChars = Math.min(
-    TOOL_RESULT_MAX_CHARS_CAP,
-    Math.floor(contextWindow * TOOL_RESULT_MAX_CONTEXT_RATIO * 4), // tokens × ~4 chars/token
-  );
+  const ratioChars = Math.floor(contextWindow * TOOL_RESULT_MAX_CONTEXT_RATIO * 4); // tokens × ~4 chars/token
+  const defaultMaxChars = Math.min(TOOL_RESULT_MAX_CHARS_CAP, ratioChars);
+  // Recent tool results rehydrated from disk get a larger inline budget so the
+  // model keeps a near-verbatim view of what it just produced; still bounded by
+  // the per-call context ratio so a huge result can't blow the window.
+  const recentMaxChars = Math.min(RECENT_TOOL_RESULT_PREVIEW_CHARS, ratioChars);
 
-  return messages.map((message) => {
+  return messages.map((message, index) => {
     if (message.role !== 'toolResult') {
       return message;
     }
+
+    const maxChars = protectedIndices?.has(index) ? recentMaxChars : defaultMaxChars;
 
     const totalChars = message.content.reduce((sum, item) => {
       if (item.type === 'text') {
@@ -302,11 +321,11 @@ export interface CompactionOptions {
   contextCompactionRecentMessageCount?: number | undefined;
   contextCompactionSummaryMaxChars?: number | undefined;
   /**
-   * Secondary trigger — when the post-context message list grows past
-   * this count, compact even if the token estimate is still under
-   * budget. Default `DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES`.
+   * Token-based retention target. After compaction, keep the most recent
+   * messages whose estimated tokens sum to ~this value verbatim; summarize
+   * the rest. Default `DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS`.
    */
-  contextCompactionMaxMessages?: number | undefined;
+  contextCompactionKeepRecentTokens?: number | undefined;
   /**
    * Pre-computed fixed overhead (system prompt + serialized tools) that
    * will be sent on every LLM call. Subtracted from the budget so the
@@ -354,11 +373,11 @@ export const getContextCompactionSummaryMaxChars = (
   options.contextCompactionSummaryMaxChars
     ?? DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS;
 
-export const getContextCompactionMaxMessages = (
+export const getContextCompactionKeepRecentTokens = (
   options: CompactionOptions,
 ): number =>
-  options.contextCompactionMaxMessages
-    ?? DEFAULT_CONTEXT_COMPACTION_MAX_MESSAGES;
+  options.contextCompactionKeepRecentTokens
+    ?? DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS;
 
 // ── LLM compaction summary ────────────────────────────────────────────
 
@@ -438,16 +457,31 @@ export const runCompactionSummaryTurn = async (input: {
     ? `${joined.slice(0, 6_000)}\n… [middle omitted] …\n${joined.slice(-10_000)}`
     : joined;
 
-  const promptParts = [
-    'Internal compaction turn:',
-    '- This is an internal runtime turn, not a user-facing reply.',
-    '- Summarize the compacted conversation below into a coherent narrative.',
-    '- Capture: key topics discussed, decisions made, important file paths or data, outstanding tasks or questions.',
-    '- Be concise but preserve important context that will help the agent continue the conversation.',
-    '- Return JSON only with key "compactionSummary".',
-    '- Do not call tools.',
-    '- Do not wrap the JSON in markdown fences.',
-  ];
+  // Adaptive section template. A structured summary preserves far more
+  // actionable state than a free narrative, but this agent is general-purpose
+  // (chat/social twins in group channels, media generation, scheduling — not
+  // just coding), so the template is a MENU, not a fixed form: the summarizer
+  // uses only the sections that fit the conversation. A task/coding session
+  // uses most of them; a casual chat may use only two. The task-oriented
+  // sections (Progress, Next Steps) must not be forced onto a conversation that
+  // has no task. The hard rules (verbatim fidelity, JSON envelope, "don't
+  // continue") live in the dedicated summarizer system prompt.
+  const summaryTemplate = [
+    'Summarize the conversation into a SINGLE JSON object: {"compactionSummary": "<markdown>"}.',
+    'Use ONLY the sections below that actually fit THIS conversation. A task or',
+    'coding session will use most of them; a casual, social, or open-ended chat',
+    'may need only a couple. Do NOT invent task structure (progress, blockers,',
+    'next steps) for a conversation that has none, and do NOT emit empty sections.',
+    '',
+    'Available sections:',
+    '## Overview — what this conversation is about and where it currently stands',
+    '## Participants & Relationships — who is involved (esp. in group chats) and how they relate to the user',
+    '## Key Facts & Preferences — durable facts about the user/topic and how they like things done',
+    '## Decisions — what was decided and why',
+    '## Progress — Done / In progress / Blocked (only for task-oriented work)',
+    '## Open Threads & Next Steps — anything expected to continue or awaiting follow-up',
+    '## Critical Details — data to keep exactly: names, dates, IDs, URLs, file paths, numbers, exact quotes',
+  ].join('\n');
 
   const userParts = [
     `Session: ${input.sessionId}`,
@@ -455,13 +489,21 @@ export const runCompactionSummaryTurn = async (input: {
 
   if (input.previousCompactionSummary) {
     userParts.push(
-      'Previous compaction summary (incorporate and update):',
-      input.previousCompactionSummary,
+      [
+        'A previous summary is provided. Produce a NEW, complete summary that SUPERSEDES it:',
+        'the old summary will be DISCARDED, so anything you do not carry forward is permanently lost.',
+        'Fold in what has happened since, update items whose state changed (e.g. finished work),',
+        'and drop what is no longer relevant.',
+        '',
+        'Previous summary:',
+        input.previousCompactionSummary,
+      ].join('\n'),
     );
   }
 
   userParts.push(
-    'Compacted messages to summarize:',
+    summaryTemplate,
+    'Conversation to summarize:',
     transcript,
   );
 
@@ -548,17 +590,29 @@ export interface CompactionDeps {
   logRuntime: (message: string) => void;
 }
 
+export interface CompactionResult {
+  /** The context to send to the model this turn (compacted or not). */
+  messages: AgentMessage[];
+  /**
+   * True only when a compaction was actually accepted (the summary/marker were
+   * persisted and the caller should write the compacted core back into live
+   * state). A length comparison is not enough: replacing a single oversized
+   * prefix message with one summary block keeps the array length identical, so
+   * the caller would otherwise skip the write-back and re-compact every turn.
+   */
+  didCompact: boolean;
+}
+
 export const compactContextIfNeeded = async (
   sessionId: string,
   config: AgentConfig,
   contextBlocks: AgentMessage[],
   messages: AgentMessage[],
   deps: CompactionDeps,
-): Promise<AgentMessage[]> => {
+): Promise<CompactionResult> => {
   const combined = contextBlocks.concat(messages);
   const budget = getContextCompactionMaxTokens(config, deps.options);
   const overhead = deps.options.fixedOverheadTokens ?? 0;
-  const maxMessages = getContextCompactionMaxMessages(deps.options);
 
   // Decision sees the real wire payload: messages + system prompt +
   // tools. The previous budget-only check ignored ~20K of overhead and
@@ -567,10 +621,9 @@ export const compactContextIfNeeded = async (
     estimateAgentMessagesTokens(msgs) + overhead;
 
   const overflowTokens = effectiveTokens(combined) > budget;
-  const overflowCount = messages.length > maxMessages;
 
-  if (messages.length <= 1 || (!overflowTokens && !overflowCount)) {
-    return combined;
+  if (messages.length <= 1 || !overflowTokens) {
+    return { messages: combined, didCompact: false };
   }
 
   const retainCountOption = getContextCompactionRecentMessageCount(deps.options);
@@ -597,46 +650,43 @@ export const compactContextIfNeeded = async (
     );
   };
 
-  // Hysteresis: compact DOWN TO a target below the trigger thresholds, not
-  // to the thresholds themselves. Compacting to exactly the cap leaves zero
-  // headroom — a couple of new messages re-trip the trigger, and (since the
-  // result is persisted back into the live state) the session pays another
-  // LLM summary + marker on nearly every generation. Targeting ~75% gives
-  // real headroom before the next genuine compaction.
-  const targetTokens = Math.floor(budget * COMPACTION_TARGET_RATIO);
-  // Floor at retainCountOption+1 so a small ratio can't compact below the
-  // configured recent-message retention — but never above the hard cap
-  // (recentMessageCount may legitimately exceed maxMessages in config).
-  const targetMessages = Math.min(
-    maxMessages,
-    Math.max(retainCountOption + 1, Math.floor(maxMessages * COMPACTION_TARGET_RATIO)),
+  // Retention is token-based, matching the compaction approach used across
+  // the ecosystem (pi, opencode, codex): walk backward from the newest
+  // message accumulating token estimates until we've gathered
+  // `keepRecentTokens` of recent history, and keep that tail verbatim. This
+  // is what gives hysteresis — after compacting we sit at ~keepRecentTokens
+  // and must grow by (budget − keepRecentTokens) before re-triggering — with
+  // no message-count proxy that mis-fires by ~10x depending on how large the
+  // individual tool results in the tail happen to be.
+  // Clamp the retention target to at most half the token budget so
+  // compaction always frees ≥50% of the budget as headroom, no matter how
+  // the budget is configured (opencode clamps its recent-tail the same way,
+  // to 25% of usable context). In production budget is ~320K so the 32K
+  // default stands; this only binds for small custom budgets.
+  const keepRecentTokens = Math.min(
+    getContextCompactionKeepRecentTokens(deps.options),
+    Math.floor(budget * COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO),
   );
 
-  // First pass: find the retain count without LLM summary (text-extraction only).
-  let compacted = buildCandidate(retainCount, undefined);
-
-  while (
-    (effectiveTokens(compacted) > targetTokens || compacted.length > targetMessages)
-    && retainCount > 1
-  ) {
-    retainCount -= 1;
-    compacted = buildCandidate(retainCount, undefined);
-  }
-
-  // Expansion phase: grow retainCount as long as we stay under the
-  // token target AND under the message-count target. Without the count
-  // cap, count-only triggers (lots of tiny messages well below budget)
-  // would expand right back to the full list and undo the compaction.
-  while (retainCount < messages.length) {
-    const expanded = buildCandidate(retainCount + 1, undefined);
-
-    if (effectiveTokens(expanded) > targetTokens || expanded.length > targetMessages) {
+  let accumulatedTokens = 0;
+  let tokenDrivenRetain = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    accumulatedTokens += estimateAgentMessageTokens(messages[i]!);
+    tokenDrivenRetain += 1;
+    if (accumulatedTokens >= keepRecentTokens) {
       break;
     }
-
-    retainCount += 1;
-    compacted = expanded;
   }
+
+  // Never retain fewer than the configured recent-message floor, and never
+  // more than the whole list. buildCandidate → getCompactionRetainedStartIndex
+  // then snaps the boundary back off any toolResult so a toolCall/toolResult
+  // pair is never split across the summary/verbatim boundary.
+  retainCount = Math.min(
+    messages.length,
+    Math.max(tokenDrivenRetain, retainCountOption),
+  );
+  let compacted = buildCandidate(retainCount, undefined);
 
   // Determine compacted messages for LLM summary.
   const retainedStartIndex = getCompactionRetainedStartIndex(messages, retainCount);
@@ -650,31 +700,23 @@ export const compactContextIfNeeded = async (
       // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
-      // Summarize the FULL message list, not just the compacted prefix.
-      // setCompactionSummary appends the summary as a `context_compaction`
-      // event at the TAIL of the session log, and resume restores only the
-      // entries logged after that marker. If the summary covered only the
-      // prefix, everything logged before the marker but outside the summary
-      // — the retained recent tail and the current user turn — would be
-      // lost on the next resume (neither summarized nor restored verbatim).
-      // Covering the full list makes the marker-at-tail boundary correct;
-      // the live context still keeps the tail verbatim via `retained`.
+      // Summarize the FULL message list, not just the compacted prefix. The
+      // summary always covers everything, so the verbatim tail we ALSO restore
+      // (via `retainFromEventId`, below) can never leave a gap — worst case a
+      // recent event is both summarized and restored verbatim, which is
+      // harmless. This mirrors the live context, where the tail is likewise
+      // kept verbatim on top of a full-history summary block.
       llmSummary = await runCompactionSummaryTurn({
         sessionId,
         compactedMessages: messages,
         previousCompactionSummary: previousSummary,
         createAgent: deps.createCompactionAgent,
       });
-
-      if (llmSummary) {
-        // Persist for next compaction pass.
-        await deps.store.messages.setCompactionSummary(
-          deps.scope,
-          sessionId,
-          llmSummary,
-          new Date().toISOString(),
-        );
-      }
+      // NOTE: persistence is deferred until AFTER the accept check below. A
+      // rejected candidate (summary bigger than the prefix it replaced) must
+      // not write a summary or a context_compaction marker — otherwise the
+      // next resume would apply a verbatim-tail boundary the live state never
+      // actually adopted.
     } catch (error) {
       deps.logRuntime(
         `compaction LLM summary failed, falling back to text extraction: ${String(error)}`,
@@ -695,24 +737,48 @@ export const compactContextIfNeeded = async (
   const beforeTokens = estimateAgentMessagesTokens(combined);
   const compactedTokens = estimateAgentMessagesTokens(compacted);
 
-  // If compaction was triggered only by message count (tokens still
-  // under budget), accept a wash on tokens as long as message count
-  // actually shrank — the goal there is to bound list length, not
-  // tokens.
-  const tokenWin = compactedTokens < beforeTokens;
-  const countWin = compacted.length < combined.length;
-  if (!tokenWin && !countWin) {
-    return combined;
+  // Only accept the compaction if it actually reduced the token estimate.
+  // A degenerate case (e.g. the summary block costing more than the tiny
+  // prefix it replaced) would otherwise make the payload bigger — return
+  // the original instead, and (crucially) persist nothing.
+  if (compactedTokens >= beforeTokens) {
+    return { messages: combined, didCompact: false };
   }
 
-  const reason = overflowTokens && overflowCount
-    ? 'tokens+count'
-    : overflowTokens
-      ? 'tokens'
-      : 'count';
+  // Compaction accepted. Only now persist the summary + verbatim-tail boundary,
+  // so a rejected candidate never mutates the store. The text-extraction
+  // fallback (no createCompactionAgent, or the LLM turn threw) keeps no marker,
+  // matching prior behaviour — only the LLM-summary path writes one.
+  if (llmSummary && deps.createCompactionAgent) {
+    // Record a verbatim-tail boundary in the marker so the next resume restores
+    // the recent tail verbatim (not summary-only). Best-effort: if the boundary
+    // lookup fails, we still persist the summary (resume falls back to
+    // summary-only, i.e. today's behaviour).
+    let retainFromEventId: number | undefined;
+    try {
+      retainFromEventId = await deps.store.messages.findRetainBoundaryEventId(
+        deps.scope,
+        sessionId,
+        keepRecentTokens,
+      );
+    } catch (boundaryError) {
+      deps.logRuntime(
+        `compaction retain-boundary lookup failed, resume will be summary-only: ${String(boundaryError)}`,
+      );
+    }
+
+    await deps.store.messages.setCompactionSummary(
+      deps.scope,
+      sessionId,
+      llmSummary,
+      new Date().toISOString(),
+      retainFromEventId,
+    );
+  }
+
   deps.logRuntime(
-    `context compacted: ${sessionId} estimated ${beforeTokens} -> ${compactedTokens} tokens, ${combined.length} -> ${compacted.length} msgs, trigger=${reason}, overhead=${overhead}${llmSummary ? ' (LLM summary)' : ' (text extraction)'}`,
+    `context compacted: ${sessionId} estimated ${beforeTokens} -> ${compactedTokens} tokens, ${combined.length} -> ${compacted.length} msgs, trigger=tokens, overhead=${overhead}${llmSummary ? ' (LLM summary)' : ' (text extraction)'}`,
   );
 
-  return compacted;
+  return { messages: compacted, didCompact: true };
 };
