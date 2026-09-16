@@ -112,6 +112,7 @@ const createStubDeps = (overrides?: Partial<CompactionDeps>): CompactionDeps => 
     messages: {
       getCompactionSummary: async () => undefined,
       setCompactionSummary: async () => {},
+      findRetainBoundaryEventId: async () => undefined,
     },
   } as unknown as CompactionDeps['store'],
   scope: { agentId: 'test-agent' },
@@ -733,6 +734,7 @@ test('compactContextIfNeeded uses LLM summary when createCompactionAgent is prov
   ];
 
   let summaryPersisted = '';
+  let retainBoundaryPersisted: number | undefined = -1;
   const mockAgent = {
     prompt: async () => {},
     waitForIdle: async () => {},
@@ -756,9 +758,17 @@ test('compactContextIfNeeded uses LLM summary when createCompactionAgent is prov
     store: {
       messages: {
         getCompactionSummary: async () => undefined,
-        setCompactionSummary: async (_scope: unknown, _sid: unknown, summary: string) => {
+        setCompactionSummary: async (
+          _scope: unknown,
+          _sid: unknown,
+          summary: string,
+          _updatedAt: unknown,
+          retainFromEventId?: number,
+        ) => {
           summaryPersisted = summary;
+          retainBoundaryPersisted = retainFromEventId;
         },
+        findRetainBoundaryEventId: async () => 42,
       },
     } as unknown as CompactionDeps['store'],
     createCompactionAgent: async () => mockAgent as any,
@@ -769,6 +779,9 @@ test('compactContextIfNeeded uses LLM summary when createCompactionAgent is prov
     result.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('LLM generated summary')),
   );
   assert.equal(summaryPersisted, 'LLM generated summary.');
+  // The verbatim-tail boundary returned by findRetainBoundaryEventId must be
+  // forwarded to setCompactionSummary so resume can restore the recent tail.
+  assert.equal(retainBoundaryPersisted, 42);
 });
 
 test('compactContextIfNeeded falls back to text extraction when LLM agent throws', async () => {
@@ -994,6 +1007,29 @@ test('TOOL_RESULT_MAX_CHARS_CAP caps inline tool result regardless of context wi
   assert.ok(resultText.length <= TOOL_RESULT_MAX_CHARS_CAP + 200, // +marker overhead
     `result kept ${resultText.length} chars, expected ≤ ~${TOOL_RESULT_MAX_CHARS_CAP}`);
   assert.ok(resultText.includes('[truncated:'));
+});
+
+test('truncateToolResults gives protected (recent) tool results a larger cap', () => {
+  // A recent tool result rehydrated from disk should survive the 8K absolute
+  // cap and keep its larger inline preview, bounded only by the context ratio.
+  const text = 'y'.repeat(50_000);
+  const messages: AgentMessage[] = [
+    makeToolResultMessage('old', 'z'.repeat(50_000)),
+    makeToolResultMessage('recent', text),
+  ];
+  // Protect index 1 (the recent result); huge context window so the ratio cap
+  // (250K chars) doesn't bind — only the protected larger cap (20K) applies.
+  const result = truncateToolResults(messages, 1_000_000, new Set([1]));
+
+  const oldText = (result[0] as { content: Array<{ text: string }> }).content[0]!.text;
+  const recentText = (result[1] as { content: Array<{ text: string }> }).content[0]!.text;
+
+  // Old result still clamped to the 8K absolute cap.
+  assert.ok(oldText.length <= TOOL_RESULT_MAX_CHARS_CAP + 200,
+    `old kept ${oldText.length}, expected ≤ ~${TOOL_RESULT_MAX_CHARS_CAP}`);
+  // Recent result kept far more than the 8K cap (up to the 20K recent budget).
+  assert.ok(recentText.length > TOOL_RESULT_MAX_CHARS_CAP * 2,
+    `recent kept ${recentText.length}, expected > ${TOOL_RESULT_MAX_CHARS_CAP * 2}`);
 });
 
 test('compactContextIfNeeded drops to the retention target and leaves token headroom', async () => {

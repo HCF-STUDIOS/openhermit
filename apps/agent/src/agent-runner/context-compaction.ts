@@ -4,7 +4,7 @@ import type { InternalStateStore, StoreScope } from '@openhermit/store';
 import type { AgentConfig } from '../core/index.js';
 import { extractAssistantText } from './message-utils.js';
 import { resolveModel } from './model-utils.js';
-import { createHeadTailPreview } from './tool-result-persistence.js';
+import { createHeadTailPreview, RECENT_TOOL_RESULT_PREVIEW_CHARS } from './tool-result-persistence.js';
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -170,16 +170,21 @@ export const TOOL_RESULT_MAX_CHARS_CAP = 8_000;
 export const truncateToolResults = (
   messages: AgentMessage[],
   contextWindow: number,
+  protectedIndices?: Set<number>,
 ): AgentMessage[] => {
-  const maxChars = Math.min(
-    TOOL_RESULT_MAX_CHARS_CAP,
-    Math.floor(contextWindow * TOOL_RESULT_MAX_CONTEXT_RATIO * 4), // tokens × ~4 chars/token
-  );
+  const ratioChars = Math.floor(contextWindow * TOOL_RESULT_MAX_CONTEXT_RATIO * 4); // tokens × ~4 chars/token
+  const defaultMaxChars = Math.min(TOOL_RESULT_MAX_CHARS_CAP, ratioChars);
+  // Recent tool results rehydrated from disk get a larger inline budget so the
+  // model keeps a near-verbatim view of what it just produced; still bounded by
+  // the per-call context ratio so a huge result can't blow the window.
+  const recentMaxChars = Math.min(RECENT_TOOL_RESULT_PREVIEW_CHARS, ratioChars);
 
-  return messages.map((message) => {
+  return messages.map((message, index) => {
     if (message.role !== 'toolResult') {
       return message;
     }
+
+    const maxChars = protectedIndices?.has(index) ? recentMaxChars : defaultMaxChars;
 
     const totalChars = message.content.reduce((sum, item) => {
       if (item.type === 'text') {
@@ -659,15 +664,12 @@ export const compactContextIfNeeded = async (
       // Load persisted compaction summary for progressive compaction.
       const previousSummary = await deps.store.messages.getCompactionSummary(deps.scope, sessionId);
 
-      // Summarize the FULL message list, not just the compacted prefix.
-      // setCompactionSummary appends the summary as a `context_compaction`
-      // event at the TAIL of the session log, and resume restores only the
-      // entries logged after that marker. If the summary covered only the
-      // prefix, everything logged before the marker but outside the summary
-      // — the retained recent tail and the current user turn — would be
-      // lost on the next resume (neither summarized nor restored verbatim).
-      // Covering the full list makes the marker-at-tail boundary correct;
-      // the live context still keeps the tail verbatim via `retained`.
+      // Summarize the FULL message list, not just the compacted prefix. The
+      // summary always covers everything, so the verbatim tail we ALSO restore
+      // (via `retainFromEventId`, below) can never leave a gap — worst case a
+      // recent event is both summarized and restored verbatim, which is
+      // harmless. This mirrors the live context, where the tail is likewise
+      // kept verbatim on top of a full-history summary block.
       llmSummary = await runCompactionSummaryTurn({
         sessionId,
         compactedMessages: messages,
@@ -676,12 +678,32 @@ export const compactContextIfNeeded = async (
       });
 
       if (llmSummary) {
+        // Record a verbatim-tail boundary in the marker so the next resume
+        // restores the recent tail verbatim (not summary-only). Without this,
+        // the marker sits at the log tail and resume degrades the ~keepRecent
+        // tokens of recent history to its summarized form. Best-effort: if the
+        // boundary lookup fails, we still persist the summary (resume falls
+        // back to summary-only, i.e. today's behaviour).
+        let retainFromEventId: number | undefined;
+        try {
+          retainFromEventId = await deps.store.messages.findRetainBoundaryEventId(
+            deps.scope,
+            sessionId,
+            keepRecentTokens,
+          );
+        } catch (boundaryError) {
+          deps.logRuntime(
+            `compaction retain-boundary lookup failed, resume will be summary-only: ${String(boundaryError)}`,
+          );
+        }
+
         // Persist for next compaction pass.
         await deps.store.messages.setCompactionSummary(
           deps.scope,
           sessionId,
           llmSummary,
           new Date().toISOString(),
+          retainFromEventId,
         );
       }
     } catch (error) {

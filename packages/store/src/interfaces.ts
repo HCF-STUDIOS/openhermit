@@ -79,7 +79,17 @@ export interface MessageStore {
   listRecentMessages(scope: StoreScope, sessionId: string, limit: number, offset?: number): Promise<MessageRow[]>;
   listSessionEntriesSinceLastCompaction(scope: StoreScope, sessionId: string): Promise<{ compactionSummary: string | undefined; entries: SessionLogEntry[] }>;
   getCompactionSummary(scope: StoreScope, sessionId: string): Promise<string | undefined>;
-  setCompactionSummary(scope: StoreScope, sessionId: string, content: string, updatedAt: string): Promise<void>;
+  setCompactionSummary(scope: StoreScope, sessionId: string, content: string, updatedAt: string, retainFromEventId?: number): Promise<void>;
+  /**
+   * Walk the session log backward from the tail, summing an approximate token
+   * estimate (char length / 4) of each event's derived content, and return the
+   * id of the oldest event whose inclusion keeps the running total at or below
+   * `keepRecentTokens`. Used at compaction time to record a verbatim-tail
+   * boundary in the compaction marker so resume can restore the recent tail
+   * verbatim (not only the summary). Returns undefined when the session has no
+   * events.
+   */
+  findRetainBoundaryEventId(scope: StoreScope, sessionId: string, keepRecentTokens: number): Promise<number | undefined>;
 }
 
 export interface MemoryProvider {

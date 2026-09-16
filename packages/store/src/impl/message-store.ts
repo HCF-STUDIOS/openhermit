@@ -1,4 +1,4 @@
-import { eq, and, gt, inArray, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, gt, gte, inArray, desc, asc, sql } from 'drizzle-orm';
 import type { SessionAttachment, SessionHistoryMessage, SessionSpec } from '@openhermit/protocol';
 
 import type { MessageStore } from '../interfaces.js';
@@ -290,16 +290,29 @@ export class DbMessageStore implements MessageStore {
 
     const afterId = compactionRow?.id ?? 0;
     let compactionSummary: string | undefined;
+    let retainFromEventId: number | undefined;
     if (compactionRow) {
       const parsed = (compactionRow.payload ?? {}) as Record<string, unknown>;
       compactionSummary = typeof parsed.content === 'string' ? parsed.content : undefined;
+      // Verbatim-tail boundary recorded at compaction time. When present, we
+      // restore every event from this id onward — the recent tail that sat
+      // *before* the marker — verbatim, on top of the full-history summary.
+      // System marker rows caught in this range are skipped by the resume
+      // reconstruction (role === 'system'), so overlap is harmless. Absent on
+      // markers written before this field existed, in which case we fall back
+      // to the marker-position boundary (summary only, no verbatim tail).
+      retainFromEventId = typeof parsed.retainFromEventId === 'number' ? parsed.retainFromEventId : undefined;
     }
+
+    const lowerBound = retainFromEventId !== undefined
+      ? gte(sessionEvents.id, retainFromEventId)
+      : gt(sessionEvents.id, afterId);
 
     const rows = await this.db.select({ payload: sessionEvents.payload }).from(sessionEvents)
       .where(and(
         eq(sessionEvents.agentId, scope.agentId),
         eq(sessionEvents.sessionId, sessionId),
-        gt(sessionEvents.id, afterId),
+        lowerBound,
       ))
       .orderBy(asc(sessionEvents.id));
 
@@ -334,12 +347,42 @@ export class DbMessageStore implements MessageStore {
     return typeof parsed.content === 'string' ? parsed.content : undefined;
   }
 
-  async setCompactionSummary(scope: StoreScope, sessionId: string, content: string, updatedAt: string): Promise<void> {
+  async setCompactionSummary(scope: StoreScope, sessionId: string, content: string, updatedAt: string, retainFromEventId?: number): Promise<void> {
     await this.appendLogEntry(scope, sessionId, {
       ts: updatedAt,
       role: 'system',
       type: 'context_compaction',
       content,
+      ...(retainFromEventId !== undefined ? { retainFromEventId } : {}),
     });
+  }
+
+  async findRetainBoundaryEventId(scope: StoreScope, sessionId: string, keepRecentTokens: number): Promise<number | undefined> {
+    if (keepRecentTokens <= 0) return undefined;
+
+    // Pull id + content length (not the content itself) newest-first. Bound the
+    // scan so a very long session can't stream unbounded rows: at ~4 chars/token
+    // the recent window is keepRecentTokens*4 chars, and empty/marker events
+    // still consume a row, so cap generously.
+    const rows = await this.db
+      .select({ id: sessionEvents.id, len: sql<number>`length(${sessionEvents.content})` })
+      .from(sessionEvents)
+      .where(and(
+        eq(sessionEvents.agentId, scope.agentId),
+        eq(sessionEvents.sessionId, sessionId),
+      ))
+      .orderBy(desc(sessionEvents.id))
+      .limit(2000);
+
+    if (rows.length === 0) return undefined;
+
+    let accumulated = 0;
+    let boundary = rows[0]!.id;
+    for (const row of rows) {
+      accumulated += Math.ceil((Number(row.len) || 0) / 4);
+      boundary = row.id;
+      if (accumulated >= keepRecentTokens) break;
+    }
+    return boundary;
   }
 }

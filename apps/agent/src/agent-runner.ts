@@ -111,7 +111,7 @@ import {
   getContextCompactionMaxTokens,
   truncateToolResults,
 } from './agent-runner/context-compaction.js';
-import { buildToolResultPreview, persistToolResult } from './agent-runner/tool-result-persistence.js';
+import { buildToolResultPreview, persistToolResult, rehydrateRecentToolResults } from './agent-runner/tool-result-persistence.js';
 import { createWebProvider, type WebProvider } from './web/index.js';
 import { ResearchOrchestrator } from './research/index.js';
 import type { ResearchPhaseCallInput } from './research/model-phase.js';
@@ -3339,10 +3339,19 @@ export class AgentRunner implements SessionRuntime {
     // can't re-send one (providers 400 on empty content, stranding the session).
     const cleanedMessages = stripEmptyAssistantTurns(allMessages);
 
+    // Rehydrate the most recent tool results from disk to a larger inline
+    // preview: the just-produced outputs are what the model is actively
+    // reasoning about, so keep them near-verbatim (older results stay at the
+    // small production preview, full text always fetchable via read_file).
+    // `protectedIndices` exempts the expanded results from the truncation cap
+    // below so the larger preview survives.
+    const { messages: rehydratedMessages, protectedIndices } =
+      await rehydrateRecentToolResults(this.options.workspace, cleanedMessages);
+
     // Truncate oversized tool results before compaction so that a single
     // huge tool response cannot blow past the entire context window.
     const model = resolveModel(config);
-    const truncatedMessages = truncateToolResults(cleanedMessages, model.contextWindow);
+    const truncatedMessages = truncateToolResults(rehydratedMessages, model.contextWindow, protectedIndices);
 
     // Opt-in rolling context window (default-off). When enabled, cap the
     // per-turn context handed to the model to the last N messages (tool-pair
