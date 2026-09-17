@@ -118,6 +118,53 @@ const LOCAL_MODELS: Record<string, Model<any>> = {
 export const listLocalModels = (provider: string): Model<any>[] =>
   Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
 
+// DeepSeek's whole Flash tier is served by the multimodal V4.1-Flash: the new
+// canonical `deepseek-flash`, the newer `deepseek-v4.1-flash` id the amiko
+// gateway hands out, and every retired alias (`deepseek-v4-flash`, `-latest`,
+// `-<date>`, `-vision-exp`). Two capability sources disagree with that reality:
+// pi-ai's registry still flags `deepseek-v4-flash` text-only (stale), and the
+// `deepseek-v4.1-flash` id is in neither pi-ai's nor the OpenRouter price
+// catalogue, so resolveModel's synthesize fallback lands on text-only + $0.
+// Either way `downgradeImagesForTextModel` strips the image to a placeholder
+// before the request — an agent on `amiko/deepseek/deepseek-v4.1-flash` reported
+// it was "text-only" and couldn't see an image the user sent. Force the family's
+// true image modality, and backfill the $0-fallback pricing/window so usage
+// isn't recorded as free. Only `deepseek-flash` (provider deepseek, direct) is
+// carried correctly by LOCAL_MODELS today; this covers the gateway-routed ids
+// everyone actually uses. Provider prefixes (`deepseek/`) and the `~…-latest`
+// pin marker are stripped before matching; `flash\b` excludes `deepseek-v4-pro`.
+const DEEPSEEK_FLASH_RE = /^deepseek-(v\d+(?:\.\d+)?-)?flash\b/;
+
+const isDeepseekFlashId = (modelId: string): boolean =>
+  DEEPSEEK_FLASH_RE.test(modelId.replace(/^~/, '').replace(/^deepseek\//, '').toLowerCase());
+
+const DEEPSEEK_FLASH_CAPS = {
+  cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
+  contextWindow: 1000000,
+  maxTokens: 384000,
+};
+
+const applyDeepseekFlashCaps = (model: Model<any>): Model<any> => {
+  if (!isDeepseekFlashId(model.id)) return model;
+  const input = Array.isArray(model.input) ? model.input : [];
+  const c = model.cost;
+  // The $0 zero-fallback signature from the synthesize path — never a real price.
+  const costIsZeroFallback =
+    !!c && c.input === 0 && c.output === 0 && c.cacheRead === 0 && c.cacheWrite === 0;
+  return {
+    ...model,
+    ...(input.includes('image') ? {} : { input: ['text', 'image'] }),
+    ...(costIsZeroFallback
+      ? {
+          cost: DEEPSEEK_FLASH_CAPS.cost,
+          contextWindow:
+            model.contextWindow === 128000 ? DEEPSEEK_FLASH_CAPS.contextWindow : model.contextWindow,
+          maxTokens: model.maxTokens ?? DEEPSEEK_FLASH_CAPS.maxTokens,
+        }
+      : {}),
+  } as Model<any>;
+};
+
 /**
  * Resolve a Model from pi-ai's registry, falling back to LOCAL_MODELS for
  * models pi-ai doesn't carry yet. Registry wins when present so its
@@ -144,12 +191,12 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
   //    base_url / api / max_tokens on top.
   const registry = tryRegistry(config.model.provider, config.model.model);
   if (registry) {
-    return {
+    return applyDeepseekFlashCaps({
       ...registry,
       ...(config.model.base_url ? { baseUrl: config.model.base_url } : {}),
       ...(config.model.api ? { api: config.model.api } : {}),
       ...(config.model.max_tokens !== undefined ? { maxTokens: config.model.max_tokens } : {}),
-    } as Model<any>;
+    } as Model<any>);
   }
 
   // 2) Custom OpenAI-compatible endpoint. The registry doesn't know this
@@ -178,7 +225,7 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
     // it's on (reasoning comes back in its own field → a real thinking block).
     const compat =
       priceCatalog === 'openrouter' ? { thinkingFormat: 'openrouter' as const } : undefined;
-    return {
+    return applyDeepseekFlashCaps({
       id: config.model.model,
       name: config.model.model,
       api,
@@ -190,7 +237,7 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
       contextWindow: priceRef?.contextWindow ?? 128000,
       maxTokens: config.model.max_tokens ?? priceRef?.maxTokens,
       ...(compat ? { compat } : {}),
-    } as Model<any>;
+    } as Model<any>);
   }
 
   throw new ValidationError(
