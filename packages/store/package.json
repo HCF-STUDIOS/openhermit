@@ -12,13 +12,16 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit"
+    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@openhermit/protocol": "0.2.0",
     "@openhermit/shared": "0.2.0",
+    "@supabase/supabase-js": "^2.116.0",
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "tar": "^7.5.13"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

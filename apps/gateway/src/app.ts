@@ -38,7 +38,8 @@ import type {
   SandboxStore,
   AttachmentStorage,
 } from '@openhermit/store';
-import { buildInboxSessionEntry } from '@openhermit/store';
+import { buildInboxSessionEntry, isSkillBlobPath } from '@openhermit/store';
+import { migrateSkillsToBlob } from './skill-blob-migrate.js';
 import type { SandboxPreset } from './config.js';
 import { defaultGatewayConfig, parseGatewayConfig, saveGatewayConfig, META_KEY } from './config.js';
 import type { ChannelRegistry } from './auth.js';
@@ -2347,15 +2348,31 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!body.description || typeof body.description !== 'string') throw new ValidationError('description is required');
     if (!body.path || typeof body.path !== 'string') throw new ValidationError('path is required');
     const now = new Date().toISOString();
+
+    // Publish the skill directory to blob storage so the row survives volume
+    // removal. When the path is already a `blob:` pointer, or no artifact store
+    // is configured, the path is stored verbatim (legacy bare-path behavior).
+    const artifactStore = instances.getSkillArtifactStore();
+    let skillPath = body.path;
+    let metadata =
+      body.metadata && typeof body.metadata === 'object'
+        ? (body.metadata as Record<string, unknown>)
+        : undefined;
+    if (artifactStore && !isSkillBlobPath(body.path)) {
+      const put = await artifactStore.putSkill({ source: 'system', slug: body.id }, body.path);
+      skillPath = put.path;
+      metadata = { ...metadata, sha256: put.sha256, version: now };
+    }
+
     await store.upsert({
       id: body.id,
       // System skills: slug equals id (storage id == user-visible id).
       slug: body.id,
       name: body.name,
       description: body.description,
-      path: body.path,
+      path: skillPath,
       source: 'system',
-      ...(body.metadata && typeof body.metadata === 'object' ? { metadata: body.metadata as Record<string, unknown> } : {}),
+      ...(metadata ? { metadata } : {}),
       createdAt: now,
       updatedAt: now,
     });
@@ -2367,6 +2384,33 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const store = requireSkillStore();
     await store.delete(c.req.param('id'));
     return c.json({ ok: true });
+  });
+
+  // One-shot migration: pack legacy bare-path skill directories from the local
+  // volume into blob storage and flip `skills.path` to a `blob:` pointer, so the
+  // volume can be dropped. Rule (per the migration criteria): migrate a row ONLY
+  // when its path is still legacy (not `blob:`) AND the directory exists on disk;
+  // any other row is left untouched. Defaults to a read-only dry run — pass
+  // `{ "apply": true }` to write. Idempotent: already-migrated rows are skipped.
+  app.post('/api/admin/skills/migrate-blob', async (c) => {
+    requireAdmin(c.req.header('authorization'));
+    const store = requireSkillStore();
+    const artifactStore = instances.getSkillArtifactStore();
+    if (!artifactStore) {
+      throw new ValidationError(
+        'No skill artifact store configured (blob storage). Cannot migrate.',
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { apply?: boolean };
+    const result = await migrateSkillsToBlob(store, artifactStore, { apply: body.apply === true });
+    if (!result.apply) {
+      // Dry run: omit the write-only sections to keep the response focused on the plan.
+      const { migrated: _m, errors: _e, ...plan } = result;
+      void _m;
+      void _e;
+      return c.json(plan);
+    }
+    return c.json(result);
   });
 
   const syncAffectedAgentSkillMounts = async (agentId: string, store: DbSkillStore): Promise<void> => {

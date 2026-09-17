@@ -65,6 +65,8 @@ class E2BExecBackend implements ExecBackend {
   readonly username: string;
   readonly agentHome: string;
   readonly files: E2BFileBackend;
+  /** Runner-supplied hook fired after a real connect/create (see ExecBackend). */
+  onEnsured: ((info: { fresh: boolean }) => Promise<void>) | null = null;
   private readonly template: string;
   private readonly timeoutMs: number;
   private readonly sandboxTimeoutMs: number;
@@ -168,6 +170,7 @@ class E2BExecBackend implements ExecBackend {
           lastSeenAt: new Date().toISOString(),
         });
         await this.replayPendingSkillSync();
+        await this.fireEnsured(false);
         return;
       } catch (err) {
         if (!(err instanceof SandboxNotFoundError)) throw err;
@@ -205,6 +208,19 @@ class E2BExecBackend implements ExecBackend {
     });
 
     await this.replayPendingSkillSync();
+    await this.fireEnsured(true);
+  }
+
+  /**
+   * Invoke the runner's onEnsured hook after a real connect/create. Best-effort:
+   * a failing skill reconcile must never break sandbox startup.
+   */
+  private async fireEnsured(fresh: boolean): Promise<void> {
+    try {
+      await this.onEnsured?.({ fresh });
+    } catch {
+      // swallow — user-skill scan/restore is best-effort.
+    }
   }
 
   async exec(command: string, opts?: ExecOpts): Promise<ExecResult> {

@@ -84,6 +84,13 @@ export {
   SupabaseAttachmentStorage,
   type SupabaseAttachmentStorageOptions,
 } from './supabase-attachment-storage.js';
+export {
+  SkillArtifactStore,
+  packSkillDir,
+  unpackSkillTar,
+  sha256Hex,
+  type PutSkillResult,
+} from './skill-artifact-store.js';
 export { FileSecretStore, type ConfigDirResolver } from './file-secret-store.js';
 export { DbSecretStore, generateSecretsKey } from './db-secret-store.js';
 export {

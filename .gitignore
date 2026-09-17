@@ -14,3 +14,5 @@ pnpm-lock.yaml
 .agents
 .claude
 skills-lock.json
+# local scratch (creds, throwaway scripts) — never commit
+scratchpad/

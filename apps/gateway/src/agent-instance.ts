@@ -7,7 +7,7 @@ import {
   createLangfuseShutdownHandler,
   type LangfuseClientLike,
 } from '@openhermit/agent/langfuse';
-import type { AgentConfigStore, AgentStore, ApprovalRequestStore, AttachmentStorage, AttachmentStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillStore } from '@openhermit/store';
+import type { AgentConfigStore, AgentStore, ApprovalRequestStore, AttachmentStorage, AttachmentStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillArtifactStore, SkillStore } from '@openhermit/store';
 
 import type { ChannelPool } from './channel-pool.js';
 
@@ -115,6 +115,7 @@ export class AgentInstanceManager {
 
   private attachmentStore: AttachmentStore | undefined;
   private attachmentStorage: AttachmentStorage | undefined;
+  private skillArtifactStore: SkillArtifactStore | undefined;
 
   setAttachmentStore(store: AttachmentStore): void {
     this.attachmentStore = store;
@@ -122,6 +123,14 @@ export class AgentInstanceManager {
 
   setAttachmentStorage(storage: AttachmentStorage): void {
     this.attachmentStorage = storage;
+  }
+
+  setSkillArtifactStore(store: SkillArtifactStore): void {
+    this.skillArtifactStore = store;
+  }
+
+  getSkillArtifactStore(): SkillArtifactStore | undefined {
+    return this.skillArtifactStore;
   }
 
   getConfigStore(): AgentConfigStore | undefined {
@@ -210,6 +219,7 @@ export class AgentInstanceManager {
       ...(this.approvalRequestStore ? { approvalRequestStore: this.approvalRequestStore } : {}),
       ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
       ...(this.attachmentStorage ? { attachmentStorage: this.attachmentStorage } : {}),
+      ...(this.skillArtifactStore ? { skillArtifactStore: this.skillArtifactStore } : {}),
       // Detached research phases run after their HTTP request returns 202;
       // holding the busy counter for their whole execution keeps the idle-LRU
       // sweep from evicting a runner mid-plan/mid-loop/mid-synthesis.
@@ -237,17 +247,28 @@ export class AgentInstanceManager {
       log(`[${agentId}] attached ${attached.length} pool channel(s): ${attached.join(', ')}`);
     }
 
-    // 7. Sync platform skills into the runner's exec backends.
+    // 7. Sync system skills into the runner's exec backends. These are
+    //    platform-owned, so we push them (overwrite) into each backend's
+    //    `skills/system/`. The backend queues this cheaply when the sandbox
+    //    isn't connected — no eager resume here.
+    //
+    //    User skills are agent-owned and NOT pushed here: they live on the
+    //    sandbox filesystem, are indexed in the durable DB (which survives the
+    //    redeploy), and are restored back into a *freshly created* sandbox by
+    //    AgentRunner's onEnsured hook — so a chat-only turn never pays a sandbox
+    //    resume just to reconcile skills.
     if (this.skillStore) {
       try {
         const enabled = await this.skillStore.listEnabled(agentId);
         await runner.syncSkills(
           // SyncSkillEntry.id is the folder basename — use slug, not the
           // encoded storage id.
-          enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
+          enabled
+            .filter((s) => s.source === 'system')
+            .map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
         );
       } catch (err) {
-        log(`[${agentId}] skill sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        log(`[${agentId}] system skill sync failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

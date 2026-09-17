@@ -39,6 +39,15 @@ export interface AttachmentsConfig {
   };
 }
 
+/**
+ * Optional dedicated storage for skill artifacts. When omitted, skill blobs
+ * reuse the attachment storage (under a `skills/` prefix). A dedicated bucket
+ * addresses the root directly (`system/<slug>.tar.gz`, `user/...`).
+ */
+export interface SkillsConfig {
+  storage: AttachmentStorageConfig;
+}
+
 export interface GatewayConfig {
   ui: boolean;
   cors: { origin: string };
@@ -63,6 +72,13 @@ export interface GatewayConfig {
    * resource pointers belong here.
    */
   attachments?: AttachmentsConfig;
+  /**
+   * Optional dedicated storage for skill artifacts. When omitted, skill blobs
+   * reuse the attachment storage under a `skills/` prefix. Point this at a
+   * separate bucket to keep skill archives isolated from user attachments;
+   * credentials still come from env, only non-secret pointers belong here.
+   */
+  skills?: SkillsConfig;
 }
 
 export const META_KEY = 'gateway.config';
@@ -150,21 +166,20 @@ const optionalBoolean = (raw: unknown, field: string): boolean | undefined => {
   return raw;
 };
 
-const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('attachments must be an object');
-  }
-  const obj = raw as Record<string, unknown>;
-  const storageRaw = obj['storage'];
+/**
+ * Parse and validate an `AttachmentStorageConfig` block (used by both
+ * `attachments.storage` and `skills.storage`). `label` prefixes error messages
+ * so the operator knows which section is wrong.
+ */
+const parseStorageConfig = (storageRaw: unknown, label: string): AttachmentStorageConfig => {
   if (!storageRaw || typeof storageRaw !== 'object' || Array.isArray(storageRaw)) {
-    throw new Error('attachments.storage must be an object');
+    throw new Error(`${label} must be an object`);
   }
   const storage = storageRaw as Record<string, unknown>;
   const provider = storage['provider'];
   if (typeof provider !== 'string' || !ATTACHMENT_PROVIDERS.has(provider)) {
     throw new Error(
-      `attachments.storage.provider must be one of: ${[...ATTACHMENT_PROVIDERS].join(', ')}`,
+      `${label}.provider must be one of: ${[...ATTACHMENT_PROVIDERS].join(', ')}`,
     );
   }
 
@@ -176,7 +191,7 @@ const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => 
   } else if (provider === 's3') {
     const bucket = storage['bucket'];
     if (typeof bucket !== 'string' || bucket === '') {
-      throw new Error('attachments.storage.bucket is required when provider=s3');
+      throw new Error(`${label}.bucket is required when provider=s3`);
     }
     parsedStorage = { provider: 's3', bucket };
     const region = optionalString(storage['region'], 'region');
@@ -187,29 +202,49 @@ const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => 
     if (endpoint !== undefined) parsedStorage.endpoint = endpoint;
     const forcePathStyle = optionalBoolean(
       storage['forcePathStyle'],
-      'attachments.storage.forcePathStyle',
+      `${label}.forcePathStyle`,
     );
     if (forcePathStyle !== undefined) parsedStorage.forcePathStyle = forcePathStyle;
     const signedExp = optionalPositiveInt(
       storage['signedUrlExpiresIn'],
-      'attachments.storage.signedUrlExpiresIn',
+      `${label}.signedUrlExpiresIn`,
     );
     if (signedExp !== undefined) parsedStorage.signedUrlExpiresIn = signedExp;
   } else {
     // supabase
     const bucket = storage['bucket'];
     if (typeof bucket !== 'string' || bucket === '') {
-      throw new Error('attachments.storage.bucket is required when provider=supabase');
+      throw new Error(`${label}.bucket is required when provider=supabase`);
     }
     parsedStorage = { provider: 'supabase', bucket };
     const prefix = optionalString(storage['prefix'], 'prefix');
     if (prefix !== undefined) parsedStorage.prefix = prefix;
     const signedExp = optionalPositiveInt(
       storage['signedUrlExpiresIn'],
-      'attachments.storage.signedUrlExpiresIn',
+      `${label}.signedUrlExpiresIn`,
     );
     if (signedExp !== undefined) parsedStorage.signedUrlExpiresIn = signedExp;
   }
+  return parsedStorage;
+};
+
+const parseSkillsConfig = (raw: unknown): SkillsConfig | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('skills must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const storage = parseStorageConfig(obj['storage'], 'skills.storage');
+  return { storage };
+};
+
+const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('attachments must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const parsedStorage = parseStorageConfig(obj['storage'], 'attachments.storage');
 
   const result: AttachmentsConfig = { storage: parsedStorage };
   const limitsRaw = obj['limits'];
@@ -268,6 +303,8 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
   };
   const attachments = parseAttachmentsConfig(raw['attachments']);
   if (attachments) out.attachments = attachments;
+  const skills = parseSkillsConfig(raw['skills']);
+  if (skills) out.skills = skills;
   return out;
 };
 

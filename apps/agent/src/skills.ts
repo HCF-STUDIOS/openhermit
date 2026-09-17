@@ -126,7 +126,8 @@ export const scanSkillDirectory = async (
  * Load the effective skill index for an agent. Skills come from two layers:
  * - DB-managed: each row carries `source` ('system' | 'user'), which decides
  *   the subdir (`skills/system/<id>` vs `skills/user/<id>`). User skills are
- *   owner-installed via `skill_install`; system skills are operator-managed.
+ *   authored by the agent in its sandbox and indexed via `skill_scan`; system
+ *   skills are operator-managed.
  * - Workspace scan: anything dropped directly under `<workspace>/.openhermit/
  *   skills/` outside the managed subdirs. Treated as 'workspace' source.
  *

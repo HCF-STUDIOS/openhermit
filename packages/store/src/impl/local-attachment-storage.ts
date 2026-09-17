@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, mkdir, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
@@ -75,6 +75,23 @@ export class LocalAttachmentStorage implements AttachmentStorage {
     };
   }
 
+  async putObject(input: {
+    storageKey: string;
+    contentType: string;
+    body: NodeJS.ReadableStream | Buffer;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }> {
+    const buffer = Buffer.isBuffer(input.body) ? input.body : await streamToBuffer(input.body);
+    const target = this.resolveKey(input.storageKey);
+    await this.mkdirWithPerms(path.dirname(target));
+    await writeFile(target, buffer, { mode: FILE_MODE });
+    await chmod(target, FILE_MODE);
+    return {
+      storageKey: input.storageKey,
+      sizeBytes: buffer.length,
+      sha256: createHash('sha256').update(buffer).digest('hex'),
+    };
+  }
+
   async readStream(storageKey: string): Promise<NodeJS.ReadableStream> {
     return createReadStream(this.resolveKey(storageKey));
   }
@@ -125,4 +142,12 @@ export class LocalAttachmentStorage implements AttachmentStorage {
     }
     return resolved;
   }
+}
+
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  return Buffer.concat(chunks);
 }

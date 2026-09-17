@@ -137,6 +137,26 @@ export class S3AttachmentStorage implements AttachmentStorage {
     };
   }
 
+  async putObject(input: {
+    storageKey: string;
+    contentType: string;
+    body: NodeJS.ReadableStream | Buffer;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }> {
+    const buffer = Buffer.isBuffer(input.body) ? input.body : await streamToBuffer(input.body);
+    const cmd = new this.sdk.PutObjectCommand({
+      Bucket: this.options.bucket,
+      Key: this.absoluteKey(input.storageKey),
+      Body: buffer,
+      ContentType: input.contentType,
+    });
+    await this.client.send(cmd);
+    return {
+      storageKey: input.storageKey,
+      sizeBytes: buffer.length,
+      sha256: createHash('sha256').update(buffer).digest('hex'),
+    };
+  }
+
   async readStream(storageKey: string): Promise<NodeJS.ReadableStream> {
     const cmd = new this.sdk.GetObjectCommand({
       Bucket: this.options.bucket,
@@ -194,6 +214,14 @@ async function loadOptional<T>(spec: string, message: string): Promise<T> {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(`${message} (${cause})`);
   }
+}
+
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  return Buffer.concat(chunks);
 }
 
 function isReadable(value: unknown): value is NodeJS.ReadableStream {

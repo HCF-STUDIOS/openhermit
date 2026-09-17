@@ -1,6 +1,8 @@
-import { userInfo } from 'node:os';
+import { userInfo, tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { posix as posixPath } from 'node:path';
+import path from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
 
 import {
   Agent,
@@ -21,6 +23,8 @@ import {
   type StoreScope,
   type UserRole,
   DbInternalStateStore,
+  isSkillBlobPath,
+  parseSkillBlobPath,
 } from '@openhermit/store';
 
 import {
@@ -125,6 +129,11 @@ import { McpClientManager } from './mcp-client.js';
 import { createMcpManagementToolset, createMcpStatusOnlyToolset } from './tools/mcp.js';
 import { createSkillManagementToolset } from './tools/skills.js';
 import {
+  scanUserSkills as scanUserSkillsImpl,
+  restoreUserSkills as restoreUserSkillsImpl,
+  type SkillScanResult,
+} from './skill-scan.js';
+import {
   DEFAULT_ATTACHMENT_MAX_BYTES,
   persistAttachmentFromSandbox,
 } from './attachments/index.js';
@@ -204,6 +213,9 @@ export class AgentRunner implements SessionRuntime {
   private readonly containerManager: DockerContainerManager;
 
   private execBackendManager: ExecBackendManager | undefined;
+
+  /** De-dupes concurrent user-skill scan/restore triggered by onEnsured. */
+  private userSkillsSyncInFlight: Promise<void> | null = null;
 
   private readonly store: InternalStateStore;
 
@@ -520,12 +532,48 @@ export class AgentRunner implements SessionRuntime {
             await store.update(sandboxId, next);
           },
         });
-        return this.execBackendManager;
+        return this.wireUserSkillBootstrap(this.execBackendManager);
       }
     }
 
     this.execBackendManager = ExecBackendManager.fromConfig(config.exec, ctxBase);
-    return this.execBackendManager;
+    return this.wireUserSkillBootstrap(this.execBackendManager);
+  }
+
+  /**
+   * Attach the user-skill reconcile hook to the default backend. Fires whenever
+   * a sandbox actually starts (connect/resume or fresh create) — never on a
+   * chat-only turn that keeps the sandbox down, so it adds no extra resumes.
+   *   - always scan  → report the sandbox's user-skill files up into DB/blob
+   *                    (the sandbox is the source of truth for user skills).
+   *   - fresh only restore → a brand-new sandbox has no files yet, so first
+   *                    copy them back down from blob (DB/blob is the source of
+   *                    truth in that one case).
+   */
+  private wireUserSkillBootstrap(manager: ExecBackendManager): ExecBackendManager {
+    if (this.options.skillStore && this.options.skillArtifactStore) {
+      manager.getDefault().onEnsured = ({ fresh }) => this.bootstrapUserSkills(fresh);
+    }
+    return manager;
+  }
+
+  /** Restore-on-fresh (if needed) then scan; de-duped so overlapping ensures
+   *  share one reconcile. Best-effort — failures are logged, never thrown. */
+  private bootstrapUserSkills(fresh: boolean): Promise<void> {
+    if (this.userSkillsSyncInFlight) return this.userSkillsSyncInFlight;
+    this.userSkillsSyncInFlight = (async () => {
+      try {
+        if (fresh) await this.restoreUserSkills();
+        await this.scanUserSkills();
+      } catch (err) {
+        this.logRuntime(
+          `user skill bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        this.userSkillsSyncInFlight = null;
+      }
+    })();
+    return this.userSkillsSyncInFlight;
   }
 
   resetWorkspaceIdleTimer(lifecycle: import('./core/types.js').WorkspaceContainerLifecycle | undefined): void {
@@ -564,7 +612,87 @@ export class AgentRunner implements SessionRuntime {
   async syncSkills(skills: import('./core/exec-backend.js').SyncSkillEntry[]): Promise<void> {
     const config = await this.options.security.readConfig();
     const manager = await this.ensureExecBackendManager(config);
-    await manager.syncSkills(skills);
+
+    // Skills whose `path` is a `blob:` pointer live in blob storage, not on a
+    // local disk. Materialize each into an ephemeral temp dir so the backend
+    // sync (which copies from a host path) has real files to read; bare paths
+    // pass through untouched for backward compatibility. The temp root is
+    // removed once the sync lands — nothing persistent stays on local disk.
+    const blobEntries = skills.filter((s) => isSkillBlobPath(s.sourcePath));
+    if (blobEntries.length === 0) {
+      await manager.syncSkills(skills);
+      return;
+    }
+
+    const artifactStore = this.options.skillArtifactStore;
+    if (!artifactStore) {
+      throw new Error(
+        'skill sync received blob: paths but no skillArtifactStore is configured',
+      );
+    }
+
+    const stageRoot = await mkdtemp(path.join(tmpdir(), 'oh-skill-stage-'));
+    try {
+      const materialized = await Promise.all(
+        skills.map(async (skill) => {
+          const storageKey = parseSkillBlobPath(skill.sourcePath);
+          if (!storageKey) return skill;
+          const destDir = path.join(stageRoot, skill.source, skill.id);
+          await artifactStore.restoreTo(storageKey, destDir);
+          return { ...skill, sourcePath: destDir };
+        }),
+      );
+      await manager.syncSkills(materialized);
+    } finally {
+      await rm(stageRoot, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Re-index the agent's user skills from the sandbox filesystem. Walks the
+   * default backend's `.openhermit/skills/user/` via its FileBackend, backs each
+   * folder up to blob storage, and reconciles the DB index (the sandbox is the
+   * source of truth). No-op when no skill store / artifact store is configured.
+   */
+  async scanUserSkills(): Promise<SkillScanResult | undefined> {
+    const skillStore = this.options.skillStore;
+    const artifactStore = this.options.skillArtifactStore;
+    if (!skillStore || !artifactStore) return undefined;
+    const config = await this.options.security.readConfig();
+    const manager = await this.ensureExecBackendManager(config);
+    const backend = manager.getDefault();
+    await backend.ensure();
+    return scanUserSkillsImpl({
+      agentId: this.scope.agentId,
+      agentHome: backend.agentHome,
+      files: backend.files,
+      skillStore,
+      artifactStore,
+      log: (m) => this.logRuntime(m),
+    });
+  }
+
+  /**
+   * Restore backed-up user skills into a fresh default backend, once per sandbox
+   * lifetime (gated on a `.restored` marker; existing folders are never
+   * overwritten). No-op without a skill store / artifact store.
+   */
+  async restoreUserSkills(): Promise<void> {
+    const skillStore = this.options.skillStore;
+    const artifactStore = this.options.skillArtifactStore;
+    if (!skillStore || !artifactStore) return;
+    const config = await this.options.security.readConfig();
+    const manager = await this.ensureExecBackendManager(config);
+    const backend = manager.getDefault();
+    await backend.ensure();
+    await restoreUserSkillsImpl({
+      agentId: this.scope.agentId,
+      agentHome: backend.agentHome,
+      files: backend.files,
+      skillStore,
+      artifactStore,
+      log: (m) => this.logRuntime(m),
+    });
   }
 
   /**
@@ -2659,18 +2787,15 @@ export class AgentRunner implements SessionRuntime {
         }
       }
 
-      if (isOwnerOrUnresolved && this.options.skillStore) {
-        const skillStore = this.options.skillStore;
-        const agentId = this.scope.agentId;
-        const resyncSkills = async (): Promise<void> => {
-          const enabled = await skillStore.listEnabled(agentId);
-          await this.syncSkills(
-            // SyncSkillEntry.id is the folder basename — must be the slug,
-            // not the (possibly encoded) storage id.
-            enabled.map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source })),
-          );
-        };
-        toolsets.push(wrapToolset(createSkillManagementToolset(skillStore, agentId, resyncSkills)));
+      if (isOwnerOrUnresolved && this.options.skillStore && this.options.skillArtifactStore) {
+        toolsets.push(
+          wrapToolset(
+            createSkillManagementToolset(async () => {
+              const result = await this.scanUserSkills();
+              return result ?? { scanned: [], upserted: [], removed: [], skipped: [] };
+            }),
+          ),
+        );
       }
 
       tools = toolsFromToolsets(toolsets);

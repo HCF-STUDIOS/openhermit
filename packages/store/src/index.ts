@@ -16,6 +16,7 @@ export type {
   ApprovalRequestStore,
   AttachmentStore,
   AttachmentStorage,
+  BlobStorage,
   ResearchStore,
 } from './interfaces.js';
 
@@ -83,6 +84,16 @@ export type {
 
 export { STANDALONE_AGENT_ID, standaloneScope, skillStorageId } from './types.js';
 
+export {
+  SKILL_BLOB_SCHEME,
+  SKILL_BLOB_PREFIX,
+  buildSkillBlobKey,
+  toSkillBlobPath,
+  parseSkillBlobPath,
+  isSkillBlobPath,
+  type SkillArtifactRef,
+} from './skill-artifacts.js';
+
 /**
  * Reserved session id for the per-agent owner inbox feed (read-only).
  * See `docs/inbox-design.md`.
@@ -131,6 +142,11 @@ export {
   type S3AttachmentStorageOptions,
   SupabaseAttachmentStorage,
   type SupabaseAttachmentStorageOptions,
+  SkillArtifactStore,
+  packSkillDir,
+  unpackSkillTar,
+  sha256Hex,
+  type PutSkillResult,
   DbMetaStore,
   DbConsumedJtiStore,
   generateSecretsKey,
