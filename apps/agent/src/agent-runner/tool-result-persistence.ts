@@ -1,4 +1,5 @@
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
+import type { ToolResultStore } from '@openhermit/store';
 
 import type { AgentWorkspace } from '../core/index.js';
 
@@ -97,13 +98,29 @@ export const buildToolResultPreview = (
   return { preview: preview + footer, filePath };
 };
 
-/** Persist the full tool result content to a workspace file. */
+/**
+ * Persist the full tool result content to the workspace file and, when a
+ * durable `store` is provided, mirror it to blob storage (keyed by agent +
+ * tool-call id) so a fresh gateway with an empty workspace can restore it.
+ *
+ * The blob mirror is best-effort: the local write already succeeded, so a blob
+ * failure is swallowed rather than surfaced — durability is an optimization,
+ * not a correctness requirement for the current session.
+ */
 export const persistToolResult = async (
   workspace: AgentWorkspace,
   toolCallId: string,
   fullText: string,
+  opts?: { store?: ToolResultStore; agentId?: string },
 ): Promise<void> => {
   await workspace.writeFile(toolResultPath(toolCallId), fullText);
+  if (opts?.store && opts.agentId) {
+    try {
+      await opts.store.put(opts.agentId, toolCallId, fullText);
+    } catch {
+      // Best-effort durable mirror; the local copy is authoritative this session.
+    }
+  }
 };
 
 // ── Recent tool-result rehydration ─────────────────────────────────────
@@ -123,10 +140,17 @@ export const persistToolResult = async (
 export const rehydrateRecentToolResults = async (
   workspace: AgentWorkspace,
   messages: AgentMessage[],
-  opts?: { perResultChars?: number; totalBudgetChars?: number },
+  opts?: {
+    perResultChars?: number;
+    totalBudgetChars?: number;
+    store?: ToolResultStore;
+    agentId?: string;
+  },
 ): Promise<{ messages: AgentMessage[]; protectedIndices: Set<number> }> => {
   const perResultChars = opts?.perResultChars ?? RECENT_TOOL_RESULT_PREVIEW_CHARS;
   const totalBudgetChars = opts?.totalBudgetChars ?? RECENT_TOOL_RESULT_TOTAL_BUDGET_CHARS;
+  const store = opts?.store;
+  const agentId = opts?.agentId;
   const protectedIndices = new Set<number>();
 
   if (perResultChars <= 0 || totalBudgetChars <= 0) {
@@ -147,9 +171,19 @@ export const rehydrateRecentToolResults = async (
     try {
       fullText = await workspace.readFile(toolResultPath(toolCallId));
     } catch {
-      // Not offloaded (result was already small) or workspace file gone —
-      // nothing to expand.
-      continue;
+      // Local miss: either the result was never offloaded (already small), or
+      // the workspace copy is gone (ephemeral workspace after a volume-free
+      // restart). Fall back to the durable blob copy when configured, and
+      // restore it locally so a later `read_file` on the same path also hits.
+      if (!store || !agentId) continue;
+      const restored = await store.get(agentId, toolCallId);
+      if (restored === null) continue;
+      fullText = restored;
+      try {
+        await workspace.writeFile(toolResultPath(toolCallId), restored);
+      } catch {
+        // Restore-to-cache is best-effort; we still expand from `restored`.
+      }
     }
 
     const currentChars = message.content.reduce(

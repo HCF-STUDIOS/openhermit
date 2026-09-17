@@ -3480,7 +3480,10 @@ export class AgentRunner implements SessionRuntime {
     // `protectedIndices` exempts the expanded results from the truncation cap
     // below so the larger preview survives.
     const { messages: rehydratedMessages, protectedIndices } =
-      await rehydrateRecentToolResults(this.options.workspace, cleanedMessages);
+      await rehydrateRecentToolResults(this.options.workspace, cleanedMessages, {
+        ...(this.options.toolResultStore ? { store: this.options.toolResultStore } : {}),
+        agentId: this.scope.agentId,
+      });
 
     // Truncate oversized tool results before compaction so that a single
     // huge tool response cannot blow past the entire context window.
@@ -4054,7 +4057,10 @@ export class AgentRunner implements SessionRuntime {
 
         void this.queueSideEffect(session, async () => {
           if (truncation && resultText) {
-            await persistToolResult(this.options.workspace, event.toolCallId, resultText);
+            await persistToolResult(this.options.workspace, event.toolCallId, resultText, {
+              ...(this.options.toolResultStore ? { store: this.options.toolResultStore } : {}),
+              agentId: this.scope.agentId,
+            });
           }
           await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
             ts,

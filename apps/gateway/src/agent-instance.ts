@@ -7,7 +7,7 @@ import {
   createLangfuseShutdownHandler,
   type LangfuseClientLike,
 } from '@openhermit/agent/langfuse';
-import type { AgentConfigStore, AgentStore, ApprovalRequestStore, AttachmentStorage, AttachmentStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillArtifactStore, SkillStore } from '@openhermit/store';
+import type { AgentConfigStore, AgentStore, ApprovalRequestStore, AttachmentStorage, AttachmentStore, McpServerStore, PolicyStore, SandboxStore, SecretStore, SkillArtifactStore, SkillStore, ToolResultStore } from '@openhermit/store';
 
 import type { ChannelPool } from './channel-pool.js';
 
@@ -116,6 +116,7 @@ export class AgentInstanceManager {
   private attachmentStore: AttachmentStore | undefined;
   private attachmentStorage: AttachmentStorage | undefined;
   private skillArtifactStore: SkillArtifactStore | undefined;
+  private toolResultStore: ToolResultStore | undefined;
 
   setAttachmentStore(store: AttachmentStore): void {
     this.attachmentStore = store;
@@ -131,6 +132,10 @@ export class AgentInstanceManager {
 
   getSkillArtifactStore(): SkillArtifactStore | undefined {
     return this.skillArtifactStore;
+  }
+
+  setToolResultStore(store: ToolResultStore): void {
+    this.toolResultStore = store;
   }
 
   getConfigStore(): AgentConfigStore | undefined {
@@ -220,6 +225,7 @@ export class AgentInstanceManager {
       ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
       ...(this.attachmentStorage ? { attachmentStorage: this.attachmentStorage } : {}),
       ...(this.skillArtifactStore ? { skillArtifactStore: this.skillArtifactStore } : {}),
+      ...(this.toolResultStore ? { toolResultStore: this.toolResultStore } : {}),
       // Detached research phases run after their HTTP request returns 202;
       // holding the busy counter for their whole execution keeps the idle-LRU
       // sweep from evicting a runner mid-plan/mid-loop/mid-synthesis.

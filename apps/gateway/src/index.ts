@@ -30,6 +30,7 @@ import {
   S3AttachmentStorage,
   SupabaseAttachmentStorage,
   SkillArtifactStore,
+  ToolResultStore,
   type AttachmentStorage,
   runMigrations,
 } from '@openhermit/store';
@@ -423,6 +424,24 @@ export const main = async (): Promise<void> => {
   }
   if (skillArtifactStore) {
     instances.setSkillArtifactStore(skillArtifactStore);
+  }
+
+  // Durable blob mirror for offloaded tool results. Opt-in via config: without
+  // it, large tool results stay local-workspace-only (the legacy behavior). A
+  // dedicated bucket holds `<agentId>/<toolCallId>.json` at its root (prefix
+  // ''), so a volume-free restart can restore results the workspace has lost.
+  let toolResultStore: ToolResultStore | undefined;
+  if (config.toolResults?.storage) {
+    const toolResultStorage = await buildBlobStorage(
+      config.toolResults.storage,
+      logStartup,
+      'tool-result',
+      'tool-results',
+    );
+    toolResultStore = new ToolResultStore(toolResultStorage, '');
+  }
+  if (toolResultStore) {
+    instances.setToolResultStore(toolResultStore);
   }
 
   if (sandboxStore) {
