@@ -159,6 +159,26 @@ export class SupabaseAttachmentStorage implements AttachmentStorage {
     return { storageKey, sizeBytes: buffer.length, sha256 };
   }
 
+  async putObject(input: {
+    storageKey: string;
+    contentType: string;
+    body: NodeJS.ReadableStream | Buffer;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }> {
+    const buffer = Buffer.isBuffer(input.body) ? input.body : await streamToBuffer(input.body);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    // upsert:true — skill artifacts are re-published in place at a
+    // deterministic key, unlike attachments (upsert:false, write-once).
+    const { error } = await this.client.storage.from(this.options.bucket).upload(
+      this.absoluteKey(input.storageKey),
+      buffer,
+      { contentType: input.contentType, upsert: true },
+    );
+    if (error) {
+      throw new Error(`SupabaseAttachmentStorage putObject failed: ${error.message}`);
+    }
+    return { storageKey: input.storageKey, sizeBytes: buffer.length, sha256 };
+  }
+
   async readStream(storageKey: string): Promise<NodeJS.ReadableStream> {
     const { data, error } = await this.client.storage
       .from(this.options.bucket)

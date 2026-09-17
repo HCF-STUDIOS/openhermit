@@ -382,6 +382,19 @@ export interface AttachmentStorage {
     contentType: string;
     body: NodeJS.ReadableStream;
   }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }>;
+  /**
+   * Store an object at a caller-supplied key, overwriting any existing object
+   * at that key. Unlike `put` — which derives an attachment-shaped key from
+   * agent/session/attachment ids — the caller owns the whole key namespace.
+   * Used for non-attachment artifacts such as skill archives, which are
+   * addressed by a deterministic key and re-published in place. Accepts a
+   * Buffer or a readable stream.
+   */
+  putObject(input: {
+    storageKey: string;
+    contentType: string;
+    body: NodeJS.ReadableStream | Buffer;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }>;
   readStream(storageKey: string): Promise<NodeJS.ReadableStream>;
   /** Returns null when the provider has no signed-URL concept (e.g. local disk). */
   getSignedUrl(
