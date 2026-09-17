@@ -29,6 +29,7 @@ import {
   LocalAttachmentStorage,
   S3AttachmentStorage,
   SupabaseAttachmentStorage,
+  SkillArtifactStore,
   type AttachmentStorage,
   runMigrations,
 } from '@openhermit/store';
@@ -386,6 +387,11 @@ export const main = async (): Promise<void> => {
   }
   if (attachmentStorage) {
     instances.setAttachmentStorage(attachmentStorage);
+    // Skills reuse the attachment blob backend (same provider/bucket, isolated
+    // under the `skills/` key prefix) so their content lives off the local
+    // volume. A dedicated skills bucket can be introduced later by wrapping a
+    // separately-built BlobStorage here.
+    instances.setSkillArtifactStore(new SkillArtifactStore(attachmentStorage));
   }
 
   if (sandboxStore) {

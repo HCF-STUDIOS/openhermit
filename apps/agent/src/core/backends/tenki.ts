@@ -61,6 +61,8 @@ export class TenkiExecBackend implements ExecBackend {
   readonly username: string;
   readonly agentHome: string;
   readonly files: TenkiFileBackend;
+  /** Runner-supplied hook fired after a real connect/create (see ExecBackend). */
+  onEnsured: ((info: { fresh: boolean }) => Promise<void>) | null = null;
 
   private readonly cpuCores: number;
   private readonly workspaceId: string | undefined;
@@ -70,7 +72,7 @@ export class TenkiExecBackend implements ExecBackend {
   private readonly baseUrl: string | undefined;
   private client: import('@tenkicloud/sandbox').TenkiSandbox | null = null;
   private session: import('@tenkicloud/sandbox').Session | null = null;
-  private ensureInFlight: Promise<void> | null = null;
+  private ensureInFlight: Promise<'live' | 'resumed' | 'created'> | null = null;
 
   constructor(
     config: TenkiExecBackendConfig,
@@ -112,20 +114,41 @@ export class TenkiExecBackend implements ExecBackend {
   }
 
   async ensure(): Promise<void> {
-    if (this.ensureInFlight) return this.ensureInFlight;
+    if (this.ensureInFlight) {
+      await this.ensureInFlight;
+      return;
+    }
     const pending = this.ensureSession();
     this.ensureInFlight = pending;
+    let outcome: 'live' | 'resumed' | 'created';
     try {
-      await pending;
+      outcome = await pending;
     } finally {
       if (this.ensureInFlight === pending) this.ensureInFlight = null;
     }
+    // Fire the hook only after the in-flight guard is cleared, so the reconcile
+    // it triggers can re-enter ensure() (a live session short-circuits) without
+    // awaiting the very promise it is running under. 'live' means we already
+    // had a handle this process — we fired when we first obtained it.
+    if (outcome !== 'live') await this.fireEnsured(outcome === 'created');
   }
 
-  private async ensureSession(): Promise<void> {
+  /**
+   * Invoke the runner's onEnsured hook after a real connect/create. Best-effort:
+   * a failing skill reconcile must never break sandbox startup.
+   */
+  private async fireEnsured(fresh: boolean): Promise<void> {
+    try {
+      await this.onEnsured?.({ fresh });
+    } catch {
+      // swallow — user-skill scan/restore is best-effort.
+    }
+  }
+
+  private async ensureSession(): Promise<'live' | 'resumed' | 'created'> {
     if (this.session) {
       await this.readySession(this.session);
-      return;
+      return 'live';
     }
     const client = await this.getClient();
 
@@ -149,7 +172,7 @@ export class TenkiExecBackend implements ExecBackend {
           await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'active' });
           await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
           await this.replayPendingSkillSync();
-          return;
+          return 'resumed';
         } catch (error) {
           this.session = null;
           throw error;
@@ -181,6 +204,7 @@ export class TenkiExecBackend implements ExecBackend {
       await session.closeIfOpen().catch(() => undefined);
       throw error;
     }
+    return 'created';
   }
 
   private async readySession(session: import('@tenkicloud/sandbox').Session): Promise<void> {

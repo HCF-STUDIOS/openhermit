@@ -63,6 +63,18 @@ export interface ExecBackend {
   /** First-class filesystem ops. Path-policy enforcement happens at the
    * tool layer; the backend assumes the caller is authorised. */
   readonly files: import('./backends/file-backend.js').FileBackend;
+  /**
+   * Optional hook the runner sets to react to a completed `ensure()`. Fires
+   * once each time `ensure()` actually connects/resumes or creates the sandbox
+   * (never when it short-circuits on an already-live handle). `fresh` is true
+   * only when a brand-new sandbox was created — i.e. its filesystem is empty.
+   *
+   * Used to reconcile agent-owned user skills: scan-on-every-startup reports
+   * the sandbox's skill files up into the DB/blob, and a fresh sandbox first
+   * gets those files restored back down from blob. Errors thrown here must not
+   * break `ensure()`; the invoking backend swallows them.
+   */
+  onEnsured?: ((info: { fresh: boolean }) => Promise<void>) | null;
 }
 
 // ── Config types ─────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
 import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
-import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillStore, UserRole } from '@openhermit/store';
+import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillArtifactStore, SkillStore, UserRole } from '@openhermit/store';
 
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
@@ -113,6 +113,13 @@ export interface AgentRunnerOptions {
   approvalRequestStore?: ApprovalRequestStore;
   attachmentStore?: AttachmentStore;
   attachmentStorage?: AttachmentStorage;
+  /**
+   * Blob-backed skill archive store. When provided, skills whose `path` is a
+   * `blob:` pointer are materialized from blob storage into an ephemeral cache
+   * dir before being synced into exec backends — so skill content no longer has
+   * to live on a persistent volume. Absent → legacy bare-path behavior only.
+   */
+  skillArtifactStore?: SkillArtifactStore;
   /**
    * Eviction fence for detached research phases: acquire before a phase
    * starts executing, release when it settles. Wired by the gateway's
