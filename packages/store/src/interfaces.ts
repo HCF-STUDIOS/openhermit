@@ -367,28 +367,19 @@ export interface AttachmentStore {
 }
 
 /**
- * Byte-storage provider for attachments. Independent of the metadata
- * store so the same provider impl (local disk / s3 / supabase) can be
- * reused across deployments without leaking storage details to the
- * gateway or to tools.
+ * Generic byte-storage backend, addressed by caller-owned keys and agnostic to
+ * what's being stored. The same provider impl (local disk / s3 / supabase) can
+ * back attachments, skill archives, or any future artifact — each pointed at
+ * its own bucket/prefix by constructing a separate instance, so storage config
+ * never leaks into the gateway or tools.
  */
-export interface AttachmentStorage {
+export interface BlobStorage {
   readonly name: string;
-  put(input: {
-    agentId: string;
-    sessionId: string;
-    attachmentId: string;
-    filename: string;
-    contentType: string;
-    body: NodeJS.ReadableStream;
-  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }>;
   /**
    * Store an object at a caller-supplied key, overwriting any existing object
-   * at that key. Unlike `put` — which derives an attachment-shaped key from
-   * agent/session/attachment ids — the caller owns the whole key namespace.
-   * Used for non-attachment artifacts such as skill archives, which are
-   * addressed by a deterministic key and re-published in place. Accepts a
-   * Buffer or a readable stream.
+   * at that key. The caller owns the whole key namespace — used for artifacts
+   * that are addressed by a deterministic key and re-published in place (e.g.
+   * skill archives). Accepts a Buffer or a readable stream.
    */
   putObject(input: {
     storageKey: string;
@@ -402,6 +393,23 @@ export interface AttachmentStorage {
     options: { expiresInSeconds: number },
   ): Promise<string | null>;
   delete(storageKey: string): Promise<void>;
+}
+
+/**
+ * Byte-storage provider for attachments: a `BlobStorage` plus the
+ * attachment-shaped `put`, which derives its key from agent/session/attachment
+ * ids and is write-once. Independent of the metadata store so the same provider
+ * impl can be reused across deployments without leaking storage details.
+ */
+export interface AttachmentStorage extends BlobStorage {
+  put(input: {
+    agentId: string;
+    sessionId: string;
+    attachmentId: string;
+    filename: string;
+    contentType: string;
+    body: NodeJS.ReadableStream;
+  }): Promise<{ storageKey: string; sizeBytes: number; sha256: string }>;
 }
 
 /**

@@ -16,6 +16,7 @@ export type {
   ApprovalRequestStore,
   AttachmentStore,
   AttachmentStorage,
+  BlobStorage,
   ResearchStore,
 } from './interfaces.js';
 

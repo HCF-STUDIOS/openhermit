@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import * as tar from 'tar';
 
-import type { AttachmentStorage } from '../interfaces.js';
+import type { BlobStorage } from '../interfaces.js';
 import {
   buildSkillBlobKey,
   toSkillBlobPath,
@@ -59,13 +59,14 @@ export interface PutSkillResult {
 /**
  * Stores skill directories as gzipped tar objects in blob storage, addressed by
  * a deterministic key derived from (source, slug, ownerAgentId). Thin wrapper
- * over `AttachmentStorage.putObject` / `readStream` — the same Local / S3 /
- * Supabase providers used for attachments back it, so no new storage config is
- * introduced.
+ * over a `BlobStorage` — the same Local / S3 / Supabase providers used for
+ * attachments implement it, so skills can share the attachment provider or be
+ * given their own separately-configured instance (e.g. a different Supabase
+ * bucket) without introducing a new storage abstraction.
  */
 export class SkillArtifactStore {
   constructor(
-    private readonly storage: AttachmentStorage,
+    private readonly storage: BlobStorage,
     private readonly prefix?: string,
   ) {}
 
