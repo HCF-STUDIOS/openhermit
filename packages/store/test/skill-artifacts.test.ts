@@ -30,6 +30,17 @@ test('buildSkillBlobKey — honors a custom prefix', () => {
   );
 });
 
+test('buildSkillBlobKey — empty prefix addresses the bucket root (no leading slash)', () => {
+  assert.equal(
+    buildSkillBlobKey({ source: 'system', slug: 'web-search' }, ''),
+    'system/web-search.tar.gz',
+  );
+  assert.equal(
+    buildSkillBlobKey({ source: 'user', slug: 'my-skill', ownerAgentId: 'agent_abc' }, ''),
+    'user/agent_abc/my-skill.tar.gz',
+  );
+});
+
 test('buildSkillBlobKey — is deterministic for the same ref', () => {
   const ref = { source: 'user' as const, slug: 's', ownerAgentId: 'a' };
   assert.equal(buildSkillBlobKey(ref), buildSkillBlobKey(ref));

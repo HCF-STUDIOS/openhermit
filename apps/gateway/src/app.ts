@@ -39,6 +39,7 @@ import type {
   AttachmentStorage,
 } from '@openhermit/store';
 import { buildInboxSessionEntry, isSkillBlobPath } from '@openhermit/store';
+import { migrateSkillsToBlob } from './skill-blob-migrate.js';
 import type { SandboxPreset } from './config.js';
 import { defaultGatewayConfig, parseGatewayConfig, saveGatewayConfig, META_KEY } from './config.js';
 import type { ChannelRegistry } from './auth.js';
@@ -2401,73 +2402,15 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       );
     }
     const body = (await c.req.json().catch(() => ({}))) as { apply?: boolean };
-    const apply = body.apply === true;
-    const { stat } = await import('node:fs/promises');
-
-    const skills = await store.list();
-    const wouldMigrate: Array<{ id: string; slug: string; source: string; path: string }> = [];
-    const missingFile: Array<{ id: string; slug: string; source: string; path: string }> = [];
-    const migrated: Array<{ id: string; slug: string; blobPath: string; sizeBytes: number; skipped: boolean }> = [];
-    const errors: Array<{ id: string; error: string }> = [];
-    let alreadyBlob = 0;
-
-    for (const skill of skills) {
-      if (isSkillBlobPath(skill.path)) {
-        alreadyBlob++;
-        continue;
-      }
-      // Legacy bare path — does the directory actually exist on this volume?
-      let dirExists = false;
-      try {
-        const st = await stat(skill.path);
-        dirExists = st.isDirectory();
-      } catch {
-        dirExists = false;
-      }
-      const summary = { id: skill.id, slug: skill.slug, source: skill.source, path: skill.path };
-      if (!dirExists) {
-        // Legacy path but no local file → not ours to migrate; leave untouched.
-        missingFile.push(summary);
-        continue;
-      }
-      wouldMigrate.push(summary);
-      if (!apply) continue;
-
-      try {
-        const ref =
-          skill.source === 'user'
-            ? { source: 'user' as const, slug: skill.slug, ownerAgentId: skill.ownerAgentId ?? '' }
-            : { source: 'system' as const, slug: skill.slug };
-        const priorSha256 =
-          typeof skill.metadata?.sha256 === 'string' ? (skill.metadata.sha256 as string) : undefined;
-        const put = await artifactStore.putSkill(ref, skill.path, priorSha256 ? { priorSha256 } : undefined);
-        const now = new Date().toISOString();
-        await store.upsert({
-          ...skill,
-          path: put.path,
-          metadata: { ...(skill.metadata ?? {}), sha256: put.sha256, version: now },
-          updatedAt: now,
-        });
-        migrated.push({ id: skill.id, slug: skill.slug, blobPath: put.path, sizeBytes: put.sizeBytes, skipped: put.skipped });
-      } catch (error) {
-        errors.push({ id: skill.id, error: error instanceof Error ? error.message : String(error) });
-      }
+    const result = await migrateSkillsToBlob(store, artifactStore, { apply: body.apply === true });
+    if (!result.apply) {
+      // Dry run: omit the write-only sections to keep the response focused on the plan.
+      const { migrated: _m, errors: _e, ...plan } = result;
+      void _m;
+      void _e;
+      return c.json(plan);
     }
-
-    return c.json({
-      apply,
-      totals: {
-        total: skills.length,
-        alreadyBlob,
-        wouldMigrate: wouldMigrate.length,
-        missingFile: missingFile.length,
-        migrated: migrated.length,
-        errors: errors.length,
-      },
-      wouldMigrate,
-      missingFile,
-      ...(apply ? { migrated, errors } : {}),
-    });
+    return c.json(result);
   });
 
   const syncAffectedAgentSkillMounts = async (agentId: string, store: DbSkillStore): Promise<void> => {

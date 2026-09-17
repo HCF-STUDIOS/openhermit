@@ -48,6 +48,7 @@ import { ChannelPool } from './channel-pool.js';
 import { CentralScheduler } from './central-scheduler.js';
 import { backfillSandboxes } from './sandbox-backfill.js';
 import { createGatewayApp } from './app.js';
+import { migrateSkillsToBlob } from './skill-blob-migrate.js';
 import { buildChannelManifestRegistry } from './channel-manifests.js';
 import {
   loadGatewayConfig,
@@ -73,15 +74,19 @@ const DEFAULT_CONFIG_FILENAME = 'gateway.json';
  * the admin UI or seeded from gateway.json on first boot. Falls back to
  * local-disk storage when no block is configured.
  */
-const buildAttachmentStorage = async (
-  config: GatewayConfig,
+/**
+ * Build a blob-storage provider (local/s3/supabase) from a storage config
+ * block. `label` names the consumer (e.g. "attachment", "skill") for log lines
+ * and, for local storage, selects the default on-disk root subdirectory.
+ */
+const buildBlobStorage = async (
+  storageConfig: AttachmentStorageConfig,
   log: (message: string) => void,
+  label: string,
+  localSubdir: string,
 ): Promise<AttachmentStorage> => {
-  const storageConfig: AttachmentStorageConfig =
-    config.attachments?.storage ?? { provider: 'local' };
-
   if (storageConfig.provider === 's3') {
-    log(`attachment storage: s3 bucket=${storageConfig.bucket}`);
+    log(`${label} storage: s3 bucket=${storageConfig.bucket}`);
     const opts: Parameters<typeof S3AttachmentStorage.open>[0] = {
       bucket: storageConfig.bucket,
     };
@@ -98,7 +103,7 @@ const buildAttachmentStorage = async (
   }
 
   if (storageConfig.provider === 'supabase') {
-    log(`attachment storage: supabase bucket=${storageConfig.bucket}`);
+    log(`${label} storage: supabase bucket=${storageConfig.bucket}`);
     const opts: Parameters<typeof SupabaseAttachmentStorage.open>[0] = {
       bucket: storageConfig.bucket,
     };
@@ -110,10 +115,21 @@ const buildAttachmentStorage = async (
   }
 
   const root =
-    storageConfig.root ?? path.join(resolveOpenHermitHome(), 'attachments');
-  log(`attachment storage: local root=${root}`);
+    storageConfig.root ?? path.join(resolveOpenHermitHome(), localSubdir);
+  log(`${label} storage: local root=${root}`);
   return new LocalAttachmentStorage({ root });
 };
+
+const buildAttachmentStorage = async (
+  config: GatewayConfig,
+  log: (message: string) => void,
+): Promise<AttachmentStorage> =>
+  buildBlobStorage(
+    config.attachments?.storage ?? { provider: 'local' },
+    log,
+    'attachment',
+    'attachments',
+  );
 
 type NodeFetchCallback = Parameters<typeof createAdaptorServer>[0]['fetch'];
 
@@ -387,11 +403,26 @@ export const main = async (): Promise<void> => {
   }
   if (attachmentStorage) {
     instances.setAttachmentStorage(attachmentStorage);
-    // Skills reuse the attachment blob backend (same provider/bucket, isolated
-    // under the `skills/` key prefix) so their content lives off the local
-    // volume. A dedicated skills bucket can be introduced later by wrapping a
-    // separately-built BlobStorage here.
-    instances.setSkillArtifactStore(new SkillArtifactStore(attachmentStorage));
+  }
+
+  // Skill artifacts get their own blob backend when `skills.storage` is
+  // configured — a dedicated bucket whose root holds `system/` and `user/`
+  // (prefix ''). Otherwise they reuse the attachment backend, isolated under
+  // the default `skills/` key prefix so nothing collides with attachments.
+  let skillArtifactStore: SkillArtifactStore | undefined;
+  if (config.skills?.storage) {
+    const skillStorage = await buildBlobStorage(
+      config.skills.storage,
+      logStartup,
+      'skill',
+      'skills',
+    );
+    skillArtifactStore = new SkillArtifactStore(skillStorage, '');
+  } else if (attachmentStorage) {
+    skillArtifactStore = new SkillArtifactStore(attachmentStorage);
+  }
+  if (skillArtifactStore) {
+    instances.setSkillArtifactStore(skillArtifactStore);
   }
 
   if (sandboxStore) {
@@ -408,24 +439,77 @@ export const main = async (): Promise<void> => {
   if (skillStore) {
     instances.setSkillStore(skillStore);
 
-    // Auto-register built-in skills into DB.
+    // Auto-register built-in skills into DB. When a skill artifact store is
+    // configured, publish each built-in directory to blob storage and record a
+    // `blob:` pointer — otherwise the row would be reset to a bare volume path on
+    // every boot, quietly undoing the migration below. Dedup by sha256 (from the
+    // prior row's metadata) keeps re-registration cheap when nothing changed.
     const builtinSkillsDir = path.resolve(gatewayDir, '../../../skills');
     const builtinSkills = await scanSkillDirectory(builtinSkillsDir, builtinSkillsDir, 'system');
+    const priorBySlug = new Map(
+      (await skillStore.list()).map((s) => [
+        s.slug,
+        typeof s.metadata?.sha256 === 'string' ? (s.metadata.sha256 as string) : undefined,
+      ]),
+    );
     for (const skill of builtinSkills) {
       const now = new Date().toISOString();
+      let skillPath = skill.path;
+      let metadata: Record<string, unknown> | undefined;
+      if (skillArtifactStore) {
+        try {
+          const priorSha256 = priorBySlug.get(skill.id);
+          const put = await skillArtifactStore.putSkill(
+            { source: 'system', slug: skill.id },
+            skill.path,
+            priorSha256 ? { priorSha256 } : undefined,
+          );
+          skillPath = put.path;
+          metadata = { sha256: put.sha256, version: now };
+        } catch (error) {
+          // Fall back to the bare path so the skill is still usable this boot.
+          logStartup(
+            `built-in skill "${skill.id}" blob publish failed: ` +
+              (error instanceof Error ? error.message : String(error)),
+          );
+        }
+      }
       await skillStore.upsert({
         id: skill.id,
         slug: skill.id,
         name: skill.name,
         description: skill.description,
-        path: skill.path,
+        path: skillPath,
         source: 'system',
+        ...(metadata ? { metadata } : {}),
         createdAt: now,
         updatedAt: now,
       });
     }
     if (builtinSkills.length > 0) {
       logStartup(`registered ${builtinSkills.length} built-in skill(s)`);
+    }
+
+    // Auto-migrate any remaining legacy bare-path skills (user skills, or
+    // system skills whose local dir still exists) to blob storage, so the local
+    // volume can be dropped. Best-effort and idempotent: already-`blob:` rows
+    // and rows with no local file are left untouched. Never blocks startup.
+    if (skillArtifactStore) {
+      try {
+        const result = await migrateSkillsToBlob(skillStore, skillArtifactStore, { apply: true });
+        const { migrated, alreadyBlob, missingFile, errors } = result.totals;
+        if (migrated > 0 || errors > 0) {
+          logStartup(
+            `skill blob auto-migrate: migrated=${migrated} alreadyBlob=${alreadyBlob} ` +
+              `missingFile=${missingFile} errors=${errors}`,
+          );
+        }
+      } catch (error) {
+        logStartup(
+          `skill blob auto-migrate failed: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
     }
   }
 

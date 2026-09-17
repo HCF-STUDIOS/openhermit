@@ -44,17 +44,21 @@ const assertSafeSegment = (value: string, label: string): string => {
  *
  *   system: <prefix>/system/<slug>.tar.gz
  *   user:   <prefix>/user/<ownerAgentId>/<slug>.tar.gz
+ *
+ * An empty `prefix` addresses the bucket root directly (`system/<slug>.tar.gz`),
+ * which is what a dedicated skills bucket wants — no leading slash.
  */
 export const buildSkillBlobKey = (
   ref: SkillArtifactRef,
   prefix: string = SKILL_BLOB_PREFIX,
 ): string => {
   const slug = assertSafeSegment(ref.slug, 'slug');
+  const head = prefix ? `${prefix}/` : '';
   if (ref.source === 'user') {
     const owner = assertSafeSegment(ref.ownerAgentId ?? '', 'ownerAgentId');
-    return `${prefix}/user/${owner}/${slug}.tar.gz`;
+    return `${head}user/${owner}/${slug}.tar.gz`;
   }
-  return `${prefix}/system/${slug}.tar.gz`;
+  return `${head}system/${slug}.tar.gz`;
 };
 
 /** Wrap a blob-storage key as a `blob:`-scheme `skills.path` pointer. */
