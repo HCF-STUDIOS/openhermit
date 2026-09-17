@@ -91,6 +91,7 @@ export {
   sha256Hex,
   type PutSkillResult,
 } from './skill-artifact-store.js';
+export { ToolResultStore } from './tool-result-store.js';
 export { FileSecretStore, type ConfigDirResolver } from './file-secret-store.js';
 export { DbSecretStore, generateSecretsKey } from './db-secret-store.js';
 export {

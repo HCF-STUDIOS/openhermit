@@ -1,6 +1,6 @@
 import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
 import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
-import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillArtifactStore, SkillStore, UserRole } from '@openhermit/store';
+import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillArtifactStore, SkillStore, ToolResultStore, UserRole } from '@openhermit/store';
 
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import type { SessionDescriptor } from '../runtime.js';
@@ -120,6 +120,14 @@ export interface AgentRunnerOptions {
    * to live on a persistent volume. Absent → legacy bare-path behavior only.
    */
   skillArtifactStore?: SkillArtifactStore;
+  /**
+   * Blob-backed durable store for offloaded tool-result payloads. When provided,
+   * large tool results persisted to `workspace/.openhermit/tool_results/*` are
+   * mirrored to blob storage on write and restored from it on read when the
+   * local workspace copy is missing (e.g. an ephemeral workspace after a
+   * volume-free restart). Absent → local-workspace-only behavior.
+   */
+  toolResultStore?: ToolResultStore;
   /**
    * Eviction fence for detached research phases: acquire before a phase
    * starts executing, release when it settles. Wired by the gateway's

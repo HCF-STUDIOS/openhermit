@@ -48,6 +48,17 @@ export interface SkillsConfig {
   storage: AttachmentStorageConfig;
 }
 
+/**
+ * Optional dedicated storage for offloaded tool-result payloads. When omitted,
+ * tool results are only written to the local agent workspace (the legacy
+ * volume-bound behavior). Point this at a bucket to mirror payloads durably so
+ * the workspace volume can be dropped; a dedicated bucket addresses the root
+ * directly (`<agentId>/<toolCallId>.json`).
+ */
+export interface ToolResultsConfig {
+  storage: AttachmentStorageConfig;
+}
+
 export interface GatewayConfig {
   ui: boolean;
   cors: { origin: string };
@@ -79,6 +90,14 @@ export interface GatewayConfig {
    * credentials still come from env, only non-secret pointers belong here.
    */
   skills?: SkillsConfig;
+  /**
+   * Optional dedicated storage for offloaded tool-result payloads. When
+   * omitted, large tool results live only on the local workspace volume. Point
+   * this at a bucket to mirror them durably (keyed by agent + tool-call id) so
+   * the workspace volume can be dropped; credentials still come from env, only
+   * non-secret pointers belong here.
+   */
+  toolResults?: ToolResultsConfig;
 }
 
 export const META_KEY = 'gateway.config';
@@ -238,6 +257,16 @@ const parseSkillsConfig = (raw: unknown): SkillsConfig | undefined => {
   return { storage };
 };
 
+const parseToolResultsConfig = (raw: unknown): ToolResultsConfig | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('toolResults must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const storage = parseStorageConfig(obj['storage'], 'toolResults.storage');
+  return { storage };
+};
+
 const parseAttachmentsConfig = (raw: unknown): AttachmentsConfig | undefined => {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -305,6 +334,8 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
   if (attachments) out.attachments = attachments;
   const skills = parseSkillsConfig(raw['skills']);
   if (skills) out.skills = skills;
+  const toolResults = parseToolResultsConfig(raw['toolResults']);
+  if (toolResults) out.toolResults = toolResults;
   return out;
 };
 

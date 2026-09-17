@@ -147,6 +147,7 @@ export {
   unpackSkillTar,
   sha256Hex,
   type PutSkillResult,
+  ToolResultStore,
   DbMetaStore,
   DbConsumedJtiStore,
   generateSecretsKey,
