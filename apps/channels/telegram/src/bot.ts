@@ -28,6 +28,18 @@ export interface BotOptions {
    * per interval. Defaults to 60s.
    */
   maxRetryDelayMs?: number;
+  /**
+   * Stop the polling loop after this many *consecutive* failures when the
+   * bot has never had a single successful poll since it started. This
+   * quiesces zombie channels — a revoked/never-configured token, or the
+   * losing side of a duplicate-token collision (two agents pointing at the
+   * same bot; Telegram lets only one poll, the others get a permanent
+   * `Conflict`) — which would otherwise re-poll at the backoff ceiling
+   * forever and storm the logs. A channel that ever succeeds resets the
+   * streak on every success, so a healthy-but-flapping bot never trips this.
+   * Set to 0 / undefined to disable (poll forever). Defaults to 50.
+   */
+  giveUpAfterConsecutiveErrors?: number;
   logger?: (message: string) => void;
   /**
    * Surface persistent polling-loop errors to the gateway so they show
@@ -36,6 +48,9 @@ export interface BotOptions {
    */
   reportRuntimeError?: (error: string | null) => void;
 }
+
+/** Default for {@link BotOptions.giveUpAfterConsecutiveErrors}. */
+export const DEFAULT_GIVE_UP_AFTER_CONSECUTIVE_ERRORS = 50;
 
 export interface WebhookRequestLike {
   headers: Record<string, string>;
@@ -57,6 +72,8 @@ export class TelegramBot {
   private pollAbort: AbortController | undefined;
   /** Consecutive failed polls; drives the exponential backoff, reset on success. */
   private consecutiveErrors = 0;
+  /** Cleared to true on the first successful poll; gates the give-up guard. */
+  private hasSucceeded = false;
 
   constructor(private readonly options: BotOptions) {
     this.api = new TelegramApi(options.botToken);
@@ -71,6 +88,18 @@ export class TelegramBot {
       this.options.pollingInterval ?? 1000,
       this.options.maxRetryDelayMs ?? 60_000,
     );
+  }
+
+  /**
+   * True once the loop has failed `giveUpAfterConsecutiveErrors` times in a
+   * row without ever polling successfully. Never fires for a bot that has had
+   * at least one success — those retry forever so a transient outage recovers.
+   */
+  private shouldGiveUp(): boolean {
+    if (this.hasSucceeded) return false;
+    const threshold =
+      this.options.giveUpAfterConsecutiveErrors ?? DEFAULT_GIVE_UP_AFTER_CONSECUTIVE_ERRORS;
+    return threshold > 0 && this.consecutiveErrors >= threshold;
   }
 
   async start(): Promise<void> {
@@ -126,6 +155,7 @@ export class TelegramBot {
       try {
         const updates = await this.api.getUpdates(this.pollOffset, 30, this.pollAbort.signal);
         this.consecutiveErrors = 0;
+        this.hasSucceeded = true;
         this.options.reportRuntimeError?.(null);
         for (const update of updates) {
           // Fire-and-forget so callback_query updates aren't blocked behind
@@ -137,9 +167,16 @@ export class TelegramBot {
         if (!this.running) break;
         if (error instanceof DOMException && error.name === 'AbortError') break;
         this.consecutiveErrors += 1;
-        const delay = this.backoffMs();
         const message =
           error instanceof Error ? error.message : String(error);
+        if (this.shouldGiveUp()) {
+          const giveUp = `polling stopped after ${this.consecutiveErrors} consecutive failures with no successful poll — last error: ${message}. Reconnect/reconfigure the channel to resume.`;
+          this.log(giveUp);
+          this.options.reportRuntimeError?.(giveUp);
+          this.running = false;
+          break;
+        }
+        const delay = this.backoffMs();
         this.log(`polling error: ${message} (retry in ${delay}ms, streak ${this.consecutiveErrors})`);
         this.options.reportRuntimeError?.(`polling error: ${message}`);
         await new Promise((resolve) => setTimeout(resolve, delay));
