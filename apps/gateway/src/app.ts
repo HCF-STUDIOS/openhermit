@@ -288,6 +288,8 @@ export interface GatewayAppOptions {
   sandboxPresets?: Record<string, SandboxPreset> | undefined;
   /** Default preset to use when an agent is created without an explicit `sandbox` field. Null disables auto-provisioning. */
   autoProvisionSandbox?: string | null | undefined;
+  /** Default model for newly-created agents (from gateway.config). Falls back to the hardcoded default when omitted. */
+  defaultModel?: import('./config.js').DefaultModelConfig | undefined;
   /** Live ChannelRegistry — handlers mutate this when channels are created/revoked. */
   channelRegistry?: ChannelRegistry | undefined;
   /** Channel manifest registry — drives builtin channel iteration in agent create. */
@@ -325,6 +327,7 @@ const resolveRunner = async (
 
 export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   const { instances, agentStore, adminToken, userStore, configStore, consumedJtiStore } = options;
+  const defaultModel = options.defaultModel;
   const log = options.logger ?? ((msg: string) => console.log(msg));
   const app = new Hono();
 
@@ -1022,7 +1025,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         500,
       );
     }
-    const templateConfig = buildDefaultAgentConfig(record.workspaceDir);
+    const templateConfig = buildDefaultAgentConfig(record.workspaceDir, defaultModel);
     if (
       body.access !== undefined &&
       body.access !== 'public' &&

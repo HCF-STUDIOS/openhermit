@@ -59,6 +59,19 @@ export interface ToolResultsConfig {
   storage: AttachmentStorageConfig;
 }
 
+/**
+ * Default model applied to newly-created agents that don't specify their own
+ * model. Lets operators change the platform default by editing config instead
+ * of shipping code. When omitted, the gateway falls back to the hardcoded
+ * default in `buildDefaultAgentConfig` (openrouter/google/gemini-3-flash-preview).
+ */
+export interface DefaultModelConfig {
+  provider: string;
+  model: string;
+  /** Optional; defaults to the fallback's max_tokens when omitted. */
+  max_tokens?: number;
+}
+
 export interface GatewayConfig {
   ui: boolean;
   cors: { origin: string };
@@ -98,6 +111,13 @@ export interface GatewayConfig {
    * non-secret pointers belong here.
    */
   toolResults?: ToolResultsConfig;
+  /**
+   * Optional default model for newly-created agents. When omitted, the gateway
+   * falls back to the hardcoded default in `buildDefaultAgentConfig`. Change
+   * this to switch the platform default (e.g. provider `amiko`, model
+   * `deepseek/deepseek-v4.1-flash`) without a code deploy.
+   */
+  defaultModel?: DefaultModelConfig;
 }
 
 export const META_KEY = 'gateway.config';
@@ -257,6 +277,26 @@ const parseSkillsConfig = (raw: unknown): SkillsConfig | undefined => {
   return { storage };
 };
 
+const parseDefaultModel = (raw: unknown): DefaultModelConfig | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('defaultModel must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  const provider = obj['provider'];
+  const model = obj['model'];
+  if (typeof provider !== 'string' || !provider) {
+    throw new Error('defaultModel.provider is required and must be a non-empty string');
+  }
+  if (typeof model !== 'string' || !model) {
+    throw new Error('defaultModel.model is required and must be a non-empty string');
+  }
+  const maxTokens = optionalPositiveInt(obj['max_tokens'], 'defaultModel.max_tokens');
+  const out: DefaultModelConfig = { provider, model };
+  if (maxTokens !== undefined) out.max_tokens = maxTokens;
+  return out;
+};
+
 const parseToolResultsConfig = (raw: unknown): ToolResultsConfig | undefined => {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -336,6 +376,8 @@ export const parseGatewayConfig = (raw: Record<string, unknown>): GatewayConfig 
   if (skills) out.skills = skills;
   const toolResults = parseToolResultsConfig(raw['toolResults']);
   if (toolResults) out.toolResults = toolResults;
+  const defaultModel = parseDefaultModel(raw['defaultModel']);
+  if (defaultModel) out.defaultModel = defaultModel;
   return out;
 };
 
