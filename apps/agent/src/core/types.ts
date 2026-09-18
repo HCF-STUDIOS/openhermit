@@ -158,18 +158,32 @@ export interface AgentRuntimeConfig {
 
 export type AgentConfig = AgentRuntimeConfig;
 
+/** Hardcoded fallback model used when no default is configured. */
+export const FALLBACK_DEFAULT_MODEL: AgentModelConfig = {
+  provider: 'openrouter',
+  model: 'google/gemini-3-flash-preview',
+  max_tokens: 8192,
+};
+
 /**
  * Build the default config.json content for a freshly-created agent.
  * Used by both the gateway's POST /agents endpoint and the agent's
  * security init fallback so a new agent is never written with a
  * minimal stub.
+ *
+ * `modelOverride` lets the gateway inject an operator-configured default
+ * model (from `gateway.config.defaultModel`) so the platform default can be
+ * changed by editing config instead of shipping code. Any fields it omits
+ * fall back to {@link FALLBACK_DEFAULT_MODEL}.
  */
-export const buildDefaultAgentConfig = (workspaceRoot: string): AgentRuntimeConfig => ({
+export const buildDefaultAgentConfig = (
+  workspaceRoot: string,
+  modelOverride?: Partial<AgentModelConfig>,
+): AgentRuntimeConfig => ({
   workspace_root: workspaceRoot,
   model: {
-    provider: 'openrouter',
-    model: 'google/gemini-3-flash-preview',
-    max_tokens: 8192,
+    ...FALLBACK_DEFAULT_MODEL,
+    ...(modelOverride ?? {}),
   },
   exec: {
     backends: [{ type: 'docker', image: 'ubuntu:24.04' }],

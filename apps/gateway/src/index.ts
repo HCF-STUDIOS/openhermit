@@ -556,6 +556,7 @@ export const main = async (): Promise<void> => {
     ...(consumedJtiStore ? { consumedJtiStore } : {}),
     sandboxPresets: config.sandboxPresets,
     autoProvisionSandbox: config.autoProvisionSandbox,
+    ...(config.defaultModel ? { defaultModel: config.defaultModel } : {}),
     channelRegistry: channels,
     manifestRegistry,
     auth,
