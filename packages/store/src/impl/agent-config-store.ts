@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import pg from 'pg';
 import { createStorePool } from './pool.js';
 
@@ -42,6 +42,11 @@ export class DbAgentConfigStore implements AgentConfigStore {
 
   async close(): Promise<void> {
     await this.pool?.end();
+  }
+
+  /** Cheap liveness probe: round-trips a `SELECT 1` to confirm the DB pool is reachable. */
+  async ping(): Promise<void> {
+    await this.db.execute(sql`select 1`);
   }
 
   async getConfig(agentId: string): Promise<Record<string, unknown> | null> {

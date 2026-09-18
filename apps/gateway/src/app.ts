@@ -907,9 +907,24 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   // --- gateway health ---
 
-  app.get('/health', (c) =>
-    c.json({ ok: true, role: 'gateway' }),
-  );
+  // Readiness probe. Railway gates deploy cutover on this endpoint, so it must
+  // reflect true readiness: the process is listening (implicit — this handler
+  // only runs after listen()) AND the DB pool is reachable. A `SELECT 1` is
+  // round-tripped with a short timeout so a hung/unreachable DB fails fast as
+  // 503 rather than hanging the healthcheck. When no DB is configured (e.g.
+  // DATABASE_URL unset) the DB check is skipped and the probe reports ok.
+  app.get('/health', async (c) => {
+    if (!configStore) {
+      return c.json({ ok: true, role: 'gateway', db: 'skipped' });
+    }
+    try {
+      await withTimeout(configStore.ping(), 3000, 'health db ping');
+    } catch (err) {
+      log(`[health] db ping failed: ${err instanceof Error ? err.message : String(err)}`);
+      return c.json({ ok: false, role: 'gateway', db: 'down' }, 503);
+    }
+    return c.json({ ok: true, role: 'gateway', db: 'up' });
+  });
 
   // --- prometheus metrics (no auth — bind to localhost or scrape via reverse proxy) ---
 
