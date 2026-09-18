@@ -64,6 +64,7 @@ import {
   repairToolCallPairing,
   repairInterleavedToolResults,
   downgradeImagesForTextModel,
+  capImagePayloadBytes,
   stripEmptyAssistantTurns,
   stripLeadingSpeakerTag,
   transcodeGroupMentions,
@@ -3628,6 +3629,25 @@ export class AgentRunner implements SessionRuntime {
       ? modelInputs.includes('image')
       : true;
     finalMessages = downgradeImagesForTextModel(finalMessages, supportsImageInput);
+
+    // Bound the inlined image payload for vision-capable models. A single
+    // `attachment_fetch`/`doc_read` image is 3-5 MB of base64, and several in
+    // the active window stack into a body the upstream rejects with `413
+    // Payload Too Large` (amiko/DeepSeek-Flash surfaces this to us as a `500
+    // Internal server error` → the user sees "model temporarily unavailable").
+    // `downgradeImagesForTextModel` above only helps text-only models and
+    // `truncateToolResults` only measures text blocks, so image blocks from the
+    // tool-result route escape both — this keeps the most-recent image(s) and
+    // downgrades older ones to a re-fetchable reference. Request-only, like the
+    // guards above. Env override for the ceiling; 0 disables.
+    const imagePayloadCap = Number.parseInt(
+      process.env.OPENHERMIT_MAX_IMAGE_PAYLOAD_BYTES ?? '',
+      10,
+    );
+    finalMessages = capImagePayloadBytes(
+      finalMessages,
+      Number.isFinite(imagePayloadCap) ? imagePayloadCap : undefined,
+    );
 
     if (AgentRunner.DEBUG) {
       const budget = getContextCompactionMaxTokens(config, {

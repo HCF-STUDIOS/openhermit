@@ -19,6 +19,7 @@ import {
   repairToolCallPairing,
   repairInterleavedToolResults,
   downgradeImagesForTextModel,
+  capImagePayloadBytes,
 } from '../src/agent-runner/message-utils.js';
 
 const assistantMsg = (text: string): AssistantMessage =>
@@ -623,6 +624,69 @@ describe('downgradeImagesForTextModel', () => {
     const input: AgentMessage[] = [toolResultWithImage('call_1', 'attachment_fetch')] as AgentMessage[];
     const before = JSON.stringify(input);
     downgradeImagesForTextModel(input, false);
+    assert.equal(JSON.stringify(input), before);
+  });
+});
+
+describe('capImagePayloadBytes', () => {
+  // A toolResult carrying one inlined image of ~`bytes` base64 chars, tagged so
+  // assertions can tell the ordering apart.
+  const imageResult = (id: string, bytes: number): ToolResultMessage =>
+    ({
+      role: 'toolResult',
+      toolCallId: id,
+      toolName: 'attachment_fetch',
+      content: [
+        { type: 'text', text: `fetched ${id}` },
+        { type: 'image', data: 'A'.repeat(bytes), mimeType: 'image/jpeg' },
+      ],
+      isError: false,
+      timestamp: 1,
+    }) as ToolResultMessage;
+
+  const isImage = (m: AgentMessage): boolean =>
+    Array.isArray((m as { content?: unknown }).content) &&
+    (m as { content: { type: string }[] }).content.some((b) => b.type === 'image');
+
+  test('keeps recent images within budget and downgrades the older ones', () => {
+    // Three 4-byte images, budget 6 → newest (index 2) kept, index 1 pushes the
+    // running total over 6 so it and index 0 are downgraded to text.
+    const messages: AgentMessage[] = [
+      imageResult('a', 4),
+      imageResult('b', 4),
+      imageResult('c', 4),
+    ] as AgentMessage[];
+    const out = capImagePayloadBytes(messages, 6);
+    assert.equal(isImage(out[0]!), false, 'oldest downgraded');
+    assert.equal(isImage(out[1]!), false, 'middle downgraded');
+    assert.equal(isImage(out[2]!), true, 'newest kept');
+    // Downgraded blocks become a re-fetchable text reference.
+    const dropped = (out[0] as ToolResultMessage).content;
+    assert.equal(dropped.every((b) => b.type === 'text'), true);
+    assert.match((dropped[1] as { text: string }).text, /image omitted.*attachment_fetch/s);
+  });
+
+  test('always keeps the most-recent image even if it alone exceeds the budget', () => {
+    const messages: AgentMessage[] = [imageResult('a', 100), imageResult('b', 100)] as AgentMessage[];
+    const out = capImagePayloadBytes(messages, 10);
+    assert.equal(isImage(out[0]!), false, 'older dropped');
+    assert.equal(isImage(out[1]!), true, 'newest force-kept despite over-budget');
+  });
+
+  test('returns the same reference when total image bytes are within budget', () => {
+    const messages: AgentMessage[] = [imageResult('a', 4), imageResult('b', 4)] as AgentMessage[];
+    assert.equal(capImagePayloadBytes(messages, 100), messages);
+  });
+
+  test('is a no-op (same reference) when disabled with a zero/negative cap', () => {
+    const messages: AgentMessage[] = [imageResult('a', 999), imageResult('b', 999)] as AgentMessage[];
+    assert.equal(capImagePayloadBytes(messages, 0), messages);
+  });
+
+  test('does not mutate the input messages', () => {
+    const input: AgentMessage[] = [imageResult('a', 8), imageResult('b', 8)] as AgentMessage[];
+    const before = JSON.stringify(input);
+    capImagePayloadBytes(input, 6);
     assert.equal(JSON.stringify(input), before);
   });
 });

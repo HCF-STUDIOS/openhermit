@@ -426,6 +426,112 @@ export const downgradeImagesForTextModel = (
   return changed ? out : messages;
 };
 
+/**
+ * Default ceiling (in base64 chars ≈ wire bytes) for the total inlined image
+ * payload a single request may carry. `attachment_fetch` in image mode and
+ * `doc_read` image pages inline a whole image as base64 — one photo is
+ * routinely 3–5 MB — and several of them in the active window stack into a
+ * request body the upstream model rejects with `413 Payload Too Large` (seen
+ * on the amiko/DeepSeek-Flash path: the router forwards the oversized body,
+ * DeepSeek 413s, and openhermit surfaces it as a `500 Internal server error`
+ * so the user just sees "model temporarily unavailable"). 6 MiB keeps the most
+ * recent image (or a handful of small ones) while trimming the rest.
+ */
+export const DEFAULT_MAX_IMAGE_PAYLOAD_BYTES = 6 * 1024 * 1024;
+
+/**
+ * Bound the total inlined image payload on the wire by keeping the most recent
+ * image blocks (up to `maxImageBytes`) and downgrading every older `image`
+ * block to a text reference the model can act on (re-fetch by id).
+ *
+ * Why this is needed even for multimodal models: `downgradeImagesForTextModel`
+ * only fires when the model can't see images, and `truncateToolResults` only
+ * measures/trims `text` blocks — so an `image` block (the shape
+ * `attachment_fetch`/`doc_read` produce on a vision-capable model) escapes both
+ * and accumulates unbounded across a turn's tool loop and the rolling window.
+ * The user-message-attachment route is already capped to the latest entry in
+ * `rebuildMessagesFromEntries`; this closes the same gap for the tool-result
+ * route.
+ *
+ * Newest-first: the current turn's most-recent image is always kept (even if it
+ * alone exceeds the budget — trimming it would blind the live turn), then older
+ * images are kept only while they fit. REQUEST-ONLY: run after the live-state
+ * write-back (like `downgradeImagesForTextModel` / `normalizeMessageAlternation`)
+ * so persisted history keeps the original image bytes and full fidelity returns
+ * for any single-image turn. Returns the input reference unchanged when the
+ * total is already within budget or nothing needs trimming.
+ */
+export const capImagePayloadBytes = (
+  messages: AgentMessage[],
+  maxImageBytes: number = DEFAULT_MAX_IMAGE_PAYLOAD_BYTES,
+): AgentMessage[] => {
+  if (!(maxImageBytes > 0)) return messages;
+
+  const imageBytes = (block: unknown): number => {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'image'
+    ) {
+      const data = (block as { data?: unknown }).data;
+      return typeof data === 'string' ? data.length : 0;
+    }
+    return 0;
+  };
+
+  // Total inlined image bytes; bail (unchanged reference) if already in budget.
+  let total = 0;
+  for (const message of messages) {
+    const content = (message as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      for (const block of content) total += imageBytes(block);
+    }
+  }
+  if (total <= maxImageBytes) return messages;
+
+  // Walk newest→oldest, keeping image blocks while they fit; always keep the
+  // single most-recent image so the live turn never loses its subject.
+  const drop = new Set<string>();
+  let kept = 0;
+  let keptCount = 0;
+  for (let mi = messages.length - 1; mi >= 0; mi -= 1) {
+    const content = (messages[mi] as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (let bi = content.length - 1; bi >= 0; bi -= 1) {
+      const size = imageBytes(content[bi]);
+      if (size === 0) continue;
+      if (keptCount === 0 || kept + size <= maxImageBytes) {
+        kept += size;
+        keptCount += 1;
+      } else {
+        drop.add(`${mi}:${bi}`);
+      }
+    }
+  }
+  if (drop.size === 0) return messages;
+
+  return messages.map((message, mi) => {
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) return message;
+
+    let changed = false;
+    const nextContent = content.map((block, bi) => {
+      if (!drop.has(`${mi}:${bi}`)) return block;
+      changed = true;
+      const mime = (block as { mimeType?: unknown }).mimeType;
+      const label = typeof mime === 'string' && mime ? ` (${mime})` : '';
+      return {
+        type: 'text' as const,
+        text:
+          `[earlier image omitted${label}: dropped from context to keep the request ` +
+          "within the model's image-payload limit. Re-fetch it with attachment_fetch if you need to view it again.]",
+      };
+    });
+
+    return changed ? ({ ...message, content: nextContent } as AgentMessage) : message;
+  });
+};
+
 // Innermost pair only: body may not contain another reasoning open tag. Used
 // iteratively so nested same-name tags do not leave residual close markup.
 const REASONING_INNERMOST_RE =
