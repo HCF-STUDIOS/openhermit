@@ -65,11 +65,17 @@ export interface ToolResultsConfig {
  * of shipping code. When omitted, the gateway falls back to the hardcoded
  * default in `buildDefaultAgentConfig` (openrouter/google/gemini-3-flash-preview).
  */
+/** Allowed reasoning-effort levels; mirrors the agent core `ThinkingLevel`. */
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high'] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 export interface DefaultModelConfig {
   provider: string;
   model: string;
   /** Optional; defaults to the fallback's max_tokens when omitted. */
   max_tokens?: number;
+  /** Optional reasoning effort applied to new agents; omitted when unset. */
+  thinking?: ThinkingLevel;
 }
 
 export interface GatewayConfig {
@@ -294,6 +300,13 @@ const parseDefaultModel = (raw: unknown): DefaultModelConfig | undefined => {
   const maxTokens = optionalPositiveInt(obj['max_tokens'], 'defaultModel.max_tokens');
   const out: DefaultModelConfig = { provider, model };
   if (maxTokens !== undefined) out.max_tokens = maxTokens;
+  const thinking = obj['thinking'];
+  if (thinking !== undefined && thinking !== null) {
+    if (typeof thinking !== 'string' || !THINKING_LEVELS.includes(thinking as ThinkingLevel)) {
+      throw new Error(`defaultModel.thinking must be one of: ${THINKING_LEVELS.join(', ')}`);
+    }
+    out.thinking = thinking as ThinkingLevel;
+  }
   return out;
 };
 

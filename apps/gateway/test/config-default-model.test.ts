@@ -25,6 +25,20 @@ test('parseGatewayConfig carries optional max_tokens', () => {
   assert.deepEqual(cfg.defaultModel, { provider: 'amiko', model: 'x/y', max_tokens: 16384 });
 });
 
+test('parseGatewayConfig parses defaultModel.thinking', () => {
+  const cfg = parseGatewayConfig({
+    defaultModel: { provider: 'amiko', model: 'x/y', thinking: 'medium' },
+  });
+  assert.deepEqual(cfg.defaultModel, { provider: 'amiko', model: 'x/y', thinking: 'medium' });
+});
+
+test('parseGatewayConfig rejects invalid defaultModel.thinking', () => {
+  assert.throws(
+    () => parseGatewayConfig({ defaultModel: { provider: 'a', model: 'b', thinking: 'ultra' } }),
+    /thinking must be one of/,
+  );
+});
+
 test('parseGatewayConfig rejects defaultModel missing required fields', () => {
   assert.throws(() => parseGatewayConfig({ defaultModel: { provider: 'amiko' } }), /model is required/);
   assert.throws(() => parseGatewayConfig({ defaultModel: { model: 'x/y' } }), /provider is required/);
