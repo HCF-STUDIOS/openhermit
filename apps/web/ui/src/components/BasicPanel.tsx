@@ -101,8 +101,13 @@ export function BasicPanel() {
     setSaving(true);
     setError('');
     try {
-      const trimmedBaseUrl = baseUrl.trim();
-      const trimmedApi = api.trim();
+      // base_url / api only apply to custom providers. When a preset provider
+      // is selected these fields are hidden, so never persist their (possibly
+      // stale) state — otherwise switching from a custom provider to a preset
+      // one silently carries the old protocol along and breaks routing.
+      const isCustomProvider = providerMode === 'custom';
+      const trimmedBaseUrl = isCustomProvider ? baseUrl.trim() : '';
+      const trimmedApi = isCustomProvider ? api.trim() : '';
       const next: AgentConfig = {
         ...config,
         model: {
@@ -164,6 +169,10 @@ export function BasicPanel() {
               if (value !== provider) {
                 setModel('');
                 setModelMode('preset');
+                // Preset providers don't use a custom protocol / base URL;
+                // drop any leftover values so they aren't re-persisted.
+                setBaseUrl('');
+                setApi('');
               }
             }}
           >
@@ -194,6 +203,9 @@ export function BasicPanel() {
               className="btn btn--ghost"
               onClick={() => {
                 setProviderMode('preset');
+                // Leaving custom mode: drop the custom-only protocol / base URL.
+                setBaseUrl('');
+                setApi('');
                 if (!catalog.some((e) => e.provider === provider)) {
                   setProvider('');
                   setModel('');
