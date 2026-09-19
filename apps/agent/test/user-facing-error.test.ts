@@ -32,6 +32,13 @@ test('classifies auth failures', () => {
   assert.equal(classifyModelError('Invalid API key provided'), 'auth');
 });
 
+test('classifies a missing-key config error as auth, not generic', () => {
+  assert.equal(
+    classifyModelError('Missing API key for provider "deepseek". Add one of [DEEPSEEK_API_KEY]'),
+    'auth',
+  );
+});
+
 test('classifies a 404 dead-model / no-endpoints error as unavailable, not generic', () => {
   assert.equal(
     classifyModelError('404 No endpoints found for anthropic/claude-3.5-haiku.'),
@@ -45,6 +52,11 @@ test('classifies context overflow before quota-ish words', () => {
     'context_too_long',
   );
   assert.equal(classifyModelError('prompt is too long: 210000 tokens'), 'context_too_long');
+});
+
+test('classifies a 413 payload-too-large as context_too_long, not generic', () => {
+  assert.equal(classifyModelError('413 Payload Too Large'), 'context_too_long');
+  assert.equal(classifyModelError('request entity too large'), 'context_too_long');
 });
 
 test('classifies provider outages as unavailable', () => {
