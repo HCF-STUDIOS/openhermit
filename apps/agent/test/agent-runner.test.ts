@@ -186,6 +186,49 @@ const createThinkingOnlyToolUseStream = (thinking: string) => {
   return stream;
 };
 
+/**
+ * Stream that emits real text and then has its upstream socket torn down
+ * (`terminated`) — pi-ai's streamFn catches the drop, stamps the accumulated
+ * message with stopReason "error" + errorMessage, and emits an `error` event
+ * carrying that partial message. Reproduces the production `terminated` case
+ * where the answer was *already streamed live* before the cut. The A0 salvage
+ * path should finish this as a truncated-but-successful turn, not an error.
+ */
+const createTextThenStreamCutStream = (text: string, errorMessage = 'terminated') => {
+  const stream = createAssistantMessageEventStream();
+  const partial = createAssistantMessage([{ type: 'text', text }], 'error');
+  const errored: AssistantMessage = { ...partial, errorMessage };
+
+  stream.push({
+    type: 'start',
+    partial: createAssistantMessage([], 'error'),
+  });
+  stream.push({
+    type: 'text_start',
+    contentIndex: 0,
+    partial,
+  });
+  stream.push({
+    type: 'text_delta',
+    contentIndex: 0,
+    delta: text,
+    partial,
+  });
+  stream.push({
+    type: 'text_end',
+    contentIndex: 0,
+    content: text,
+    partial,
+  });
+  stream.push({
+    type: 'error',
+    reason: 'error',
+    error: errored,
+  });
+
+  return stream;
+};
+
 const createSequentialStreamFn = (
   responders: Array<(context: Context) => ReturnType<typeof createAssistantMessageEventStream>>,
 ): StreamFn => {
@@ -900,6 +943,102 @@ test('AgentRunner surfaces a missing API key as an error event instead of crashi
         typeof entry.message === 'string' &&
         entry.message.includes('Missing API key for provider "anthropic"'),
     ),
+  );
+});
+
+test('AgentRunner salvages a stream cut that already produced text instead of erroring', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  const salvaged = 'Here is the first half of my answer before the socket dropped.';
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([() => createTextThenStreamCutStream(salvaged, 'terminated')]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:salvage-session',
+    source: {
+      kind: 'cli',
+      interactive: true,
+    },
+  });
+  await runner.postMessage('cli:salvage-session', {
+    text: 'tell me a story',
+  });
+  await runner.waitForSessionIdle('cli:salvage-session');
+
+  const backlog = runner.events.getBacklog('cli:salvage-session');
+
+  // The user must NOT see a scary error bubble for content they already saw.
+  assert.ok(
+    !backlog.some((entry) => entry.event.type === 'error'),
+    'no error event should be published for a salvaged stream cut',
+  );
+
+  // The turn completes with a text_final carrying the streamed text.
+  assert.ok(
+    backlog.some(
+      (entry) => entry.event.type === 'text_final' && entry.event.text === salvaged,
+    ),
+    'a text_final with the salvaged text should be published',
+  );
+
+  // Persisted as a normal assistant turn (stopReason "stop"), tagged with the
+  // raw stream error for diagnostics — never an `error` role entry.
+  const sessionEntries = await readSessionLog(runner, 'cli:salvage-session');
+  assert.ok(
+    !sessionEntries.some((entry) => entry.role === 'error'),
+    'no error entry should be persisted for a salvaged turn',
+  );
+  const assistantEntries = sessionEntries.filter((entry) => entry.role === 'assistant');
+  assert.equal(assistantEntries.length, 1);
+  assert.equal(assistantEntries[0]?.content, salvaged);
+  assert.equal(assistantEntries[0]?.stopReason, 'stop');
+  assert.deepEqual(assistantEntries[0]?.metadata, { salvagedStreamError: 'terminated' });
+});
+
+test('AgentRunner still surfaces a stream cut with no produced text as an error', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  // Empty text: nothing was streamed to the user, so there is nothing to
+  // salvage — this must remain a (transient, `unavailable`-classified) error.
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([() => createTextThenStreamCutStream('', 'terminated')]),
+  });
+
+  await runner.openSession({
+    sessionId: 'cli:no-salvage-session',
+    source: {
+      kind: 'cli',
+      interactive: true,
+    },
+  });
+  await runner.postMessage('cli:no-salvage-session', {
+    text: 'tell me a story',
+  });
+  await runner.waitForSessionIdle('cli:no-salvage-session');
+
+  const backlog = runner.events.getBacklog('cli:no-salvage-session');
+  const errorEvent = backlog.find((entry) => entry.event.type === 'error');
+  assert.ok(errorEvent, 'a pre-text stream cut should still surface an error');
+  assert.equal(
+    errorEvent?.event.type === 'error' ? errorEvent.event.kind : undefined,
+    'unavailable',
+    'the transient stream cut should be classified as unavailable',
   );
 });
 
