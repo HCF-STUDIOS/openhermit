@@ -7,12 +7,19 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, TenkiExecBackendConfig } from '../exec-backend.js';
 import { ensureTenkiDirectories, TenkiFileBackend, toTenkiFsPath } from './file-backend.js';
 import {
+  assertSkillSourcesReadable,
   buildSkillManifestReadScript,
   buildSkillSyncCommitScript,
   parseSkillManifest,
   planSkillSync,
+  reconcileSystemSkillsOnEnsure,
+  writePendingSkillFlag,
   type ManagedSkillIds,
 } from './shared.js';
+
+/** Pre-flag runtime-state key. Honored for one reconcile on migration so a
+ *  sandbox paused with a queued sync across the deploy still syncs (see shared.ts). */
+const TENKI_LEGACY_PENDING_SKILLS_KEY = 'tenki_pending_skills';
 import { registerExecBackend } from '../exec-backend.js';
 
 const TENKI_DEFAULT_USERNAME = 'tenki';
@@ -47,11 +54,6 @@ interface TenkiBackendPersisted {
   cwd: string;
   updatedAt: string;
   state?: 'active' | 'paused';
-}
-
-interface TenkiPendingSkillSync {
-  skills: Array<{ id: string; sourcePath: string; source: 'system' | 'user' }>;
-  queuedAt: string;
 }
 
 export class TenkiExecBackend implements ExecBackend {
@@ -171,7 +173,7 @@ export class TenkiExecBackend implements ExecBackend {
         try {
           await this.saveState({ ...persisted, updatedAt: new Date().toISOString(), state: 'active' });
           await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
-          await this.replayPendingSkillSync();
+          await this.reconcileSystemSkills(false);
           return 'resumed';
         } catch (error) {
           this.session = null;
@@ -198,7 +200,7 @@ export class TenkiExecBackend implements ExecBackend {
         state: 'active',
       });
       await this.context.markActive?.({ externalId: session.id, lastSeenAt: new Date().toISOString() });
-      await this.replayPendingSkillSync();
+      await this.reconcileSystemSkills(true);
     } catch (error) {
       this.session = null;
       await session.closeIfOpen().catch(() => undefined);
@@ -271,18 +273,20 @@ export class TenkiExecBackend implements ExecBackend {
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.session) {
       if (!this.context.setRuntimeState || !this.context.getRuntimeState) {
+        // No runtime state to carry a dirty flag across restarts, so we cannot
+        // defer: bring the session up now and sync the given set directly.
         await this.ensure();
         await this.applySkillSync(skills);
         return;
       }
-      await this.savePendingSkillSync({
-        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
-        queuedAt: new Date().toISOString(),
-      });
+      // Session is paused/cold: just mark the dirty flag. The desired skill set
+      // is re-derived from the DB on the next ensure(), so no host path (long
+      // gone by wake-up time) is frozen into runtime_state.
+      await this.setPendingSkillFlag(true);
       return;
     }
     await this.applySkillSync(skills);
-    await this.savePendingSkillSync(null);
+    await this.setPendingSkillFlag(false);
   }
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
@@ -295,6 +299,10 @@ export class TenkiExecBackend implements ExecBackend {
     const previous = await this.readSkillManifest(skillsRoot);
     const plan = planSkillSync(skills, previous);
 
+    // Fail before staging if any source is unreadable (e.g. a blob restore that
+    // half-failed) — the commit swap deletes the old copy, so refusing keeps the
+    // last-good skills in place.
+    await assertSkillSourcesReadable(plan.install);
     const nonce = randomUUID();
     const stageRoot = `${skillsRoot}/.tenki-stage-${nonce}`;
     await ensureTenkiDirectories(this.session, [`${stageRoot}/system`, `${stageRoot}/user`]);
@@ -333,27 +341,28 @@ export class TenkiExecBackend implements ExecBackend {
     }
   }
 
-  private async replayPendingSkillSync(): Promise<void> {
-    if (!this.context.getRuntimeState) return;
-    const state = await this.context.getRuntimeState();
-    const pending = state?.['tenki_pending_skills'] as TenkiPendingSkillSync | undefined;
-    if (!pending) return;
-    await this.applySkillSync(
-      pending.skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source ?? 'system' })),
-    );
-    await this.savePendingSkillSync(null);
+  /** Re-derive enabled system skills from the DB and push them if this session
+   *  is fresh or woke with the dirty flag set. Delegates to the shared helper. */
+  private reconcileSystemSkills(fresh: boolean): Promise<void> {
+    return reconcileSystemSkillsOnEnsure({
+      fresh,
+      label: `tenki:${this.id}`,
+      legacyPendingKey: TENKI_LEGACY_PENDING_SKILLS_KEY,
+      getRuntimeState: this.context.getRuntimeState,
+      setRuntimeState: this.context.setRuntimeState,
+      getEnabledSystemSkills: this.context.getEnabledSystemSkills,
+      apply: (s) => this.applySkillSync(s),
+    });
   }
 
-  private async savePendingSkillSync(pending: TenkiPendingSkillSync | null): Promise<void> {
-    if (!this.context.setRuntimeState || !this.context.getRuntimeState) return;
-    const current = (await this.context.getRuntimeState()) ?? {};
-    if (pending === null) {
-      const { tenki_pending_skills: _drop, ...rest } = current;
-      void _drop;
-      await this.context.setRuntimeState(rest);
-    } else {
-      await this.context.setRuntimeState({ ...current, tenki_pending_skills: pending });
-    }
+  private setPendingSkillFlag(dirty: boolean): Promise<void> {
+    return writePendingSkillFlag(
+      {
+        getRuntimeState: this.context.getRuntimeState,
+        setRuntimeState: this.context.setRuntimeState,
+      },
+      dirty,
+    );
   }
 
   async shutdown(): Promise<void> {

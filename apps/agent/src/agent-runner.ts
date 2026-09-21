@@ -37,7 +37,9 @@ import {
   resolveMcpMatches,
   resolveToolMatches,
   type AgentConfig,
+  type BackendFactoryContext,
   type PolicyRow,
+  type SyncSkillEntry,
 } from './core/index.js';
 import { ApprovalGate } from './agent-runner/approval-gate.js';
 import { buildSystemPrompt } from './agent-runner/prompt.js';
@@ -507,11 +509,21 @@ export class AgentRunner implements SessionRuntime {
   private async ensureExecBackendManager(config: AgentConfig): Promise<ExecBackendManager> {
     if (this.execBackendManager) return this.execBackendManager;
 
-    const ctxBase = {
+    const ctxBase: Omit<
+      BackendFactoryContext,
+      'getRuntimeState' | 'setRuntimeState' | 'markActive'
+    > = {
       containerManager: this.containerManager,
       agentId: this.scope.agentId,
       workspaceDir: this.options.workspace.root,
       passThroughEnvProvider: () => this.options.security.getPassThroughEnv(),
+      // Let each backend re-derive its enabled system skills from the DB when it
+      // wakes with the pending-sync flag set, instead of replaying a frozen skill
+      // list. Only wired when blob storage is available, so the reconcile never
+      // runs against an empty set (which would prune every managed skill).
+      ...(this.options.skillStore && this.options.skillArtifactStore
+        ? { getEnabledSystemSkills: () => this.materializeEnabledSystemSkills() }
+        : {}),
     };
 
     if (this.options.sandboxStore) {
@@ -610,19 +622,33 @@ export class AgentRunner implements SessionRuntime {
    * For docker the skills land in the bind-mount; for host they go to $HOME;
    * for e2b they're streamed via the SDK if the sandbox is connected.
    */
-  async syncSkills(skills: import('./core/exec-backend.js').SyncSkillEntry[]): Promise<void> {
+  async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     const config = await this.options.security.readConfig();
     const manager = await this.ensureExecBackendManager(config);
+    const { skills: materialized, cleanup } = await this.materializeSkills(skills);
+    try {
+      await manager.syncSkills(materialized);
+    } finally {
+      await cleanup();
+    }
+  }
 
-    // Skills whose `path` is a `blob:` pointer live in blob storage, not on a
-    // local disk. Materialize each into an ephemeral temp dir so the backend
-    // sync (which copies from a host path) has real files to read; bare paths
-    // pass through untouched for backward compatibility. The temp root is
-    // removed once the sync lands — nothing persistent stays on local disk.
+  /**
+   * Turn a skill set into one the backends can copy from local disk.
+   *
+   * Skills whose `path` is a `blob:` pointer live in blob storage, not on a
+   * local disk. Each is restored into an ephemeral temp dir so the backend sync
+   * (which copies from a host path) has real files to read; bare paths pass
+   * through untouched for backward compatibility. The returned `cleanup` removes
+   * the temp root once the sync lands — nothing persistent stays on local disk.
+   */
+  private async materializeSkills(
+    skills: SyncSkillEntry[],
+  ): Promise<{ skills: SyncSkillEntry[]; cleanup: () => Promise<void> }> {
+    const noopCleanup = async (): Promise<void> => {};
     const blobEntries = skills.filter((s) => isSkillBlobPath(s.sourcePath));
     if (blobEntries.length === 0) {
-      await manager.syncSkills(skills);
-      return;
+      return { skills, cleanup: noopCleanup };
     }
 
     const artifactStore = this.options.skillArtifactStore;
@@ -643,10 +669,34 @@ export class AgentRunner implements SessionRuntime {
           return { ...skill, sourcePath: destDir };
         }),
       );
-      await manager.syncSkills(materialized);
-    } finally {
+      return {
+        skills: materialized,
+        cleanup: () => rm(stageRoot, { recursive: true, force: true }),
+      };
+    } catch (err) {
       await rm(stageRoot, { recursive: true, force: true });
+      throw err;
     }
+  }
+
+  /**
+   * Resolve the agent's enabled *system* skills from the DB and materialize them
+   * ready to upload. Backends call this (via `getEnabledSystemSkills`) when a
+   * sandbox wakes with the pending-sync flag set, so the desired set is always
+   * re-read fresh rather than replayed from a stale runtime-state record. User
+   * skills are excluded — they flow through scan/restore, not this push path.
+   */
+  private async materializeEnabledSystemSkills(): Promise<{
+    skills: SyncSkillEntry[];
+    cleanup: () => Promise<void>;
+  }> {
+    const skillStore = this.options.skillStore;
+    if (!skillStore) return { skills: [], cleanup: async () => {} };
+    const enabled = await skillStore.listEnabled(this.scope.agentId);
+    const entries: SyncSkillEntry[] = enabled
+      .filter((s) => s.source === 'system')
+      .map((s) => ({ id: s.slug, sourcePath: s.path, source: s.source }));
+    return this.materializeSkills(entries);
   }
 
   /**
