@@ -13,9 +13,13 @@ import {
   parseSkillManifest,
   planSkillSync,
   reconcileSystemSkillsOnEnsure,
-  writePendingSkillSyncFlag,
+  writePendingSkillFlag,
   type ManagedSkillIds,
 } from './shared.js';
+
+/** Runtime-state key marking a deferred system-skill sync. Reused from the
+ *  pre-flag code so old records migrate for free (see shared.ts). */
+const DAYTONA_PENDING_SKILLS_KEY = 'daytona_pending_skills';
 import { registerExecBackend } from '../exec-backend.js';
 
 const DAYTONA_DEFAULT_USERNAME = 'daytona';
@@ -268,6 +272,7 @@ class DaytonaExecBackend implements ExecBackend {
     return reconcileSystemSkillsOnEnsure({
       fresh,
       label: `daytona:${this.id}`,
+      pendingKey: DAYTONA_PENDING_SKILLS_KEY,
       getRuntimeState: this.context.getRuntimeState,
       setRuntimeState: this.context.setRuntimeState,
       getEnabledSystemSkills: this.context.getEnabledSystemSkills,
@@ -276,11 +281,12 @@ class DaytonaExecBackend implements ExecBackend {
   }
 
   private setPendingSkillFlag(dirty: boolean): Promise<void> {
-    return writePendingSkillSyncFlag(
+    return writePendingSkillFlag(
       {
         getRuntimeState: this.context.getRuntimeState,
         setRuntimeState: this.context.setRuntimeState,
       },
+      DAYTONA_PENDING_SKILLS_KEY,
       dirty,
     );
   }

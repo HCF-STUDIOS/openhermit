@@ -13,9 +13,13 @@ import {
   parseSkillManifest,
   planSkillSync,
   reconcileSystemSkillsOnEnsure,
-  writePendingSkillSyncFlag,
+  writePendingSkillFlag,
   type ManagedSkillIds,
 } from './shared.js';
+
+/** Runtime-state key marking a deferred system-skill sync. Reused from the
+ *  pre-flag code so old records migrate for free (see shared.ts). */
+const E2B_PENDING_SKILLS_KEY = 'e2b_pending_skills';
 import { registerExecBackend } from '../exec-backend.js';
 
 const E2B_DEFAULT_USERNAME = 'user';
@@ -324,6 +328,7 @@ class E2BExecBackend implements ExecBackend {
     return reconcileSystemSkillsOnEnsure({
       fresh,
       label: `e2b:${this.id}`,
+      pendingKey: E2B_PENDING_SKILLS_KEY,
       getRuntimeState: this.context.getRuntimeState,
       setRuntimeState: this.context.setRuntimeState,
       getEnabledSystemSkills: this.context.getEnabledSystemSkills,
@@ -332,11 +337,12 @@ class E2BExecBackend implements ExecBackend {
   }
 
   private setPendingSkillFlag(dirty: boolean): Promise<void> {
-    return writePendingSkillSyncFlag(
+    return writePendingSkillFlag(
       {
         getRuntimeState: this.context.getRuntimeState,
         setRuntimeState: this.context.setRuntimeState,
       },
+      E2B_PENDING_SKILLS_KEY,
       dirty,
     );
   }
