@@ -35,6 +35,18 @@ export const classifyModelError = (raw: string): ModelErrorKind => {
   return 'generic';
 };
 
+/**
+ * A torn-down streaming connection (as opposed to a semantic model error like
+ * a content-policy refusal or context overflow). When one of these interrupts
+ * a turn that has *already* produced text, the text was streamed to the user
+ * and the turn can be salvaged as a normal — if truncated — completion rather
+ * than surfaced as an error. Kept narrow: only connection-drop signatures, so
+ * we never mistake a real model failure for a recoverable cut.
+ */
+const STREAM_CUT_PATTERN = /terminated|und_err|econnreset|socket hang ?up|network error|stream (closed|disconnected)|premature close/i;
+
+export const isStreamCutError = (raw: string): boolean => STREAM_CUT_PATTERN.test(raw);
+
 /** Languages we can phrase the notice in. Extend the table below to add one. */
 export type UserLanguage = 'zh' | 'en';
 

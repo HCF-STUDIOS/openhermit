@@ -91,10 +91,11 @@ import {
   startTurnTrace,
 } from './langfuse.js';
 import { withOpenRouterAttribution } from './agent-runner/openrouter-attribution.js';
-import { buildUserFacingModelError, classifyModelError } from './agent-runner/user-facing-error.js';
+import { buildUserFacingModelError, classifyModelError, isStreamCutError } from './agent-runner/user-facing-error.js';
 import type { ModelErrorKind } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import { withStreamIdleTimeout } from './agent-runner/stream-idle-timeout.js';
+import { withStreamRetry } from './agent-runner/stream-retry.js';
 import {
   awaitTriggeredTurn,
   surfaceRunError,
@@ -3078,8 +3079,12 @@ export class AgentRunner implements SessionRuntime {
       // hung SSE that never emits a byte) directly; the attribution wrappers
       // only decorate headers and the langfuse wrapper only re-yields events,
       // so a stall throws up through both as a normal, bounded turn error.
+      // Retry sits just outside idle-timeout: each pre-first-token attempt is
+      // independently idle-guarded and carries the same attribution headers,
+      // so a transient connect drop is re-issued transparently before the
+      // caller ever sees an event. It never retries once a byte has streamed.
       withOpenRouterAttribution(
-        withAmikoTwinAttribution(withStreamIdleTimeout(this.options.streamFn)),
+        withAmikoTwinAttribution(withStreamRetry(withStreamIdleTimeout(this.options.streamFn))),
       ),
       input.langfuseTurnContext ?? { currentTrace: undefined },
     );
@@ -3982,6 +3987,53 @@ export class AgentRunner implements SessionRuntime {
         // Handle error responses from the model provider.
         if (assistantMessage.stopReason === 'error') {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
+
+          // A0 salvage: a torn-down stream that had *already* produced
+          // meaningful text means the answer was streamed to the user
+          // (text_delta went out live). Finish the turn as a truncated-but-
+          // successful completion — emit the text via agent_end's text_final
+          // and persist it — instead of surfacing a scary error bubble for
+          // content the user already saw. Only connection-drop signatures
+          // qualify (isStreamCutError), never a semantic model failure.
+          if (isStreamCutError(errorMsg) && !!assistantText && hasMeaningfulAssistantText(assistantText)) {
+            const cleanedText = cleanGroupText(assistantText);
+            this.logRuntime(
+              `salvaged truncated turn in ${session.spec.sessionId} after stream cut: ${errorMsg}`,
+            );
+            session.latestAssistantText = cleanedText;
+            session.messageCount += 1;
+            session.lastMessagePreview = cleanedText;
+            const salvageTs = new Date().toISOString();
+            session.updatedAt = salvageTs;
+            void this.queueSideEffect(session, () => this.persistSessionIndex(session));
+
+            if (assistantMessage.usage) {
+              const u = assistantMessage.usage;
+              if (u.input) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'in' }, u.input);
+              if (u.output) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'out' }, u.output);
+              if (u.cacheRead) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'cache_read' }, u.cacheRead);
+              if (u.cacheWrite) agentTokensTotal.inc({ agent_id: this.scope.agentId, direction: 'cache_write' }, u.cacheWrite);
+            }
+
+            void this.queueSideEffect(session, async () => {
+              await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+                ts: salvageTs,
+                role: 'assistant',
+                content: cleanedText,
+                ...(thinkingText ? { thinking: thinkingText } : {}),
+                ...(thinkingSignature ? { thinkingSignature } : {}),
+                provider: assistantMessage.provider,
+                model: assistantMessage.model,
+                usage: assistantMessage.usage,
+                // Persist as a completed answer (the user received it); keep the
+                // underlying cut cause in metadata for diagnostics.
+                stopReason: 'stop',
+                metadata: { salvagedStreamError: errorMsg },
+              });
+            });
+            break;
+          }
+
           const errorKind = classifyModelError(errorMsg);
           // Record the failure synchronously (not via a side-effect) so it is
           // visible the moment the turn's queue settles — runScheduledJob reads
