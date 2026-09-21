@@ -3916,13 +3916,15 @@ export class AgentRunner implements SessionRuntime {
           // Channels forward the error message to the end user verbatim —
           // publish a classified, language-matched notice, never provider
           // internals (raw text is logged/persisted on the message_end path).
+          const rawStreamError =
+            event.assistantMessageEvent.error.errorMessage ?? 'Model stream failed.';
           void this.events.publish({
             type: 'error',
             sessionId: session.spec.sessionId,
-            message: buildUserFacingModelError(
-              event.assistantMessageEvent.error.errorMessage ?? 'Model stream failed.',
-              session.currentTurnUserText,
-            ),
+            message: buildUserFacingModelError(rawStreamError, session.currentTurnUserText),
+            // Lets consumers soften transient failures (e.g. `unavailable`)
+            // into a recovering state instead of a hard error bubble.
+            kind: classifyModelError(rawStreamError),
           });
         }
         break;
@@ -3980,10 +3982,11 @@ export class AgentRunner implements SessionRuntime {
         // Handle error responses from the model provider.
         if (assistantMessage.stopReason === 'error') {
           const errorMsg = assistantMessage.errorMessage ?? 'Model returned an error.';
+          const errorKind = classifyModelError(errorMsg);
           // Record the failure synchronously (not via a side-effect) so it is
           // visible the moment the turn's queue settles — runScheduledJob reads
           // it right after waitForSessionIdle to decide success vs. failed run.
-          session.lastTurnModelError = { kind: classifyModelError(errorMsg), message: errorMsg };
+          session.lastTurnModelError = { kind: errorKind, message: errorMsg };
           const ts = new Date().toISOString();
           session.updatedAt = ts;
           void this.queueSideEffect(session, () => this.persistSessionIndex(session));
@@ -3999,6 +4002,9 @@ export class AgentRunner implements SessionRuntime {
             type: 'error',
             sessionId: session.spec.sessionId,
             message: buildUserFacingModelError(errorMsg, session.currentTurnUserText),
+            // Reuse the classification computed for lastTurnModelError above so
+            // consumers can distinguish transient from terminal failures.
+            kind: errorKind,
           });
 
           void this.queueSideEffect(session, async () => {

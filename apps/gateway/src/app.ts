@@ -1484,11 +1484,23 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       const buffered: SessionEventEnvelope[] = [];
       let streamReady = false;
       let streamApi: SSEStreamingApi | undefined;
+      // A long tool round can run for minutes without emitting an event; a
+      // silent SSE connection is liable to be idle-timed by an intermediary
+      // (Caddy/Railway edge), surfacing as a mid-turn stream drop. Ping like
+      // the events endpoint does so the connection stays warm end to end.
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      const stopHeartbeat = () => {
+        if (heartbeat) {
+          clearInterval(heartbeat);
+          heartbeat = undefined;
+        }
+      };
 
       const unsubscribe = runtime.events.subscribe(sessionId, async (envelope) => {
         if (streamReady && streamApi) {
           await writeEvent(streamApi, envelope);
           if (envelope.event.type === 'agent_end') {
+            stopHeartbeat();
             unsubscribe();
             void streamApi.close();
           }
@@ -1506,29 +1518,39 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
       return streamSSE(c, async (stream) => {
         streamApi = stream;
-
-        if (result.messageId) {
-          await stream.writeSSE({
-            event: 'message_ack',
-            data: JSON.stringify({ sessionId, messageId: result.messageId }),
+        heartbeat = setInterval(() => {
+          void stream.writeSSE({
+            event: 'ping',
+            data: JSON.stringify({ sessionId }),
           });
-        }
+        }, SSE_PING_INTERVAL_MS);
 
-        let closed = false;
-        for (const envelope of buffered) {
-          await writeEvent(stream, envelope);
-          if (envelope.event.type === 'agent_end') {
-            unsubscribe();
-            closed = true;
-            break;
+        try {
+          if (result.messageId) {
+            await stream.writeSSE({
+              event: 'message_ack',
+              data: JSON.stringify({ sessionId, messageId: result.messageId }),
+            });
           }
-        }
-        buffered.length = 0;
-        streamReady = true;
 
-        if (!closed) {
-          await waitForAbort(c.req.raw.signal);
-          unsubscribe();
+          let closed = false;
+          for (const envelope of buffered) {
+            await writeEvent(stream, envelope);
+            if (envelope.event.type === 'agent_end') {
+              unsubscribe();
+              closed = true;
+              break;
+            }
+          }
+          buffered.length = 0;
+          streamReady = true;
+
+          if (!closed) {
+            await waitForAbort(c.req.raw.signal);
+            unsubscribe();
+          }
+        } finally {
+          stopHeartbeat();
         }
       });
     }

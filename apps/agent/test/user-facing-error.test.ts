@@ -65,6 +65,16 @@ test('classifies provider outages as unavailable', () => {
   assert.equal(classifyModelError('upstream overloaded'), 'unavailable');
 });
 
+test('classifies torn-down model streams as unavailable, not generic', () => {
+  // undici raises a bare `TypeError: terminated` when the upstream streaming
+  // socket is dropped mid-response; without this the user saw the scary
+  // generic bubble even though the condition is transient.
+  assert.equal(classifyModelError('terminated'), 'unavailable');
+  assert.equal(classifyModelError('TypeError: terminated'), 'unavailable');
+  assert.equal(classifyModelError('UND_ERR_SOCKET: other side closed'), 'unavailable');
+  assert.equal(classifyModelError('socket hang up'), 'unavailable');
+});
+
 test('falls back to generic for unknown errors', () => {
   assert.equal(classifyModelError('Model returned an error.'), 'generic');
 });
