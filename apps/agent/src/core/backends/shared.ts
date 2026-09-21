@@ -1,7 +1,9 @@
-import { mkdir, readFile, rm, cp, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, cp, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { SyncSkillEntry } from '../exec-backend.js';
+import { isSkillBlobPath } from '@openhermit/store';
+
+import type { BackendFactoryContext, SyncSkillEntry } from '../exec-backend.js';
 
 export type SkillSource = 'system' | 'user';
 
@@ -207,4 +209,56 @@ export const buildSkillSyncCommitScript = (
   );
   if (stageRoot) lines.push(`rm -rf ${shQuote(stageRoot)}`);
   return lines.join('\n');
+};
+
+/**
+ * Re-stage the `blob:`-backed entries of a queued sync.
+ *
+ * A sync queued while the sandbox was disconnected stores the durable `blob:`
+ * pointer, because the staging directory the original call unpacked into is
+ * deleted as soon as that call returns. Replaying one therefore has to unpack
+ * the artifacts again; the returned `cleanup` removes the new staging dir.
+ */
+export const materializeQueuedSkills = async (
+  skills: SyncSkillEntry[],
+  materialize: BackendFactoryContext['materializeSkills'],
+): Promise<{ skills: SyncSkillEntry[]; cleanup: () => Promise<void> }> => {
+  const noop = async (): Promise<void> => {};
+  if (!skills.some((skill) => isSkillBlobPath(skill.sourcePath))) {
+    return { skills, cleanup: noop };
+  }
+  if (!materialize) {
+    throw new Error(
+      'pending skill sync holds blob: paths but this backend cannot materialize them',
+    );
+  }
+  return materialize(skills);
+};
+
+/**
+ * Throw unless every skill about to be installed can actually be read.
+ *
+ * The remote sync deletes the target directories before it uploads anything,
+ * so a source that has gone away — a staging dir already cleaned up, an
+ * unmaterialized `blob:` pointer — used to empty the skill out and leave the
+ * manifest claiming it was installed. Checking first keeps the failure
+ * non-destructive.
+ */
+export const assertSkillSourcesReadable = async (
+  skills: SyncSkillEntry[],
+): Promise<void> => {
+  for (const skill of skills) {
+    if (isSkillBlobPath(skill.sourcePath)) {
+      throw new Error(
+        `skill ${skill.source}/${skill.id} was not materialized before sync ` +
+          `(${skill.sourcePath})`,
+      );
+    }
+    const stats = await stat(skill.sourcePath).catch(() => null);
+    if (!stats?.isDirectory()) {
+      throw new Error(
+        `skill ${skill.source}/${skill.id} source is missing: ${skill.sourcePath}`,
+      );
+    }
+  }
 };

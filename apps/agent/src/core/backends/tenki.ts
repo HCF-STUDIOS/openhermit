@@ -7,8 +7,10 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, TenkiExecBackendConfig } from '../exec-backend.js';
 import { ensureTenkiDirectories, TenkiFileBackend, toTenkiFsPath } from './file-backend.js';
 import {
+  assertSkillSourcesReadable,
   buildSkillManifestReadScript,
   buildSkillSyncCommitScript,
+  materializeQueuedSkills,
   parseSkillManifest,
   planSkillSync,
   type ManagedSkillIds,
@@ -276,7 +278,15 @@ export class TenkiExecBackend implements ExecBackend {
         return;
       }
       await this.savePendingSkillSync({
-        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
+        // Record the durable address, not the staging dir: a `blob:`-backed
+        // entry's `sourcePath` is a temp dir the runner deletes the moment
+        // this call returns, so persisting it would queue a replay against a
+        // path that no longer exists.
+        skills: skills.map((s) => ({
+          id: s.id,
+          sourcePath: s.originPath ?? s.sourcePath,
+          source: s.source,
+        })),
         queuedAt: new Date().toISOString(),
       });
       return;
@@ -294,6 +304,10 @@ export class TenkiExecBackend implements ExecBackend {
     const skillsRoot = `${this.agentHome}/.openhermit/skills`;
     const previous = await this.readSkillManifest(skillsRoot);
     const plan = planSkillSync(skills, previous);
+
+    // Staging protects the live directories from a half-finished upload, but
+    // an unreadable source should still fail before any remote work starts.
+    await assertSkillSourcesReadable(plan.install);
 
     const nonce = randomUUID();
     const stageRoot = `${skillsRoot}/.tenki-stage-${nonce}`;
@@ -338,9 +352,22 @@ export class TenkiExecBackend implements ExecBackend {
     const state = await this.context.getRuntimeState();
     const pending = state?.['tenki_pending_skills'] as TenkiPendingSkillSync | undefined;
     if (!pending) return;
-    await this.applySkillSync(
-      pending.skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source ?? 'system' })),
+    const queued = pending.skills.map((s) => ({
+      id: s.id,
+      sourcePath: s.sourcePath,
+      source: s.source ?? 'system',
+    }));
+    // Queued `blob:` pointers have to be staged again — the temp dir the
+    // original call used is long gone.
+    const { skills, cleanup } = await materializeQueuedSkills(
+      queued,
+      this.context.materializeSkills,
     );
+    try {
+      await this.applySkillSync(skills);
+    } finally {
+      await cleanup();
+    }
     await this.savePendingSkillSync(null);
   }
 

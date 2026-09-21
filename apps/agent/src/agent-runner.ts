@@ -512,6 +512,8 @@ export class AgentRunner implements SessionRuntime {
       agentId: this.scope.agentId,
       workspaceDir: this.options.workspace.root,
       passThroughEnvProvider: () => this.options.security.getPassThroughEnv(),
+      materializeSkills: (skills: import('./core/exec-backend.js').SyncSkillEntry[]) =>
+        this.materializeSkills(skills),
     };
 
     if (this.options.sandboxStore) {
@@ -614,15 +616,33 @@ export class AgentRunner implements SessionRuntime {
     const config = await this.options.security.readConfig();
     const manager = await this.ensureExecBackendManager(config);
 
-    // Skills whose `path` is a `blob:` pointer live in blob storage, not on a
-    // local disk. Materialize each into an ephemeral temp dir so the backend
-    // sync (which copies from a host path) has real files to read; bare paths
-    // pass through untouched for backward compatibility. The temp root is
-    // removed once the sync lands — nothing persistent stays on local disk.
-    const blobEntries = skills.filter((s) => isSkillBlobPath(s.sourcePath));
-    if (blobEntries.length === 0) {
-      await manager.syncSkills(skills);
-      return;
+    const { skills: materialized, cleanup } = await this.materializeSkills(skills);
+    try {
+      await manager.syncSkills(materialized);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  /**
+   * Stage `blob:`-pointer skills into an ephemeral temp dir so a backend sync
+   * (which copies from a host path) has real files to read; bare paths pass
+   * through untouched. Each staged entry keeps the pointer it came from in
+   * `originPath`, so a backend that has to queue the sync persists the durable
+   * address rather than the staging path this call is about to delete.
+   *
+   * The caller must await `cleanup()` once the sync has landed — nothing
+   * persistent stays on local disk.
+   */
+  private async materializeSkills(
+    skills: import('./core/exec-backend.js').SyncSkillEntry[],
+  ): Promise<{
+    skills: import('./core/exec-backend.js').SyncSkillEntry[];
+    cleanup: () => Promise<void>;
+  }> {
+    const noop = async (): Promise<void> => {};
+    if (!skills.some((s) => isSkillBlobPath(s.sourcePath))) {
+      return { skills, cleanup: noop };
     }
 
     const artifactStore = this.options.skillArtifactStore;
@@ -640,12 +660,16 @@ export class AgentRunner implements SessionRuntime {
           if (!storageKey) return skill;
           const destDir = path.join(stageRoot, skill.source, skill.id);
           await artifactStore.restoreTo(storageKey, destDir);
-          return { ...skill, sourcePath: destDir };
+          return { ...skill, sourcePath: destDir, originPath: skill.sourcePath };
         }),
       );
-      await manager.syncSkills(materialized);
-    } finally {
+      return {
+        skills: materialized,
+        cleanup: () => rm(stageRoot, { recursive: true, force: true }),
+      };
+    } catch (error) {
       await rm(stageRoot, { recursive: true, force: true });
+      throw error;
     }
   }
 

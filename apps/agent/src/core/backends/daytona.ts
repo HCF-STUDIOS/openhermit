@@ -6,9 +6,11 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, DaytonaExecBackendConfig } from '../exec-backend.js';
 import { DaytonaFileBackend } from './file-backend.js';
 import {
+  assertSkillSourcesReadable,
   buildSkillManifestReadScript,
   buildSkillSyncCommitScript,
   buildSkillSyncPrepareScript,
+  materializeQueuedSkills,
   parseSkillManifest,
   planSkillSync,
   type ManagedSkillIds,
@@ -218,7 +220,15 @@ class DaytonaExecBackend implements ExecBackend {
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.sandbox) {
       await this.savePendingSkillSync({
-        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
+        // Record the durable address, not the staging dir: a `blob:`-backed
+        // entry's `sourcePath` is a temp dir the runner deletes the moment
+        // this call returns, so persisting it would queue a replay against a
+        // path that no longer exists.
+        skills: skills.map((s) => ({
+          id: s.id,
+          sourcePath: s.originPath ?? s.sourcePath,
+          source: s.source,
+        })),
         queuedAt: new Date().toISOString(),
       });
       return;
@@ -237,6 +247,11 @@ class DaytonaExecBackend implements ExecBackend {
     const skillsRoot = `${this.agentHome}/.openhermit/skills`;
     const previous = await this.readSkillManifest(skillsRoot);
     const plan = planSkillSync(skills, previous);
+
+    // The prepare script deletes before anything is uploaded, so an
+    // unreadable source would leave the sandbox with an empty skill dir and a
+    // stale manifest. Fail first and leave the existing files alone.
+    await assertSkillSourcesReadable(plan.install);
 
     await this.sandbox.process.executeCommand(buildSkillSyncPrepareScript(skillsRoot, plan));
     for (const skill of plan.install) {
@@ -266,14 +281,23 @@ class DaytonaExecBackend implements ExecBackend {
     const pending = state?.['daytona_pending_skills'] as DaytonaPendingSkillSync | undefined;
     if (!pending || !pending.skills?.length) return;
     try {
-      await this.applySkillSync(
-        pending.skills.map((s) => ({
-          id: s.id,
-          sourcePath: s.sourcePath,
-          // Tolerate state saved before the source column existed.
-          source: s.source ?? 'system',
-        })),
+      const queued = pending.skills.map((s) => ({
+        id: s.id,
+        sourcePath: s.sourcePath,
+        // Tolerate state saved before the source column existed.
+        source: s.source ?? 'system',
+      }));
+      // Queued `blob:` pointers have to be staged again — the temp dir the
+      // original call used is long gone.
+      const { skills, cleanup } = await materializeQueuedSkills(
+        queued,
+        this.context.materializeSkills,
       );
+      try {
+        await this.applySkillSync(skills);
+      } finally {
+        await cleanup();
+      }
       await this.savePendingSkillSync(null);
     } catch (error) {
       console.warn(

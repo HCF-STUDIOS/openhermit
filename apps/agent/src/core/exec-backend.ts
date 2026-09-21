@@ -24,6 +24,16 @@ export interface SyncSkillEntry {
   /** Absolute path on the gateway host to copy from. */
   sourcePath: string;
   /**
+   * Durable address this entry was materialized from — a `blob:` pointer when
+   * the runner staged the files out of blob storage into a temp dir.
+   *
+   * `sourcePath` is then an ephemeral staging path that the runner deletes as
+   * soon as the sync returns, so it must never be persisted. A backend that
+   * queues a sync for a disconnected sandbox records `originPath` instead and
+   * re-materializes it on replay.
+   */
+  originPath?: string;
+  /**
    * Selects the subdir under `<agentHome>/.openhermit/skills/`:
    *   'system' → skills/system/<id>
    *   'user'   → skills/user/<id>
@@ -167,6 +177,20 @@ export interface BackendFactoryContext {
   passThroughEnvProvider?: () => Promise<Record<string, string>>;
   getRuntimeState?: () => Promise<Record<string, unknown> | null>;
   setRuntimeState?: (state: Record<string, unknown>) => Promise<void>;
+  /**
+   * Stage `blob:`-pointer skills into real directories the backend can upload
+   * from, and hand back a cleanup to drop the staging dir afterwards. Supplied
+   * by the runner, which owns the skill artifact store; entries that are
+   * already plain paths pass through untouched.
+   *
+   * Backends need this when replaying a sync queued while the sandbox was
+   * down: what they persisted is the durable pointer, not the long-gone
+   * staging path the original call ran against.
+   */
+  materializeSkills?: (skills: SyncSkillEntry[]) => Promise<{
+    skills: SyncSkillEntry[];
+    cleanup: () => Promise<void>;
+  }>;
   markActive?: (patch: {
     externalId?: string | null;
     lastSeenAt?: string;

@@ -54,6 +54,22 @@ When a runner hydrates (on the first request that targets the agent, or on `agen
 
 DB skills take precedence over workspace-installed skills with the same name.
 
+### Staging and queued syncs
+
+A skill row's `path` is a `blob:` pointer, so `runner.syncSkills` unpacks the
+artifacts into a temp directory and deletes it as soon as the call returns. The
+remote backends must therefore treat `sourcePath` as ephemeral:
+
+- A sync that arrives while the sandbox is disconnected is queued in runtime
+  state under the *durable* `blob:` pointer (`SyncSkillEntry.originPath`), never
+  the staging path, and is re-materialized through `BackendFactoryContext.materializeSkills`
+  when the sandbox next connects.
+- Every install source is checked before the destructive prepare step runs, so a
+  sync that cannot read its source fails without emptying the skill directory.
+
+Because the plan reinstalls every enabled skill rather than a diff, the next
+successful sync repairs a sandbox left inconsistent by an earlier failure.
+
 ## Admin API
 
 | Method | Path | Description |
