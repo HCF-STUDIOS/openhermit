@@ -38,7 +38,7 @@ import type {
   SandboxStore,
   AttachmentStorage,
 } from '@openhermit/store';
-import { buildInboxSessionEntry, isSkillBlobPath } from '@openhermit/store';
+import { buildInboxSessionEntry, isSkillBlobPath, parseSkillBlobPath } from '@openhermit/store';
 import { migrateSkillsToBlob } from './skill-blob-migrate.js';
 import { readSkillMd } from './skill-source.js';
 import type { SandboxPreset } from './config.js';
@@ -2401,8 +2401,47 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   app.delete('/api/admin/skills/:id', async (c) => {
     requireAdmin(c.req.header('authorization'));
     const store = requireSkillStore();
-    await store.delete(c.req.param('id'));
-    return c.json({ ok: true });
+    const id = c.req.param('id');
+
+    const skill = await store.get(id);
+    if (!skill) {
+      // Nothing to delete — stay idempotent.
+      return c.json({ ok: true, deleted: false });
+    }
+
+    // Guard: refuse while the skill is still enabled for any agent. Unmounting
+    // a skill from an agent's sandbox is the job of `disable` (it runs the
+    // mount sync — right away for a running sandbox, on next hydrate for a
+    // paused one). Deleting a still-enabled skill would strand its files in
+    // live sandboxes and orphan the assignment rows, so the operator must
+    // disable it everywhere first.
+    const enabledFor = (await store.listAssignments(id)).filter((a) => a.enabled);
+    if (enabledFor.length > 0) {
+      const who = enabledFor.map((a) => (a.agentId === '*' ? 'all agents (*)' : a.agentId)).join(', ');
+      throw new ValidationError(
+        `Skill ${id} is still enabled for ${enabledFor.length} assignment(s): ${who}. ` +
+          `Disable it there first, then delete.`,
+      );
+    }
+
+    // Capture the blob key before the row (our only pointer to the archive) is
+    // gone. `store.delete` cascades the leftover disabled assignment rows.
+    const storageKey = parseSkillBlobPath(skill.path);
+    await store.delete(id);
+
+    // Best-effort archive cleanup — a leaked blob is recoverable, a row that
+    // points at a missing blob is not, so this runs after the row is gone and
+    // never fails the delete.
+    if (storageKey !== null) {
+      const artifactStore = instances.getSkillArtifactStore();
+      if (artifactStore) {
+        await artifactStore.deleteArchive(storageKey).catch((err) => {
+          log(`[skills] blob cleanup for ${id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    }
+
+    return c.json({ ok: true, deleted: true });
   });
 
   // One-shot migration: pack legacy bare-path skill directories from the local

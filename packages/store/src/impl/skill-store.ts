@@ -57,7 +57,15 @@ export class DbSkillStore implements SkillStore {
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.delete(skills).where(eq(skills.id, id)).catch(() => undefined);
+    // Drop the skill and its assignment rows together so no `agent_skills` row
+    // is left pointing at a skill that no longer exists. The caller guards
+    // against deleting a skill that is still *enabled* anywhere; by the time we
+    // get here only leftover disabled rows remain, and they go with it.
+    // A missing skill simply affects zero rows — still idempotent.
+    await this.db.transaction(async (tx) => {
+      await tx.delete(agentSkills).where(eq(agentSkills.skillId, id));
+      await tx.delete(skills).where(eq(skills.id, id));
+    });
   }
 
   async enable(agentId: string, skillId: string): Promise<void> {
