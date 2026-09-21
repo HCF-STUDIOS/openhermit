@@ -6,11 +6,14 @@ import { ValidationError } from '@openhermit/shared';
 import type { ExecBackend, ExecOpts, ExecResult, SyncSkillEntry, BackendFactoryContext, E2BExecBackendConfig } from '../exec-backend.js';
 import { E2BFileBackend } from './file-backend.js';
 import {
+  assertSkillSourcesReadable,
   buildSkillManifestReadScript,
   buildSkillSyncCommitScript,
   buildSkillSyncPrepareScript,
   parseSkillManifest,
   planSkillSync,
+  reconcileSystemSkillsOnEnsure,
+  writePendingSkillSyncFlag,
   type ManagedSkillIds,
 } from './shared.js';
 import { registerExecBackend } from '../exec-backend.js';
@@ -51,11 +54,6 @@ interface E2BBackendPersisted {
    * Informational; `connect()` itself transparently resumes paused
    * sandboxes, so this is for observability rather than dispatch. */
   state?: 'active' | 'paused';
-}
-
-interface E2BPendingSkillSync {
-  skills: Array<{ id: string; sourcePath: string; source: 'system' | 'user' }>;
-  queuedAt: string;
 }
 
 class E2BExecBackend implements ExecBackend {
@@ -169,7 +167,7 @@ class E2BExecBackend implements ExecBackend {
           externalId: this.sandbox.sandboxId,
           lastSeenAt: new Date().toISOString(),
         });
-        await this.replayPendingSkillSync();
+        await this.reconcileSystemSkills(false);
         await this.fireEnsured(false);
         return;
       } catch (err) {
@@ -207,7 +205,7 @@ class E2BExecBackend implements ExecBackend {
       lastSeenAt: new Date().toISOString(),
     });
 
-    await this.replayPendingSkillSync();
+    await this.reconcileSystemSkills(true);
     await this.fireEnsured(true);
   }
 
@@ -273,15 +271,15 @@ class E2BExecBackend implements ExecBackend {
 
   async syncSkills(skills: SyncSkillEntry[]): Promise<void> {
     if (!this.sandbox) {
-      await this.savePendingSkillSync({
-        skills: skills.map((s) => ({ id: s.id, sourcePath: s.sourcePath, source: s.source })),
-        queuedAt: new Date().toISOString(),
-      });
+      // Sandbox is paused/cold: just mark the dirty flag. The desired skill set
+      // is re-derived from the DB on the next ensure(), so no host path (long
+      // gone by wake-up time) is frozen into runtime_state.
+      await this.setPendingSkillFlag(true);
       return;
     }
 
     await this.applySkillSync(skills);
-    await this.savePendingSkillSync(null);
+    await this.setPendingSkillFlag(false);
   }
 
   private async applySkillSync(skills: SyncSkillEntry[]): Promise<void> {
@@ -294,6 +292,10 @@ class E2BExecBackend implements ExecBackend {
     const previous = await this.readSkillManifest(skillsRoot);
     const plan = planSkillSync(skills, previous);
 
+    // Bail before the prepare script deletes the old copies if any source is
+    // unreadable (e.g. a blob restore that half-failed) — better to keep the
+    // last-good skills than strand the sandbox without them.
+    await assertSkillSourcesReadable(plan.install);
     await this.sandbox.commands.run(buildSkillSyncPrepareScript(skillsRoot, plan));
     for (const skill of plan.install) {
       const remoteSkillDir = `${skillsRoot}/${skill.source}/${skill.id}`;
@@ -316,39 +318,27 @@ class E2BExecBackend implements ExecBackend {
     }
   }
 
-  private async replayPendingSkillSync(): Promise<void> {
-    if (!this.context.getRuntimeState) return;
-    const state = await this.context.getRuntimeState();
-    const pending = state?.['e2b_pending_skills'] as E2BPendingSkillSync | undefined;
-    if (!pending || !pending.skills?.length) return;
-    try {
-      await this.applySkillSync(
-        pending.skills.map((s) => ({
-          id: s.id,
-          sourcePath: s.sourcePath,
-          // Tolerate state saved before the source column existed.
-          source: s.source ?? 'system',
-        })),
-      );
-      await this.savePendingSkillSync(null);
-    } catch (error) {
-      console.warn(
-        `[exec-backend][e2b][${this.id}] failed to replay pending skill sync: ` +
-          (error instanceof Error ? error.message : String(error)),
-      );
-    }
+  /** Re-derive enabled system skills from the DB and push them if this sandbox
+   *  is fresh or woke with the dirty flag set. Delegates to the shared helper. */
+  private reconcileSystemSkills(fresh: boolean): Promise<void> {
+    return reconcileSystemSkillsOnEnsure({
+      fresh,
+      label: `e2b:${this.id}`,
+      getRuntimeState: this.context.getRuntimeState,
+      setRuntimeState: this.context.setRuntimeState,
+      getEnabledSystemSkills: this.context.getEnabledSystemSkills,
+      apply: (s) => this.applySkillSync(s),
+    });
   }
 
-  private async savePendingSkillSync(pending: E2BPendingSkillSync | null): Promise<void> {
-    if (!this.context.setRuntimeState || !this.context.getRuntimeState) return;
-    const current = (await this.context.getRuntimeState()) ?? {};
-    if (pending === null) {
-      const { e2b_pending_skills: _drop, ...rest } = current;
-      void _drop;
-      await this.context.setRuntimeState(rest);
-    } else {
-      await this.context.setRuntimeState({ ...current, e2b_pending_skills: pending });
-    }
+  private setPendingSkillFlag(dirty: boolean): Promise<void> {
+    return writePendingSkillSyncFlag(
+      {
+        getRuntimeState: this.context.getRuntimeState,
+        setRuntimeState: this.context.setRuntimeState,
+      },
+      dirty,
+    );
   }
 
   async shutdown(): Promise<void> {

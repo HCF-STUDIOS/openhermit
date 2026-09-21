@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm, cp, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, cp, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 
 import type { SyncSkillEntry } from '../exec-backend.js';
@@ -207,4 +208,116 @@ export const buildSkillSyncCommitScript = (
   );
   if (stageRoot) lines.push(`rm -rf ${shQuote(stageRoot)}`);
   return lines.join('\n');
+};
+
+/**
+ * Fail before the destructive prepare script runs if any skill source is
+ * unreadable. `syncSkills` materializes blob-backed skills into a temp stage
+ * dir; if a stage dir vanished (a botched restore, a cleanup race), uploading
+ * would skip that skill while the prepare script has already removed its old
+ * copy — leaving the sandbox without a skill the agent still has enabled.
+ * Refusing the whole sync keeps the last-good copy in place instead.
+ */
+export const assertSkillSourcesReadable = async (
+  install: SyncSkillEntry[],
+): Promise<void> => {
+  const unreadable: string[] = [];
+  await Promise.all(
+    install.map(async (skill) => {
+      try {
+        await access(path.join(skill.sourcePath, 'SKILL.md'), fsConstants.R_OK);
+      } catch {
+        unreadable.push(`${skill.source}/${skill.id}`);
+      }
+    }),
+  );
+  if (unreadable.length > 0) {
+    throw new Error(
+      `skill sources are unreadable, refusing sync: ${unreadable.sort().join(', ')}`,
+    );
+  }
+};
+
+// ── Pending-sync dirty flag (e2b / daytona / tenki backends) ──────────────
+
+/**
+ * Runtime-state key holding a single boolean: does this sandbox have enabled
+ * system skills that were changed while it was paused/cold and not yet synced?
+ *
+ * We deliberately store *only* a flag — not the skill list or any host path.
+ * The list is re-derived from the database on the next ensure(), so a temp
+ * staging path (long deleted by the time the sandbox wakes) never gets frozen
+ * into runtime_state the way the old `<backend>_pending_skills` entries did.
+ */
+export const PENDING_SYNC_SKILLS_KEY = 'pending_sync_skills';
+
+interface RuntimeStateAccess {
+  getRuntimeState?: (() => Promise<Record<string, unknown> | null>) | undefined;
+  setRuntimeState?: ((state: Record<string, unknown>) => Promise<void>) | undefined;
+}
+
+const readPendingSkillSyncFlag = async (
+  getRuntimeState: RuntimeStateAccess['getRuntimeState'],
+): Promise<boolean> => {
+  if (!getRuntimeState) return false;
+  const state = await getRuntimeState().catch(() => null);
+  return state?.[PENDING_SYNC_SKILLS_KEY] === true;
+};
+
+/** Set or clear the dirty flag; a no-op when the backend has no runtime state. */
+export const writePendingSkillSyncFlag = async (
+  access: RuntimeStateAccess,
+  dirty: boolean,
+): Promise<void> => {
+  if (!access.getRuntimeState || !access.setRuntimeState) return;
+  const state = (await access.getRuntimeState().catch(() => null)) ?? {};
+  if (dirty) {
+    state[PENDING_SYNC_SKILLS_KEY] = true;
+  } else {
+    delete state[PENDING_SYNC_SKILLS_KEY];
+  }
+  await access.setRuntimeState(state);
+};
+
+/**
+ * Bring a just-ensured sandbox's system skills in line with the database.
+ *
+ * A fresh sandbox always syncs (it starts empty). A resumed one syncs only
+ * when the dirty flag says something changed while it slept — otherwise the
+ * manifest already matches and we skip the round-trip. On success the flag is
+ * cleared; failures are swallowed with a warning so ensure() still returns a
+ * usable sandbox (the flag stays set, so the next ensure retries).
+ */
+export const reconcileSystemSkillsOnEnsure = async (params: {
+  fresh: boolean;
+  label: string;
+  getRuntimeState?: (() => Promise<Record<string, unknown> | null>) | undefined;
+  setRuntimeState?: ((state: Record<string, unknown>) => Promise<void>) | undefined;
+  getEnabledSystemSkills?:
+    | (() => Promise<{ skills: SyncSkillEntry[]; cleanup: () => Promise<void> }>)
+    | undefined;
+  apply: (skills: SyncSkillEntry[]) => Promise<void>;
+}): Promise<void> => {
+  const { fresh, label, getRuntimeState, setRuntimeState, getEnabledSystemSkills, apply } =
+    params;
+  // Without a resolver we cannot know the desired set; syncing an empty list
+  // would prune every managed skill, so do nothing instead.
+  if (!getEnabledSystemSkills) return;
+  const dirty = await readPendingSkillSyncFlag(getRuntimeState);
+  if (!fresh && !dirty) return;
+
+  try {
+    const { skills, cleanup } = await getEnabledSystemSkills();
+    try {
+      await apply(skills);
+    } finally {
+      await cleanup().catch(() => undefined);
+    }
+    await writePendingSkillSyncFlag({ getRuntimeState, setRuntimeState }, false);
+  } catch (err) {
+    console.warn(
+      `[exec-backend][${label}] system skill reconcile failed; will retry on next ensure`,
+      err,
+    );
+  }
 };

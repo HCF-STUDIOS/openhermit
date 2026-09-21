@@ -165,6 +165,18 @@ export interface BackendFactoryContext {
    * (one DB roundtrip via SecretStore.listEntries).
    */
   passThroughEnvProvider?: () => Promise<Record<string, string>>;
+  /**
+   * Resolve the agent's currently-enabled system skills, materialized to local
+   * dirs ready to upload. Returns a `cleanup` the caller must run once the sync
+   * finishes to remove the temp staging dir. Backends call this from
+   * `reconcileSystemSkillsOnEnsure` to re-derive the desired set from the DB
+   * instead of replaying a stale, path-bearing pending-sync record. Absent when
+   * no skill store is configured — reconcile then skips (never prunes blindly).
+   */
+  getEnabledSystemSkills?: () => Promise<{
+    skills: SyncSkillEntry[];
+    cleanup: () => Promise<void>;
+  }>;
   getRuntimeState?: () => Promise<Record<string, unknown> | null>;
   setRuntimeState?: (state: Record<string, unknown>) => Promise<void>;
   markActive?: (patch: {
