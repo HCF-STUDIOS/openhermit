@@ -6,13 +6,15 @@ import path from 'node:path';
 
 import {
   assertSkillSourcesReadable,
-  isPendingSkillDirty,
+  isLegacyPendingDirty,
+  PENDING_SYNC_SKILLS_KEY,
   reconcileSystemSkillsOnEnsure,
   writePendingSkillFlag,
 } from '../src/core/backends/shared.js';
 import type { SyncSkillEntry } from '../src/core/exec-backend.js';
 
-const KEY = 'e2b_pending_skills';
+/** The pre-flag per-backend key (e.g. e2b's), used to test migration. */
+const LEGACY_KEY = 'e2b_pending_skills';
 
 /** In-memory stand-in for a sandbox row's runtime_state. */
 const fakeRuntimeState = (initial: Record<string, unknown> = {}) => {
@@ -63,34 +65,34 @@ test('assertSkillSourcesReadable throws listing every unreadable source', async 
   }
 });
 
-test('isPendingSkillDirty covers the new marker and legacy shapes', () => {
-  // New bare marker.
-  assert.equal(isPendingSkillDirty(true), true);
+test('isLegacyPendingDirty honors the pre-flag record shapes', () => {
   // Legacy record with a queued list → dirty only when non-empty.
-  assert.equal(isPendingSkillDirty({ skills: [{ id: 'a' }], queuedAt: 'x' }), true);
-  assert.equal(isPendingSkillDirty({ skills: [], queuedAt: 'x' }), false);
+  assert.equal(isLegacyPendingDirty({ skills: [{ id: 'a' }], queuedAt: 'x' }), true);
+  assert.equal(isLegacyPendingDirty({ skills: [], queuedAt: 'x' }), false);
   // Legacy-ish object with no skills array is treated as dirty (be safe).
-  assert.equal(isPendingSkillDirty({ queuedAt: 'x' }), true);
+  assert.equal(isLegacyPendingDirty({ queuedAt: 'x' }), true);
+  // Bare true (defensive) → dirty.
+  assert.equal(isLegacyPendingDirty(true), true);
   // Absent / falsy → clean.
-  assert.equal(isPendingSkillDirty(undefined), false);
-  assert.equal(isPendingSkillDirty(null), false);
-  assert.equal(isPendingSkillDirty(false), false);
+  assert.equal(isLegacyPendingDirty(undefined), false);
+  assert.equal(isLegacyPendingDirty(null), false);
+  assert.equal(isLegacyPendingDirty(false), false);
 });
 
-test('writePendingSkillFlag sets and clears the flag, preserving other state', async () => {
+test('writePendingSkillFlag sets and clears the new flag, preserving other state', async () => {
   const rt = fakeRuntimeState({ e2b: { sandboxId: 'sb-1' } });
 
-  await writePendingSkillFlag(rt, KEY, true);
-  assert.equal(rt.snapshot()[KEY], true);
+  await writePendingSkillFlag(rt, true);
+  assert.equal(rt.snapshot()[PENDING_SYNC_SKILLS_KEY], true);
   assert.deepEqual(rt.snapshot().e2b, { sandboxId: 'sb-1' });
 
-  await writePendingSkillFlag(rt, KEY, false);
-  assert.ok(!(KEY in rt.snapshot()));
+  await writePendingSkillFlag(rt, false);
+  assert.ok(!(PENDING_SYNC_SKILLS_KEY in rt.snapshot()));
   assert.deepEqual(rt.snapshot().e2b, { sandboxId: 'sb-1' });
 });
 
 test('writePendingSkillFlag is a no-op without runtime state access', async () => {
-  await assert.doesNotReject(writePendingSkillFlag({}, KEY, true));
+  await assert.doesNotReject(writePendingSkillFlag({}, true));
 });
 
 const oneSkill = async (): Promise<{
@@ -109,7 +111,7 @@ const reconcile = (
   reconcileSystemSkillsOnEnsure({
     fresh,
     label: 'test',
-    pendingKey: KEY,
+    legacyPendingKey: LEGACY_KEY,
     getRuntimeState: rt.getRuntimeState,
     setRuntimeState: rt.setRuntimeState,
     getEnabledSystemSkills: oneSkill,
@@ -127,7 +129,7 @@ test('reconcile on a fresh sandbox always applies and leaves the flag clear', as
   });
   assert.equal(applied.length, 1);
   assert.equal(applied[0]![0]!.id, 'alpha');
-  assert.ok(!(KEY in rt.snapshot()));
+  assert.ok(!(PENDING_SYNC_SKILLS_KEY in rt.snapshot()));
 });
 
 test('reconcile on a clean resume skips the sync entirely', async () => {
@@ -141,8 +143,8 @@ test('reconcile on a clean resume skips the sync entirely', async () => {
   assert.equal(called, false);
 });
 
-test('reconcile on a resume with the new marker applies and clears it', async () => {
-  const rt = fakeRuntimeState({ [KEY]: true });
+test('reconcile on a resume with the new flag applies and clears it', async () => {
+  const rt = fakeRuntimeState({ [PENDING_SYNC_SKILLS_KEY]: true });
   let called = false;
   await reconcile(rt, false, {
     apply: async () => {
@@ -150,13 +152,13 @@ test('reconcile on a resume with the new marker applies and clears it', async ()
     },
   });
   assert.equal(called, true);
-  assert.ok(!(KEY in rt.snapshot()));
+  assert.ok(!(PENDING_SYNC_SKILLS_KEY in rt.snapshot()));
 });
 
-test('reconcile migrates a legacy non-empty pending record on resume', async () => {
+test('reconcile migrates a legacy non-empty pending record and sweeps both keys', async () => {
   // Pre-flag production data: an object with a queued skill list + host paths.
   const rt = fakeRuntimeState({
-    [KEY]: {
+    [LEGACY_KEY]: {
       skills: [{ id: 'old', sourcePath: '/tmp/oh-skill-stage-gone/system/old', source: 'system' }],
       queuedAt: '2026-01-01T00:00:00.000Z',
     },
@@ -168,12 +170,13 @@ test('reconcile migrates a legacy non-empty pending record on resume', async () 
     },
   });
   assert.equal(called, true);
-  // Stale record is swept away after a successful reconcile.
-  assert.ok(!(KEY in rt.snapshot()));
+  // Both the new flag and the stale legacy entry are gone after success.
+  assert.ok(!(PENDING_SYNC_SKILLS_KEY in rt.snapshot()));
+  assert.ok(!(LEGACY_KEY in rt.snapshot()));
 });
 
 test('reconcile ignores a legacy record with an empty queued list', async () => {
-  const rt = fakeRuntimeState({ [KEY]: { skills: [], queuedAt: 'x' } });
+  const rt = fakeRuntimeState({ [LEGACY_KEY]: { skills: [], queuedAt: 'x' } });
   let called = false;
   await reconcile(rt, false, {
     apply: async () => {
@@ -184,7 +187,7 @@ test('reconcile ignores a legacy record with an empty queued list', async () => 
 });
 
 test('reconcile without a skill resolver never applies (avoids pruning everything)', async () => {
-  const rt = fakeRuntimeState({ [KEY]: true });
+  const rt = fakeRuntimeState({ [PENDING_SYNC_SKILLS_KEY]: true });
   let called = false;
   await reconcile(rt, true, {
     getEnabledSystemSkills: undefined,
@@ -193,12 +196,12 @@ test('reconcile without a skill resolver never applies (avoids pruning everythin
     },
   });
   assert.equal(called, false);
-  // Marker is left untouched so a later ensure with a resolver still retries.
-  assert.equal(rt.snapshot()[KEY], true);
+  // Flag is left untouched so a later ensure with a resolver still retries.
+  assert.equal(rt.snapshot()[PENDING_SYNC_SKILLS_KEY], true);
 });
 
 test('reconcile keeps the flag set and swallows errors when apply fails', async () => {
-  const rt = fakeRuntimeState({ [KEY]: true });
+  const rt = fakeRuntimeState({ [PENDING_SYNC_SKILLS_KEY]: true });
   let cleaned = false;
   await assert.doesNotReject(
     reconcile(rt, false, {
@@ -213,8 +216,8 @@ test('reconcile keeps the flag set and swallows errors when apply fails', async 
       },
     }),
   );
-  // Failure must not clear the marker — the next ensure retries.
-  assert.equal(rt.snapshot()[KEY], true);
+  // Failure must not clear the flag — the next ensure retries.
+  assert.equal(rt.snapshot()[PENDING_SYNC_SKILLS_KEY], true);
   // Materialized temp dirs are still cleaned up even on failure.
   assert.equal(cleaned, true);
 });

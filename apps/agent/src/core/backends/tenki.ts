@@ -17,9 +17,9 @@ import {
   type ManagedSkillIds,
 } from './shared.js';
 
-/** Runtime-state key marking a deferred system-skill sync. Reused from the
- *  pre-flag code so old records migrate for free (see shared.ts). */
-const TENKI_PENDING_SKILLS_KEY = 'tenki_pending_skills';
+/** Pre-flag runtime-state key. Honored for one reconcile on migration so a
+ *  sandbox paused with a queued sync across the deploy still syncs (see shared.ts). */
+const TENKI_LEGACY_PENDING_SKILLS_KEY = 'tenki_pending_skills';
 import { registerExecBackend } from '../exec-backend.js';
 
 const TENKI_DEFAULT_USERNAME = 'tenki';
@@ -347,7 +347,7 @@ export class TenkiExecBackend implements ExecBackend {
     return reconcileSystemSkillsOnEnsure({
       fresh,
       label: `tenki:${this.id}`,
-      pendingKey: TENKI_PENDING_SKILLS_KEY,
+      legacyPendingKey: TENKI_LEGACY_PENDING_SKILLS_KEY,
       getRuntimeState: this.context.getRuntimeState,
       setRuntimeState: this.context.setRuntimeState,
       getEnabledSystemSkills: this.context.getEnabledSystemSkills,
@@ -361,7 +361,6 @@ export class TenkiExecBackend implements ExecBackend {
         getRuntimeState: this.context.getRuntimeState,
         setRuntimeState: this.context.setRuntimeState,
       },
-      TENKI_PENDING_SKILLS_KEY,
       dirty,
     );
   }
