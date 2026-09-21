@@ -331,7 +331,26 @@ export type OutboundEventBody =
     }
   | { type: 'agent_start'; sessionId: string; correlationId?: string }
   | { type: 'agent_end'; sessionId: string }
-  | { type: 'error'; sessionId: string; message: string; correlationId?: string }
+  | {
+      type: 'error';
+      sessionId: string;
+      message: string;
+      /**
+       * Coarse classification of the underlying model-provider failure, so
+       * consumers can distinguish transient conditions (e.g. `unavailable`,
+       * `rate_limit`) from terminal ones and soften the UX accordingly —
+       * showing a "reconnecting…" state rather than a hard error bubble.
+       * Absent on non-model errors.
+       */
+      kind?:
+        | 'quota'
+        | 'rate_limit'
+        | 'auth'
+        | 'context_too_long'
+        | 'unavailable'
+        | 'generic';
+      correlationId?: string;
+    }
   | {
       /**
        * In-flight media placeholder from a media-generation tool; channels/UIs
@@ -1347,6 +1366,15 @@ export const isToolApprovalRequest = (
 
 const OUTBOUND_MEDIA_KINDS = new Set(['image', 'audio', 'video', 'document']);
 
+const MODEL_ERROR_KINDS = new Set([
+  'quota',
+  'rate_limit',
+  'auth',
+  'context_too_long',
+  'unavailable',
+  'generic',
+]);
+
 /**
  * Subset of OutboundEventBody a trusted server may publish into a live session
  * via the publish-into-session route; everything else stays runtime-internal.
@@ -1390,6 +1418,8 @@ export const isPublishableOutboundEvent = (
   if (value.type === 'error') {
     if (typeof value.message !== 'string' || !value.message) return false;
     if (!isOptionalString(value.correlationId)) return false;
+    if (value.kind !== undefined && (typeof value.kind !== 'string' || !MODEL_ERROR_KINDS.has(value.kind)))
+      return false;
     return true;
   }
 
