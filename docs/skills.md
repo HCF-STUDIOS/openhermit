@@ -54,6 +54,26 @@ When a runner hydrates (on the first request that targets the agent, or on `agen
 
 DB skills take precedence over workspace-installed skills with the same name.
 
+### Staging and paused/cold sandboxes
+
+A skill row's `path` is a `blob:` pointer, so `runner.syncSkills` unpacks the
+artifacts into a temp directory and deletes it as soon as the call returns. The
+remote backends (e2b / daytona / tenki) therefore treat `sourcePath` as
+ephemeral and never persist it:
+
+- A sync that arrives while the sandbox is paused or cold cannot upload, so the
+  backend only records a bare dirty flag (`pending_sync_skills`) in runtime
+  state — never the skill list or the staging path (both long gone by wake-up).
+  On the next `ensure()` the enabled system skills are re-derived from the DB and
+  re-materialized, then the flag is cleared.
+- A fresh sandbox always reconciles from the DB (it starts empty); a resumed one
+  reconciles only when the dirty flag is set.
+- Before the destructive prepare step runs, every install source is checked
+  (`assertSkillSourcesReadable`); a sync that cannot read its source fails
+  without emptying the skill directory. Because the plan reinstalls every enabled
+  skill rather than a diff, the next successful sync repairs a sandbox left
+  inconsistent by an earlier failure.
+
 ## Admin API
 
 | Method | Path | Description |
