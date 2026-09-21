@@ -40,6 +40,7 @@ import type {
 } from '@openhermit/store';
 import { buildInboxSessionEntry, isSkillBlobPath } from '@openhermit/store';
 import { migrateSkillsToBlob } from './skill-blob-migrate.js';
+import { readSkillMd } from './skill-source.js';
 import type { SandboxPreset } from './config.js';
 import { defaultGatewayConfig, parseGatewayConfig, saveGatewayConfig, META_KEY } from './config.js';
 import type { ChannelRegistry } from './auth.js';
@@ -2478,7 +2479,8 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         : undefined;
 
     const { parseFrontmatter } = await import('@openhermit/agent/skills');
-    const { readFile } = await import('node:fs/promises');
+
+    const artifactStore = instances.getSkillArtifactStore();
 
     const all = await store.list();
     const systemSkills = all.filter((s) => s.source === 'system');
@@ -2510,17 +2512,14 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const results: SyncResultEntry[] = [];
 
     for (const existing of targets) {
-      // Read from the path recorded on the row — that's where the skill
-      // actually lives. Built-in skills point at a bundled location (e.g.
-      // inside @openhermit/agent); operator-registered system skills
-      // point at `<gatewayDir>/registry/skills/<id>/` (or wherever
-      // `register --path` was given). Either way, frontmatter that's
-      // visible to the runner is the frontmatter at this path.
-      const skillMdPath = path.join(existing.path, 'SKILL.md');
-      let content: string;
-      try {
-        content = await readFile(skillMdPath, 'utf8');
-      } catch {
+      // Read from the source recorded on the row — that's where the skill
+      // actually lives. Migrated system skills carry a `blob:` pointer (no
+      // local file), so `readSkillMd` materializes the archive; legacy
+      // bare-path rows (built-in bundled locations, or wherever
+      // `register --path` was given) are read straight off disk. Either way,
+      // the frontmatter here is the frontmatter the runner will see.
+      const content = await readSkillMd(existing.path, artifactStore);
+      if (content === null) {
         results.push({ id: existing.id, action: 'missing_on_disk' });
         continue;
       }
