@@ -79,7 +79,7 @@ ephemeral and never persist it:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/admin/skills` | list registered skills |
-| `GET` | `/api/admin/skills/scan` | scan skill directories |
+| `GET` | `/api/admin/skills/scan` | scan the gateway skills directory for manifests — read-only, does not touch the DB or blob storage |
 | `GET` | `/api/admin/skills/assignments` | list skill assignments |
 | `GET` | `/api/admin/skills/{id}` | get one skill |
 | `POST` | `/api/admin/skills` | create or upsert a skill (content-only — see [Register vs. sync](#register-vs-sync)) |
@@ -141,7 +141,7 @@ These routes require owner or admin auth.
 |---------|-------------|
 | `hermit skills list` | list registered skills |
 | `hermit skills assignments` | show which skills are enabled for which agents |
-| `hermit skills scan` | scan the gateway skills directory for manifests |
+| `hermit skills scan` | preview the manifests in the gateway skills directory — read-only; registers nothing and uploads nothing. Blob upload happens only at `register`. |
 | `hermit skills register <id> --path <dir> [--name ...] [--description ...]` | register/upsert a skill from a local directory; `--name`/`--description` default to the directory's `SKILL.md` frontmatter, read once at register time |
 | `hermit skills sync [skillId]` | re-read `SKILL.md` and refresh the DB index + running agents; one skill if an id is given, otherwise every system skill |
 | `hermit skills enable <id> (--agent <id> \| --all)` | enable for one agent or every agent (`*`) |
