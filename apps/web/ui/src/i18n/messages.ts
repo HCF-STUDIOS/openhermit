@@ -435,8 +435,8 @@ export const messages = {
   'secrets.fieldKey': { en: 'Key', zh: '名称' },
   'secrets.fieldValue': { en: 'Value', zh: '值' },
   'secrets.duplicateError': {
-    en: 'Secret "{key}" already exists',
-    zh: '密钥「{key}」已存在',
+    en: 'Secret "{key}" already exists — close this and use its Edit button to change the value.',
+    zh: '密钥「{key}」已存在 —— 请关闭此窗口，用该密钥的「编辑」按钮修改它的值。',
   },
   'secrets.editValueRequired': {
     en: 'Enter a new value to update this secret.',
