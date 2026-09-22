@@ -262,8 +262,8 @@ export const repairToolCallPairing = (
 };
 
 /**
- * Reorder a plain assistant message that got serialized *between* the tool
- * results of a single preceding assistant's parallel tool calls.
+ * Reorder a plain assistant message OR a user message that got serialized
+ * *between* a preceding assistant's tool call(s) and their results.
  *
  * The anthropic-messages wire format (MiniMax's `/anthropic` endpoint) requires
  * that once an assistant turn issues tool calls, *all* of that turn's tool
@@ -283,16 +283,27 @@ export const repairToolCallPairing = (
  * attachment were sent in one turn (two `attachment_send` calls, each with its
  * own caption).
  *
+ * The same run splits when the OWNER types while a tool is still running, so a
+ * user message lands between the call and its result:
+ *
+ *   assistant(text, toolCall)
+ *   user(text)               ← illegal: splits the call from its result
+ *   toolResult
+ *
+ * — the wedge that hit 小爱's session when the owner sent "好的" mid-`exec`
+ * (2026-09-22).
+ *
  * Neither existing guard fixes it: `normalizeMessageAlternation` merges only
- * ADJACENT same-role turns, but here a `toolResult` sits between the two
- * assistants so they are never adjacent; `repairToolCallPairing` only drops
- * ORPHANS, but both calls do have a surviving result — only the ORDER is wrong.
+ * ADJACENT same-role turns, but here a `toolResult` sits between the interleaved
+ * message and the assistant so they are never adjacent; `repairToolCallPairing`
+ * only drops ORPHANS, but the call does have a surviving result — only the ORDER
+ * is wrong.
  *
  * Repair: for each assistant that issues tool calls, gather the run of following
  * `toolResult` messages that answer those calls, hoisting any interleaved
- * call-less assistant messages out to *after* the result run (relative order
- * preserved). `normalizeMessageAlternation`, which runs next, then coalesces the
- * hoisted assistants with the following turn.
+ * call-less assistant OR user message out to *after* the result run (relative
+ * order preserved). `normalizeMessageAlternation`, which runs next, then
+ * coalesces the hoisted messages with the following turn.
  *
  * REQUEST-ONLY — same contract as `repairToolCallPairing` and
  * `normalizeMessageAlternation`: applied to the wire payload after the live-state
@@ -324,9 +335,12 @@ export const repairInterleavedToolResults = (
     }
 
     // Assistant with tool calls: gather its result run, deferring any call-less
-    // assistant messages until we know whether another wanted result follows
-    // them (⇒ they were interleaved and must be hoisted) or not (⇒ they are the
-    // next turn and stay put).
+    // assistant message OR user message until we know whether another wanted
+    // result follows it (⇒ it was interleaved and must be hoisted) or not (⇒ it
+    // is the next turn and stays put). A user message lands mid-run when the
+    // owner types while a tool is still executing — e.g. an "好的" that arrived
+    // between an `exec` call and its result — and MiniMax 400s (2013) on the
+    // split result run exactly as it does for an interleaved caption assistant.
     const wanted = new Set(callIds);
     const results: AgentMessage[] = [];
     const hoisted: AgentMessage[] = [];
@@ -344,7 +358,10 @@ export const repairInterleavedToolResults = (
         j += 1;
         continue;
       }
-      if (isAssistantMessage(mj) && toolCallIdsOf(mj).length === 0) {
+      const isCallLessAssistant =
+        isAssistantMessage(mj) && toolCallIdsOf(mj).length === 0;
+      const isUser = (mj as Message).role === 'user';
+      if (isCallLessAssistant || isUser) {
         pending.push(mj);
         j += 1;
         continue;
