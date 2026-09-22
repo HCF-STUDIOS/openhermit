@@ -26,6 +26,7 @@ export const messages = {
   'common.copy': { en: 'Copy', zh: '复制' },
   'common.unknown': { en: 'Unknown', zh: '未知' },
   'common.save': { en: 'Save', zh: '保存' },
+  'common.edit': { en: 'Edit', zh: '编辑' },
   'common.saving': { en: 'Saving…', zh: '保存中…' },
   'common.delete': { en: 'Delete', zh: '删除' },
   'common.close': { en: 'Close', zh: '关闭' },
@@ -403,10 +404,10 @@ export const messages = {
   // ── Secrets panel ─────────────────────────────────────────────
   'secrets.eyebrow': { en: 'Secrets', zh: '密钥' },
   'secrets.hintPrefix': {
-    en: 'Provider API keys, channel tokens, and other credentials. Existing values are never returned to the browser; the placeholder shows how the server has masked the current value. Each row saves independently — type a new value and click ',
-    zh: 'Provider API Key、通道令牌等凭据。现有的值不会返回到浏览器；占位符显示的是服务器掩码后的当前值。每行独立保存 — 输入新值后点击该行上的「',
+    en: 'Provider API keys, channel tokens, and other credentials. Existing values are never returned to the browser; the list shows only the server-masked preview. Click ',
+    zh: 'Provider API Key、通道令牌等凭据。现有的值不会返回到浏览器；列表只显示服务器掩码后的预览。点击该行上的「',
   },
-  'secrets.hintMiddle1': { en: ' on that row, or ', zh: '」，或点击「' },
+  'secrets.hintMiddle1': { en: ' on a row to set a new value, or ', zh: '」为该密钥设置新值，或点击「' },
   'secrets.hintMiddle2': {
     en: ' to remove the secret. Toggle ',
     zh: '」删除该密钥。开启「',
@@ -418,6 +419,7 @@ export const messages = {
   'secrets.add': { en: 'Add Secret', zh: '添加密钥' },
   'secrets.empty': { en: 'No secrets configured yet.', zh: '尚未配置密钥。' },
   'secrets.valueUnchanged': { en: 'unchanged', zh: '保持不变' },
+  'secrets.valueHidden': { en: '•••• (hidden)', zh: '•••• (已隐藏)' },
   'secrets.passToSandbox': { en: 'Pass to sandbox', zh: '注入到沙箱' },
   'secrets.passToSandboxTitle': {
     en: 'Inject as env var into sandboxes',
@@ -429,12 +431,19 @@ export const messages = {
   },
   'secrets.deleteConfirm': { en: 'Delete secret "{key}"?', zh: '删除密钥「{key}」？' },
   'secrets.dialogAddTitle': { en: 'Add Secret', zh: '添加密钥' },
+  'secrets.dialogEditTitle': { en: 'Edit Secret', zh: '编辑密钥' },
   'secrets.fieldKey': { en: 'Key', zh: '名称' },
   'secrets.fieldValue': { en: 'Value', zh: '值' },
   'secrets.duplicateError': {
     en: 'Secret "{key}" already exists',
     zh: '密钥「{key}」已存在',
   },
+  'secrets.editValueRequired': {
+    en: 'Enter a new value to update this secret.',
+    zh: '请输入新值以更新该密钥。',
+  },
+  'secrets.addSuccess': { en: 'Secret "{key}" added.', zh: '密钥「{key}」已添加。' },
+  'secrets.saveSuccess': { en: 'Secret "{key}" updated.', zh: '密钥「{key}」已更新。' },
 
   // ── Voice panel ───────────────────────────────────────────────
   'voice.eyebrow': { en: 'Voice', zh: '语音' },

@@ -13,18 +13,23 @@ interface RowState {
   masked: string;
   /** Whether this secret is injected as an env var into sandboxes. */
   passThrough: boolean;
-  /** Current edit-in-progress value; empty until the user types. */
-  draft: string;
   /** This row is currently mid-PUT/DELETE. */
   busy: boolean;
 }
+
+/** Which dialog is open, if any. `null` key + mode 'add' is the add flow. */
+type DialogState =
+  | { mode: 'add' }
+  | { mode: 'edit'; key: string; passThrough: boolean; masked: string }
+  | null;
 
 export function SecretsPanel() {
   const { t } = useTranslation();
   const [rows, setRows] = useState<RowState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [showAdd, setShowAdd] = useState(false);
+  const [toast, setToast] = useState('');
+  const [dialog, setDialog] = useState<DialogState>(null);
 
   const loadFromServer = useCallback(async () => {
     const map = await fetchAgentSecrets();
@@ -33,7 +38,6 @@ export function SecretsPanel() {
         key: k,
         masked: map[k]?.masked ?? '',
         passThrough: map[k]?.passThrough ?? false,
-        draft: '',
         busy: false,
       })),
     );
@@ -45,22 +49,15 @@ export function SecretsPanel() {
       .finally(() => setLoading(false));
   }, [loadFromServer]);
 
+  // Auto-dismiss the success toast.
+  useEffect(() => {
+    if (!toast) return;
+    const id = window.setTimeout(() => setToast(''), 4000);
+    return () => window.clearTimeout(id);
+  }, [toast]);
+
   const updateRow = (key: string, patch: Partial<RowState>) => {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-  };
-
-  const saveRow = async (key: string) => {
-    const row = rows.find((r) => r.key === key);
-    if (!row || row.draft === '') return;
-    setError('');
-    updateRow(key, { busy: true });
-    try {
-      await setAgentSecret(key, row.draft, { passThrough: row.passThrough });
-      await loadFromServer();
-    } catch (err) {
-      setError((err as Error).message);
-      updateRow(key, { busy: false });
-    }
   };
 
   const togglePassThrough = async (key: string, next: boolean) => {
@@ -95,7 +92,7 @@ export function SecretsPanel() {
       <div className="secrets-panel__intro">
         <p className="eyebrow">{t('secrets.eyebrow')}</p>
         <p className="secrets-panel__hint">
-          {t('secrets.hintPrefix')}<strong>{t('common.save')}</strong>
+          {t('secrets.hintPrefix')}<strong>{t('common.edit')}</strong>
           {t('secrets.hintMiddle1')}<strong>{t('common.delete')}</strong>
           {t('secrets.hintMiddle2')}<strong>{t('secrets.passToSandbox')}</strong>
           {t('secrets.hintSuffix')}
@@ -106,11 +103,13 @@ export function SecretsPanel() {
         <button
           type="button"
           className="btn btn--sm btn--primary"
-          onClick={() => setShowAdd(true)}
+          onClick={() => setDialog({ mode: 'add' })}
         >
           {t('secrets.add')}
         </button>
       </div>
+
+      {toast && <p className="secrets-panel__toast" role="status">{toast}</p>}
 
       <div className="secrets-panel__list">
         {rows.length === 0 ? (
@@ -119,15 +118,9 @@ export function SecretsPanel() {
           rows.map((r) => (
             <div className="secrets-row" key={r.key}>
               <span className="secrets-row__key">{r.key}</span>
-              <input
-                type="text"
-                className="secrets-row__value"
-                value={r.draft}
-                onChange={(e) => updateRow(r.key, { draft: e.target.value })}
-                placeholder={r.masked || t('secrets.valueUnchanged')}
-                disabled={r.busy}
-                autoComplete="off"
-              />
+              <span className="secrets-row__value secrets-row__value--display" title={r.masked}>
+                {r.masked || <span className="secrets-row__value-empty">{t('secrets.valueHidden')}</span>}
+              </span>
               <label className="secrets-row__passthrough" title={t('secrets.passToSandboxTitle')}>
                 <input
                   type="checkbox"
@@ -141,10 +134,12 @@ export function SecretsPanel() {
                 <button
                   type="button"
                   className="btn btn--primary btn--sm"
-                  disabled={r.busy || r.draft === ''}
-                  onClick={() => void saveRow(r.key)}
+                  disabled={r.busy}
+                  onClick={() =>
+                    setDialog({ mode: 'edit', key: r.key, passThrough: r.passThrough, masked: r.masked })
+                  }
                 >
-                  {r.busy ? '…' : t('common.save')}
+                  {r.busy ? '…' : t('common.edit')}
                 </button>
                 <button
                   type="button"
@@ -164,31 +159,38 @@ export function SecretsPanel() {
 
       {error && <p className="basic-panel__error">{error}</p>}
 
-      {showAdd && (
-        <AddSecretDialog
+      {dialog && (
+        <SecretDialog
+          dialog={dialog}
           existingKeys={rows.map((r) => r.key)}
-          onClose={() => setShowAdd(false)}
-          onCreated={loadFromServer}
+          onClose={() => setDialog(null)}
+          onSaved={async (message) => {
+            await loadFromServer();
+            setToast(message);
+          }}
         />
       )}
     </div>
   );
 }
 
-function AddSecretDialog({
+function SecretDialog({
+  dialog,
   existingKeys,
   onClose,
-  onCreated,
+  onSaved,
 }: {
+  dialog: Exclude<DialogState, null>;
   existingKeys: string[];
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onSaved: (message: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const isEdit = dialog.mode === 'edit';
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [key, setKey] = useState('');
+  const [key, setKey] = useState(isEdit ? dialog.key : '');
   const [value, setValue] = useState('');
-  const [passThrough, setPassThrough] = useState(false);
+  const [passThrough, setPassThrough] = useState(isEdit ? dialog.passThrough : false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -200,15 +202,25 @@ function AddSecretDialog({
     e.preventDefault();
     const k = key.trim();
     if (!k) return;
-    if (existingKeys.includes(k)) {
+    if (!isEdit && existingKeys.includes(k)) {
       setError(t('secrets.duplicateError', { key: k }));
+      return;
+    }
+    // Editing requires a new value — the current one is never returned to the
+    // browser, so an empty submit would blank the secret rather than keep it.
+    if (isEdit && value === '') {
+      setError(t('secrets.editValueRequired'));
       return;
     }
     setError('');
     setSubmitting(true);
     try {
       await setAgentSecret(k, value, { passThrough });
-      await onCreated();
+      await onSaved(
+        isEdit
+          ? t('secrets.saveSuccess', { key: k })
+          : t('secrets.addSuccess', { key: k }),
+      );
       onClose();
     } catch (err) {
       setError((err as Error).message);
@@ -220,7 +232,7 @@ function AddSecretDialog({
   return (
     <dialog ref={dialogRef} className="manage__dialog" onClose={onClose}>
       <form className="manage__dialog-form" onSubmit={handleSubmit}>
-        <h3>{t('secrets.dialogAddTitle')}</h3>
+        <h3>{isEdit ? t('secrets.dialogEditTitle') : t('secrets.dialogAddTitle')}</h3>
 
         <label className="manage__field">
           <span className="manage__field-label">{t('secrets.fieldKey')}</span>
@@ -230,9 +242,10 @@ function AddSecretDialog({
             onChange={(e) => setKey(e.target.value)}
             placeholder="ANTHROPIC_API_KEY"
             autoComplete="off"
-            autoFocus
+            autoFocus={!isEdit}
             required
-            disabled={submitting}
+            readOnly={isEdit}
+            disabled={submitting || isEdit}
           />
         </label>
 
@@ -243,7 +256,9 @@ function AddSecretDialog({
             className="manage__field-input"
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            placeholder={isEdit ? dialog.masked : ''}
             autoComplete="off"
+            autoFocus={isEdit}
             disabled={submitting}
           />
         </label>
@@ -269,7 +284,7 @@ function AddSecretDialog({
             type="submit"
             disabled={submitting || !key.trim()}
           >
-            {submitting ? '…' : t('common.add')}
+            {submitting ? '…' : isEdit ? t('common.save') : t('common.add')}
           </button>
         </div>
       </form>

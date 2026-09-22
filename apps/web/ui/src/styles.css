@@ -1477,6 +1477,27 @@ h2 { font-size: 14px; font-weight: 600; }
 .secrets-row__value:focus { outline: none; border-color: var(--accent); }
 .secrets-row__value:disabled { background: var(--panel-muted); color: var(--muted); }
 
+/* Read-only masked preview (existing secrets are never editable in place). */
+.secrets-row__value--display {
+  background: var(--panel-muted);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.secrets-row__value-empty { font-style: italic; }
+
+.secrets-panel__toast {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--success);
+  border-radius: 6px;
+  background: rgba(22, 163, 74, 0.1);
+  color: var(--success);
+  font-size: 12px;
+}
+
 .secrets-row__actions { display: flex; gap: 4px; flex-shrink: 0; }
 .secrets-row__delete { color: var(--danger); }
 .secrets-row__delete:hover { background: rgba(220, 38, 38, 0.08); }
