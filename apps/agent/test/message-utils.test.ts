@@ -522,6 +522,38 @@ describe('repairInterleavedToolResults', () => {
     assert.equal(repairInterleavedToolResults(clean), clean);
   });
 
+  test('hoists a user message the owner typed between a tool call and its result (小爱)', () => {
+    // 小爱: the owner sent "好的" while an `exec` (image generate) was still
+    // running, so the user message serialized between the call and its result —
+    // splitting the run, which MiniMax 400s with `invalid params (2013)`.
+    const wedged: AgentMessage[] = [
+      assistantCall('call_a0c1f8eeb', 'exec'),
+      user('好的'), // ← interleaved: arrived mid-exec
+      toolResult('call_a0c1f8eeb', 'exec'),
+      assistantCall('call_a0c1f98e2', 'file_read'), // next turn
+      toolResult('call_a0c1f98e2', 'file_read'),
+    ] as AgentMessage[];
+    const out = repairInterleavedToolResults(wedged);
+    // The call/result pair is contiguous; the user turn is hoisted after it.
+    assert.equal(roles(out), 'ATUAT');
+    assert.equal((out[1] as ToolResultMessage).toolCallId, 'call_a0c1f8eeb');
+    assert.equal((out[2] as { role: string }).role, 'user');
+    assert.equal(
+      ((out[2] as UserMessage).content[0] as { text: string }).text,
+      '好的',
+    );
+  });
+
+  test('leaves a user message that follows the whole result run in place', () => {
+    // A user turn AFTER the result run is the next turn, not an interleaving.
+    const clean: AgentMessage[] = [
+      assistantCall('call_1', 'exec'),
+      toolResult('call_1', 'exec'),
+      user('继续'),
+    ] as AgentMessage[];
+    assert.equal(repairInterleavedToolResults(clean), clean); // same reference
+  });
+
   test('does not mutate the input messages', () => {
     const input: AgentMessage[] = [
       assistantCalls([
