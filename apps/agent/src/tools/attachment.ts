@@ -321,25 +321,14 @@ export const createAttachmentUploadTool = (
       ...(args.name !== undefined ? { name: args.name } : {}),
     });
 
-    // Skeleton keyed by the new attachment id; attachment_send reuses that id as
-    // correlationId to swap real media in. Only renderable media gets one so an
-    // unsent upload, e.g. a document read, can't strand a skeleton.
-    const skeletonMime = result.mimeType ?? '';
-    const skeletonKind = skeletonMime.startsWith('image/')
-      ? 'image'
-      : skeletonMime.startsWith('audio/')
-        ? 'audio'
-        : skeletonMime.startsWith('video/')
-          ? 'video'
-          : null;
-    if (skeletonKind && context.publishEvent && context.sessionId) {
-      context.publishEvent({
-        type: 'pending_media',
-        sessionId: context.sessionId,
-        correlationId: result.id,
-        kind: skeletonKind,
-      });
-    }
+    // Deliberately no `pending_media` skeleton on upload. Upload and send are
+    // separate, discretionary steps: agents routinely upload a file only to
+    // inspect it (attachment_upload → attachment_fetch) and then send a
+    // different one, or none at all. Emitting a skeleton here stranded a "生成中…"
+    // bubble for every uploaded-but-unsent image/audio/video, because the only
+    // resolver is `attachment_send` keyed on the same id (and there is no
+    // reaper). `attachment_send` is now the sole emitter; the chat consumer
+    // already handles a first-time attachment with no pre-existing placeholder.
 
     return {
       content: asTextContent(formatJson(result)),
