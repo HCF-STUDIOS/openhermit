@@ -135,6 +135,11 @@ export const buildSystemPrompt = async (
   const utc = now.toISOString().slice(0, 19).replace('T', ' ');
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
   runtimeLines.push(`Current date & time: ${utc} UTC (${weekday}).`);
+  if (config.model?.model) {
+    // The model actually serving this turn — lets the agent answer "which
+    // model are you?" truthfully instead of guessing from its training data.
+    runtimeLines.push(`Running model: \`${config.model.model}\` (provider: ${config.model.provider}).`);
+  }
   if (currentUser?.sessionId) {
     runtimeLines.push(`Current session: \`${currentUser.sessionId}\``);
   }

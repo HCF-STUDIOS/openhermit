@@ -79,3 +79,16 @@ test('buildSystemPrompt states the current date & time in the Runtime section', 
     /### Runtime[\s\S]*Current date & time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \([A-Za-z]+\)\./,
   );
 });
+
+test('buildSystemPrompt states the running model in the Runtime section', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+  const config = await security.readConfig();
+
+  const prompt = await buildSystemPrompt(config, security, allToolsets);
+
+  assert.match(
+    prompt,
+    new RegExp(`### Runtime[\\s\\S]*Running model: \`${config.model.model}\` \\(provider: ${config.model.provider}\\)\\.`),
+  );
+});
