@@ -129,6 +129,12 @@ export const buildSystemPrompt = async (
   }
 
   const runtimeLines: string[] = [];
+  // Rebuilt every turn, so this reflects the real wall-clock time each request.
+  // Server time is UTC; state the zone explicitly so the model can convert.
+  const now = new Date();
+  const utc = now.toISOString().slice(0, 19).replace('T', ' ');
+  const weekday = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+  runtimeLines.push(`Current date & time: ${utc} UTC (${weekday}).`);
   if (currentUser?.sessionId) {
     runtimeLines.push(`Current session: \`${currentUser.sessionId}\``);
   }

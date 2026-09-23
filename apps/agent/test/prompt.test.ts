@@ -65,3 +65,17 @@ test('buildSystemPrompt includes all sections when all toolsets are present', as
   assert.match(prompt, /### Web/);
   assert.match(prompt, /### Instructions Management/);
 });
+
+test('buildSystemPrompt states the current date & time in the Runtime section', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+  const config = await security.readConfig();
+
+  const prompt = await buildSystemPrompt(config, security, allToolsets);
+
+  // e.g. "Current date & time: 2026-09-23 12:34:56 UTC (Tuesday)."
+  assert.match(
+    prompt,
+    /### Runtime[\s\S]*Current date & time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \([A-Za-z]+\)\./,
+  );
+});
