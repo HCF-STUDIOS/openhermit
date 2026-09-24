@@ -92,3 +92,29 @@ test('buildSystemPrompt states the running model in the Runtime section', async 
     new RegExp(`### Runtime[\\s\\S]*Running model: \`${config.model.model}\` \\(provider: ${config.model.provider}\\)\\.`),
   );
 });
+
+test('buildSystemPrompt lists image input for a multimodal model without the text-only warning', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+  const config = await security.readConfig();
+  // MiniMax-M3 is carried in LOCAL_MODELS with input ['text', 'image'].
+  config.model = { provider: 'minimax', model: 'MiniMax-M3', max_tokens: 8192 };
+
+  const prompt = await buildSystemPrompt(config, security, allToolsets);
+
+  assert.match(prompt, /Input types you can accept: text, images\./);
+  assert.doesNotMatch(prompt, /You are text-only/);
+});
+
+test('buildSystemPrompt warns a text-only model it cannot see images', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+  const config = await security.readConfig();
+  // Unknown openrouter model → synthesized as text-only (input ['text']).
+  config.model = { provider: 'openrouter', model: 'acme/text-only-model', max_tokens: 8192 };
+
+  const prompt = await buildSystemPrompt(config, security, allToolsets);
+
+  assert.match(prompt, /Input types you can accept: text\./);
+  assert.match(prompt, /You are text-only — you cannot see images/);
+});
