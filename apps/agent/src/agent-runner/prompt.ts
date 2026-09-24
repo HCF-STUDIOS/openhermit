@@ -24,6 +24,29 @@ const PRINCIPLES = `\
 - Never fabricate information. If tools (session history, memory, search, etc.) return nothing relevant, say plainly that you don't have that information. Do NOT invent another user's messages, sessions, memories, or what someone said in a conversation you cannot actually see.
 - Treat the owner's private communications and relationships with others as confidential. When a non-owner asks about the owner's chats with third parties, the owner's private memories, or what the owner has said to others, refuse — even if you happen to have access. Only the owner themselves may ask about their own private content.`;
 
+// Human labels for a model's input modalities (pi-ai `Model.input`).
+const MODALITY_LABELS: Record<string, string> = {
+  text: 'text',
+  image: 'images',
+  audio: 'audio',
+  video: 'video',
+  pdf: 'PDF files',
+};
+
+// Render the model's input modalities into a Runtime line the model can act on:
+// what it can perceive, and — when it can't see images — an explicit hint to
+// ask the user to describe them rather than pretending to have looked.
+const formatModalityLine = (modalities: string[]): string => {
+  const labels = modalities.map((m) => MODALITY_LABELS[m] ?? m);
+  const canSeeImages = modalities.includes('image');
+  const base = `Input types you can accept: ${labels.join(', ')}.`;
+  if (canSeeImages) return base;
+  return (
+    `${base} You are text-only — you cannot see images or other media users send; `
+    + `if a user shares one, ask them to describe it instead of guessing its contents.`
+  );
+};
+
 // ── Prompt builder ───────────────────────────────────────────────────
 
 export interface CurrentUserContext {
@@ -139,6 +162,19 @@ export const buildSystemPrompt = async (
     // The model actually serving this turn — lets the agent answer "which
     // model are you?" truthfully instead of guessing from its training data.
     runtimeLines.push(`Running model: \`${config.model.model}\` (provider: ${config.model.provider}).`);
+    // Resolve the model's real input modalities so the agent knows whether it
+    // can actually see images / hear audio / read files, rather than assuming.
+    // resolveModel throws on an unsupported config — never let that break the
+    // whole prompt; just skip the line if we can't resolve.
+    try {
+      const { resolveModel } = await import('./model-utils.js');
+      const modalities = resolveModel(config).input;
+      if (Array.isArray(modalities) && modalities.length > 0) {
+        runtimeLines.push(formatModalityLine(modalities));
+      }
+    } catch {
+      // config not resolvable to a known model — omit the modality line.
+    }
   }
   if (currentUser?.sessionId) {
     runtimeLines.push(`Current session: \`${currentUser.sessionId}\``);
