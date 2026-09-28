@@ -154,6 +154,18 @@ export interface AgentRuntimeConfig {
     /** Number of trailing messages to keep when the window is on. Default 40. */
     rolling_window_messages?: number;
   };
+  /**
+   * Opt-in confirmation gate for proactive outward `session_send` actions.
+   * Default-off: when absent or `enabled` is not exactly `true`, sends behave
+   * as today. When enabled, group broadcasts (unless `groups` is `false`) and
+   * DMs to non-owners (unless `non_owner_dms` is `false`) are held for owner
+   * approval before delivery. Scheduled jobs are always exempt.
+   */
+  confirm_outbound?: {
+    enabled?: boolean;
+    groups?: boolean;
+    non_owner_dms?: boolean;
+  };
 }
 
 export type AgentConfig = AgentRuntimeConfig;
