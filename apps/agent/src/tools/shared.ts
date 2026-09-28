@@ -90,6 +90,13 @@ export interface ToolContext {
   notifyOwnerApproval?: (requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string, args?: unknown) => Promise<void>;
   /** Publish an SSE event to the session's event stream. */
   publishEvent?: (event: Record<string, unknown>) => void;
+  /** Origin of the current turn (e.g. 'schedule', 'channel', 'cli'). The
+   * outbound confirmation gate exempts scheduled jobs — owner-designed
+   * automation — and only holds live, agent-improvised sends. */
+  sourceKind?: string | undefined;
+  /** When set, session_send holds proactive outward sends for owner approval:
+   * group broadcasts when `groups`, DMs to non-owners when `nonOwnerDms`. */
+  outboundConfirm?: { groups: boolean; nonOwnerDms: boolean } | undefined;
 }
 
 /** Maximum characters for a single tool result text block (~256 KB). */

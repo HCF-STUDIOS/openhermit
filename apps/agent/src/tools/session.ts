@@ -7,6 +7,7 @@ import {
   type Toolset,
   type ToolContext,
   asTextContent,
+  checkApprovalOrRequest,
   formatJson,
 } from './shared.js';
 
@@ -353,6 +354,79 @@ export const resolveOutbound = (
   return undefined;
 };
 
+/**
+ * Short, stable fingerprint of a message body. Used only to make each
+ * distinct outbound message its own approval resource, so re-sending the
+ * *same* text within the approval TTL reuses the grant while any edit
+ * re-prompts the owner. Not security-sensitive — a cheap 32-bit rolling hash.
+ */
+const shortTextHash = (text: string): string => {
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+};
+
+/**
+ * Confirmation gate for proactive outbound sends. When enabled
+ * (`context.outboundConfirm`), a group broadcast — or a DM whose recipient is
+ * not the owner — is held for owner approval before it leaves the process.
+ * Scheduled jobs are exempt: they are owner-designed automation, not the
+ * agent improvising a send mid-conversation. Returns without throwing when no
+ * gate applies; otherwise delegates to `checkApprovalOrRequest`, which either
+ * finds a prior approval, prompts an interactive owner in real time, or
+ * creates an async request and throws ApprovalRequiredError.
+ */
+const maybeGateOutboundSend = async (
+  context: ToolContext,
+  target: { type?: string; userIds?: string[] },
+  outbound: { to: string; adapter: { channel: string } },
+  sessionId: string,
+  text: string,
+): Promise<void> => {
+  const gate = context.outboundConfirm;
+  if (!gate) return;
+  // Only gate live, improvised sends — never owner-designed scheduled jobs.
+  if (context.sourceKind === 'schedule') return;
+
+  const isGroup = target.type === 'group';
+  let kind: 'group' | 'dm' | undefined;
+  if (isGroup) {
+    if (gate.groups) kind = 'group';
+  } else if (gate.nonOwnerDms) {
+    // A direct session addressed only to the owner is not "outward"; gate a
+    // DM only when a recipient is (or might be) someone other than the owner.
+    let ownerIds = new Set<string>();
+    if (context.userStore && context.storeScope) {
+      try {
+        const members = await context.userStore.listByAgent(context.storeScope);
+        ownerIds = new Set(members.filter((m) => m.role === 'owner').map((m) => m.userId));
+      } catch {
+        // If we can't resolve ownership, fail safe and treat as non-owner.
+      }
+    }
+    const recipients = target.userIds ?? [];
+    const hasNonOwner = recipients.length === 0 || recipients.some((id) => !ownerIds.has(id));
+    if (hasNonOwner) kind = 'dm';
+  }
+  if (!kind) return;
+
+  await checkApprovalOrRequest(
+    context,
+    'outbound_send',
+    `${kind}:${outbound.to}:${shortTextHash(text)}`,
+    { kind, to: outbound.to, channel: outbound.adapter.channel, targetSession: sessionId },
+    {
+      action: kind === 'group' ? 'group_broadcast' : 'direct_message',
+      to: outbound.to,
+      channel: outbound.adapter.channel,
+      targetSession: sessionId,
+      preview: text,
+    },
+  );
+};
+
 export const createSessionSendTool = (context: ToolContext): PolicyAwareTool<typeof SessionSendParams> => ({
   policy: { defaultGrants: [{ type: 'role', value: 'owner' }, { type: 'role', value: 'user' }] },
   name: 'session_send',
@@ -398,6 +472,11 @@ export const createSessionSendTool = (context: ToolContext): PolicyAwareTool<typ
         + 'or the channel adapter is not running.',
       );
     }
+
+    // Confirmation gate: hold outward group broadcasts / non-owner DMs for
+    // owner approval before they leave the process (no-op when not enabled or
+    // when this is a scheduled job). Throws if approval is required/denied.
+    await maybeGateOutboundSend(context, target, outbound, sessionId, text);
 
     // Send the message via the channel adapter.
     const result = await outbound.adapter.send({ sessionId, to: outbound.to, text });

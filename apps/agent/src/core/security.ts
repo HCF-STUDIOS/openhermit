@@ -182,6 +182,14 @@ const ContextConfigSchema = z.object({
   rolling_window_messages: z.number().int().positive().optional(),
 });
 
+// Opt-in outward-send confirmation gate (default-off). Absent is fine; only
+// exact `enabled: true` arms it. See AgentRuntimeConfig.confirm_outbound.
+const ConfirmOutboundConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  groups: z.boolean().optional(),
+  non_owner_dms: z.boolean().optional(),
+});
+
 const AgentRuntimeConfigSchema = z.object({
   workspace_root: z.string(),
   model: ModelConfigSchema,
@@ -191,6 +199,7 @@ const AgentRuntimeConfigSchema = z.object({
   channels: ChannelsConfigSchema.optional(),
   voice: VoiceConfigSchema.optional(),
   context: ContextConfigSchema.optional(),
+  confirm_outbound: ConfirmOutboundConfigSchema.optional(),
 });
 
 function validateConfig(config: unknown, filePath: string): asserts config is AgentRuntimeConfig {

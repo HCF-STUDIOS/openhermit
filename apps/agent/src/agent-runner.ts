@@ -2090,9 +2090,26 @@ export class AgentRunner implements SessionRuntime {
   private makeNotifyOwnerApproval(): ((requestId: string, shortId: number, resourceType: string, resourceKey: string, requesterId: string, requesterSessionId: string, args?: unknown) => Promise<void>) | undefined {
     return async (requestId, shortId, resourceType, resourceKey, requesterId, requesterSessionId, args) => {
       try {
-        const text = `🔔 Approval required\n\n`
-          + `User \`${requesterId}\` needs approval for ${resourceType}/${resourceKey}.\n`
-          + `Request ID: ${requestId}`;
+        // Render a human-readable preview for outbound-send approvals so the
+        // owner can review the actual message (and its links/version) before
+        // it goes out, rather than an opaque resource key.
+        const a = (args ?? {}) as Record<string, unknown>;
+        const preview = typeof a.preview === 'string' ? a.preview : undefined;
+        let text: string;
+        if (resourceType === 'outbound_send' && preview !== undefined) {
+          const action = a.action === 'group_broadcast' ? 'send to a group' : 'send a direct message';
+          const dest = typeof a.channel === 'string'
+            ? `${a.channel}${typeof a.to === 'string' ? ` → ${a.to}` : ''}`
+            : (typeof a.to === 'string' ? a.to : '(unknown)');
+          text = `🔔 Approval required\n\n`
+            + `The agent wants to ${action} (${dest}). Review the message below before it is sent:\n\n`
+            + `---\n${preview}\n---\n\n`
+            + `Reply to approve or reject. Request ID: ${requestId}`;
+        } else {
+          text = `🔔 Approval required\n\n`
+            + `User \`${requesterId}\` needs approval for ${resourceType}/${resourceKey}.\n`
+            + `Request ID: ${requestId}`;
+        }
 
         // 1. Canonical write: per-agent inbox session. Always.
         // The inbox row is eagerly created at agent register time;
@@ -2796,6 +2813,17 @@ export class AgentRunner implements SessionRuntime {
         ...(input.approvalCallback ? { approvalCallback: input.approvalCallback } : {}),
         ...(input.approvedCache ? { approvedCache: input.approvedCache } : {}),
         ...(input.onToolCall ? { onToolCall: input.onToolCall } : {}),
+        ...(input.sourceKind ? { sourceKind: input.sourceKind } : {}),
+        ...(() => {
+          const c = input.config.confirm_outbound;
+          if (c?.enabled !== true) return {};
+          return {
+            outboundConfirm: {
+              groups: c.groups !== false,
+              nonOwnerDms: c.non_owner_dms !== false,
+            },
+          };
+        })(),
         hookBus: this.bus,
         ...(() => { const n = this.makeNotifyOwnerApproval(); return n ? { notifyOwnerApproval: n } : {}; })(),
         publishEvent: (event: Record<string, unknown>) => {
