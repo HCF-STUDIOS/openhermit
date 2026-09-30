@@ -3493,12 +3493,28 @@ export class AgentRunner implements SessionRuntime {
 
     const contextBlocks: AgentMessage[] = [];
 
-    // When a resumed session has at most 1 message in the current agent
-    // instance, restore the full message history from DB so compaction
-    // and LLM conversion work identically to a live session.
+    // Whenever the MAIN agent is about to build context but its live
+    // `state.messages` holds at most the current turn, restore the full
+    // history from DB so compaction and LLM conversion work identically to a
+    // live session. This keys off the real invariant — an empty live context —
+    // rather than the `session.resumed` flag, which is only ever true on the
+    // first generation after a *cold* load and cleared immediately after. A
+    // warm session that loses its in-memory history any other way (state reset,
+    // an aborted/rebuilt turn) would otherwise never recover: `resumed` is
+    // already false, the restore below is skipped, and the model silently gets
+    // working-memory-only context with no conversation history (observed in
+    // production — a turn one round after delivery had zero prior messages).
+    // Gating on `messages.length <= 1` is self-limiting: after the first
+    // generation seeds the live array, subsequent generations see length > 1
+    // and skip the DB read, so this fires at most once per empty context.
+    //
+    // Gated to the MAIN agent (`isMainSessionAgent`). `session` resolves via
+    // `contextSessionId`, which side agents (`<sid>:introspection`,
+    // `<sid>:compaction`) share — without this guard a side agent whose own
+    // short context has length <= 1 would reset the MAIN agent's live messages.
     const session = this.sessions.get(sessionId);
     let restoredMessages: AgentMessage[] = [];
-    if (session?.resumed && messages.length <= 1) {
+    if (isMainSessionAgent && session && messages.length <= 1) {
       const resolved = resolveModel(config);
       const modelInputs = (resolved as { input?: string[] }).input;
       const supportsImageInput = Array.isArray(modelInputs)

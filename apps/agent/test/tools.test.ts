@@ -610,6 +610,136 @@ test('session_read denies access when user is not a participant', async (t) => {
   );
 });
 
+test('session_read reports the true length of a truncated message and can return it in full', async (t) => {
+  // Regression (Q1): session_read used to hard-truncate every message to 500
+  // chars with a bare "…" and no indication of how much was cut. An agent
+  // reviewing another session saw the clipped text, found the rest "missing",
+  // and wrongly concluded the content was never persisted. The tool must (a)
+  // show the true length on truncation and (b) offer a way to read it in full.
+  const { security, agentId } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const scope = { agentId };
+
+  const now = new Date().toISOString();
+  await store.sessions.upsert(scope, {
+    sessionId: 'sess-long',
+    source: { kind: 'cli', interactive: true },
+    createdAt: now,
+    lastActivityAt: now,
+    messageCount: 1,
+    userIds: ['user-owner'],
+  });
+
+  const longBody = `HEAD ${'x'.repeat(5000)} TAIL_MARKER`;
+  await store.messages.appendLogEntry(scope, 'sess-long', {
+    ts: now,
+    role: 'user',
+    content: longBody,
+  });
+
+  const readTool = createSessionReadTool({
+    security,
+    sessionStore: store.sessions,
+    messageStore: store.messages,
+    storeScope: scope,
+    currentUserRole: 'owner',
+  });
+
+  const clipped = await readTool.execute('call-clip', { session_id: 'sess-long' });
+  const clippedText = clipped.content.map((c: any) => c.text).join('');
+  assert.ok(
+    clippedText.includes(`of ${longBody.length} total`),
+    'truncation marker must report the true total length',
+  );
+  assert.ok(!clippedText.includes('TAIL_MARKER'), 'the tail should be clipped at the default cap');
+  assert.equal(clipped.details.truncated, true);
+
+  const full = await readTool.execute('call-full', { session_id: 'sess-long', max_chars: 0 });
+  const fullText = full.content.map((c: any) => c.text).join('');
+  assert.ok(fullText.includes('TAIL_MARKER'), 'max_chars:0 must return the message in full');
+  assert.equal(full.details.truncated, false);
+});
+
+test('session_read renders tool activity instead of blank assistant lines', async (t) => {
+  // Regression (Q2): a tool-calling step is stored as an empty assistant event
+  // plus separate tool_call/tool_result events. session_read filtered to
+  // user/assistant/error, so those steps rendered as mysterious blank
+  // "[ASSISTANT]" lines with no hint of what the agent actually did. It now
+  // includes tool activity by default and labels tool-only steps otherwise.
+  const { security, agentId } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const scope = { agentId };
+
+  const now = new Date().toISOString();
+  await store.sessions.upsert(scope, {
+    sessionId: 'sess-tools',
+    source: { kind: 'cli', interactive: true },
+    createdAt: now,
+    lastActivityAt: now,
+    messageCount: 1,
+    userIds: ['user-owner'],
+  });
+
+  await store.messages.appendLogEntry(scope, 'sess-tools', { ts: now, role: 'user', content: 'look up the weather' });
+  // Empty assistant shell = the tool-calling step.
+  await store.messages.appendLogEntry(scope, 'sess-tools', { ts: now, role: 'assistant', content: '' });
+  await store.messages.appendLogEntry(scope, 'sess-tools', {
+    ts: now,
+    role: 'tool_call',
+    type: 'tool_call',
+    name: 'get_weather',
+    args: { city: 'Beijing' },
+    toolCallId: 'tc-1',
+  });
+  await store.messages.appendLogEntry(scope, 'sess-tools', {
+    ts: now,
+    role: 'tool_result',
+    type: 'tool_result',
+    name: 'get_weather',
+    toolCallId: 'tc-1',
+    isError: false,
+    content: 'sunny, 25C',
+  });
+  await store.messages.appendLogEntry(scope, 'sess-tools', { ts: now, role: 'assistant', content: 'It is sunny in Beijing.' });
+
+  const readTool = createSessionReadTool({
+    security,
+    sessionStore: store.sessions,
+    messageStore: store.messages,
+    storeScope: scope,
+    currentUserRole: 'owner',
+  });
+
+  const withTools = await readTool.execute('call-tools', { session_id: 'sess-tools' });
+  const withToolsText = withTools.content.map((c: any) => c.text).join('');
+  assert.ok(withToolsText.includes('[TOOL_CALL get_weather]'), 'tool call should be shown');
+  assert.ok(withToolsText.includes('Beijing'), 'tool call args should be shown');
+  assert.ok(withToolsText.includes('[TOOL_RESULT get_weather]'), 'tool result should be shown');
+  assert.ok(withToolsText.includes('sunny, 25C'), 'tool result body should be shown');
+  assert.ok(withToolsText.includes('It is sunny in Beijing.'), 'the real reply should be shown');
+  // The empty assistant shell is dropped when tools are shown (the TOOL_CALL
+  // line explains that step), so there must be no bare blank assistant line.
+  assert.ok(!/\[ASSISTANT\]\s*\n/.test(withToolsText), 'no blank assistant line when tools are shown');
+
+  const noTools = await readTool.execute('call-notools', { session_id: 'sess-tools', include_tools: false });
+  const noToolsText = noTools.content.map((c: any) => c.text).join('');
+  assert.ok(!noToolsText.includes('[TOOL_CALL'), 'tool calls suppressed when include_tools=false');
+  assert.ok(
+    noToolsText.includes('tool-calling step, no reply text'),
+    'the empty assistant step must be labelled rather than left blank',
+  );
+});
+
 test('session_summary denies access when user is not a participant', async (t) => {
   const { security, agentId } = await createSecurityFixture(t, {
     secrets: { ANTHROPIC_API_KEY: 'key' },

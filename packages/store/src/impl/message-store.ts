@@ -47,7 +47,10 @@ const mapEventRowToHistoryMessage = (row: {
     const message: SessionHistoryMessage = {
       ts: row.ts,
       role: 'tool' as const,
-      content: (payload?.text as string) ?? '',
+      // Writers persist the tool body under `content` (agent-runner and the
+      // introspection runner both do); `text` is the shape used on the live
+      // event bus. Read both so a stored tool_result isn't rendered empty.
+      content: (payload?.text as string) ?? (payload?.content as string) ?? '',
       tool: (payload?.name as string) || (payload?.tool as string) || '',
       toolPhase: phase,
       toolIsError: phase === 'result' ? ((payload?.isError as boolean) ?? false) : false,
@@ -272,6 +275,42 @@ export class DbMessageStore implements MessageStore {
       role: row.role as 'user' | 'assistant' | 'error',
       content: row.content,
     }));
+  }
+
+  async listRecentEntries(
+    scope: StoreScope,
+    sessionId: string,
+    limit: number,
+    offset?: number,
+  ): Promise<SessionHistoryMessage[]> {
+    // Like listRecentMessages, but INCLUDES tool_call/tool_result events and
+    // returns fully-normalized history messages (tool name, args, error flag,
+    // thinking) rather than bare content strings. session_read uses this so a
+    // tool-calling step reads as "[TOOL_CALL name] args" instead of a mysterious
+    // empty assistant line. Newest-first window, reversed to chronological.
+    const rows = await this.db.execute<{
+      ts: string;
+      event_type: string;
+      content: string | null;
+      payload: unknown;
+    }>(sql`
+      SELECT ts, event_type, content, payload FROM (
+        SELECT ts, event_type, content, payload, id
+        FROM session_events
+        WHERE agent_id = ${scope.agentId} AND session_id = ${sessionId}
+          AND event_type IN ('user', 'assistant', 'error', 'tool_call', 'tool_result')
+        ORDER BY id DESC
+        LIMIT ${limit} OFFSET ${offset ?? 0}
+      ) sub ORDER BY id ASC
+    `);
+    return rows.rows.map((row) =>
+      mapEventRowToHistoryMessage({
+        ts: row.ts,
+        eventType: row.event_type,
+        content: row.content,
+        payload: row.payload,
+      }),
+    );
   }
 
   async listSessionEntriesSinceLastCompaction(

@@ -71,6 +71,8 @@ const SessionReadParams = Type.Object({
   session_id: Type.String({ description: 'Session ID to read messages from.' }),
   limit: Type.Optional(Type.Number({ description: 'Maximum number of messages to return (default 50).' })),
   offset: Type.Optional(Type.Number({ description: 'Number of messages to skip from the end (0 = most recent). Use with limit to page backwards through history.' })),
+  max_chars: Type.Optional(Type.Number({ description: 'Per-message character cap (default 2000). Longer messages are truncated with a marker showing the true length; raise this (or set 0 for unlimited) to read a message in full instead of assuming content is missing.' })),
+  include_tools: Type.Optional(Type.Boolean({ description: 'Include tool calls and results in the listing so you can see what the agent did between replies (default true). When false, tool-only assistant steps are labelled rather than shown as blank.' })),
 });
 
 type SessionReadArgs = Static<typeof SessionReadParams>;
@@ -200,7 +202,7 @@ export const createSessionReadTool = (context: ToolContext): PolicyAwareTool<typ
   policy: { defaultGrants: [{ type: 'any' }] },
   name: 'session_read',
   label: 'Read Session Messages',
-  description: 'Read message history from a specified session. Returns recent user and assistant messages. Use this to review what happened in another session.',
+  description: 'Read message history from a specified session — user and assistant messages plus (by default) the tool calls/results between them. Use this to review what happened in another session. Long messages are truncated to max_chars with a marker showing the true length; raise max_chars (or set 0) to read them in full rather than concluding content is missing.',
   parameters: SessionReadParams,
   execute: async (_toolCallId, args: SessionReadArgs) => {
     if (!context.messageStore || !context.storeScope) {
@@ -227,24 +229,70 @@ export const createSessionReadTool = (context: ToolContext): PolicyAwareTool<typ
 
     const limit = args.limit ?? 50;
     const offset = args.offset ?? 0;
-    const messages = await context.messageStore.listRecentMessages(context.storeScope, sessionId, limit, offset);
+    const maxChars = args.max_chars ?? 2000;
+    const includeTools = args.include_tools ?? true;
+    const entries = await context.messageStore.listRecentEntries(context.storeScope, sessionId, limit, offset);
 
-    if (messages.length === 0) {
+    if (entries.length === 0) {
       return {
         content: asTextContent(`No messages found in session ${sessionId}${offset > 0 ? ` (offset ${offset})` : ''}.\n`),
         details: { sessionId, count: 0, offset },
       };
     }
 
-    const formatted = messages.map((m) => {
+    // Truncate long bodies but ALWAYS report the true length, so a reader never
+    // mistakes a clipped message for missing/lost content (the exact failure
+    // that made an agent conclude earlier messages were never persisted).
+    let truncatedAny = false;
+    const clip = (text: string): string => {
+      if (maxChars <= 0 || text.length <= maxChars) return text;
+      truncatedAny = true;
+      const omitted = text.length - maxChars;
+      return `${text.slice(0, maxChars)}…[+${omitted} chars omitted of ${text.length} total; raise max_chars to read the rest]`;
+    };
+
+    const lines: string[] = [];
+    for (const m of entries) {
+      if (m.role === 'tool') {
+        // A tool step is the reason an assistant message can look "empty": the
+        // reply text is in a separate tool_call/tool_result event, not the
+        // assistant event. Render it so the history is self-explanatory.
+        if (!includeTools) continue;
+        const name = m.tool || 'tool';
+        if (m.toolPhase === 'call') {
+          const rawArgs = m.toolArgs === undefined
+            ? ''
+            : typeof m.toolArgs === 'string' ? m.toolArgs : JSON.stringify(m.toolArgs);
+          lines.push(`${m.ts} [TOOL_CALL ${name}]${rawArgs ? ` ${clip(rawArgs)}` : ''}`);
+        } else {
+          const errFlag = m.toolIsError ? ' ✗error' : '';
+          lines.push(`${m.ts} [TOOL_RESULT ${name}${errFlag}] ${clip(m.content ?? '')}`);
+        }
+        continue;
+      }
+
       const tag = m.role === 'user' ? '[USER]' : m.role === 'assistant' ? '[ASSISTANT]' : `[${m.role.toUpperCase()}]`;
-      const preview = m.content.length > 500 ? `${m.content.slice(0, 500)}…` : m.content;
-      return `${m.ts} ${tag} ${preview}`;
-    }).join('\n\n');
+      const body = m.content ?? '';
+      if (m.role === 'assistant' && !body.trim()) {
+        // Empty assistant event = a tool-calling / reasoning-only step. When
+        // tools are shown the adjacent TOOL_CALL lines already explain it, so
+        // skip the blank shell; otherwise label it so it isn't a mystery.
+        if (includeTools) continue;
+        const note = m.thinking?.trim() ? '(reasoning-only step, no reply text)' : '(tool-calling step, no reply text)';
+        lines.push(`${m.ts} ${tag} ${note}`);
+        continue;
+      }
+      lines.push(`${m.ts} ${tag} ${clip(body)}`);
+    }
+
+    const formatted = lines.join('\n\n');
+    const hint = truncatedAny
+      ? '\n\n(Some messages were truncated — see the [+N chars omitted …] markers. Raise max_chars or set it to 0 to read them in full.)'
+      : '';
 
     return {
-      content: asTextContent(`Session ${sessionId} — ${messages.length} messages${offset > 0 ? ` (offset ${offset})` : ''}:\n\n${formatted}\n`),
-      details: { sessionId, count: messages.length, offset },
+      content: asTextContent(`Session ${sessionId} — ${entries.length} events${offset > 0 ? ` (offset ${offset})` : ''}:\n\n${formatted}\n${hint}`),
+      details: { sessionId, count: entries.length, offset, truncated: truncatedAny },
     };
   },
 });
