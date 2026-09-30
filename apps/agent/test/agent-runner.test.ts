@@ -1219,17 +1219,86 @@ test('AgentRunner injects session resumption context when reopening a persisted 
   });
   await restoredRunner.waitForSessionIdle('cli:resumption-session');
 
-  const resumptionBlock = capturedMessages.find(
-    (msg) =>
-      msg.role === 'user' &&
-      JSON.stringify(msg.content).includes('Session resumption context'),
-  );
-  assert.ok(resumptionBlock, 'resumption context should be injected for a persisted session');
-  const resumptionText = JSON.stringify(resumptionBlock!.content);
+  // Resumption reconstructs the prior turns as raw user/assistant messages
+  // (plus a compaction-summary block only when a compaction marker exists),
+  // rather than a single labeled "Session resumption context" block. Assert the
+  // prior conversation content is present in the restored context.
+  const resumptionText = JSON.stringify(capturedMessages);
   assert.ok(
     resumptionText.includes('container sandbox model') ||
     resumptionText.includes('architecture'),
     'resumption context should include prior conversation content',
+  );
+});
+
+test('AgentRunner restores history when a WARM session lost its in-memory messages', async (t) => {
+  // Regression (Q3): the history-restore branch in transformContext used to be
+  // gated on `session.resumed`, which is only ever true on the FIRST generation
+  // after a *cold* load and is cleared immediately after. A session that stays
+  // warm in the runner map (resumed === false) but whose live `state.messages`
+  // was emptied any other way — a state reset, an aborted/rebuilt turn, a side
+  // agent — would then skip the restore and hand the model working-memory-only
+  // context with ZERO prior conversation. This was observed in production: a
+  // turn just one round after delivery arrived with no history, so the agent
+  // wrongly concluded earlier messages "没落库" (were never persisted).
+  //
+  // The fix keys the restore off the real invariant — an empty live context on
+  // the main agent — not the stale flag. This test reproduces the warm loss and
+  // asserts the next turn still sees prior history. Under the old code it fails:
+  // resumed is false, so the restore never runs.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      ANTHROPIC_API_KEY: 'test-anthropic-key',
+    },
+  });
+  await security.load();
+
+  let capturedMessages: Context['messages'] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('first reply about the sandbox architecture'),
+      (context) => {
+        capturedMessages = context.messages;
+        return createTextResponseStream('second reply');
+      },
+    ]),
+  });
+
+  const sessionId = 'cli:warm-loss-session';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+  await runner.postMessage(sessionId, {
+    text: 'Explain the container sandbox model',
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  // Reach into the live runner state and reproduce the warm history loss: the
+  // session stays in the map (so it is NOT a cold resume), resumed is forced
+  // false (the state after any normal turn), and its in-memory message list is
+  // emptied — exactly the production condition.
+  const session = (
+    runner as unknown as {
+      sessions: Map<string, { resumed: boolean; agent: { state: { messages: unknown[] } } }>;
+    }
+  ).sessions.get(sessionId);
+  assert.ok(session, 'session should still be warm in the runner map');
+  session!.resumed = false;
+  session!.agent.state.messages.length = 0;
+
+  await runner.postMessage(sessionId, {
+    text: 'Continue the discussion',
+  });
+  await runner.waitForSessionIdle(sessionId);
+
+  const restored = JSON.stringify(capturedMessages);
+  assert.ok(
+    restored.includes('container sandbox model') ||
+      restored.includes('sandbox architecture'),
+    'a warm session that lost its in-memory history must restore prior turns from DB',
   );
 });
 
