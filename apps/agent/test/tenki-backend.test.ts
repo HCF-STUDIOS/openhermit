@@ -50,10 +50,10 @@ test('Tenki exec preserves normal non-zero command results', async () => {
 });
 
 test('Tenki exec passes the command budget, cwd and environment to the SDK', async () => {
-  let runOptions: unknown;
+  let runOptions: import('@tenkicloud/sandbox').ProcessRunOptions | undefined;
   const session = {
     id: 'session-1', state: 'RUNNING', mkdir: async () => undefined,
-    run: (_argv: string[], options: unknown) => {
+    run: (_argv: string[], options: import('@tenkicloud/sandbox').ProcessRunOptions) => {
       runOptions = options;
       return processHandle(Promise.resolve({ exitCode: 0, stdout: bytes('ok'), stderr: bytes('') }));
     },
@@ -68,7 +68,69 @@ test('Tenki exec passes the command budget, cwd and environment to the SDK', asy
   assert.equal((await backend.exec('true', { cwd: '/home/tenki/work', env: { OVERRIDE: 'new' } })).exitCode, 0);
   assert.deepEqual(runOptions, {
     cwd: '/home/tenki/work', timeoutMs: 1000, env: { SHARED: 'inherited', OVERRIDE: 'new' },
+    signal: runOptions?.signal,
   });
+  assert.ok(runOptions?.signal instanceof AbortSignal);
+  assert.equal(runOptions.signal.aborted, false);
+});
+
+test('Tenki exec aborts a stalled transport after the guest timeout grace', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  let creates = 0;
+  const session = {
+    id: 'session-1', state: 'RUNNING', closeIfOpen: async () => undefined,
+    run: (_argv: string[], options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return processHandle(new Promise(() => undefined), () => new Promise(() => undefined));
+    },
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki', timeout_ms: 1000 }, context as never,
+    { createAndWait: async () => { creates += 1; return session; } } as never,
+  );
+  await backend.ensure();
+  const pending = backend.exec('sleep 30');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1000);
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(5000);
+  const result = await pending;
+  assert.equal(signal.aborted, true);
+  assert.equal(result.exitCode, 137);
+  assert.match(result.stderr, /Command timed out after 1000ms/);
+  assert.match(result.stderr, /no response within 5000ms/);
+  await backend.ensure();
+  assert.equal(creates, 2);
+});
+
+test('Tenki exec keeps guest timeout output arriving during the grace period', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  let finish!: (result: { exitCode: number; stdout: Uint8Array; stderr: Uint8Array; timedOut: boolean }) => void;
+  const session = {
+    id: 'session-1', state: 'RUNNING', closeIfOpen: async () => undefined,
+    run: (_argv: string[], options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return processHandle(new Promise((resolve) => { finish = resolve; }));
+    },
+  };
+  const backend = new TenkiExecBackend(
+    { type: 'tenki', timeout_ms: 1000 }, context as never,
+    { createAndWait: async () => session } as never,
+  );
+  await backend.ensure();
+  const pending = backend.exec('sleep 30');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1500);
+  finish({ exitCode: 0, stdout: bytes('partial'), stderr: bytes('diagnostic'), timedOut: true });
+  const result = await pending;
+  assert.equal(result.stdout, 'partial');
+  assert.equal(result.stderr, 'diagnostic\nCommand timed out after 1000ms');
+  assert.equal(result.exitCode, 137);
+  t.mock.timers.tick(5000);
+  assert.equal(signal?.aborted, false);
 });
 
 for (const exitCode of [0, -1, 3]) {
