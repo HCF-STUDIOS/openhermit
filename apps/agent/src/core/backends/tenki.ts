@@ -226,35 +226,19 @@ export class TenkiExecBackend implements ExecBackend {
         ...((await this.context.passThroughEnvProvider?.()) ?? {}),
         ...(opts?.env ?? {}),
       };
-      const handle = this.session!.run(['sh', '-c', command], {
+      const result = await this.session!.run(['sh', '-c', command], {
         cwd,
+        timeoutMs: this.timeoutMs,
         ...(Object.keys(passEnv).length > 0 ? { env: passEnv } : {}),
       });
-      const timeout = Symbol('timeout');
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let outcome: Awaited<typeof handle> | typeof timeout;
-      try {
-        outcome = await Promise.race([
-          Promise.resolve(handle),
-          new Promise<typeof timeout>((resolve) => { timer = setTimeout(() => resolve(timeout), this.timeoutMs); }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
+      let stderr = new TextDecoder().decode(result.stderr);
+      if (result.timedOut) {
+        stderr += `${stderr && !stderr.endsWith('\n') ? '\n' : ''}Command timed out after ${this.timeoutMs}ms`;
       }
-      if (outcome === timeout) {
-        await handle.kill().catch(() => undefined);
-        return {
-          stdout: '',
-          stderr: `Command timed out after ${this.timeoutMs}ms`,
-          exitCode: 137,
-          durationMs: Date.now() - startedAt,
-        };
-      }
-      const result = outcome;
       return {
         stdout: new TextDecoder().decode(result.stdout),
-        stderr: new TextDecoder().decode(result.stderr),
-        exitCode: result.exitCode,
+        stderr,
+        exitCode: result.timedOut ? 137 : result.exitCode,
         durationMs: Date.now() - startedAt,
       };
     } catch (error: unknown) {
