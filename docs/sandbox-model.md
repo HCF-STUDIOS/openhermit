@@ -2,12 +2,13 @@
 
 A **sandbox** is the execution environment an agent uses to run shell commands and host its workspace files. Each agent has zero or more sandboxes, each persisted as a row in the `sandboxes` table; the runtime constructs an `ExecBackend` from each row when the agent starts.
 
-Four backend types are supported:
+Five backend types are supported:
 
 - `host` — runs commands directly on the gateway host. No isolation. At most one host sandbox per gateway.
 - `docker` — runs commands inside a per-agent Docker container managed by the gateway.
 - `e2b` — runs commands inside an [E2B](https://e2b.dev) cloud sandbox.
 - `daytona` — runs commands inside a [Daytona](https://www.daytona.io) cloud sandbox.
+- `tenki` — runs commands inside a [Tenki](https://tenki.cloud) cloud sandbox.
 
 ## Sandbox Row
 
@@ -18,7 +19,7 @@ Each sandbox row carries:
 | `id` | UUID |
 | `agent_id` | Owning agent |
 | `alias` | Per-agent unique name. The default alias is `default`. |
-| `type` | `host` / `docker` / `e2b` / `daytona` |
+| `type` | `host` / `docker` / `e2b` / `daytona` / `tenki` |
 | `config` | Type-specific config blob (see below) |
 | `status` | Lifecycle state: `pending` → `provisioned` → `deleted` (soft delete) |
 | `external_id` | Backend-assigned identifier (container name, e2b sandbox id, etc.) |
@@ -93,6 +94,19 @@ Requires `E2B_API_KEY` in the gateway environment. `template` is the E2B templat
 ```
 
 Requires `DAYTONA_API_KEY`. Pass `snapshot` (snapshot id) or `image` (mutually exclusive). Daytona auto-stops idle sandboxes after `auto_stop_interval_minutes` (Daytona default 15) and auto-archives after 7 days; `ensure()` calls `start()` which transparently recovers archived sandboxes — no explicit recover step is needed.
+
+### `tenki`
+
+```json
+{
+  "type": "tenki",
+  "config": { "timeout_ms": 300000 }
+}
+```
+
+Requires `TENKI_API_KEY` (or `TENKI_AUTH_TOKEN`). The backend uses Tenki SDK 1.4 or newer and works in `/home/tenki` by default. Set `workspace_id` when selecting a workspace explicitly.
+
+`timeout_ms` is the guest-enforced per-command budget, defaulting to five minutes. Timed-out commands return exit code 137 and a timeout diagnostic while preserving partial stdout and stderr. A stalled transport is aborted after an additional five-second grace period; when no result arrives, partial output is unavailable. `shutdown()` pauses the sandbox; `ensure()` reconnects and resumes it using persisted runtime state.
 
 ## Sandbox Presets
 
