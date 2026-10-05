@@ -25,6 +25,7 @@ import { registerExecBackend } from '../exec-backend.js';
 const TENKI_DEFAULT_USERNAME = 'tenki';
 const TENKI_DEFAULT_AGENT_HOME = '/home/tenki';
 const TENKI_DEFAULT_TIMEOUT_MS = 300_000;
+const TENKI_TIMEOUT_GRACE_MS = 5_000;
 const TENKI_DEFAULT_CREATE_TIMEOUT_MS = 180_000;
 const TENKI_DEFAULT_CPU_CORES = 2;
 const TENKI_DEFAULT_MEMORY_MB = 4096;
@@ -226,35 +227,45 @@ export class TenkiExecBackend implements ExecBackend {
         ...((await this.context.passThroughEnvProvider?.()) ?? {}),
         ...(opts?.env ?? {}),
       };
+      const controller = new AbortController();
       const handle = this.session!.run(['sh', '-c', command], {
         cwd,
+        timeoutMs: this.timeoutMs,
+        signal: controller.signal,
         ...(Object.keys(passEnv).length > 0 ? { env: passEnv } : {}),
       });
       const timeout = Symbol('timeout');
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let outcome: Awaited<typeof handle> | typeof timeout;
+      let result: Awaited<typeof handle> | typeof timeout;
       try {
-        outcome = await Promise.race([
+        result = await Promise.race([
           Promise.resolve(handle),
-          new Promise<typeof timeout>((resolve) => { timer = setTimeout(() => resolve(timeout), this.timeoutMs); }),
+          new Promise<typeof timeout>((resolve) => {
+            timer = setTimeout(() => resolve(timeout), this.timeoutMs + TENKI_TIMEOUT_GRACE_MS);
+          }),
         ]);
       } finally {
         if (timer) clearTimeout(timer);
       }
-      if (outcome === timeout) {
-        await handle.kill().catch(() => undefined);
+      if (result === timeout) {
+        // Give the guest time to return buffered output before abandoning a stalled stream.
+        controller.abort(new Error('Tenki command transport deadline exceeded'));
+        this.session = null;
         return {
           stdout: '',
-          stderr: `Command timed out after ${this.timeoutMs}ms`,
+          stderr: `Command timed out after ${this.timeoutMs}ms; no response within ${TENKI_TIMEOUT_GRACE_MS}ms grace period`,
           exitCode: 137,
           durationMs: Date.now() - startedAt,
         };
       }
-      const result = outcome;
+      let stderr = new TextDecoder().decode(result.stderr);
+      if (result.timedOut) {
+        stderr += `${stderr && !stderr.endsWith('\n') ? '\n' : ''}Command timed out after ${this.timeoutMs}ms`;
+      }
       return {
         stdout: new TextDecoder().decode(result.stdout),
-        stderr: new TextDecoder().decode(result.stderr),
-        exitCode: result.exitCode,
+        stderr,
+        exitCode: result.timedOut ? 137 : result.exitCode,
         durationMs: Date.now() - startedAt,
       };
     } catch (error: unknown) {
