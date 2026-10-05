@@ -380,6 +380,44 @@ export const repairInterleavedToolResults = (
 };
 
 /**
+ * Compose the three structural wire-shape repairs in the order MiniMax's
+ * `/anthropic` endpoint requires, BRACKETING the interleave-hoist with
+ * alternation so it works no matter how resume reconstruction fragmented the
+ * turn:
+ *
+ *   1. `repairToolCallPairing`       — drop orphaned toolCall/toolResult blocks.
+ *   2. `normalizeMessageAlternation` — coalesce consecutive same-role turns.
+ *      This FIRST alternation pass is what makes step 3 reliable. When an
+ *      assistant's parallel tool calls were recorded with caption text
+ *      interleaved *between the calls*, resume reconstruction splits them into
+ *      several `assistant(toolCall)` messages (an assistant-text event always
+ *      starts a new message; a tool_call event only appends to whatever
+ *      assistant is current). Merging first rebuilds the single
+ *      `assistant(…all toolCalls…)` turn, which exposes any caption still
+ *      interleaved *between the tool results* for step 3 to hoist. Without it,
+ *      `repairInterleavedToolResults` breaks on the second `assistant(toolCall)`
+ *      and never reaches the split result run — the exact gap that kept the
+ *      Lucky Girl Helen session 400ing (`invalid params (2013)`, short form,
+ *      nothing orphaned) for over a week despite every repair being live.
+ *   3. `repairInterleavedToolResults` — hoist a caption/user message that split
+ *      a parallel-result run out to after the run.
+ *   4. `normalizeMessageAlternation` — final pass: the hoist can leave the
+ *      hoisted caption adjacent to the next assistant turn; coalesce them so the
+ *      transcript still strictly alternates.
+ *
+ * REQUEST-ONLY: callers apply this to the wire payload after the live-state
+ * write-back, never to persisted history — a session that already baked the bad
+ * shape in auto-unwedges on its next turn with no DB surgery.
+ */
+export const repairToolCallStructure = (messages: AgentMessage[]): AgentMessage[] => {
+  let out = repairToolCallPairing(messages);
+  out = normalizeMessageAlternation(out);
+  out = repairInterleavedToolResults(out);
+  out = normalizeMessageAlternation(out);
+  return out;
+};
+
+/**
  * Downgrade every `image` content block to a text placeholder when the target
  * model cannot accept image input. Text-only providers (e.g. MiniMax-M3) reject
  * a request that carries an image block outright — MiniMax 400s with
