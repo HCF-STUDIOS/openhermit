@@ -4095,6 +4095,23 @@ export class AgentRunner implements SessionRuntime {
               stopReason: 'error',
               errorMessage: errorMsg,
             });
+            // Also persist a role:'error' entry so the failure lands in an
+            // `event_type = 'error'` row. fleetStats.errors24h counts those
+            // rows (agent-store.ts); a model error that only wrote the
+            // assistant/stopReason='error' row above was invisible to
+            // fleet-level alerting, so these wedges (e.g. MiniMax 2013) only
+            // surfaced via user complaints. Mirrors the run-error path's
+            // role:'error' append. The raw provider error stays in the
+            // assistant row's errorMessage + logRuntime for diagnostics; the
+            // persisted `message` here is the classified, language-matched
+            // notice so history replay (listMessagesSinceEvent) never shows a
+            // raw provider string. Reconstruction skips role:'error'
+            // (agent-runner.ts ~3249), so this never re-enters the model window.
+            await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
+              ts,
+              role: 'error',
+              message: buildUserFacingModelError(errorMsg, session.currentTurnUserText),
+            });
           });
           break;
         }
