@@ -18,6 +18,7 @@ import {
   normalizeMessageAlternation,
   repairToolCallPairing,
   repairInterleavedToolResults,
+  repairToolCallStructure,
   downgradeImagesForTextModel,
   capImagePayloadBytes,
 } from '../src/agent-runner/message-utils.js';
@@ -567,6 +568,104 @@ describe('repairInterleavedToolResults', () => {
     const before = JSON.stringify(input);
     repairInterleavedToolResults(input);
     assert.equal(JSON.stringify(input), before);
+  });
+});
+
+describe('repairToolCallStructure (composed wire-shape repair)', () => {
+  // The Lucky Girl Helen 09-28 wedge that survived every individual repair for
+  // over a week. Her turn fired many `attachment_send` calls in parallel with a
+  // caption serialized between them; resume reconstruction (an assistant-text
+  // event starts a NEW assistant message, a tool_call only appends to the
+  // current one) therefore SPLIT the turn into several assistant(toolCall)
+  // messages — with the tool results dumped at the end and one caption left
+  // interleaved AMONG the results. MiniMax 400s (`invalid params (2013)`, short
+  // form — nothing is orphaned, every call is paired).
+  const fragmentedTurn = (): AgentMessage[] =>
+    [
+      user('把这些图发出来'),
+      assistantCalls([
+        { id: 'c1', name: 'attachment_send' },
+        { id: 'c2', name: 'attachment_send' },
+        { id: 'c3', name: 'attachment_send' },
+      ]),
+      assistantText('🅰️ 第一组'), // caption → starts a new assistant message
+      assistantCalls([{ id: 'c4', name: 'attachment_send' }], '🅱️ 第二组'),
+      assistantText('🅲️ 第三组'),
+      assistantCalls([{ id: 'c5', name: 'attachment_send' }], '🅳️ 第四组'),
+      toolResult('c2', 'attachment_send'), // results dumped at the end, out of order
+      assistantText('还有一张'), // ← caption interleaved AMONG the results
+      toolResult('c1', 'attachment_send'),
+      toolResult('c3', 'attachment_send'),
+      toolResult('c4', 'attachment_send'),
+      toolResult('c5', 'attachment_send'),
+      assistantText('都发好了'), // trailing next-turn text
+    ] as AgentMessage[];
+
+  test('coalesces the fragmented turn into one valid assistant → contiguous results', () => {
+    const out = repairToolCallStructure(fragmentedTurn());
+
+    // One assistant carries all five tool calls, immediately followed by a
+    // contiguous run of all five results, then the coalesced trailing captions.
+    assert.equal(roles(out), 'UATTTTTA');
+    const assistant = out[1] as AssistantMessage;
+    const callIds = assistant.content
+      .filter((b) => b.type === 'toolCall')
+      .map((b) => (b as { id: string }).id);
+    assert.deepEqual(callIds, ['c1', 'c2', 'c3', 'c4', 'c5']);
+    assert.equal(assistant.stopReason, 'toolUse');
+    // All five results sit contiguously right after the assistant — no caption
+    // splits the run (the split is exactly what MiniMax 400s on).
+    for (let k = 2; k <= 6; k += 1) {
+      assert.equal((out[k] as { role: string }).role, 'toolResult');
+    }
+    const resultIds = out.slice(2, 7).map((m) => (m as ToolResultMessage).toolCallId);
+    assert.deepEqual(new Set(resultIds), new Set(['c1', 'c2', 'c3', 'c4', 'c5']));
+  });
+
+  test('the pre-fix order (hoist before alternation) leaves the result run split', () => {
+    // Why the fix is an ordering change, not a new repair: running the
+    // interleave-hoist on the still-fragmented input (as the old pipeline did)
+    // breaks on the second assistant(toolCall) and never reaches the split
+    // result run; the merge that would expose it only happens in the LATER
+    // alternation pass — too late. The bad shape survives: an assistant caption
+    // ends up between tool results.
+    const oldOrder = normalizeMessageAlternation(
+      repairInterleavedToolResults(repairToolCallPairing(fragmentedTurn())),
+    );
+    const firstResult = oldOrder.findIndex((m) => (m as { role: string }).role === 'toolResult');
+    const lastResult =
+      oldOrder.length -
+      1 -
+      [...oldOrder].reverse().findIndex((m) => (m as { role: string }).role === 'toolResult');
+    const splitByAssistant = oldOrder
+      .slice(firstResult, lastResult + 1)
+      .some((m) => (m as { role: string }).role === 'assistant');
+    assert.equal(splitByAssistant, true); // still wedged under the old order
+  });
+
+  test('preserves an already-valid parallel turn', () => {
+    const clean: AgentMessage[] = [
+      user('go'),
+      assistantCalls([
+        { id: 'c1', name: 'exec' },
+        { id: 'c2', name: 'exec' },
+      ]),
+      toolResult('c1', 'exec'),
+      toolResult('c2', 'exec'),
+      assistantText('done'),
+    ] as AgentMessage[];
+    assert.equal(roles(repairToolCallStructure(clean)), 'UATTA');
+  });
+
+  test('still collapses the consecutive-user wedge and drops orphans', () => {
+    const wedged: AgentMessage[] = [
+      assistantText('reply'),
+      user('a'),
+      user('b'),
+      toolResult('gone', 'exec'), // orphan: no matching toolCall
+    ] as AgentMessage[];
+    // orphan toolResult dropped, two users coalesced.
+    assert.equal(roles(repairToolCallStructure(wedged)), 'AU');
   });
 });
 
