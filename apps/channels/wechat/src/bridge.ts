@@ -152,6 +152,15 @@ export class WechatBridge implements ChannelOutbound {
    */
   private readonly peerContextTokens = new Map<string, string>();
 
+  /**
+   * DM peers we've already attempted a first-contact owner claim for, so we
+   * call the gateway at most once per peer per process. The server-side claim
+   * is itself idempotent and guarded; this just avoids an HTTP round-trip on
+   * every subsequent message. A failed attempt is removed so the next message
+   * retries. In-memory only — a restart re-attempts once (harmless/idempotent).
+   */
+  private readonly claimedPeers = new Set<string>();
+
   constructor(
     private runtime: WechatBridgeRuntime,
     clientOptions: { baseUrl: string; token: string },
@@ -535,6 +544,29 @@ export class WechatBridge implements ChannelOutbound {
     const turnContextToken = msg.context_token?.trim();
 
     const isGroup = Boolean(msg.group_id?.trim());
+
+    // Single-user channel: WeChat DMs are an owner-private 1:1 line, so the
+    // first DM sender is bound as the agent owner — removing the manual
+    // identity-link step. Fire before the session resolves identity so the very
+    // first turn already sees the owner. DM-only; groups are never claimed. The
+    // gateway enforces all the real guards (allowlist, DM-only, once-per-channel);
+    // this is best-effort and non-fatal.
+    const dmSenderId = !isGroup ? msg.from_user_id?.trim() : undefined;
+    if (dmSenderId && !this.claimedPeers.has(peer)) {
+      this.claimedPeers.add(peer);
+      try {
+        const claim = await this.client.claimChannelOwner({ channelUserId: dmSenderId });
+        if (claim.claimed) {
+          this.log(`owner-claim: bound ${peer} as owner (user ${claim.userId})`);
+        }
+      } catch (err) {
+        this.claimedPeers.delete(peer); // allow a retry on the next message
+        this.log(
+          `owner-claim failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     let sessionId = await this.getSessionId(peer, isGroup);
     // A recovered session id may no longer be reopenable (stale/migrated, or
     // a different resolved identity) — the agent API returns 404 Session not
