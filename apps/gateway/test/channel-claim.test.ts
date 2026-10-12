@@ -5,11 +5,20 @@ import type { UserIdentity } from '@openhermit/store';
 
 import {
   OWNER_CLAIM_ELIGIBLE_CHANNELS,
+  isChannelClaimed,
   planChannelClaim,
   type ChannelClaimRosterEntry,
 } from '../src/channel-claim.js';
 
 const roster = (...entries: ChannelClaimRosterEntry[]): ChannelClaimRosterEntry[] => entries;
+
+const ids = (entries: Record<string, string[]>): Map<string, { channel: string }[]> =>
+  new Map(
+    Object.entries(entries).map(([userId, channels]) => [
+      userId,
+      channels.map((channel) => ({ channel })),
+    ]),
+  );
 
 test('allowlist contains wechat and nothing unexpected opens the door', () => {
   assert.ok(OWNER_CLAIM_ELIGIBLE_CHANNELS.has('wechat'));
@@ -82,6 +91,69 @@ test('sender is a known DIFFERENT established user: refuse (no silent cross-user
     channelIdentityBound: false,
   });
   assert.deepEqual(plan, { action: 'reject', reason: 'sender_bound_elsewhere' });
+});
+
+test('isChannelClaimed: true when the owner already has an identity on the channel', () => {
+  assert.equal(
+    isChannelClaimed({
+      channel: 'wechat',
+      agentRoles: roster({ userId: 'u_owner', role: 'owner' }),
+      identitiesByUser: ids({ u_owner: ['web', 'wechat'] }),
+    }),
+    true,
+  );
+});
+
+test('isChannelClaimed: false when the owner has no identity on the channel', () => {
+  assert.equal(
+    isChannelClaimed({
+      channel: 'wechat',
+      agentRoles: roster({ userId: 'u_owner', role: 'owner' }),
+      identitiesByUser: ids({ u_owner: ['web', 'telegram'] }),
+    }),
+    false,
+  );
+});
+
+test('isChannelClaimed: a GUEST with a channel identity does NOT claim the channel (hub-agent bug fix)', () => {
+  // The crux: cross-agent guests carry wechat identities from their OWN agents.
+  // Only the owner's identity may mark the channel claimed.
+  assert.equal(
+    isChannelClaimed({
+      channel: 'wechat',
+      agentRoles: roster(
+        { userId: 'u_owner', role: 'owner' },
+        { userId: 'u_guest', role: 'guest' },
+      ),
+      identitiesByUser: ids({ u_owner: ['web'], u_guest: ['wechat'] }),
+    }),
+    false,
+  );
+});
+
+test('isChannelClaimed: false on an ownerless agent even if guests carry the channel', () => {
+  assert.equal(
+    isChannelClaimed({
+      channel: 'wechat',
+      agentRoles: roster({ userId: 'u_guest', role: 'guest' }),
+      identitiesByUser: ids({ u_guest: ['wechat'] }),
+    }),
+    false,
+  );
+});
+
+test('isChannelClaimed: with multiple owners, any owner holding the channel marks it claimed', () => {
+  assert.equal(
+    isChannelClaimed({
+      channel: 'wechat',
+      agentRoles: roster(
+        { userId: 'u_owner1', role: 'owner' },
+        { userId: 'u_owner2', role: 'owner' },
+      ),
+      identitiesByUser: ids({ u_owner1: ['telegram'], u_owner2: ['wechat'] }),
+    }),
+    true,
+  );
 });
 
 // Type-only sanity: UserIdentity is the shape the route filters on by channel.
