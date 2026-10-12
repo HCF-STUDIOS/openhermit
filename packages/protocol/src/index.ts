@@ -955,6 +955,11 @@ export interface SessionCheckpointRequest {
 export const agentLocalRoutes = {
   health: '/health',
   sessions: '/sessions',
+  /**
+   * First-contact owner claim (single-user channels only). Resolved against
+   * the client's agent-scoped base URL, so the agent is implicit in the token.
+   */
+  channelClaim: '/channel-claim',
   sessionEventsPattern: '/sessions/:sessionId/events',
   sessionEvents: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
@@ -1096,6 +1101,17 @@ export const gatewayRoutes = {
   agentManage: (agentId: string, action: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/manage/${encodeURIComponent(action)}`,
   agentManagePattern: '/api/agents/:agentId/manage/:action',
+
+  /**
+   * First-contact owner claim for single-user channels. A channel-mode token
+   * whose namespace is on the gateway's central single-user allowlist can bind
+   * the first direct-message sender as the agent owner, so the owner never has
+   * to run a manual cross-channel identity link. See the gateway handler for
+   * the full guard set.
+   */
+  agentChannelClaim: (agentId: string): string =>
+    `/api/agents/${encodeURIComponent(agentId)}/channel-claim`,
+  agentChannelClaimPattern: '/api/agents/:agentId/channel-claim',
 
   /** Sandbox CRUD per agent. */
   agentSandboxes: (agentId: string): string =>

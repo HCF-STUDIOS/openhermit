@@ -69,6 +69,7 @@ import {
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
 import { registerResearchRoutes } from './research-routes.js';
+import { OWNER_CLAIM_ELIGIBLE_CHANNELS, planChannelClaim } from './channel-claim.js';
 import {
   registerSessionPublishRoute,
   type AttachmentIngestResult,
@@ -2151,6 +2152,79 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const now = new Date().toISOString();
     await userStore.assignAgent(scope, userId, 'owner', now);
     return c.json({ ok: true, userId, role: 'owner' });
+  });
+
+  // First-contact owner claim for single-user channels (e.g. a WeChat personal
+  // account that only ever talks to its owner). Lets the channel bridge bind the
+  // first DM sender as owner WITHOUT a manual cross-channel identity link.
+  //
+  // This is a deliberately silent owner promotion, so it is tightly guarded:
+  //   1. channel-mode token only — not admin, not a user JWT;
+  //   2. the channel namespace must be on the central OWNER_CLAIM_ELIGIBLE_CHANNELS
+  //      allowlist (a user's self-registered channel can't self-declare it);
+  //   3. DM-only — the channel sets x-channel-user-id for direct messages only,
+  //      so an empty sender id means this isn't a 1:1 line (e.g. a group);
+  //   4. once-per-channel — if any identity on this channel is already bound to a
+  //      member of the agent, the channel is already claimed and a later/other
+  //      DMer can never rebind it. This is the anti-hijack invariant that makes
+  //      "first DM = owner" safe under the single-user trust assumption.
+  app.post(gatewayRoutes.agentChannelClaimPattern, async (c) => {
+    const agentId = c.req.param('agentId') ?? '';
+    const auth = requireAuth(c, agentId);
+    if (!userStore) {
+      throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
+    }
+
+    // Guard 1: channel-mode token only.
+    if (auth.mode !== 'channel' || !auth.channelNamespace) {
+      throw new UnauthorizedError('channel-claim requires a channel token.');
+    }
+    // Guard 2: central single-user allowlist (never manifest-declared).
+    if (!OWNER_CLAIM_ELIGIBLE_CHANNELS.has(auth.channelNamespace)) {
+      throw new UnauthorizedError(
+        `Channel "${auth.channelNamespace}" is not eligible for owner auto-claim.`,
+      );
+    }
+    // Guard 3: DM-only — direct messages carry a concrete sender id.
+    const channelUserId = auth.channelUserId?.trim();
+    if (!channelUserId) {
+      throw new ValidationError('channel-claim requires a direct-message sender.');
+    }
+
+    const channel = auth.channelNamespace;
+    const scope = { agentId };
+    const now = new Date().toISOString();
+
+    const agentUsers = await userStore.listByAgent(scope);
+    const callerUserId = await userStore.resolve(channel, channelUserId);
+    const identitiesByUser = await userStore.listIdentitiesByUserIds(
+      agentUsers.map((u) => u.userId),
+    );
+    const channelIdentityBound = [...identitiesByUser.values()].some((list) =>
+      list.some((identity) => identity.channel === channel),
+    );
+
+    const plan = planChannelClaim({ callerUserId, agentRoles: agentUsers, channelIdentityBound });
+
+    switch (plan.action) {
+      case 'already-owner':
+        return c.json({ ok: true, agentId, userId: plan.ownerUserId, role: 'owner', claimed: false });
+      case 'reject':
+        return c.json({ ok: false, agentId, reason: plan.reason, claimed: false });
+      case 'link-to-owner':
+        await userStore.linkIdentity({ userId: plan.ownerUserId, channel, channelUserId, createdAt: now });
+        return c.json({ ok: true, agentId, userId: plan.ownerUserId, role: 'owner', claimed: true });
+      case 'assign-owner': {
+        let ownerId = plan.userId;
+        if (!ownerId) {
+          ownerId = `u_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+          await userStore.upsert({ userId: ownerId, createdAt: now, updatedAt: now });
+          await userStore.linkIdentity({ userId: ownerId, channel, channelUserId, createdAt: now });
+        }
+        await userStore.assignAgent(scope, ownerId, 'owner', now);
+        return c.json({ ok: true, agentId, userId: ownerId, role: 'owner', claimed: true });
+      }
+    }
   });
 
   app.get('/api/agents/:agentId/config', async (c) => {

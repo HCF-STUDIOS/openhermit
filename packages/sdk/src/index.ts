@@ -87,6 +87,20 @@ export interface AgentLocalClientOptions {
   fetch?: FetchLike;
 }
 
+/** Result of {@link AgentLocalClient.claimChannelOwner}. */
+export interface ChannelClaimResult {
+  /** True when the claim was accepted (either freshly bound or already owner). */
+  ok: boolean;
+  agentId: string;
+  /** The owner's internal user id (present when `ok`). */
+  userId?: string;
+  role?: 'owner';
+  /** True only when this call newly bound an owner identity. */
+  claimed: boolean;
+  /** Set when `ok` is false — e.g. `channel_already_claimed`, `sender_bound_elsewhere`. */
+  reason?: string;
+}
+
 export class AgentLocalClient {
   private readonly fetchImpl: FetchLike;
 
@@ -169,6 +183,22 @@ export class AgentLocalClient {
       ? { 'x-channel-user-id': opts.channelUserId }
       : undefined;
     return this.postJson(path, message, headers);
+  }
+
+  /**
+   * First-contact owner claim for single-user channels (e.g. a WeChat personal
+   * account that only ever talks to its owner). Binds `channelUserId` as the
+   * agent owner so no manual identity-link step is needed. The gateway enforces
+   * every guard (channel-mode token, central single-user allowlist, DM-only,
+   * once-per-channel), so this is safe to call optimistically on first contact;
+   * it is idempotent and a no-op once the channel has an owner identity bound.
+   */
+  async claimChannelOwner(opts: { channelUserId: string }): Promise<ChannelClaimResult> {
+    return this.postJson(
+      agentLocalRoutes.channelClaim,
+      {},
+      { 'x-channel-user-id': opts.channelUserId },
+    );
   }
 
   async submitApproval(
