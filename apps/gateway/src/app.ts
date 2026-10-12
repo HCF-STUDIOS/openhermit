@@ -69,7 +69,7 @@ import {
   DEFAULT_ATTACHMENT_MAX_BYTES,
 } from './attachment-routes.js';
 import { registerResearchRoutes } from './research-routes.js';
-import { OWNER_CLAIM_ELIGIBLE_CHANNELS, planChannelClaim } from './channel-claim.js';
+import { OWNER_CLAIM_ELIGIBLE_CHANNELS, isChannelClaimed, planChannelClaim } from './channel-claim.js';
 import {
   registerSessionPublishRoute,
   type AttachmentIngestResult,
@@ -2164,10 +2164,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   //      allowlist (a user's self-registered channel can't self-declare it);
   //   3. DM-only — the channel sets x-channel-user-id for direct messages only,
   //      so an empty sender id means this isn't a 1:1 line (e.g. a group);
-  //   4. once-per-channel — if any identity on this channel is already bound to a
-  //      member of the agent, the channel is already claimed and a later/other
-  //      DMer can never rebind it. This is the anti-hijack invariant that makes
-  //      "first DM = owner" safe under the single-user trust assumption.
+  //   4. once-per-channel — if the agent OWNER already has an identity on this
+  //      channel, the channel is already claimed and a later/other DMer can
+  //      never rebind it. This is the anti-hijack invariant that makes
+  //      "first DM = owner" safe under the single-user trust assumption. Scoped
+  //      to the owner (not the whole roster) so a hub agent's guests — who carry
+  //      channel identities from their OWN agents — can't wedge it shut.
   app.post(gatewayRoutes.agentChannelClaimPattern, async (c) => {
     const agentId = c.req.param('agentId') ?? '';
     const auth = requireAuth(c, agentId);
@@ -2197,12 +2199,16 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     const agentUsers = await userStore.listByAgent(scope);
     const callerUserId = await userStore.resolve(channel, channelUserId);
-    const identitiesByUser = await userStore.listIdentitiesByUserIds(
-      agentUsers.map((u) => u.userId),
-    );
-    const channelIdentityBound = [...identitiesByUser.values()].some((list) =>
-      list.some((identity) => identity.channel === channel),
-    );
+    // Anti-hijack is scoped to the OWNER's identities only — a claim binds an
+    // owner, and a hub agent's guests carry channel identities from their own
+    // agents, which must not count as "claimed". See isChannelClaimed.
+    const ownerUserIds = agentUsers.filter((u) => u.role === 'owner').map((u) => u.userId);
+    const identitiesByOwner = await userStore.listIdentitiesByUserIds(ownerUserIds);
+    const channelIdentityBound = isChannelClaimed({
+      channel,
+      agentRoles: agentUsers,
+      identitiesByUser: identitiesByOwner,
+    });
 
     const plan = planChannelClaim({ callerUserId, agentRoles: agentUsers, channelIdentityBound });
 

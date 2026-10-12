@@ -27,6 +27,41 @@ export interface ChannelClaimRosterEntry {
   role: string;
 }
 
+/** Minimal identity shape the claim logic discriminates on. */
+export interface ChannelClaimIdentity {
+  channel: string;
+}
+
+/**
+ * Whether this channel has already been owner-claimed on the agent.
+ *
+ * The claim flow only ever binds an OWNER's identity on the channel, so "already
+ * claimed" means an OWNER already carries an identity on this channel — NOT that
+ * some guest/user does. This scoping is load-bearing: a hub agent accumulates
+ * cross-agent guests, and those guests carry channel identities that belong to
+ * THEIR OWN agents (e.g. an amiko web guest who separately uses WeChat on their
+ * own twin). Counting a guest's unrelated identity would make the channel
+ * permanently unclaimable — the real owner could never first-contact-claim. So
+ * the once-per-channel anti-hijack guard looks ONLY at the agent's owner(s).
+ *
+ * @param channel          the channel namespace being claimed (e.g. 'wechat')
+ * @param agentRoles       the agent's current (userId, role) roster
+ * @param identitiesByUser identities keyed by userId (only owner ids need be
+ *                         populated; non-owner entries are ignored)
+ */
+export function isChannelClaimed(input: {
+  channel: string;
+  agentRoles: ChannelClaimRosterEntry[];
+  identitiesByUser: ReadonlyMap<string, readonly ChannelClaimIdentity[]>;
+}): boolean {
+  const { channel, agentRoles, identitiesByUser } = input;
+  return agentRoles
+    .filter((u) => u.role === 'owner')
+    .some((u) =>
+      (identitiesByUser.get(u.userId) ?? []).some((identity) => identity.channel === channel),
+    );
+}
+
 /**
  * What the route should do, given the agent's current roster and identity
  * bindings. Preconditions (channel-mode token, allowlist membership, a concrete
@@ -44,14 +79,13 @@ export type ChannelClaimPlan =
 
 /**
  * Decide the owner-claim action. Pure — no I/O. The anti-hijack invariant lives
- * here: once ANY identity on this channel is bound to a member of the agent, the
+ * here: once an identity on this channel is bound to the agent OWNER, the
  * channel is considered claimed and a later/other DM sender can never rebind it.
  *
- * @param channel          the channel namespace being claimed (e.g. 'wechat')
  * @param callerUserId     the user the DM sender already resolves to, if any
  * @param agentRoles       the agent's current (userId, role) roster
- * @param channelIdentityBound whether any roster member already has an identity
- *                         on `channel` (the once-per-channel guard, precomputed)
+ * @param channelIdentityBound whether the agent's owner already has an identity
+ *                         on the channel (see {@link isChannelClaimed}, precomputed)
  */
 export function planChannelClaim(input: {
   callerUserId: string | undefined;
@@ -66,12 +100,12 @@ export function planChannelClaim(input: {
     return { action: 'already-owner', ownerUserId: existingOwner.userId };
   }
 
-  // Once-per-channel: an identity on this channel is already bound to the agent.
+  // Once-per-channel: the owner already has an identity on this channel.
   if (channelIdentityBound) {
     return { action: 'reject', reason: 'channel_already_claimed' };
   }
 
-  // From here, no identity on this channel is bound to the agent yet.
+  // From here, the owner has no identity on this channel yet.
   if (existingOwner) {
     // Owner exists (e.g. created in-app) but has no identity on this channel.
     if (callerUserId && callerUserId !== existingOwner.userId) {
