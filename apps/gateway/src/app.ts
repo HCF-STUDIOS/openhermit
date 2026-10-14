@@ -3398,6 +3398,12 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (body.type === 'once' && (!body.runAt || typeof body.runAt !== 'string')) {
       throw new ValidationError('runAt is required for once schedules');
     }
+    if (body.sessionMode !== undefined) {
+      const kind = (body.sessionMode as { kind?: unknown } | null)?.kind;
+      if (kind !== 'dedicated' && kind !== 'ephemeral') {
+        throw new ValidationError('sessionMode.kind must be "dedicated" or "ephemeral"');
+      }
+    }
 
     // Resolve creator identity. Owner-mode requests use auth.userId.
     // Admin-mode has no userId, so default to the agent's earliest owner
@@ -3437,6 +3443,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       prompt: body.prompt,
       ...(body.delivery ? { delivery: body.delivery as any } : {}),
       ...(body.policy ? { policy: body.policy as any } : {}),
+      ...(body.sessionMode ? { sessionMode: body.sessionMode as any } : {}),
       createdBy,
     });
     return c.json(schedule, 201);
@@ -3456,6 +3463,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (typeof body.cronExpression === 'string') patch.cronExpression = body.cronExpression;
     if (typeof body.runAt === 'string') patch.runAt = body.runAt;
     if (body.delivery !== undefined) patch.delivery = body.delivery;
+    if (body.sessionMode !== undefined) {
+      const kind = (body.sessionMode as { kind?: unknown } | null)?.kind;
+      if (kind !== 'dedicated' && kind !== 'ephemeral') {
+        throw new ValidationError('sessionMode.kind must be "dedicated" or "ephemeral"');
+      }
+      patch.sessionMode = body.sessionMode;
+    }
     const updated = await store.update({ agentId }, scheduleId, patch as any);
     return c.json(updated);
   });

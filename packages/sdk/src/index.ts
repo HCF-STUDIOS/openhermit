@@ -1430,6 +1430,7 @@ export class GatewayClient {
     id?: string;
     delivery?: unknown;
     policy?: unknown;
+    sessionMode?: { kind: 'dedicated' | 'ephemeral' };
   }): Promise<unknown> {
     return this.postJson(`/api/agents/${encodeURIComponent(agentId)}/schedules`, input);
   }
