@@ -136,6 +136,23 @@ test('estimateTextTokens approximates 4 chars per token', () => {
   assert.equal(estimateTextTokens('a'.repeat(100)), 25);
 });
 
+test('estimateTextTokens counts CJK at ~1 token per character', () => {
+  // The models we run tokenize CJK at ~1 token/char; a flat chars/4 would
+  // report 1 token here and let Chinese-heavy contexts blow past the real
+  // window before compaction ever triggers.
+  assert.equal(estimateTextTokens('你好世界'), 4);
+  assert.equal(estimateTextTokens('中'.repeat(100)), 100);
+  // Japanese kana and Hangul are equally dense.
+  assert.equal(estimateTextTokens('こんにちは'), 5);
+  assert.equal(estimateTextTokens('안녕하세요'), 5);
+});
+
+test('estimateTextTokens mixes CJK (~1/char) and Latin (~4 chars/token)', () => {
+  // 50 Han chars (→50) + 200 Latin chars (→50) = 100 tokens. The old flat
+  // heuristic returned ceil(250/4)=63, a ~40% undercount on this mix.
+  assert.equal(estimateTextTokens('中'.repeat(50) + 'a'.repeat(200)), 100);
+});
+
 test('estimateAgentMessageTokens includes role overhead', () => {
   const user = makeUserMessage('hello');
   const tokens = estimateAgentMessageTokens(user);

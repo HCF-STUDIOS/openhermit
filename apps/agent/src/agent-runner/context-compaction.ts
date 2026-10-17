@@ -51,8 +51,32 @@ export const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
 
 // ── Token estimation ───────────────────────────────────────────────────
 
-export const estimateTextTokens = (text: string): number =>
-  Math.max(1, Math.ceil(text.length / 4));
+// Latin/ASCII text tokenizes at roughly 4 chars/token, but CJK text
+// tokenizes at ~1 token per character across the models we run (DeepSeek,
+// MiniMax, …). A flat chars/4 therefore undercounts Chinese/Japanese/Korean
+// by ~4x. Because compaction triggers off this estimate, that undercount let
+// CJK-heavy agents grow their REAL context all the way to the model's hard
+// limit while compaction stayed dormant — producing repeated 400 "maximum
+// context length" errors with no compaction ever firing (a Chinese-dominant
+// agent on deepseek-v3.2-exp wedged at ~157K real tokens while the estimate
+// read ~37K). Count CJK codepoints as ~1 token and everything else at
+// ~4 chars/token. The CJK side is deliberately a slight overestimate (real
+// ratio is ~0.6–1.0), which only makes compaction trigger a little earlier —
+// the safe direction.
+//
+// Ranges: CJK symbols/punctuation (U+3000–303F), Hiragana+Katakana
+// (U+3040–30FF), CJK Ext-A (U+3400–4DBF), CJK Unified (U+4E00–9FFF), Hangul
+// syllables (U+AC00–D7A3), CJK compat ideographs (U+F900–FAFF), and
+// half/fullwidth forms (U+FF00–FFEF).
+const CJK_RE =
+  /[　-〿぀-ヿ㐀-䶿一-鿿가-힣豈-﫿＀-￯]/gu;
+
+export const estimateTextTokens = (text: string): number => {
+  if (text.length === 0) return 1;
+  const cjkCount = (text.match(CJK_RE) ?? []).length;
+  const rest = text.length - cjkCount;
+  return Math.max(1, Math.ceil(cjkCount + rest / 4));
+};
 
 export const estimateContentTokens = (content: unknown): number => {
   if (typeof content === 'string') {
