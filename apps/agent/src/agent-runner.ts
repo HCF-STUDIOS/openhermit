@@ -1765,6 +1765,22 @@ export class AgentRunner implements SessionRuntime {
       );
     }
 
+    // Idempotent re-delivery guard. A channel relay (e.g. amiko-chat) whose
+    // connection drops before it observes any event cannot tell whether we
+    // accepted the turn, so it may safely re-POST the same messageId. Treat a
+    // messageId already logged in this session as a no-op: don't append it again
+    // or trigger a second turn. Without this, a retried command (e.g. a trading
+    // order) would execute twice. Mirrors appendMessage's dedup; the check runs
+    // before any session mutation so a duplicate leaves no trace.
+    if (message.messageId) {
+      const existingEntryId = await this.store.messages.findEntryIdByMessageId(
+        this.scope, session.spec.sessionId, message.messageId,
+      );
+      if (existingEntryId !== null) {
+        return { sessionId, messageId: message.messageId, triggered: false };
+      }
+    }
+
     // Plugin transform hook — plugins may rewrite (or scrub) the
     // incoming text before it lands in the session log.
     const transformed = await this.bus.transform('session.message.received@v1', {

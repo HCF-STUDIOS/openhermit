@@ -1760,6 +1760,51 @@ test('AgentRunner.appendMessage is idempotent by messageId', async (t) => {
   assert.equal(matches.length, 1, 'only one entry persisted for duplicate messageId');
 });
 
+test('AgentRunner.postMessage is idempotent by messageId (safe re-delivery)', async (t) => {
+  // A channel relay whose connection drops before it sees any event may re-POST
+  // the same messageId. The second delivery must be a no-op: no duplicate log
+  // entry and no second turn triggered (otherwise a retried order runs twice).
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+  });
+  await security.load();
+
+  // Only ONE response is provisioned: a second triggered turn would exhaust the
+  // stream, so a dedup failure surfaces as an error rather than passing silently.
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('first reply'),
+    ]),
+  });
+
+  const sessionId = 'cli:post-idempotent';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'cli', interactive: true },
+  });
+
+  const first = await runner.postMessage(sessionId, {
+    messageId: 'post-dup',
+    text: 'buy 1 eth',
+  });
+  assert.equal(first.triggered, true, 'first delivery triggers a turn');
+  await runner.waitForSessionIdle(sessionId);
+
+  const second = await runner.postMessage(sessionId, {
+    messageId: 'post-dup',
+    text: 'buy 1 eth',
+  });
+  assert.equal(second.triggered, false, 'duplicate delivery does not trigger a turn');
+  assert.equal(second.messageId, 'post-dup');
+  await runner.waitForSessionIdle(sessionId);
+
+  const entries = await readSessionLog(runner, sessionId);
+  const matches = entries.filter((e) => e.messageId === 'post-dup');
+  assert.equal(matches.length, 1, 'only one entry persisted for duplicate messageId');
+});
+
 test('AgentRunner.appendMessage honours occurredAt as the persisted ts', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
