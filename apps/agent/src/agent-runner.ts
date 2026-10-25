@@ -3655,6 +3655,7 @@ export class AgentRunner implements SessionRuntime {
           contextCompactionRecentMessageCount: this.options.contextCompactionRecentMessageCount,
           contextCompactionSummaryMaxChars: this.options.contextCompactionSummaryMaxChars,
           contextCompactionKeepRecentTokens: this.options.contextCompactionKeepRecentTokens,
+          contextCompactionSummaryTimeoutMs: this.options.contextCompactionSummaryTimeoutMs,
           fixedOverheadTokens: overheadTokens,
         },
         createCompactionAgent: canRunLlmCompaction

@@ -14,6 +14,18 @@ export const DEFAULT_CONTEXT_COMPACTION_SUMMARY_MAX_CHARS = 2_400;
 
 export const DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS = 2_048;
 
+// Wall-clock cap on the LLM compaction-summary turn. Compaction runs on the
+// hot path — it blocks the user's reply until it finishes — and the summary
+// turn uses the agent's OWN model/provider. When that provider is slow or
+// overloaded (observed in production: a long CJK session stalled ~4 min on a
+// single summary call before the first token reached the user), the whole turn
+// hangs on `agent.waitForIdle()` with no bound. Cap it: on timeout we throw,
+// which the caller already catches and handles by falling back to the
+// text-extraction summary — so the user gets a reply in bounded time instead
+// of staring at silence. Generous enough (90s) that a normally-loaded provider
+// still produces a real LLM summary; only pathological stalls hit the fallback.
+export const DEFAULT_CONTEXT_COMPACTION_SUMMARY_TIMEOUT_MS = 90_000;
+
 // Hard ceiling on the auto-derived compaction threshold. Without this,
 // models with huge context windows (e.g. Gemini's 1M) would only compact
 // at ~1M input tokens — single turns hit 700K+ tokens before kicking in.
@@ -351,6 +363,13 @@ export interface CompactionOptions {
    */
   contextCompactionKeepRecentTokens?: number | undefined;
   /**
+   * Wall-clock cap (ms) on the LLM compaction-summary turn. On timeout the
+   * summary turn is abandoned and compaction falls back to the text-extraction
+   * summary, so a slow/overloaded provider can't block the user's reply
+   * indefinitely. Default `DEFAULT_CONTEXT_COMPACTION_SUMMARY_TIMEOUT_MS`.
+   */
+  contextCompactionSummaryTimeoutMs?: number | undefined;
+  /**
    * Pre-computed fixed overhead (system prompt + serialized tools) that
    * will be sent on every LLM call. Subtracted from the budget so the
    * compaction decision reflects the real wire payload, not just the
@@ -402,6 +421,12 @@ export const getContextCompactionKeepRecentTokens = (
 ): number =>
   options.contextCompactionKeepRecentTokens
     ?? DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS;
+
+export const getContextCompactionSummaryTimeoutMs = (
+  options: CompactionOptions,
+): number =>
+  options.contextCompactionSummaryTimeoutMs
+    ?? DEFAULT_CONTEXT_COMPACTION_SUMMARY_TIMEOUT_MS;
 
 // ── LLM compaction summary ────────────────────────────────────────────
 
@@ -459,6 +484,12 @@ export const runCompactionSummaryTurn = async (input: {
   compactedMessages: AgentMessage[];
   previousCompactionSummary: string | undefined;
   createAgent: CreateCompactionAgentFn;
+  /**
+   * Wall-clock cap (ms) on waiting for the summary turn to settle. On expiry
+   * this rejects, letting the caller fall back to text-extraction instead of
+   * blocking the user's reply on a slow provider. `0`/undefined disables.
+   */
+  timeoutMs?: number | undefined;
 }): Promise<string | undefined> => {
   const textSummaries = input.compactedMessages
     .map((message) => summarizeMessageForCompaction(message))
@@ -538,7 +569,31 @@ export const runCompactionSummaryTurn = async (input: {
     content: [{ type: 'text', text: userParts.join('\n\n') }],
     timestamp: Date.now(),
   });
-  await agent.waitForIdle();
+
+  // Bound the wait. The summary turn runs on the agent's own model/provider;
+  // a slow or overloaded provider would otherwise hang the whole user turn on
+  // waitForIdle() (compaction is synchronous, on the hot path). On timeout we
+  // throw — the caller catches it and falls back to the text-extraction
+  // summary, so the user still gets a bounded-time reply. The abandoned turn is
+  // left to settle in the background; the compaction agent is transient
+  // (`<sessionId>:compaction`) and holds no tools, so it drops out on its own.
+  const timeoutMs = input.timeoutMs ?? 0;
+  if (timeoutMs > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`compaction summary timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      await Promise.race([agent.waitForIdle(), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } else {
+    await agent.waitForIdle();
+  }
 
   const assistantMessage = [...agent.state.messages]
     .reverse()
@@ -735,6 +790,7 @@ export const compactContextIfNeeded = async (
         compactedMessages: messages,
         previousCompactionSummary: previousSummary,
         createAgent: deps.createCompactionAgent,
+        timeoutMs: getContextCompactionSummaryTimeoutMs(deps.options),
       });
       // NOTE: persistence is deferred until AFTER the accept check below. A
       // rejected candidate (summary bigger than the prefix it replaced) must

@@ -594,6 +594,76 @@ test('runCompactionSummaryTurn extracts JSON summary from agent response', async
   assert.equal(result, 'User discussed project setup.');
 });
 
+test('runCompactionSummaryTurn rejects when the summary turn exceeds the timeout', async () => {
+  // A provider that never settles would otherwise hang the user's turn on
+  // waitForIdle(). With a timeout set, the call rejects so the caller can fall
+  // back to text extraction.
+  const mockAgent = {
+    prompt: async () => {},
+    waitForIdle: () => new Promise<void>(() => {}), // never resolves
+    state: { messages: [] },
+  };
+
+  await assert.rejects(
+    runCompactionSummaryTurn({
+      sessionId: 's1',
+      compactedMessages: [makeUserMessage('hello')],
+      previousCompactionSummary: undefined,
+      createAgent: async () => mockAgent as any,
+      timeoutMs: 20,
+    }),
+    /timed out after 20ms/,
+  );
+});
+
+test('compactContextIfNeeded falls back to text extraction when the summary turn times out', async () => {
+  const longText = 'word '.repeat(200).trim();
+  const messages = [
+    makeUserMessage(longText),
+    makeAssistantMessage(longText),
+    makeUserMessage(longText),
+    makeAssistantMessage(longText),
+    makeUserMessage('final question'),
+    makeAssistantMessage('final answer'),
+  ];
+
+  let summaryPersisted = false;
+  const deps = createStubDeps({
+    options: {
+      contextCompactionMaxTokens: 800,
+      contextCompactionRecentMessageCount: 2,
+      contextCompactionSummaryMaxChars: 200,
+      contextCompactionSummaryTimeoutMs: 20,
+    },
+    store: {
+      messages: {
+        getCompactionSummary: async () => undefined,
+        setCompactionSummary: async () => { summaryPersisted = true; },
+        findRetainBoundaryEventId: async () => undefined,
+      },
+    } as unknown as CompactionDeps['store'],
+    // Hangs forever — the timeout must kick in and route to text extraction.
+    createCompactionAgent: async () => ({
+      prompt: async () => {},
+      waitForIdle: () => new Promise<void>(() => {}),
+      state: { messages: [] },
+    }) as any,
+  });
+
+  const { messages: result, didCompact } = await compactContextIfNeeded('s1', stubConfig, [], messages, deps);
+
+  // Compaction still happened via the text-extraction fallback...
+  assert.equal(didCompact, true);
+  assert.ok(result.length < messages.length);
+  assert.ok(
+    result.some(
+      (m) => m.role === 'user' && JSON.stringify(m.content).includes('Context compaction summary'),
+    ),
+  );
+  // ...and the lossy fallback must NOT overwrite the persisted LLM summary.
+  assert.equal(summaryPersisted, false);
+});
+
 test('runCompactionSummaryTurn rejects a plain text (non-JSON) response', async () => {
   // A non-JSON answer here is usually the model replying conversationally
   // instead of summarizing (observed in production). It must NOT be
