@@ -43,6 +43,7 @@ import {
 } from './core/index.js';
 import { ApprovalGate } from './agent-runner/approval-gate.js';
 import { buildSystemPrompt } from './agent-runner/prompt.js';
+import { recoverInterruptedToolCalls } from './agent-runner/tool-call-recovery.js';
 import { AgentEventBus } from './events.js';
 import { buildSessionSummaries, createPersistedSessionIndexEntry } from './agent-runner/session-index.js';
 import type { AgentRunnerOptions, RunnerSession } from './agent-runner/types.js';
@@ -3487,12 +3488,19 @@ export class AgentRunner implements SessionRuntime {
       knownToolCallIds.add(tr.toolCallId);
     }
 
+    // Mirror post-pass: synthesize a risk-graded error result for every tool
+    // call an interrupted turn left unanswered (process died after the call was
+    // persisted but before its result). Runs AFTER the orphaned-result pass above
+    // so synthetic calls it created are answered too. Only ever adds a result, so
+    // it cannot regress the request-path wire repairs. See `tool-call-recovery.ts`.
+    const recovered = recoverInterruptedToolCalls(messages);
+
     this.logRuntime(
-      `[${sessionId}] resumed with ${messages.length} messages from DB`
+      `[${sessionId}] resumed with ${recovered.length} messages from DB`
       + (compactionSummary ? ' (with compaction summary)' : ''),
     );
 
-    return messages;
+    return recovered;
   }
 
   private async transformContext(
