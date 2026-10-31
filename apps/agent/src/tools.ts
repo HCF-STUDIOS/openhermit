@@ -15,6 +15,7 @@ import { createSessionToolset } from './tools/session.js';
 import { createHistoryToolset } from './tools/history.js';
 import { createIdentityToolset, createUserToolset } from './tools/user.js';
 import { createExecToolset } from './tools/sandbox-exec.js';
+import { createRunCodeToolset } from './tools/run-code.js';
 import { createFileToolset } from './tools/file.js';
 import { createScheduleToolset } from './tools/schedule.js';
 import { createPolicyToolset } from './tools/policy.js';
@@ -59,6 +60,11 @@ export const createBuiltInToolsets = (
   if (context.agentId) {
     toolsets.push(createExecToolset(context));
     toolsets.push(createFileToolset(context));
+    // Experimental code mode — only when explicitly enabled (see
+    // docs/code-mode-design.md). Off by default: no behavior change otherwise.
+    if (context.codeModeEnabled) {
+      toolsets.push(createRunCodeToolset(context));
+    }
   }
   if (context.userStore) {
     toolsets.push(createUserToolset(context));
