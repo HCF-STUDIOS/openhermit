@@ -152,6 +152,11 @@ import {
  *  cost of a model that keeps re-calling a permanently broken tool. */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 15;
 
+/** Experimental code-mode (`run_code`) feature flag, resolved once at module
+ *  load. Off unless `OPENHERMIT_CODE_MODE` is a truthy value. See
+ *  docs/code-mode-design.md. */
+const CODE_MODE_ENABLED = /^(1|true|yes|on)$/i.test(process.env.OPENHERMIT_CODE_MODE ?? '');
+
 const addUserIdToList = (existing: string[], userId: string | undefined): string[] => {
   if (!userId) return existing;
   return existing.includes(userId) ? existing : [...existing, userId];
@@ -2805,6 +2810,7 @@ export class AgentRunner implements SessionRuntime {
           }
         })(),
         execBackendManager: execManager,
+        ...(CODE_MODE_ENABLED ? { codeModeEnabled: true } : {}),
         onExec: () => this.resetWorkspaceIdleTimer(input.config.exec?.lifecycle),
         ...(this.channelOutbound.size > 0 ? { channelOutbound: this.channelOutbound } : {}),
         scheduleStore: this.store.schedules,
