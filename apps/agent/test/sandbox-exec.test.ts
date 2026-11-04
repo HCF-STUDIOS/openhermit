@@ -75,3 +75,27 @@ test('exec passes cwd through alongside the session env', async () => {
   assert.equal(rec.lastOpts?.cwd, '/home/agent/work');
   assert.equal(rec.lastOpts?.env?.OPENHERMIT_SESSION_ID, 'sess-9');
 });
+
+test('exec is hard-denied for guests even without a policy store', async () => {
+  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+  const ctx = makeContext(rec, { sessionId: 'sess-g', agentId: 'agent-g', currentUserRole: 'guest' });
+  const tool = createSandboxExecTool(ctx);
+
+  await assert.rejects(
+    () => tool.execute('tc-1', { command: 'echo hi' }),
+    /exec is not available to guest users/,
+  );
+  // The guest block sits above the backend: nothing was ensured or executed.
+  assert.equal(rec.ensured, 0);
+  assert.equal(rec.lastCommand, undefined);
+});
+
+test('exec allows non-guest roles (owner) through the guest gate', async () => {
+  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+  const ctx = makeContext(rec, { sessionId: 'sess-o', agentId: 'agent-o', currentUserRole: 'owner' });
+  const tool = createSandboxExecTool(ctx);
+  await tool.execute('tc-1', { command: 'echo hi' });
+
+  assert.equal(rec.ensured, 1);
+  assert.equal(rec.lastCommand, 'echo hi');
+});

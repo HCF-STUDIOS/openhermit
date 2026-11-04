@@ -43,6 +43,14 @@ export const createSandboxExecTool = (
   description: buildExecDescription(context),
   parameters: SandboxExecParams,
   execute: async (_toolCallId, args: SandboxExecArgs) => {
+    // Hard block: guests can never run exec, even when a policy row would
+    // otherwise allow (or require approval for) the command. This is a
+    // role-level denial that sits ABOVE the policy layer — exec grants are
+    // reserved for owner/user principals only.
+    if (context.currentUserRole === 'guest') {
+      throw new ValidationError('Access denied: exec is not available to guest users.');
+    }
+
     if (!context.execBackendManager) {
       return {
         content: asTextContent(
