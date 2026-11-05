@@ -779,6 +779,106 @@ test('runCompactionSummaryTurn handles code-fenced JSON response', async () => {
   assert.equal(result, 'Fenced summary.');
 });
 
+test('runCompactionSummaryTurn accepts an envelope-free structured summary', async () => {
+  // Flash-tier summarizers (deepseek-flash, minimax) reliably produce the
+  // requested sections but routinely drop the {"compactionSummary":…} wrapper.
+  // The raw Markdown must be accepted when it carries a template section header,
+  // otherwise the marker never advances and the verbatim tail grows unbounded.
+  const markdown = [
+    '## Overview',
+    'User and agent are planning a trip to Kyoto in April.',
+    '',
+    '## Critical Details',
+    '- Flight NH-847, 2026-04-03, seat 12A',
+  ].join('\n');
+  const mockAgent = {
+    prompt: async () => {},
+    waitForIdle: async () => {},
+    state: {
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: markdown }],
+          ...assistantDefaults,
+          timestamp: Date.now(),
+        },
+      ],
+    },
+  };
+
+  const result = await runCompactionSummaryTurn({
+    sessionId: 's1',
+    compactedMessages: [makeUserMessage('hello')],
+    previousCompactionSummary: undefined,
+    createAgent: async () => mockAgent as any,
+  });
+  assert.equal(result, markdown);
+});
+
+test('runCompactionSummaryTurn still rejects bare prose with no section header', async () => {
+  // A header-less reply is indistinguishable from a conversational answer and
+  // must NOT become the authoritative summary.
+  let promptCalls = 0;
+  const mockAgent = {
+    prompt: async () => { promptCalls += 1; },
+    waitForIdle: async () => {},
+    state: {
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: 'Sure — I went ahead and wrapped that up for you.' }],
+          ...assistantDefaults,
+          timestamp: Date.now(),
+        },
+      ],
+    },
+  };
+
+  const result = await runCompactionSummaryTurn({
+    sessionId: 's1',
+    compactedMessages: [makeUserMessage('hello')],
+    previousCompactionSummary: undefined,
+    createAgent: async () => mockAgent as any,
+  });
+  assert.equal(result, undefined);
+  // The strict reprompt fired (prose on the first attempt triggers one retry).
+  assert.equal(promptCalls, 2);
+});
+
+test('runCompactionSummaryTurn recovers via a strict reprompt retry', async () => {
+  // First attempt answers conversationally; the corrective reprompt yields a
+  // valid envelope. The retry must run on the same agent and be accepted.
+  const responses = [
+    'OK, I saved everything and will continue now.',
+    '{"compactionSummary":"Recovered summary after retry."}',
+  ];
+  let idx = -1;
+  const mockAgent = {
+    prompt: async () => { idx += 1; },
+    waitForIdle: async () => {},
+    state: {
+      get messages() {
+        return [
+          {
+            role: 'assistant' as const,
+            content: [{ type: 'text' as const, text: responses[Math.min(idx, responses.length - 1)]! }],
+            ...assistantDefaults,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    },
+  };
+
+  const result = await runCompactionSummaryTurn({
+    sessionId: 's1',
+    compactedMessages: [makeUserMessage('hello')],
+    previousCompactionSummary: undefined,
+    createAgent: async () => mockAgent as any,
+  });
+  assert.equal(result, 'Recovered summary after retry.');
+});
+
 test('runCompactionSummaryTurn includes previous summary in prompt', async () => {
   let capturedPrompt = '';
   const mockAgent = {
