@@ -81,6 +81,11 @@ export interface RunnerSession extends SessionDescriptor {
    *  when this reaches `MAX_CONSECUTIVE_TOOL_FAILURES` to prevent the
    *  model from looping forever against a broken tool. */
   consecutiveToolFailures: number;
+  /** Sliding window of recent tool-call signatures (`name:sorted-args`) for the
+   *  current turn, used by the content-based loop guard to detect the model
+   *  repeating the same successful call. Reset at turn start. See
+   *  `agent-runner/loop-guard.ts`. */
+  toolCallSignatures: string[];
   /** Set at message_end when the turn ended in a model error
    *  (`stopReason==='error'`), cleared at turn start. `runScheduledJob` reads
    *  it so a cron run that produced no reply is recorded as a *failed* run
