@@ -107,6 +107,53 @@ const createSessionStartedEntries = (spec: SessionSpec, model: { provider: strin
 const parseStoredSessionLogEntry = (payload: unknown): SessionLogEntry =>
   payload as SessionLogEntry;
 
+/**
+ * Estimate the token footprint of a stored event from the serialized size of
+ * its `payload`, CJK-aware to mirror the runtime `estimateTextTokens`: in
+ * UTF-8 a CJK codepoint is 3 bytes and an ASCII char is 1, so
+ * `(bytes - chars) / 2` approximates the CJK codepoint count (which bills at
+ * ~1 token/char) and the remainder bills at ~4 chars/token.
+ *
+ * Crucially this reads `payload`, not the `content` column: `deriveContent`
+ * returns null for `tool_call`/`tool_result` events, so those rows have an
+ * empty `content` even though their payloads can be huge. Measuring the retain
+ * boundary off `content` undercounts a tool-heavy session by ~10x — the walk
+ * never reaches `keepRecentTokens`, runs to the row-scan limit, and pins the
+ * verbatim-tail boundary thousands of events (weeks) too far back. The oversized
+ * tail is then rebuilt on every resume and re-triggers compaction every turn.
+ */
+export const estimateEventTokensFromPayloadSize = (
+  payloadChars: number,
+  payloadBytes: number,
+): number => {
+  const chars = Math.max(0, Number(payloadChars) || 0);
+  const bytes = Math.max(0, Number(payloadBytes) || 0);
+  const cjk = Math.max(0, (bytes - chars) / 2);
+  const ascii = Math.max(0, chars - cjk);
+  return Math.ceil(cjk + ascii / 4);
+};
+
+/**
+ * Walk events newest-first, accumulating payload-size token estimates, and
+ * return the id of the oldest event that still fits inside `keepRecentTokens`.
+ * Everything from this id onward is restored verbatim on the next resume.
+ * Pure (no DB) so the undercount fix is unit-testable without a database.
+ */
+export const pickRetainBoundaryId = (
+  rows: ReadonlyArray<{ id: number; payloadChars: number; payloadBytes: number }>,
+  keepRecentTokens: number,
+): number | undefined => {
+  if (keepRecentTokens <= 0 || rows.length === 0) return undefined;
+  let accumulated = 0;
+  let boundary = rows[0]!.id;
+  for (const row of rows) {
+    accumulated += estimateEventTokensFromPayloadSize(row.payloadChars, row.payloadBytes);
+    boundary = row.id;
+    if (accumulated >= keepRecentTokens) break;
+  }
+  return boundary;
+};
+
 export class DbMessageStore implements MessageStore {
   constructor(private readonly db: DrizzleDb) {}
 
@@ -399,12 +446,20 @@ export class DbMessageStore implements MessageStore {
   async findRetainBoundaryEventId(scope: StoreScope, sessionId: string, keepRecentTokens: number): Promise<number | undefined> {
     if (keepRecentTokens <= 0) return undefined;
 
-    // Pull id + content length (not the content itself) newest-first. Bound the
-    // scan so a very long session can't stream unbounded rows: at ~4 chars/token
-    // the recent window is keepRecentTokens*4 chars, and empty/marker events
-    // still consume a row, so cap generously.
+    // Pull id + serialized payload size (NOT the content column: it is null for
+    // tool_call/tool_result events — see estimateEventTokensFromPayloadSize —
+    // and measuring off it undercounts tool-heavy sessions ~10x). `length`/
+    // `octet_length` return integers computed server-side, so the payloads
+    // themselves are never streamed to the client. Bound the scan so a very
+    // long session can't stream unbounded rows; with payload-aware sizing the
+    // walk now reaches keepRecentTokens in tens of rows, so this cap rarely
+    // binds (it only guards degenerate all-tiny-event sessions).
     const rows = await this.db
-      .select({ id: sessionEvents.id, len: sql<number>`length(${sessionEvents.content})` })
+      .select({
+        id: sessionEvents.id,
+        payloadChars: sql<number>`length(${sessionEvents.payload}::text)`,
+        payloadBytes: sql<number>`octet_length(${sessionEvents.payload}::text)`,
+      })
       .from(sessionEvents)
       .where(and(
         eq(sessionEvents.agentId, scope.agentId),
@@ -413,15 +468,13 @@ export class DbMessageStore implements MessageStore {
       .orderBy(desc(sessionEvents.id))
       .limit(2000);
 
-    if (rows.length === 0) return undefined;
-
-    let accumulated = 0;
-    let boundary = rows[0]!.id;
-    for (const row of rows) {
-      accumulated += Math.ceil((Number(row.len) || 0) / 4);
-      boundary = row.id;
-      if (accumulated >= keepRecentTokens) break;
-    }
-    return boundary;
+    return pickRetainBoundaryId(
+      rows.map((row) => ({
+        id: row.id,
+        payloadChars: Number(row.payloadChars) || 0,
+        payloadBytes: Number(row.payloadBytes) || 0,
+      })),
+      keepRecentTokens,
+    );
   }
 }
