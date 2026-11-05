@@ -432,6 +432,18 @@ export const getContextCompactionSummaryTimeoutMs = (
 
 export type CreateCompactionAgentFn = (sessionId: string) => Promise<Agent>;
 
+// A line starting with one of the summary template's own section headings. Used
+// to recognise an envelope-free summary: flash-tier summarizers (deepseek-flash,
+// minimax) reliably produce the requested sections but routinely drop the JSON
+// wrapper. A header this specific never appears in a conversational reply (which
+// the dedicated summarizer prompt forbids anyway), so it safely tells a real
+// summary apart from chatter.
+const COMPACTION_SECTION_HEADER_RE =
+  /^\s{0,3}#{1,4}\s+(Overview|Participants(?:\s*&\s*Relationships)?|Key Facts(?:\s*&\s*Preferences)?|Decisions|Progress|Open Threads(?:\s*&\s*Next Steps)?|Next Steps|Critical Details)\b/im;
+
+const looksLikeStructuredSummary = (text: string): boolean =>
+  COMPACTION_SECTION_HEADER_RE.test(text);
+
 const parseCompactionSummaryResponse = (
   text: string | undefined,
 ): string | undefined => {
@@ -460,8 +472,7 @@ const parseCompactionSummaryResponse = (
     // resume, and models occasionally answer here with a conversational
     // reply instead of the requested JSON (observed in production). Try to
     // salvage an embedded JSON object (e.g. `compactionSummary: {...}`);
-    // otherwise drop it — the caller falls back to text extraction and the
-    // previous persisted summary stays authoritative.
+    // otherwise fall through to the structured-markdown check below.
     const embedded = jsonText.match(/\{[\s\S]*\}/);
     if (embedded) {
       try {
@@ -470,10 +481,23 @@ const parseCompactionSummaryResponse = (
           return parsed.compactionSummary.trim();
         }
       } catch {
-        // fall through to undefined
+        // fall through to the structured-markdown check below
       }
     }
-    return undefined;
+  }
+
+  // Envelope-free structured summary. Flash-tier summarizers often emit the
+  // requested Markdown sections verbatim but omit the `{"compactionSummary":…}`
+  // wrapper, which the two checks above reject — the single biggest source of
+  // perpetually-frozen compaction markers in production (the summary turn
+  // "fails", the marker never advances, and the verbatim tail grows unbounded
+  // so the session re-compacts every turn). Accept the raw Markdown ONLY when
+  // it carries one of the template's section headers: that is specific enough
+  // to exclude a conversational reply while recovering the dropped-envelope
+  // case. Still refuse bare prose — the caller then falls back to text
+  // extraction and keeps the previous persisted summary.
+  if (looksLikeStructuredSummary(jsonText)) {
+    return jsonText;
   }
 
   return undefined;
@@ -564,12 +588,6 @@ export const runCompactionSummaryTurn = async (input: {
 
   const agent = await input.createAgent(input.sessionId);
 
-  await agent.prompt({
-    role: 'user',
-    content: [{ type: 'text', text: userParts.join('\n\n') }],
-    timestamp: Date.now(),
-  });
-
   // Bound the wait. The summary turn runs on the agent's own model/provider;
   // a slow or overloaded provider would otherwise hang the whole user turn on
   // waitForIdle() (compaction is synchronous, on the hot path). On timeout we
@@ -578,31 +596,71 @@ export const runCompactionSummaryTurn = async (input: {
   // left to settle in the background; the compaction agent is transient
   // (`<sessionId>:compaction`) and holds no tools, so it drops out on its own.
   const timeoutMs = input.timeoutMs ?? 0;
-  if (timeoutMs > 0) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`compaction summary timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-    });
-    try {
-      await Promise.race([agent.waitForIdle(), timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
+  const waitForTurn = async (): Promise<void> => {
+    if (timeoutMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`compaction summary timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      });
+      try {
+        await Promise.race([agent.waitForIdle(), timeout]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    } else {
+      await agent.waitForIdle();
     }
-  } else {
-    await agent.waitForIdle();
+  };
+
+  const latestSummary = (): string | undefined => {
+    const assistantMessage = [...agent.state.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    return parseCompactionSummaryResponse(
+      assistantMessage ? extractAssistantText(assistantMessage) : undefined,
+    );
+  };
+
+  await agent.prompt({
+    role: 'user',
+    content: [{ type: 'text', text: userParts.join('\n\n') }],
+    timestamp: Date.now(),
+  });
+  await waitForTurn();
+
+  let summary = latestSummary();
+
+  // Retry ONCE with a terse, strict reprompt when the first response can't be
+  // read as a summary. Flash-tier summarizers routinely answer the first time
+  // with prose or a malformed/absent envelope; a short corrective nudge on the
+  // SAME agent (the transcript is already in its context, so this is cheap)
+  // recovers most of them. Without this, a model that keeps missing the format
+  // freezes the marker forever and the tail grows unbounded. The retry reuses
+  // the same per-turn timeout, so the worst-case added latency is bounded.
+  if (!summary) {
+    await agent.prompt({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: [
+            'That was not a usable summary. Reply with ONLY a single JSON object and nothing else:',
+            '{"compactionSummary": "<your Markdown summary here>"}',
+            'No prose before or after, no code fences, no reasoning tags. If JSON is not possible,',
+            'output the Markdown summary directly, beginning with a "## " section header.',
+          ].join('\n'),
+        },
+      ],
+      timestamp: Date.now(),
+    });
+    await waitForTurn();
+    summary = latestSummary();
   }
 
-  const assistantMessage = [...agent.state.messages]
-    .reverse()
-    .find((message) => message.role === 'assistant');
-  const responseText = assistantMessage
-    ? extractAssistantText(assistantMessage)
-    : undefined;
-
-  return parseCompactionSummaryResponse(responseText);
+  return summary;
 };
 
 // ── Compaction block builder ───────────────────────────────────────────
