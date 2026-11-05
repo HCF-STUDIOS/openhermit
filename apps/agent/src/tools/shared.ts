@@ -53,6 +53,10 @@ export interface ToolContext {
   storeScope?: StoreScope;
   agentId?: string;
   execBackendManager?: ExecBackendManager;
+  /** Gates the experimental code-mode (`run_code`) toolset. Off by default;
+   *  wired from `OPENHERMIT_CODE_MODE` in the runner. See
+   *  `docs/code-mode-design.md`. */
+  codeModeEnabled?: boolean;
   scheduleStore?: ScheduleStore;
   policyStore?: PolicyStore;
   approvalRequestStore?: import('@openhermit/store').ApprovalRequestStore;
