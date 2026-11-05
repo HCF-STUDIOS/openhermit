@@ -88,6 +88,16 @@ export interface RunnerSession extends SessionDescriptor {
    *  instead of a silent success that keeps re-firing at full cadence — the
    *  behaviour that turned an account-wide 402 outage into a per-tick storm. */
   lastTurnModelError?: { kind: ModelErrorKind; message: string };
+  /** Remaining context-overflow retries for the in-flight turn. Set to
+   *  `CONTEXT_OVERFLOW_MAX_RETRIES` at turn start and decremented each time a
+   *  `context_too_long` error is suppressed for a shrink-and-retry. When it
+   *  reaches 0 the error surfaces through the normal path instead. */
+  contextOverflowRetriesRemaining: number;
+  /** Set by the subscriber when a turn failed with `context_too_long` and a
+   *  retry budget remains: the error is NOT surfaced; instead the turn driver
+   *  deterministically shrinks the live transcript and re-generates via
+   *  `agent.continue()`. Cleared by the driver before each retry. */
+  pendingContextOverflowRetry?: boolean;
 }
 
 export interface AgentRunnerOptions {

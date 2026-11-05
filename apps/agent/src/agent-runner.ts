@@ -94,6 +94,7 @@ import type { ModelErrorKind } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import { withStreamIdleTimeout } from './agent-runner/stream-idle-timeout.js';
 import { withStreamRetry } from './agent-runner/stream-retry.js';
+import { resolveContextOverflowMaxRetries, shrinkMessagesForRetry } from './agent-runner/context-overflow.js';
 import {
   awaitTriggeredTurn,
   surfaceRunError,
@@ -151,6 +152,11 @@ import {
 /** Abort the turn after this many consecutive tool failures. Bounds the
  *  cost of a model that keeps re-calling a permanently broken tool. */
 const MAX_CONSECUTIVE_TOOL_FAILURES = 15;
+
+/** Per-turn budget of deterministic shrink-and-retry attempts on a
+ *  `context_too_long` error (env-overridable, 0 disables). Resolved once at
+ *  module load. */
+const CONTEXT_OVERFLOW_MAX_RETRIES = resolveContextOverflowMaxRetries();
 
 const addUserIdToList = (existing: string[], userId: string | undefined): string[] => {
   if (!userId) return existing;
@@ -1071,6 +1077,7 @@ export class AgentRunner implements SessionRuntime {
       messageCount: persisted?.messageCount ?? 0,
       completedTurnCount: persisted?.completedTurnCount ?? 0,
       consecutiveToolFailures: 0,
+      contextOverflowRetriesRemaining: 0,
       ...(persisted?.description ? { description: persisted.description } : {}),
       ...(persisted?.descriptionSource
         ? { descriptionSource: persisted.descriptionSource }
@@ -1590,6 +1597,30 @@ export class AgentRunner implements SessionRuntime {
   }
 
   /**
+   * Prepare the live transcript for a context-overflow retry: deterministically
+   * shrink it in place so the next `agent.continue()` fits the model's window.
+   *
+   * `transformContext` re-runs the full compaction/truncate/rolling-window
+   * pipeline on every generation, so this only has to make enough room for that
+   * pipeline to succeed — a plain rolling-window cut (tool-pair safe) is enough.
+   * We deliberately do NOT trigger a second summary LLM call here: it would add
+   * latency on an already-degraded turn and could itself overflow or fail.
+   *
+   * Mutates `session.agent.state.messages` in place (clear + refill) so the SDK
+   * agent keeps operating on its own array reference.
+   */
+  private recoverFromContextOverflow(session: RunnerSession): void {
+    const messages = session.agent.state.messages;
+    const before = messages.length;
+    const shrunk = shrinkMessagesForRetry(messages);
+    messages.length = 0;
+    messages.push(...shrunk);
+    this.logRuntime(
+      `context overflow in ${session.spec.sessionId}: shrank transcript ${before} → ${messages.length} messages, retrying turn`,
+    );
+  }
+
+  /**
    * Replace a session's underlying SDK agent with a fresh one, preserving the
    * conversation transcript and re-wiring events. Used by the watchdog
    * force-release when a hung provider read has left the old agent's
@@ -1931,6 +1962,8 @@ export class AgentRunner implements SessionRuntime {
         session.reasoningTagStream = undefined;
         session.reasoningCarryTagName = undefined;
         session.consecutiveToolFailures = 0;
+        session.contextOverflowRetriesRemaining = CONTEXT_OVERFLOW_MAX_RETRIES;
+        delete session.pendingContextOverflowRetry;
         delete session.lastTurnModelError;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
@@ -1970,6 +2003,18 @@ export class AgentRunner implements SessionRuntime {
           { supportsImageInput, log: (m) => console.warn(`[agent-runner] ${m}`) },
         );
         await session.agent.prompt(createUserMessage(promptMessage, attachmentBlocks));
+        // Context-overflow recovery: when the turn failed because the prompt
+        // exceeded the model's context window, the subscriber suppressed the
+        // user-facing error and flagged a retry (while budget remained).
+        // Deterministically shrink the live transcript and re-generate — no
+        // second summary LLM call, which could itself overflow. The per-turn
+        // retry budget bounds this loop; once spent, a further overflow is no
+        // longer flagged and surfaces through the normal error path.
+        while (session.pendingContextOverflowRetry) {
+          delete session.pendingContextOverflowRetry;
+          this.recoverFromContextOverflow(session);
+          await session.agent.continue();
+        }
       } catch (error) {
         await surfaceRunError(
           session.spec.source.kind,
@@ -4075,6 +4120,23 @@ export class AgentRunner implements SessionRuntime {
           }
 
           const errorKind = classifyModelError(errorMsg);
+
+          // Context-overflow recovery: the turn was rejected because the prompt
+          // exceeded the model's context window. While a per-turn retry budget
+          // remains, suppress the user-facing error and flag a deterministic
+          // shrink-and-retry (driven in `run`) instead of surfacing a dead-end
+          // "conversation too long" bubble. Once the budget is spent, fall
+          // through to the normal error path below so the failure still shows.
+          if (errorKind === 'context_too_long' && session.contextOverflowRetriesRemaining > 0) {
+            session.contextOverflowRetriesRemaining -= 1;
+            session.pendingContextOverflowRetry = true;
+            this.logRuntime(
+              `context overflow in ${session.spec.sessionId}: suppressing error for shrink-and-retry ` +
+                `(${session.contextOverflowRetriesRemaining} retries left): ${errorMsg}`,
+            );
+            break;
+          }
+
           // Record the failure synchronously (not via a side-effect) so it is
           // visible the moment the turn's queue settles — runScheduledJob reads
           // it right after waitForSessionIdle to decide success vs. failed run.
