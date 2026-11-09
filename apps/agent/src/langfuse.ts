@@ -433,33 +433,49 @@ const buildGenerationAdapter = (
   };
 };
 
-const buildTraceAdapter = (rootSpan: LangfuseSpan): LangfuseTraceLike => ({
-  generation(body: Record<string, unknown>): LangfuseGenerationLike {
-    return buildGenerationAdapter(rootSpan, body);
-  },
-  update(body: Record<string, unknown>): unknown {
-    const { output, metadata } = body as {
-      output?: unknown;
-      metadata?: Record<string, unknown>;
-    };
+const buildTraceAdapter = (rootSpan: LangfuseSpan): LangfuseTraceLike => {
+  // Once the root span ends, OpenTelemetry silently drops any further
+  // update()/setAttribute() and logs a diagnostic per operation. This happens
+  // on every compaction, where the root span is ended early (see agent-runner)
+  // yet the compaction generation still runs as a child and calls update() on
+  // completion. Track the ended state so post-end writes (and a double end())
+  // become true no-ops rather than lost writes + log noise.
+  let ended = false;
+  return {
+    generation(body: Record<string, unknown>): LangfuseGenerationLike {
+      return buildGenerationAdapter(rootSpan, body);
+    },
+    update(body: Record<string, unknown>): unknown {
+      if (ended) {
+        return undefined;
+      }
 
-    rootSpan.update({
-      ...(output !== undefined ? { output } : {}),
-      ...(metadata ? { metadata } : {}),
-    });
+      const { output, metadata } = body as {
+        output?: unknown;
+        metadata?: Record<string, unknown>;
+      };
 
-    if (output !== undefined) {
-      setTraceAttribute(rootSpan, LangfuseOtelSpanAttributes.TRACE_OUTPUT, output);
-    }
+      rootSpan.update({
+        ...(output !== undefined ? { output } : {}),
+        ...(metadata ? { metadata } : {}),
+      });
 
-    return undefined;
-  },
-  end(): unknown {
-    // Ending an already-ended OpenTelemetry span is a safe no-op.
-    rootSpan.end();
-    return undefined;
-  },
-});
+      if (output !== undefined) {
+        setTraceAttribute(rootSpan, LangfuseOtelSpanAttributes.TRACE_OUTPUT, output);
+      }
+
+      return undefined;
+    },
+    end(): unknown {
+      if (ended) {
+        return undefined;
+      }
+      ended = true;
+      rootSpan.end();
+      return undefined;
+    },
+  };
+};
 
 const createTrace = (body: Record<string, unknown>): LangfuseTraceLike => {
   const { name, sessionId, input, metadata } = body as {
