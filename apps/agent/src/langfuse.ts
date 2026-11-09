@@ -14,7 +14,14 @@ import {
   type Tool,
 } from '@mariozechner/pi-ai';
 import { getErrorMessage } from '@openhermit/shared';
-import { Langfuse } from 'langfuse';
+import { LangfuseOtelSpanAttributes, serializeValue } from '@langfuse/core';
+import { LangfuseSpanProcessor } from '@langfuse/otel';
+import {
+  setLangfuseTracerProvider,
+  startObservation,
+  type LangfuseSpan,
+} from '@langfuse/tracing';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 const LANGFUSE_PUBLIC_KEY = 'LANGFUSE_PUBLIC_KEY';
 const LANGFUSE_SECRET_KEY = 'LANGFUSE_SECRET_KEY';
@@ -27,6 +34,13 @@ export interface LangfuseGenerationLike {
 export interface LangfuseTraceLike {
   generation(body: Record<string, unknown>): LangfuseGenerationLike;
   update(body: Record<string, unknown>): unknown;
+  /**
+   * Close the trace's root span. Required under the v4 OpenTelemetry SDK, where
+   * a span is only exported once it ends — an unended root span would leave the
+   * trace without its name/sessionId/output. Optional so lightweight mocks
+   * (and callers that only own child generations) need not implement it.
+   */
+  end?(): unknown;
 }
 
 export interface LangfuseClientLike {
@@ -232,6 +246,12 @@ const recordLangfuseSuccess = async (
   generation: LangfuseGenerationLike,
   message: AssistantMessage,
   metadata: Record<string, unknown>,
+  /**
+   * Whether this call owns the trace's lifecycle. True for standalone
+   * traces (one trace per generation); false when the generation is a child of
+   * a longer-lived turn/research trace that its creator ends via endTurnTrace.
+   */
+  ownsTrace: boolean,
 ): Promise<AssistantMessage> => {
   const output = serializeAssistantMessage(message);
   const update = {
@@ -245,6 +265,9 @@ const recordLangfuseSuccess = async (
 
   generation.end({ ...update, ...buildGenerationUsage(message.usage) });
   trace.update(update);
+  if (ownsTrace) {
+    trace.end?.();
+  }
   await flushLangfuse(langfuse);
   return message;
 };
@@ -255,6 +278,7 @@ const recordLangfuseError = async (
   generation: LangfuseGenerationLike,
   error: unknown,
   metadata: Record<string, unknown>,
+  ownsTrace: boolean,
 ): Promise<never> => {
   const message = getErrorMessage(error);
   const update = {
@@ -267,6 +291,9 @@ const recordLangfuseError = async (
 
   generation.end(update);
   trace.update(update);
+  if (ownsTrace) {
+    trace.end?.();
+  }
   await flushLangfuse(langfuse);
   throw error;
 };
@@ -324,9 +351,198 @@ export const endTurnTrace = async (
     turnContext.currentTrace.update({
       ...(output ? { output } : {}),
     });
+    // v4: end the root span so the trace (name/sessionId/output) is exported.
+    turnContext.currentTrace.end?.();
     turnContext.currentTrace = undefined;
     await flushLangfuse(langfuse);
   }
+};
+
+/**
+ * Serialize a value onto a trace-level OpenTelemetry span attribute. Strings
+ * pass through; everything else goes through the SDK's own serializer (JSON).
+ * `undefined`/`null` and un-serializable values are skipped so we never write a
+ * bad attribute.
+ */
+const setTraceAttribute = (
+  rootSpan: LangfuseSpan,
+  key: LangfuseOtelSpanAttributes,
+  value: unknown,
+): void => {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  const serialized = typeof value === 'string' ? value : serializeValue(value);
+
+  if (serialized === undefined) {
+    return;
+  }
+
+  rootSpan.otelSpan.setAttribute(key, serialized);
+};
+
+const buildGenerationAdapter = (
+  parent: LangfuseSpan,
+  body: Record<string, unknown>,
+): LangfuseGenerationLike => {
+  const { name, model, input, metadata, startTime } = body as {
+    name?: string;
+    model?: string;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
+    startTime?: Date;
+  };
+
+  const generation = parent.startObservation(
+    typeof name === 'string' ? name : 'llm_call',
+    {
+      ...(model !== undefined ? { model: String(model) } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(metadata ? { metadata } : {}),
+    },
+    {
+      asType: 'generation',
+      ...(startTime instanceof Date ? { startTime } : {}),
+    },
+  );
+
+  return {
+    end(endBody: Record<string, unknown>): unknown {
+      const {
+        output,
+        metadata: endMetadata,
+        usageDetails,
+        costDetails,
+      } = endBody as {
+        output?: unknown;
+        metadata?: Record<string, unknown>;
+        usageDetails?: Record<string, number>;
+        costDetails?: Record<string, number>;
+      };
+
+      generation.update({
+        ...(output !== undefined ? { output } : {}),
+        ...(endMetadata ? { metadata: endMetadata } : {}),
+        ...(usageDetails ? { usageDetails } : {}),
+        ...(costDetails ? { costDetails } : {}),
+      });
+      generation.end();
+      return undefined;
+    },
+  };
+};
+
+const buildTraceAdapter = (rootSpan: LangfuseSpan): LangfuseTraceLike => {
+  // Once the root span ends, OpenTelemetry silently drops any further
+  // update()/setAttribute() and logs a diagnostic per operation. This happens
+  // on every compaction, where the root span is ended early (see agent-runner)
+  // yet the compaction generation still runs as a child and calls update() on
+  // completion. Track the ended state so post-end writes (and a double end())
+  // become true no-ops rather than lost writes + log noise.
+  let ended = false;
+  return {
+    generation(body: Record<string, unknown>): LangfuseGenerationLike {
+      return buildGenerationAdapter(rootSpan, body);
+    },
+    update(body: Record<string, unknown>): unknown {
+      if (ended) {
+        return undefined;
+      }
+
+      const { output, metadata } = body as {
+        output?: unknown;
+        metadata?: Record<string, unknown>;
+      };
+
+      rootSpan.update({
+        ...(output !== undefined ? { output } : {}),
+        ...(metadata ? { metadata } : {}),
+      });
+
+      if (output !== undefined) {
+        setTraceAttribute(rootSpan, LangfuseOtelSpanAttributes.TRACE_OUTPUT, output);
+      }
+
+      return undefined;
+    },
+    end(): unknown {
+      if (ended) {
+        return undefined;
+      }
+      ended = true;
+      rootSpan.end();
+      return undefined;
+    },
+  };
+};
+
+const createTrace = (body: Record<string, unknown>): LangfuseTraceLike => {
+  const { name, sessionId, input, metadata } = body as {
+    name?: string;
+    sessionId?: string;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
+  };
+
+  const rootSpan = startObservation(typeof name === 'string' ? name : 'trace', {
+    ...(input !== undefined ? { input } : {}),
+    ...(metadata ? { metadata } : {}),
+  });
+
+  // Promote this to a trace root and attach trace-level correlation attributes.
+  // These MUST be set at creation time: a root span may be ended immediately
+  // (its children attach via the retained span context) or outlive many child
+  // generations, and attributes written after a span ends are silently dropped
+  // by OpenTelemetry.
+  rootSpan.otelSpan.setAttribute(LangfuseOtelSpanAttributes.AS_ROOT, true);
+  if (typeof name === 'string') {
+    rootSpan.otelSpan.setAttribute(LangfuseOtelSpanAttributes.TRACE_NAME, name);
+  }
+  if (typeof sessionId === 'string') {
+    rootSpan.otelSpan.setAttribute(
+      LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
+      sessionId,
+    );
+  }
+  setTraceAttribute(rootSpan, LangfuseOtelSpanAttributes.TRACE_INPUT, input);
+
+  return buildTraceAdapter(rootSpan);
+};
+
+/**
+ * The v4 SDK records traces through a process-global OpenTelemetry tracer
+ * provider rather than per-instance clients. All agents share one Langfuse
+ * project (keys come from the same environment), so a single shared span
+ * processor is both correct and necessary: child observations created via the
+ * module-level `startObservation` always resolve the globally-registered
+ * Langfuse tracer, so per-instance providers cannot be isolated. Traces stay
+ * separated by sessionId. Initialized lazily so no OpenTelemetry machinery
+ * spins up when Langfuse is disabled.
+ */
+let sharedProcessor: LangfuseSpanProcessor | undefined;
+
+const ensureSharedProcessor = (params: {
+  publicKey: string;
+  secretKey: string;
+  baseUrl?: string | undefined;
+}): LangfuseSpanProcessor => {
+  if (!sharedProcessor) {
+    sharedProcessor = new LangfuseSpanProcessor({
+      publicKey: params.publicKey,
+      secretKey: params.secretKey,
+      ...(params.baseUrl ? { baseUrl: params.baseUrl } : {}),
+    });
+    const provider = new NodeTracerProvider({
+      spanProcessors: [sharedProcessor],
+    });
+    // Register with Langfuse's own tracer only. Deliberately NOT
+    // provider.register(): that installs a process-global OTel context manager
+    // and propagator, which would affect unrelated code in the host process.
+    setLangfuseTracerProvider(provider);
+  }
+
+  return sharedProcessor;
 };
 
 export const createLangfuseClientFromEnv = (options: {
@@ -349,11 +565,22 @@ export const createLangfuseClientFromEnv = (options: {
     return undefined;
   }
 
-  return new Langfuse({
-    publicKey,
-    secretKey,
-    ...(baseUrl ? { baseUrl } : {}),
-  });
+  const processor = ensureSharedProcessor({ publicKey, secretKey, baseUrl });
+
+  return {
+    trace(body: Record<string, unknown>): LangfuseTraceLike {
+      return createTrace(body);
+    },
+    async flushAsync(): Promise<void> {
+      await processor.forceFlush();
+    },
+    async shutdownAsync(): Promise<void> {
+      // The processor is shared across all agents, so a per-agent teardown must
+      // not stop the export pipeline. Flush instead, so this agent's buffered
+      // spans still reach Langfuse.
+      await processor.forceFlush();
+    },
+  };
 };
 
 export const createLangfuseShutdownHandler = (
@@ -405,6 +632,7 @@ export const completeWithLangfuseTrace = async (
       generation,
       message,
       metadata,
+      true,
     );
   } catch (error) {
     return recordLangfuseError(
@@ -413,6 +641,7 @@ export const completeWithLangfuseTrace = async (
       generation,
       error,
       metadata,
+      true,
     );
   }
 };
@@ -455,13 +684,16 @@ export const createLangfuseTracedStreamFn = (
   return async (model, context, options) => {
     const original = await Promise.resolve(nextStreamFn(model, context, options));
 
-    // If inside a turn, create generation as child of the turn trace.
-    // Otherwise fall back to a standalone trace+generation.
+    // If inside a turn, create generation as child of the turn trace (owned by
+    // the turn's creator, ended via endTurnTrace). Otherwise fall back to a
+    // standalone trace+generation that this call owns and must end itself.
+    const insideTurn = Boolean(turnContext.currentTrace);
     const { trace, generation, metadata } = turnContext.currentTrace
       ? startGenerationOnTrace(turnContext.currentTrace, model, context, options)
       : startLangfuseGeneration(langfuse, model, context, options, {
           name: 'openhermit.llm_step',
         });
+    const ownsTrace = !insideTurn;
 
     // Flush the generation-create immediately (fire-and-forget) so a request
     // whose stream connects and then hangs — never emitting an event and never
@@ -480,6 +712,7 @@ export const createLangfuseTracedStreamFn = (
               generation,
               message,
               metadata,
+              ownsTrace,
             ),
           (error) =>
             recordLangfuseError(
@@ -488,6 +721,7 @@ export const createLangfuseTracedStreamFn = (
               generation,
               error,
               metadata,
+              ownsTrace,
             ),
         );
       }
