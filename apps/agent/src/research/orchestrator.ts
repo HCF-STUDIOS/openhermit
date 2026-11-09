@@ -11,6 +11,7 @@ import type {
   StoreScope,
 } from '@openhermit/store';
 
+import { endTurnTrace } from '../langfuse.js';
 import type { LangfuseClientLike, LangfuseTurnContext } from '../langfuse.js';
 import {
   researchActionsTotal,
@@ -845,6 +846,12 @@ export class ResearchOrchestrator {
         this.deps.log(`[research] run ${runId} execution error: ${sanitizeError(err)}`);
         await this.handlePhaseFailure(runId, phase, undefined, err).catch(() => {});
       } finally {
+        // v4: end the deep_research root span so the trace is exported. Under
+        // the legacy SDK traces auto-closed; the OpenTelemetry SDK only emits a
+        // span once it ends.
+        if (this.deps.langfuse && langfuseTurnContext) {
+          void endTurnTrace(this.deps.langfuse, langfuseTurnContext);
+        }
         this.executions.delete(runId);
         if (this.executionsBySession.get(sessionId) === runId) {
           this.executionsBySession.delete(sessionId);

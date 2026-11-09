@@ -3779,6 +3779,13 @@ export class AgentRunner implements SessionRuntime {
         }
       : undefined;
 
+    // v4: the compaction trace carries no later trace-level output and the
+    // summary agent is transient with no natural close hook. End the root span
+    // now so the trace is exported under the OpenTelemetry SDK (which only emits
+    // a span once it ends); child generations created during the summary turn
+    // still attach to this trace via the retained span context.
+    langfuseTurnContext?.currentTrace?.end?.();
+
     return this.createConfiguredAgent({
       config,
       agentSessionId: `${sessionId}:compaction`,
