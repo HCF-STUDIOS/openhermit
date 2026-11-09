@@ -91,16 +91,6 @@ export interface DockerExecBackendConfig {
   lifecycle?: WorkspaceContainerLifecycle;
 }
 
-export interface HostExecBackendConfig {
-  id?: string;
-  type: 'host';
-  label?: string;
-  cwd?: string;
-  shell?: string;
-  env?: Record<string, string>;
-  timeout_ms?: number;
-}
-
 export interface E2BExecBackendConfig {
   id?: string;
   type: 'e2b';
@@ -141,7 +131,6 @@ export interface TenkiExecBackendConfig {
 
 export type ExecBackendConfig =
   | DockerExecBackendConfig
-  | HostExecBackendConfig
   | E2BExecBackendConfig
   | DaytonaExecBackendConfig
   | TenkiExecBackendConfig;
@@ -193,6 +182,9 @@ export const registerExecBackend = (type: string, factory: BackendFactory): void
   factories.set(type, factory);
 };
 
+/** Whether a backend of this type has a registered factory (i.e. is supported). */
+export const isRegisteredExecBackend = (type: string): boolean => factories.has(type);
+
 export const createExecBackend = (config: ExecBackendConfig, context: BackendFactoryContext): ExecBackend => {
   const factory = factories.get(config.type);
   if (!factory) {
@@ -229,7 +221,10 @@ export class ExecBackendManager {
       configs = execConfig.backends;
       defaultId = execConfig.default_backend;
     } else {
-      configs = [{ type: 'host', id: 'host' }];
+      // No implicit fallback. The removed `host` default ran exec directly on
+      // the gateway host as the gateway process user — an unacceptable default.
+      // An agent with no configured sandbox simply has no exec environment.
+      throw new ValidationError('No exec backend configured for this agent.');
     }
 
     const usedIds = new Set<string>();
@@ -269,7 +264,21 @@ export class ExecBackendManager {
     if (rows.length === 0) {
       throw new ValidationError('No sandboxes configured for this agent.');
     }
-    const backends = rows.map((row) => {
+    // Defensively drop rows whose backend type is no longer supported (e.g. the
+    // removed `host` type). A stale or re-inserted row must never crash agent
+    // boot and must never execute. The sandbox loader already filters soft-
+    // deleted rows; this guards the row that slips through.
+    const usableRows = rows.filter((row) => {
+      if (isRegisteredExecBackend(row.type)) return true;
+      console.warn(
+        `[exec-backend] ignoring sandbox "${row.alias}" (${row.id}): unsupported backend type "${row.type}".`,
+      );
+      return false;
+    });
+    if (usableRows.length === 0) {
+      throw new ValidationError('No usable exec backend configured for this agent.');
+    }
+    const backends = usableRows.map((row) => {
       const ctx: BackendFactoryContext = {
         ...context,
         getRuntimeState: () => sandboxAccess.getRuntimeState(row.id),
@@ -279,7 +288,7 @@ export class ExecBackendManager {
       const cfg = { ...row.config, type: row.type, id: row.alias } as ExecBackendConfig;
       return createExecBackend(cfg, ctx);
     });
-    const defaultId = rows.find((r) => r.alias === 'default')?.alias ?? rows[0]!.alias;
+    const defaultId = usableRows.find((r) => r.alias === 'default')?.alias ?? usableRows[0]!.alias;
     return new ExecBackendManager(backends, defaultId);
   }
 

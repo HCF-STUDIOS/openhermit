@@ -14,7 +14,7 @@ interface Recorder {
 function makeBackend(rec: Recorder): ExecBackend {
   return {
     id: 'default',
-    type: 'host',
+    type: 'docker',
     label: 'test',
     username: 'tester',
     agentHome: '/home/agent',

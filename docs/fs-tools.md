@@ -9,7 +9,7 @@ This document proposes those tools and the backend abstraction behind them.
 ## Goals
 
 - Path-level access policy enforceable at the tool layer.
-- Uniform tool surface across `host` / `docker` / `e2b` / `daytona` backends.
+- Uniform tool surface across `docker` / `e2b` / `daytona` backends.
 - Multi-sandbox aware: an agent can own several sandboxes; tool calls and policies must distinguish them.
 - Performance comparable to direct `cat` / `tee`.
 
@@ -81,10 +81,6 @@ interface FileBackend {
 
 The backend is scoped to a single sandbox — paths are relative to that sandbox's filesystem. Tool handlers resolve the backend via `context.execBackendManager.get(alias)` and call `backend.files.*`.
 
-### `host` backend
-
-Native Node `fs/promises` against the gateway machine's filesystem. Used by the devops agent only (per sandbox-model.md, `host` is reserved and private).
-
 ### `e2b` backend
 
 `E2BFileBackend` wraps the e2b SDK's filesystem methods (`sandbox.files.read` / `write` / `list` / `getInfo` / `remove` / `exists`). Uses a lazy sandbox reference — the `sandbox` handle is injected after `ensure()` and cleared on `shutdown()`.
@@ -107,7 +103,7 @@ The docker backend uses `HostFileBackend` with path translation. The gateway's `
 - Agents always use container-side paths (e.g. `/home/agent/workspace/foo.txt`)
 - The backend strips `containerRoot` and prepends `hostRoot` to get the host path
 - `realpath` + startsWith boundary check prevents escape via `..` or symlinks
-- When `hostRoot === containerRoot` (host backend), translation is a no-op but boundary check still applies
+- When `hostRoot === containerRoot`, translation is a no-op but the boundary check still applies
 
 ## exec coexistence
 

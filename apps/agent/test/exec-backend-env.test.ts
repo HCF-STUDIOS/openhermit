@@ -1,7 +1,4 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -18,50 +15,6 @@ const fakeContext: BackendFactoryContext = {
   agentId: 'test-agent',
   workspaceDir: '/tmp/workspace',
 };
-
-// ── host backend: env reaches the spawned process ─────────────────────────
-
-const restoreEnv = (key: string, prev: string | undefined): void => {
-  if (prev === undefined) delete process.env[key];
-  else process.env[key] = prev;
-};
-
-test('host backend: ExecOpts.env is visible to the spawned command', async () => {
-  const tmp = await mkdtemp(path.join(tmpdir(), 'oh-env-host-'));
-  const prevHome = process.env['HOME'];
-  const prevMyTestVar = process.env['MY_TEST_VAR'];
-  try {
-    process.env['HOME'] = tmp;
-    delete process.env['MY_TEST_VAR'];
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    const result = await backend.exec(`printf '%s' "$MY_TEST_VAR"`, {
-      env: { MY_TEST_VAR: 'hello-from-opts' },
-    });
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, 'hello-from-opts');
-  } finally {
-    restoreEnv('HOME', prevHome);
-    restoreEnv('MY_TEST_VAR', prevMyTestVar);
-    await rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('host backend: absent env means the var is unset in the process', async () => {
-  const tmp = await mkdtemp(path.join(tmpdir(), 'oh-env-host-'));
-  const prevHome = process.env['HOME'];
-  const prevMyTestVar = process.env['MY_TEST_VAR'];
-  try {
-    process.env['HOME'] = tmp;
-    delete process.env['MY_TEST_VAR'];
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    const result = await backend.exec(`printf '%s' "${'$'}{MY_TEST_VAR:-<unset>}"`);
-    assert.equal(result.stdout, '<unset>');
-  } finally {
-    restoreEnv('HOME', prevHome);
-    restoreEnv('MY_TEST_VAR', prevMyTestVar);
-    await rm(tmp, { recursive: true, force: true });
-  }
-});
 
 // ── docker backend: env plumbs into the docker exec argv ──────────────────
 

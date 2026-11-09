@@ -9,6 +9,7 @@ import { ValidationError, NotFoundError } from '@openhermit/shared';
 import {
   ExecBackendManager,
   createExecBackend,
+  HostFileBackend,
   type ExecBackend,
   type BackendFactoryContext,
 } from '../src/core/index.js';
@@ -22,10 +23,11 @@ const fakeContext: BackendFactoryContext = {
 
 // ── createExecBackend ────────────────────────────────────────────────────
 
-test('createExecBackend creates a host backend', () => {
-  const backend = createExecBackend({ type: 'host', id: 'host' }, fakeContext);
-  assert.equal(backend.type, 'host');
-  assert.equal(backend.id, 'host');
+test('createExecBackend rejects the removed host backend', () => {
+  assert.throws(
+    () => createExecBackend({ type: 'host', id: 'host' } as any, fakeContext),
+    ValidationError,
+  );
 });
 
 test('createExecBackend throws for unknown type', () => {
@@ -37,7 +39,7 @@ test('createExecBackend throws for unknown type', () => {
 
 // ── ExecBackendManager ───────────────────────────────────────────────────
 
-const makeFakeBackend = (id: string, type = 'host'): ExecBackend => ({
+const makeFakeBackend = (id: string, type = 'docker'): ExecBackend => ({
   id,
   type,
   label: id,
@@ -87,19 +89,55 @@ test('ExecBackendManager.list returns all backends', () => {
   assert.equal(mgr.list().length, 2);
 });
 
-test('ExecBackendManager.fromConfig falls back to host', () => {
-  const mgr = ExecBackendManager.fromConfig(undefined, fakeContext);
-  assert.equal(mgr.getDefault().type, 'host');
+test('ExecBackendManager.fromConfig throws when no backend is configured', () => {
+  // The removed `host` default used to be injected here; there is no implicit
+  // fallback anymore — an agent with no sandbox has no exec environment.
+  assert.throws(() => ExecBackendManager.fromConfig(undefined, fakeContext), ValidationError);
+  assert.throws(
+    () => ExecBackendManager.fromConfig({ backends: [] }, fakeContext),
+    ValidationError,
+  );
 });
 
 test('ExecBackendManager.fromConfig auto-assigns ids', () => {
   const mgr = ExecBackendManager.fromConfig(
-    { backends: [{ type: 'host' }, { type: 'host' }] },
+    { backends: [{ type: 'docker', image: 'ubuntu:24.04' }, { type: 'docker', image: 'ubuntu:24.04' }] },
     fakeContext,
   );
   const ids = mgr.list().map((b) => b.id);
   assert.equal(ids.length, 2);
   assert.notEqual(ids[0], ids[1]);
+});
+
+const fakeSandboxAccess = {
+  getRuntimeState: async () => null,
+  setRuntimeState: async () => {},
+  markActive: async () => {},
+};
+
+test('ExecBackendManager.fromSandboxRows drops rows with an unsupported backend type', () => {
+  const mgr = ExecBackendManager.fromSandboxRows(
+    [
+      { id: 's1', alias: 'h', type: 'host', config: {} },
+      { id: 's2', alias: 'default', type: 'docker', config: { image: 'ubuntu:24.04' } },
+    ],
+    fakeContext,
+    fakeSandboxAccess,
+  );
+  const ids = mgr.list().map((b) => b.id);
+  assert.deepEqual(ids, ['default']);
+});
+
+test('ExecBackendManager.fromSandboxRows throws when every row is unsupported', () => {
+  assert.throws(
+    () =>
+      ExecBackendManager.fromSandboxRows(
+        [{ id: 's1', alias: 'h', type: 'host', config: {} }],
+        fakeContext,
+        fakeSandboxAccess,
+      ),
+    ValidationError,
+  );
 });
 
 test('ExecBackendManager.shutdownAll calls all backends', async () => {
@@ -115,49 +153,49 @@ test('ExecBackendManager.shutdownAll calls all backends', async () => {
   assert.equal(shutdownCount, 2);
 });
 
-// ── File backends ────────────────────────────────────────────────────────
+// ── File backend (HostFileBackend) ─────────────────────────────────────────
+// HostFileBackend is the shared filesystem layer (docker uses it via a
+// bind-mount with path translation). With hostRoot === containerRoot the
+// translation is a no-op but the boundary / symlink-escape checks still apply.
 
-test('host file backend: read/write/stat/list/delete round-trip', async () => {
+test('HostFileBackend: read/write/stat/list/delete round-trip', async () => {
   const tmp = await mkdtemp(path.join(tmpdir(), 'oh-fs-host-'));
   try {
-    process.env['HOME'] = tmp;
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    await backend.files.write(path.join(tmp, 'a.txt'), Buffer.from('hello'), 'overwrite');
-    const r = await backend.files.read(path.join(tmp, 'a.txt'));
+    const files = new HostFileBackend(tmp, tmp);
+    await files.write(path.join(tmp, 'a.txt'), Buffer.from('hello'), 'overwrite');
+    const r = await files.read(path.join(tmp, 'a.txt'));
     assert.equal(r.data.toString(), 'hello');
-    const s = await backend.files.stat(path.join(tmp, 'a.txt'));
+    const s = await files.stat(path.join(tmp, 'a.txt'));
     assert.equal(s?.type, 'file');
     assert.equal(s?.size, 5);
-    const list = await backend.files.list(tmp);
+    const list = await files.list(tmp);
     assert.ok(list.some((e) => e.name === 'a.txt' && e.type === 'file'));
-    await backend.files.delete(path.join(tmp, 'a.txt'));
-    assert.equal(await backend.files.stat(path.join(tmp, 'a.txt')), null);
+    await files.delete(path.join(tmp, 'a.txt'));
+    assert.equal(await files.stat(path.join(tmp, 'a.txt')), null);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('host file backend: rejects paths outside agentHome', async () => {
+test('HostFileBackend: rejects paths outside the root', async () => {
   const tmp = await mkdtemp(path.join(tmpdir(), 'oh-fs-host-'));
   try {
-    process.env['HOME'] = tmp;
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    await assert.rejects(() => backend.files.read('/etc/passwd'), ValidationError);
-    await assert.rejects(() => backend.files.read('relative/path'), ValidationError);
-    await assert.rejects(() => backend.files.read(`${tmp}/../escape`), ValidationError);
+    const files = new HostFileBackend(tmp, tmp);
+    await assert.rejects(() => files.read('/etc/passwd'), ValidationError);
+    await assert.rejects(() => files.read('relative/path'), ValidationError);
+    await assert.rejects(() => files.read(`${tmp}/../escape`), ValidationError);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('host file backend: create mode fails when file exists', async () => {
+test('HostFileBackend: create mode fails when file exists', async () => {
   const tmp = await mkdtemp(path.join(tmpdir(), 'oh-fs-host-'));
   try {
-    process.env['HOME'] = tmp;
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    await backend.files.write(path.join(tmp, 'x'), Buffer.from('1'), 'create');
+    const files = new HostFileBackend(tmp, tmp);
+    await files.write(path.join(tmp, 'x'), Buffer.from('1'), 'create');
     await assert.rejects(
-      () => backend.files.write(path.join(tmp, 'x'), Buffer.from('2'), 'create'),
+      () => files.write(path.join(tmp, 'x'), Buffer.from('2'), 'create'),
       ValidationError,
     );
   } finally {
@@ -165,14 +203,13 @@ test('host file backend: create mode fails when file exists', async () => {
   }
 });
 
-test('host file backend: append mode concatenates', async () => {
+test('HostFileBackend: append mode concatenates', async () => {
   const tmp = await mkdtemp(path.join(tmpdir(), 'oh-fs-host-'));
   try {
-    process.env['HOME'] = tmp;
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
-    await backend.files.write(path.join(tmp, 'x'), Buffer.from('foo'), 'overwrite');
-    await backend.files.write(path.join(tmp, 'x'), Buffer.from('bar'), 'append');
-    const r = await backend.files.read(path.join(tmp, 'x'));
+    const files = new HostFileBackend(tmp, tmp);
+    await files.write(path.join(tmp, 'x'), Buffer.from('foo'), 'overwrite');
+    await files.write(path.join(tmp, 'x'), Buffer.from('bar'), 'append');
+    const r = await files.read(path.join(tmp, 'x'));
     assert.equal(r.data.toString(), 'foobar');
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -207,25 +244,24 @@ test('docker file backend: container path translates to host workspaceDir', asyn
   }
 });
 
-test('host file backend: symlink escape is blocked', async () => {
+test('HostFileBackend: symlink escape is blocked', async () => {
   const tmp = await mkdtemp(path.join(tmpdir(), 'oh-fs-escape-'));
   const outside = await mkdtemp(path.join(tmpdir(), 'oh-fs-outside-'));
   try {
-    process.env['HOME'] = tmp;
     await writeFile(path.join(outside, 'secret.txt'), 'sensitive data');
     await symlink(outside, path.join(tmp, 'escape'));
 
-    const backend = createExecBackend({ type: 'host' }, fakeContext);
+    const files = new HostFileBackend(tmp, tmp);
     await assert.rejects(
-      () => backend.files.read(path.join(tmp, 'escape', 'secret.txt')),
+      () => files.read(path.join(tmp, 'escape', 'secret.txt')),
       ValidationError,
     );
     await assert.rejects(
-      () => backend.files.write(path.join(tmp, 'escape', 'pwned.txt'), Buffer.from('x'), 'overwrite'),
+      () => files.write(path.join(tmp, 'escape', 'pwned.txt'), Buffer.from('x'), 'overwrite'),
       ValidationError,
     );
     await assert.rejects(
-      () => backend.files.list(path.join(tmp, 'escape')),
+      () => files.list(path.join(tmp, 'escape')),
       ValidationError,
     );
   } finally {

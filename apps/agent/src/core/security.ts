@@ -61,15 +61,6 @@ const DockerBackendSchema = z.object({
   lifecycle: LifecycleSchema.optional(),
 });
 
-const HostBackendSchema = z.object({
-  id: z.string().optional(),
-  type: z.literal('host'),
-  label: z.string().optional(),
-  cwd: z.string().optional(),
-  shell: z.string().optional(),
-  env: z.record(z.string(), z.string()).optional(),
-});
-
 const E2BBackendSchema = z.object({
   id: z.string().optional(),
   type: z.literal('e2b'),
@@ -109,7 +100,6 @@ const TenkiBackendSchema = z.object({
 
 const ExecBackendConfigSchema = z.discriminatedUnion('type', [
   DockerBackendSchema,
-  HostBackendSchema,
   E2BBackendSchema,
   DaytonaBackendSchema,
   TenkiBackendSchema,
