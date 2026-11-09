@@ -1,6 +1,6 @@
 export type KnownSourceKind = 'cli' | 'api' | 'channel' | 'schedule';
 
-export const SANDBOX_TYPES = ['host', 'docker', 'e2b', 'daytona', 'tenki'] as const;
+export const SANDBOX_TYPES = ['docker', 'e2b', 'daytona', 'tenki'] as const;
 export type SandboxType = (typeof SANDBOX_TYPES)[number];
 
 const SANDBOX_TYPE_SET: ReadonlySet<string> = new Set(SANDBOX_TYPES);

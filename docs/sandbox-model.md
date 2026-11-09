@@ -2,9 +2,8 @@
 
 A **sandbox** is the execution environment an agent uses to run shell commands and host its workspace files. Each agent has zero or more sandboxes, each persisted as a row in the `sandboxes` table; the runtime constructs an `ExecBackend` from each row when the agent starts.
 
-Five backend types are supported:
+Four backend types are supported:
 
-- `host` — runs commands directly on the gateway host. No isolation. At most one host sandbox per gateway.
 - `docker` — runs commands inside a per-agent Docker container managed by the gateway.
 - `e2b` — runs commands inside an [E2B](https://e2b.dev) cloud sandbox.
 - `daytona` — runs commands inside a [Daytona](https://www.daytona.io) cloud sandbox.
@@ -19,7 +18,7 @@ Each sandbox row carries:
 | `id` | UUID |
 | `agent_id` | Owning agent |
 | `alias` | Per-agent unique name. The default alias is `default`. |
-| `type` | `host` / `docker` / `e2b` / `daytona` / `tenki` |
+| `type` | `docker` / `e2b` / `daytona` / `tenki` |
 | `config` | Type-specific config blob (see below) |
 | `status` | Lifecycle state: `pending` → `provisioned` → `deleted` (soft delete) |
 | `external_id` | Backend-assigned identifier (container name, e2b sandbox id, etc.) |
@@ -32,22 +31,12 @@ A row starts at `pending` and flips to `provisioned` the first time the backend'
 
 ## Backend Configs
 
-### `host`
-
-```json
-{ "type": "host", "config": {} }
-```
-
-All fields optional:
-
-- `cwd` — defaults to the agent's workspace dir
-- `shell` — defaults to `sh`
-- `env` — extra env vars merged on top of the gateway process environment
-- `timeout_ms` — per-command timeout, default 5 min
-
-The host backend treats the gateway machine as the sandbox; only one agent per gateway can hold the host sandbox (enforced at the API layer).
-
-> ⚠️ **Reserved for the devops agent.** The `host` backend gives the agent unsandboxed shell access to the gateway machine itself — every command runs as the gateway process user, on the same filesystem and network as the gateway. It is intended for a single privileged operator agent that manages the host (the "devops" agent) and **must** be paired with `access: "private"` so only the owner / explicitly added admins can talk to it. Do not use `host` for general-purpose agents; pick `docker`, `e2b`, or `daytona` instead.
+> **Note:** The `host` backend (run commands directly on the gateway machine, as
+> the gateway process user, with no isolation) has been **removed**. It granted
+> unsandboxed shell access to the production host and was abused to read gateway
+> secrets. Agents must use an isolated backend (`docker` / `e2b` / `daytona` /
+> `tenki`); there is no implicit fallback — an agent with no configured sandbox
+> has no exec environment.
 
 ### `docker`
 
@@ -148,7 +137,7 @@ CLI mirror:
 
 ```bash
 hermit sandbox list --agent <id>
-hermit sandbox add  --agent <id> --type host
+hermit sandbox add  --agent <id> --type docker --config '{"image":"ubuntu:24.04"}'
 hermit sandbox add  --agent <id> --type e2b --config '{"template":"base"}'
 hermit sandbox remove --agent <id> default
 ```

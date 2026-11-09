@@ -3877,12 +3877,6 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (existing) {
       throw new ConflictError(`Sandbox alias "${alias}" already exists for this agent.`);
     }
-    if (type === 'host') {
-      const owner = await store.findAgentByType('host', agentId);
-      if (owner) {
-        throw new ConflictError(`Host backend is already in use by agent ${owner}.`);
-      }
-    }
     const row = await store.create({
       agentId,
       alias,

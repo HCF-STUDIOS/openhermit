@@ -778,9 +778,9 @@ test('session_summary denies access when user is not a participant', async (t) =
 // ── file_read: skill-path bypass ─────────────────────────────────────────
 
 const makeReadOnlyBackend = (agentHome: string, files: Map<string, Buffer>): ExecBackend => ({
-  id: 'host',
-  type: 'host',
-  label: 'host',
+  id: 'docker',
+  type: 'docker',
+  label: 'docker',
   username: 'tester',
   agentHome,
   ensure: async () => {},

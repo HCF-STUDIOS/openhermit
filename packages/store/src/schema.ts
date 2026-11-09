@@ -202,13 +202,13 @@ export const memories = pgTable('memories', {
  * Each row is identified by a uuid `id`. Within an agent, sandboxes have
  * a unique `alias` (default `default`) used by exec callers to pick a
  * target. `external_id` holds the backend-specific handle (docker
- * container name, e2b sandbox id; null for host).
+ * container name, e2b sandbox id).
  */
 export const sandboxes = pgTable('sandboxes', {
   id: text('id').primaryKey(),
   agentId: text('agent_id').notNull(),
   alias: text('alias').notNull(),
-  /** 'host' | 'docker' | 'e2b' | 'daytona' | 'tenki' (future) */
+  /** 'docker' | 'e2b' | 'daytona' | 'tenki' */
   type: text('type').notNull(),
   externalId: text('external_id'),
   /** 'pending' | 'provisioned' | 'deleted' — see SandboxStatus type. */
