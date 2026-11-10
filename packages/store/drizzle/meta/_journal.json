@@ -253,6 +253,13 @@
       "when": 1780300000000,
       "tag": "0035_research_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1780400000000,
+      "tag": "0036_user_agents_one_owner",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, asc, isNull, sql, inArray } from 'drizzle-orm';
 import pg from 'pg';
 import { createStorePool } from './pool.js';
+import { rethrowOwnerConflict } from './owner-conflict.js';
 
 import type { UserStore } from '../interfaces.js';
 import type { StoreScope, UserAgentRecord, UserIdentity, UserRecord, UserRole } from '../types.js';
@@ -144,6 +145,12 @@ export class DbUserStore implements UserStore {
 
       const fromAgents = await tx.select().from(userAgents)
         .where(eq(userAgents.userId, fromUserId));
+      // Delete the source rows BEFORE re-inserting under the target user. If
+      // fromUser owns an agent and we inserted intoUser as owner first, both
+      // owner rows would coexist mid-transaction and trip the one-owner partial
+      // unique index (migration 0036), aborting the merge. Freeing the slot
+      // first keeps the merge valid.
+      await tx.delete(userAgents).where(eq(userAgents.userId, fromUserId));
       for (const ua of fromAgents) {
         const [exists] = await tx.select().from(userAgents)
           .where(and(eq(userAgents.userId, intoUserId), eq(userAgents.agentId, ua.agentId)));
@@ -156,7 +163,6 @@ export class DbUserStore implements UserStore {
           });
         }
       }
-      await tx.delete(userAgents).where(eq(userAgents.userId, fromUserId));
 
       await tx.update(sessionEvents).set({ userId: intoUserId })
         .where(eq(sessionEvents.userId, fromUserId));
@@ -170,12 +176,19 @@ export class DbUserStore implements UserStore {
   }
 
   async assignAgent(scope: StoreScope, userId: string, role: UserRole, createdAt: string): Promise<void> {
-    await this.db.insert(userAgents)
-      .values({ userId, agentId: scope.agentId, role, createdAt })
-      .onConflictDoUpdate({
-        target: [userAgents.userId, userAgents.agentId],
-        set: { role },
-      });
+    try {
+      await this.db.insert(userAgents)
+        .values({ userId, agentId: scope.agentId, role, createdAt })
+        .onConflictDoUpdate({
+          target: [userAgents.userId, userAgents.agentId],
+          set: { role },
+        });
+    } catch (err) {
+      // role='owner' on an already-owned agent trips the partial unique index
+      // user_agents_one_owner — surface a clean 409 instead of a raw 500.
+      // (Non-owner roles and same-user re-assignment never hit it.)
+      throw rethrowOwnerConflict(err, scope.agentId);
+    }
   }
 
   async removeAgent(scope: StoreScope, userId: string): Promise<void> {

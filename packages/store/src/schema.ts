@@ -289,6 +289,13 @@ export const userAgents = pgTable('user_agents', {
 }, (table) => [
   primaryKey({ columns: [table.userId, table.agentId] }),
   index('idx_user_agents_agent').on(table.agentId),
+  // An agent has at most one owner. The PK only makes (user, agent) unique, so
+  // nothing stopped two different users each holding role='owner' on the same
+  // agent — several agents accumulated 2–3 owners via different claim/import
+  // paths before this. This partial unique index is the invariant backstop.
+  uniqueIndex('user_agents_one_owner')
+    .on(table.agentId)
+    .where(sql`role = 'owner'`),
 ]);
 
 export const userIdentities = pgTable('user_identities', {

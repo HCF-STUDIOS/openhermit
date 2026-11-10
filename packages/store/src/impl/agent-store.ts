@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import { createStorePool } from './pool.js';
+import { rethrowOwnerConflict } from './owner-conflict.js';
 
 import type { AgentStore } from '../interfaces.js';
 import type { AgentRecord, AgentStatus } from '../types.js';
@@ -135,12 +136,20 @@ export class DbAgentStore implements AgentStore {
     await this.db.insert(users)
       .values({ userId, createdAt: now, updatedAt: now })
       .onConflictDoNothing();
-    await this.db.insert(userAgents)
-      .values({ userId, agentId, role: 'owner', createdAt: now })
-      .onConflictDoUpdate({
-        target: [userAgents.userId, userAgents.agentId],
-        set: { role: 'owner' },
-      });
+    try {
+      await this.db.insert(userAgents)
+        .values({ userId, agentId, role: 'owner', createdAt: now })
+        .onConflictDoUpdate({
+          target: [userAgents.userId, userAgents.agentId],
+          set: { role: 'owner' },
+        });
+    } catch (err) {
+      // Re-claiming by the SAME user hits the (user, agent) PK and is upserted
+      // above. A DIFFERENT user on an already-owned agent instead trips the
+      // partial unique index user_agents_one_owner (one owner per agent) — turn
+      // that raw constraint violation into a clean 409 rather than a 500.
+      throw rethrowOwnerConflict(err, agentId);
+    }
   }
 
   /**
