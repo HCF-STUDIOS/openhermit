@@ -84,7 +84,8 @@ export const createUserIdentityLinkTool = (context: ToolContext): PolicyAwareToo
   policy: { defaultGrants: [{ type: 'role', value: 'owner' }] },
   name: 'user_identity_link',
   label: 'Link User Identity',
-  description: 'Link a channel identity to a user. If the identity already belongs to another user, it will be re-linked to the target user.',
+  description:
+    'Link an additional channel identity to YOUR OWN user (the user you are currently acting as), e.g. to connect a new device/channel to your account. To link identities that belong to a different user, use the token-proved identity_link_request / identity_link_confirm flow instead.',
   parameters: UserIdentityLinkParams,
   execute: async (_toolCallId, args: UserIdentityLinkArgs) => {
     if (!context.userStore || !context.storeScope) {
@@ -99,10 +100,39 @@ export const createUserIdentityLinkTool = (context: ToolContext): PolicyAwareToo
       throw new ValidationError('user_identity_link requires non-empty user_id, channel, and channel_user_id.');
     }
 
+    // SECURITY: an agent may only link a channel identity onto the user it is
+    // currently acting on behalf of. Without this bound, any agent owner could
+    // graft an arbitrary channel session onto ANY existing user_id — a
+    // cross-account takeover primitive: the caller who holds that channel
+    // session would then authenticate as the victim. Cross-user linking is the
+    // job of the token-proved identity_link_request / identity_link_confirm
+    // flow, which proves both sides belong to the same person.
+    if (!context.currentUserId) {
+      throw new ValidationError(
+        'user_identity_link requires a resolved caller identity. Use identity_link_request / identity_link_confirm to link identities across channels.',
+      );
+    }
+    if (userId !== context.currentUserId) {
+      throw new ValidationError(
+        `user_identity_link can only link an identity to your own user (${context.currentUserId}), not ${userId}. To link an identity to a different user, use the token-proved identity_link_request / identity_link_confirm flow.`,
+      );
+    }
+
     // Verify target user exists
     const user = await context.userStore.get(userId);
     if (!user) {
       throw new ValidationError(`User not found: ${userId}`);
+    }
+
+    // SECURITY: never silently steal an identity that is already bound to a
+    // different user (linkIdentity re-points on conflict). If this
+    // (channel, channel_user_id) already resolves to another user, refuse —
+    // re-pointing it would hijack that user's channel login.
+    const existingOwner = await context.userStore.resolve(channel, channelUserId);
+    if (existingOwner && existingOwner !== userId) {
+      throw new ValidationError(
+        `Identity ${channel}:${channelUserId} is already linked to a different user. Refusing to re-point it.`,
+      );
     }
 
     await context.userStore.linkIdentity({
