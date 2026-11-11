@@ -70,6 +70,7 @@ import {
 } from './attachment-routes.js';
 import { registerResearchRoutes } from './research-routes.js';
 import { OWNER_CLAIM_ELIGIBLE_CHANNELS, isChannelClaimed, planChannelClaim } from './channel-claim.js';
+import { resolveMemberRole } from './member-role.js';
 import {
   registerSessionPublishRoute,
   type AttachmentIngestResult,
@@ -825,10 +826,14 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       }
 
       // ── Determine effective role ────────────────────────────────────
-      const effectiveRole: 'owner' | 'user' | 'guest' =
-        auth.mode === 'admin' ? (body.role ?? 'guest')
-        : (body.role && body.role !== 'owner') ? body.role  // non-admins can't grant owner here
-        : 'guest';
+      // A self-join is forced to `guest`: a JWT user may not pick its own
+      // elevated role when adding itself to a (public) agent. See
+      // resolveMemberRole for the full escalation rules.
+      const effectiveRole = resolveMemberRole({
+        authMode: auth.mode,
+        isSelfJoin,
+        requestedRole: body.role,
+      });
 
       // ── Access-policy gate (applies to JWT-user self-join only) ────
       if (isSelfJoin) {
