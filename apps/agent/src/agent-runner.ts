@@ -42,6 +42,7 @@ import {
   type SyncSkillEntry,
 } from './core/index.js';
 import { ApprovalGate } from './agent-runner/approval-gate.js';
+import { appendReminder, recordToolCall } from './agent-runner/loop-guard.js';
 import { buildSystemPrompt } from './agent-runner/prompt.js';
 import { AgentEventBus } from './events.js';
 import { buildSessionSummaries, createPersistedSessionIndexEntry } from './agent-runner/session-index.js';
@@ -1071,6 +1072,7 @@ export class AgentRunner implements SessionRuntime {
       messageCount: persisted?.messageCount ?? 0,
       completedTurnCount: persisted?.completedTurnCount ?? 0,
       consecutiveToolFailures: 0,
+      toolCallSignatures: [],
       ...(persisted?.description ? { description: persisted.description } : {}),
       ...(persisted?.descriptionSource
         ? { descriptionSource: persisted.descriptionSource }
@@ -1643,6 +1645,7 @@ export class AgentRunner implements SessionRuntime {
     session.agent = freshAgent;
     // The wedged turn is over; the next message starts a clean turn.
     session.consecutiveToolFailures = 0;
+    session.toolCallSignatures.length = 0;
     this.logRuntime(
       `turn watchdog: rebuilt SDK agent for session ${session.spec.sessionId} after force-release`,
     );
@@ -1931,6 +1934,7 @@ export class AgentRunner implements SessionRuntime {
         session.reasoningTagStream = undefined;
         session.reasoningCarryTagName = undefined;
         session.consecutiveToolFailures = 0;
+        session.toolCallSignatures.length = 0;
         delete session.lastTurnModelError;
         if (message.messageId !== undefined) {
           session.currentTurnCorrelationId = message.messageId;
@@ -2216,13 +2220,32 @@ export class AgentRunner implements SessionRuntime {
   }
 
   /**
-   * Per-tool-result hook: track consecutive failures and abort the turn once
-   * they reach {@link MAX_CONSECUTIVE_TOOL_FAILURES}, so the model can't loop
-   * forever against a broken tool. Extracted so both the session-open path and
-   * {@link rebuildSessionAgent} wire identical behavior onto the agent.
+   * Per-tool-result hook. Two independent guards run here:
+   *
+   * 1. Consecutive-failure guard — abort the turn once failures reach
+   *    {@link MAX_CONSECUTIVE_TOOL_FAILURES}, so the model can't loop forever
+   *    against a broken tool.
+   * 2. Content-based loop guard — detect the model repeating the *same
+   *    successful* call (same name + identical args) within the turn, which
+   *    returns no new information and burns the context window. Escalating
+   *    advisories are appended to the offending result; the turn is aborted at
+   *    the hard ceiling. See `agent-runner/loop-guard.ts`.
+   *
+   * Extracted so both the session-open path and {@link rebuildSessionAgent}
+   * wire identical behavior onto the agent.
    */
   private makeAfterToolCallHook(session: RunnerSession): AfterToolCallHook {
     return async (ctx) => {
+      // Content-based loop guard — runs regardless of success/failure.
+      const loop = recordToolCall(session.toolCallSignatures, ctx.toolCall.name, ctx.args);
+      if (loop.abort) {
+        this.logRuntime(
+          `session ${session.spec.sessionId}: aborting turn after ${loop.count} identical \`${ctx.toolCall.name}\` tool calls`,
+        );
+        session.agent.abort();
+      }
+
+      // Consecutive-failure guard.
       if (ctx.isError) {
         session.consecutiveToolFailures += 1;
         if (session.consecutiveToolFailures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
@@ -2233,6 +2256,10 @@ export class AgentRunner implements SessionRuntime {
         }
       } else {
         session.consecutiveToolFailures = 0;
+      }
+
+      if (loop.reminder) {
+        return { content: appendReminder(ctx.result.content, loop.reminder) };
       }
       return undefined;
     };
