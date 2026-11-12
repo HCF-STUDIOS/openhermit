@@ -11,6 +11,8 @@ import { DbInternalStateStore, standaloneScope } from '@openhermit/store';
 import { createBuiltInTools, withApproval } from '../src/tools.js';
 import { createFileReadTool } from '../src/tools/file.js';
 import { createSessionListTool, createSessionReadTool, createSessionSummaryTool } from '../src/tools/session.js';
+import { createUserIdentityLinkTool } from '../src/tools/user.js';
+import type { ToolContext } from '../src/tools/shared.js';
 import { DefuddleWebProvider } from '../src/web/index.js';
 import { ExecBackendManager } from '../src/core/index.js';
 import type { ExecBackend } from '../src/core/index.js';
@@ -861,4 +863,82 @@ test('file_read does not bypass numbering for paths only superficially matching 
 
   const text = (result.content[0] as { type: string; text: string }).text;
   assert.ok(text.startsWith('1\troot:x:0:0'), 'paths with .. segments are treated as non-skill — line numbers applied');
+});
+
+// ── user_identity_link: cross-account takeover regression ──────────────────
+// A real breach (Nov 2026) abused user_identity_link: the tool trusted its
+// args wholesale and was owner-gated only on the CALLING agent, so any agent
+// owner could graft an arbitrary channel session onto ANY existing user_id —
+// the attacker then authenticated as the victim. The tool must now only link
+// identities onto the caller's own user, and must never steal an identity that
+// already belongs to another user.
+const makeMockUserStore = () => {
+  const identities = new Map<string, string>(); // `${channel}:${cid}` -> userId
+  const users = new Set<string>();
+  const store = {
+    get: async (userId: string) => (users.has(userId) ? { userId } : undefined),
+    resolve: async (channel: string, cid: string) => identities.get(`${channel}:${cid}`),
+    linkIdentity: async (i: { userId: string; channel: string; channelUserId: string }) => {
+      identities.set(`${i.channel}:${i.channelUserId}`, i.userId);
+    },
+  } as unknown as import('@openhermit/store').UserStore;
+  return { identities, users, store };
+};
+
+const makeLinkTool = (mock: ReturnType<typeof makeMockUserStore>, currentUserId?: string) =>
+  createUserIdentityLinkTool({
+    security: {} as never,
+    userStore: mock.store,
+    storeScope: standaloneScope,
+    currentUserId,
+  } as unknown as ToolContext);
+
+test('user_identity_link refuses to graft an identity onto a different user', async () => {
+  const mock = makeMockUserStore();
+  mock.users.add('usr-caller');
+  mock.users.add('usr-victim');
+  const tool = makeLinkTool(mock, 'usr-caller');
+
+  await assert.rejects(
+    () => tool.execute('c1', { user_id: 'usr-victim', channel: 'web', channel_user_id: 'deadbeef' }),
+    (err: any) => err instanceof ValidationError && /only link an identity to your own user/.test(err.message),
+    'grafting onto another user must be rejected',
+  );
+  assert.equal(mock.identities.size, 0, 'no identity should have been linked');
+});
+
+test('user_identity_link allows linking a new identity to the caller\'s own user', async () => {
+  const mock = makeMockUserStore();
+  mock.users.add('usr-caller');
+  const tool = makeLinkTool(mock, 'usr-caller');
+
+  const result = await tool.execute('c2', { user_id: 'usr-caller', channel: 'web', channel_user_id: 'abc123' });
+  assert.match(getFirstText(result), /Linked web:abc123 to user usr-caller/);
+  assert.equal(mock.identities.get('web:abc123'), 'usr-caller', 'self-link should persist');
+});
+
+test('user_identity_link refuses to steal an identity already bound to another user', async () => {
+  const mock = makeMockUserStore();
+  mock.users.add('usr-caller');
+  mock.identities.set('telegram:999', 'usr-thirdparty');
+  const tool = makeLinkTool(mock, 'usr-caller');
+
+  await assert.rejects(
+    () => tool.execute('c3', { user_id: 'usr-caller', channel: 'telegram', channel_user_id: '999' }),
+    (err: any) => err instanceof ValidationError && /already linked to a different user/.test(err.message),
+    'stealing a third party identity must be rejected',
+  );
+  assert.equal(mock.identities.get('telegram:999'), 'usr-thirdparty', 'victim identity must be untouched');
+});
+
+test('user_identity_link requires a resolved caller identity', async () => {
+  const mock = makeMockUserStore();
+  mock.users.add('usr-x');
+  const tool = makeLinkTool(mock, undefined);
+
+  await assert.rejects(
+    () => tool.execute('c4', { user_id: 'usr-x', channel: 'web', channel_user_id: 'z' }),
+    (err: any) => err instanceof ValidationError && /requires a resolved caller identity/.test(err.message),
+    'an unresolved caller must not be able to link identities',
+  );
 });
