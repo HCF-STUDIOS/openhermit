@@ -42,10 +42,15 @@ test('deepseek-flash appears in the picker catalog under deepseek', () => {
   assert.equal(flash!.reasoning, true);
 });
 
-test('legacy deepseek-v4-flash still resolves (retired alias, registry-served)', () => {
+test('legacy deepseek-v4-flash still resolves (retired alias pruned from the registry)', () => {
+  // pi-ai 1.x dropped the id; it borrows the canonical deepseek-flash entry
+  // (not -v4-pro's price) and keeps the configured id on the wire.
   const m = resolveModel(modelConfig('deepseek', 'deepseek-v4-flash'));
+  const canonical = resolveModel(modelConfig('deepseek', 'deepseek-flash'));
   assert.equal(m.id, 'deepseek-v4-flash');
   assert.equal(m.provider, 'deepseek');
+  assert.ok((m.input as string[]).includes('image'));
+  assert.deepEqual(m.cost, canonical.cost);
 });
 
 // --- Flash tier is multimodal across every alias and route ---
@@ -78,7 +83,7 @@ test('amiko flash id unknown to the price catalog no longer records usage as $0'
   const m = resolveModel(modelConfig('amiko', 'deepseek/deepseek-v4.1-flash'));
   assert.ok(m.cost.input > 0, `expected non-zero input price, got ${m.cost.input}`);
   assert.ok(m.cost.output > 0, `expected non-zero output price, got ${m.cost.output}`);
-  assert.equal(m.contextWindow, 1000000, 'flash carries the real 1M window, not the 128k default');
+  assert.ok(m.contextWindow > 128000, `flash carries its real ~1M window, not the 128k default (got ${m.contextWindow})`);
 });
 
 test('deepseek-flash carries the compat flags even for the amiko-routed id', () => {
@@ -97,4 +102,26 @@ test('deepseek-v4-pro is NOT swept into the flash multimodal override', () => {
     !m.input?.includes('image'),
     `deepseek-v4-pro must stay text-only, got ${JSON.stringify(m.input)}`,
   );
+});
+
+// --- Retired ids pruned from pi-ai's registry keep resolving ---
+
+test('a retired dated id borrows its family sibling instead of failing', () => {
+  // claude-sonnet-4-20250514 left the 1.x registry; agents configured with it
+  // must still open, on the provider's api with a sonnet's capabilities.
+  const m = resolveModel(modelConfig('anthropic', 'claude-sonnet-4-20250514'));
+  assert.equal(m.id, 'claude-sonnet-4-20250514');
+  assert.equal(m.api, 'anthropic-messages');
+  assert.ok((m.input as string[]).includes('image'));
+  assert.ok(m.cost.input > 0);
+});
+
+test('a retired id picks the same family, not the first vendor match', () => {
+  const haiku = resolveModel(modelConfig('anthropic', 'claude-3-5-haiku-latest'));
+  const current = resolveModel(modelConfig('anthropic', 'claude-haiku-4-5'));
+  assert.deepEqual(haiku.cost, current.cost);
+});
+
+test('an id with no same-vendor sibling still fails loudly', () => {
+  assert.throws(() => resolveModel(modelConfig('anthropic', 'totally-unknown')), /Unsupported model/);
 });

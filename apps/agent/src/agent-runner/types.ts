@@ -1,4 +1,4 @@
-import type { Agent, StreamFn } from '@mariozechner/pi-agent-core';
+import type { Agent, StreamFn } from '@earendil-works/pi-agent-core';
 import type { MessageParticipant, SessionStatus } from '@openhermit/protocol';
 import type { ApprovalRequestStore, AttachmentStorage, AttachmentStore, InternalStateStore, McpServerStore, PolicyStore, SandboxStore, SkillArtifactStore, SkillStore, ToolResultStore, UserRole } from '@openhermit/store';
 

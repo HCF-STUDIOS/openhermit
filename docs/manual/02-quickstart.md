@@ -16,7 +16,7 @@ This chapter takes you from nothing to a working agent in about ten minutes. You
 
 You need:
 
-- **Node.js 20 or newer** — check with `node --version`.
+- **Node.js 22.19 or newer** — check with `node --version`.
 - **A PostgreSQL database** — local Postgres, Docker Postgres, or a managed Postgres URL.
 - **At least one model provider API key** — Anthropic, OpenAI, or OpenRouter.
 

@@ -16,7 +16,7 @@
  * needed to pick up changes mid-session.
  */
 
-import { Type } from '@mariozechner/pi-ai';
+import { Type } from 'typebox';
 
 import { asTextContent, formatJson, type PolicyAwareTool, type Toolset } from './shared.js';
 import type { SkillScanResult } from '../skill-scan.js';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { StreamFn } from '@mariozechner/pi-agent-core';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 
 import { withOpenRouterAttribution } from '../src/agent-runner/openrouter-attribution.js';
 

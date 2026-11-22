@@ -1,4 +1,4 @@
-import { Type, type Static } from '@mariozechner/pi-ai';
+import { Type, type Static } from 'typebox';
 import { ValidationError } from '@openhermit/shared';
 
 import {

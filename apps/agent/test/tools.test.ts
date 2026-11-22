@@ -3,8 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import type { AgentTool, AgentToolUpdateCallback } from '@mariozechner/pi-agent-core';
-import { Type } from '@mariozechner/pi-ai';
+import type { AgentTool, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core';
+import { Type } from 'typebox';
 import { ValidationError } from '@openhermit/shared';
 
 import { DbInternalStateStore, standaloneScope } from '@openhermit/store';

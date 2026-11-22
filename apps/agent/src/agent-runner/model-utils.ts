@@ -1,4 +1,4 @@
-import { getModel, type Model } from '@mariozechner/pi-ai';
+import { getModel, getModels, type Model } from '@earendil-works/pi-ai/compat';
 
 import { ValidationError } from '@openhermit/shared';
 
@@ -57,82 +57,19 @@ const OPENAI_COMPATIBLE_PROVIDERS: Record<
   },
 };
 
-const minimaxM3 = (provider: string, baseUrl: string): Model<any> => ({
-  id: 'MiniMax-M3',
-  name: 'MiniMax-M3',
-  api: 'anthropic-messages',
-  provider,
-  baseUrl,
-  reasoning: true,
-  input: ['text', 'image'],
-  cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
-  contextWindow: 1000000,
-  maxTokens: 131072,
-} as Model<any>);
-
-const LOCAL_MODELS: Record<string, Model<any>> = {
-  'minimax/MiniMax-M3': minimaxM3('minimax', 'https://api.minimax.io/anthropic'),
-  'minimax-cn/MiniMax-M3': minimaxM3('minimax-cn', 'https://api.minimaxi.com/anthropic'),
-  // OpenRouter routes MiniMax under the lowercase, slashed id and an
-  // OpenAI-compatible API (not anthropic-messages). pi-ai's registry lacks it
-  // through 0.73.1, so add it locally (issue #212). Drop once pi-ai carries it.
-  'openrouter/minimax/minimax-m3': {
-    id: 'minimax/minimax-m3',
-    name: 'MiniMax-M3 (OpenRouter)',
-    api: 'openai-completions',
-    provider: 'openrouter',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    reasoning: true,
-    input: ['text', 'image'],
-    cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.375 },
-    contextWindow: 1000000,
-    maxTokens: 131072,
-  } as Model<any>,
-  // DeepSeek renamed its Flash tier: `deepseek-flash` (→ DeepSeek-V4.1-Flash,
-  // now vision-capable) is the current canonical id. The old `deepseek-v4-flash`
-  // /`deepseek-v4-flash-vision-exp` are retired aliases — still accepted and
-  // served by V4.1-Flash at the Flash price, but no longer the name to use.
-  // pi-ai's registry still carries only the legacy `deepseek-v4-flash` (through
-  // 0.73.1), so add the new id locally. compat/pricing mirror pi-ai's deepseek
-  // entry; input adds `image` since V4.1-Flash is multimodal. Drop once pi-ai
-  // registers `deepseek-flash`. (`deepseek-v4-pro` is unchanged — registry-served.)
-  'deepseek/deepseek-flash': {
-    id: 'deepseek-flash',
-    name: 'DeepSeek Flash (V4.1)',
-    api: 'openai-completions',
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com',
-    compat: {
-      requiresReasoningContentOnAssistantMessages: true,
-      thinkingFormat: 'deepseek',
-      reasoningEffortMap: { minimal: 'high', low: 'high', medium: 'high', high: 'high', xhigh: 'max' },
-    },
-    reasoning: true,
-    input: ['text', 'image'],
-    cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-  } as Model<any>,
-};
-
-export const listLocalModels = (provider: string): Model<any>[] =>
-  Object.values(LOCAL_MODELS).filter((m) => m.provider === provider);
-
-// DeepSeek's whole Flash tier is served by the multimodal V4.1-Flash: the new
-// canonical `deepseek-flash`, the newer `deepseek-v4.1-flash` id the amiko
-// gateway hands out, and every retired alias (`deepseek-v4-flash`, `-latest`,
-// `-<date>`, `-vision-exp`). Two capability sources disagree with that reality:
-// pi-ai's registry still flags `deepseek-v4-flash` text-only (stale), and the
-// `deepseek-v4.1-flash` id is in neither pi-ai's nor the OpenRouter price
-// catalogue, so resolveModel's synthesize fallback lands on text-only + $0.
-// Either way `downgradeImagesForTextModel` strips the image to a placeholder
-// before the request — an agent on `amiko/deepseek/deepseek-v4.1-flash` reported
-// it was "text-only" and couldn't see an image the user sent. Force the family's
-// true image modality, and backfill the $0-fallback pricing/window so usage
-// isn't recorded as free. Only `deepseek-flash` (provider deepseek, direct) is
-// carried correctly by LOCAL_MODELS today; this covers the gateway-routed ids
-// everyone actually uses. Provider prefixes (`deepseek/`) and the `~…-latest`
-// pin marker are stripped before matching; `flash\b` excludes `deepseek-v4-pro`.
+// DeepSeek's whole Flash tier is served by the multimodal V4.1-Flash: the
+// canonical `deepseek-flash`, the `deepseek-v4.1-flash` id the amiko gateway
+// hands out, and every retired alias (`deepseek-v4-flash`, `-latest`,
+// `-<date>`, `-vision-exp`). pi-ai 1.6 carries `deepseek/deepseek-flash` and
+// `openrouter/deepseek/deepseek-v4.1-flash` as image-capable, but other routes
+// (OpenRouter's retired `deepseek-v4-flash` ids, a gateway id it doesn't
+// carry) resolve text-only, or synthesize as text-only + $0. Either way
+// pi-ai would strip images before the request (an agent
+// on such an id reported it "couldn't see" an image the user sent). Force the
+// family's true image modality, and backfill the $0-fallback pricing/window so
+// usage isn't recorded as free. Provider prefixes (`deepseek/`) and the
+// `~…-latest` pin marker are stripped before matching; `flash\b` excludes
+// `deepseek-v4-pro`.
 const DEEPSEEK_FLASH_RE = /^deepseek-(v\d+(?:\.\d+)?-)?flash\b/;
 
 const isDeepseekFlashId = (modelId: string): boolean =>
@@ -165,21 +102,69 @@ const applyDeepseekFlashCaps = (model: Model<any>): Model<any> => {
   } as Model<any>;
 };
 
-/**
- * Resolve a Model from pi-ai's registry, falling back to LOCAL_MODELS for
- * models pi-ai doesn't carry yet. Registry wins when present so its
- * authoritative capability flags aren't overridden; drop the local entry once
- * pi-ai registers the model.
- */
+/** Resolve a Model from pi-ai's built-in registry, if it carries it. */
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
-  let registry: Model<any> | undefined;
   try {
-    registry = getModel(provider as never, modelId as never) as Model<any>;
+    return getModel(provider as never, modelId as never) as Model<any> | undefined;
   } catch {
-    registry = undefined;
+    return undefined;
   }
-  return registry ?? LOCAL_MODELS[`${provider}/${modelId}`];
 };
+
+const commonPrefixLength = (a: string, b: string): number => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  return i;
+};
+
+const familyWords = (id: string): string[] =>
+  id.split(/[-/.:_~]+/).filter((word) => /^[a-z]+$/.test(word));
+
+/**
+ * pi-ai 1.x prunes retired ids from its registry (e.g. `claude-sonnet-4-20250514`,
+ * `deepseek-v4-flash`, most of the `grok-*` / older openrouter ids). Agents
+ * configured before the prune must keep working, and providers usually still
+ * serve those ids for a while. So when the exact id is missing, borrow the
+ * closest same-provider sibling — longest shared id prefix that reaches at
+ * least one family boundary (`-` or `/`) — and keep the requested id on the
+ * wire. Its api/baseUrl/compat are the provider's; capabilities and price are
+ * the nearest family member's, which beats the text-only $0 synthesize default.
+ * A DeepSeek Flash alias prefers the canonical flash entry over `-v4-pro`.
+ */
+const tryRetiredSibling = (provider: string, modelId: string): Model<any> | undefined => {
+  let models: Model<any>[];
+  try {
+    models = getModels(provider as never) as Model<any>[];
+  } catch {
+    return undefined;
+  }
+  const wanted = modelId.toLowerCase();
+  const flash = isDeepseekFlashId(modelId);
+  const candidates = flash && models.some((m) => isDeepseekFlashId(m.id))
+    ? models.filter((m) => isDeepseekFlashId(m.id))
+    : models;
+  // Rank by shared family words first (`haiku`, `sonnet`, `flash`, …), then by
+  // shared prefix, so `claude-3-5-haiku-latest` lands on a haiku, not on
+  // whichever `claude-*` happens to come first.
+  const wantedWords = familyWords(wanted);
+  let best: Model<any> | undefined;
+  let bestScore: [number, number] = [0, 0];
+  for (const candidate of candidates) {
+    const id = candidate.id.toLowerCase();
+    const shared = familyWords(id).filter((w) => wantedWords.includes(w)).length;
+    const prefix = commonPrefixLength(wanted, id);
+    if (!/[-/]/.test(wanted.slice(0, prefix))) continue;
+    if (shared > bestScore[0] || (shared === bestScore[0] && prefix > bestScore[1])) {
+      best = candidate;
+      bestScore = [shared, prefix];
+    }
+  }
+  if (!best) return undefined;
+  return { ...best, id: modelId, name: modelId };
+};
+
+const tryRegistryOrSibling = (provider: string, modelId: string): Model<any> | undefined =>
+  tryRegistry(provider, modelId) ?? tryRetiredSibling(provider, modelId);
 
 export const resolveModel = (config: AgentConfig): Model<any> => {
   const providerDefaults = OPENAI_COMPATIBLE_PROVIDERS[config.model.provider];
@@ -189,7 +174,7 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
   // 1) Registry first. If pi-ai knows this (provider, modelId), trust its
   //    capability flags (reasoning, compat, etc.). Apply user overrides for
   //    base_url / api / max_tokens on top.
-  const registry = tryRegistry(config.model.provider, config.model.model);
+  const registry = tryRegistryOrSibling(config.model.provider, config.model.model);
   if (registry) {
     return applyDeepseekFlashCaps({
       ...registry,
@@ -213,7 +198,7 @@ export const resolveModel = (config: AgentConfig): Model<any> => {
     const priceCatalog = providerDefaults?.priceCatalog;
     const priceRef = priceCatalog
       ? (tryRegistry(priceCatalog, config.model.model) ??
-        tryRegistry(priceCatalog, config.model.model.replace(/-\d{8}$/, '')))
+        tryRegistryOrSibling(priceCatalog, config.model.model.replace(/-\d{8}$/, '')))
       : undefined;
     // Gateways that proxy OpenRouter (priceCatalog='openrouter') also speak
     // OpenRouter's reasoning param semantics, but their base URL isn't

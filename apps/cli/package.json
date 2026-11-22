@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
@@ -54,9 +54,9 @@
     "@langfuse/core": "^6.1.1",
     "@langfuse/otel": "^6.1.1",
     "@langfuse/tracing": "^6.1.1",
-    "@mariozechner/pi-agent-core": "^0.70.6",
-    "@mariozechner/pi-ai": "^0.70.6",
-    "@mariozechner/pi-tui": "^0.70.6",
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-tui": "1.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openhermit/protocol": "0.2.0",
     "@opentelemetry/api": "^1.9.1",

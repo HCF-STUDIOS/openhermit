@@ -31,7 +31,7 @@
  *   first; ties broken by registration order.
  */
 
-import type { Message } from '@mariozechner/pi-ai';
+import type { Message } from '@earendil-works/pi-ai';
 import type { SessionType } from '@openhermit/protocol';
 
 // ─── Event payloads ────────────────────────────────────────────────────

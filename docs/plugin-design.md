@@ -185,7 +185,7 @@ export interface PluginChannelContext extends PluginContext {
 ```
 
 `Toolset` and `AgentTool` are re-exported from `apps/agent/src/tools.ts` and
-`@mariozechner/pi-agent-core` respectively, so plugin authors get the same
+`@earendil-works/pi-agent-core` respectively, so plugin authors get the same
 authoring contract that built-in tools use. Namespacing is loader-enforced,
 not plugin-enforced — see "Discovery and loading".
 

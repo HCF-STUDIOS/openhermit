@@ -1,4 +1,4 @@
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { TSchema } from 'typebox';
 import type { ChannelOutbound } from '@openhermit/protocol';
 import { ValidationError } from '@openhermit/shared';
