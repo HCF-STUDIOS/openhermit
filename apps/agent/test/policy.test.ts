@@ -99,12 +99,15 @@ test('evaluateAccess: deny wins over require_approval', () => {
   assert.equal(evaluateAccess({ agentId: 'a', role: 'user' }, matches), 'require_approval');
 });
 
-test('evaluateAccess: returns default when no grants match', () => {
+test('evaluateAccess: denies when policies exist but none grant the principal', () => {
+  // Fail closed: a matching policy restricts who may use the resource, so a
+  // principal outside its grants is denied regardless of the default.
   const matches: PolicyMatch[] = [
     { effect: 'allow', grants: [{ type: 'role', value: 'owner' }] },
   ];
-  assert.equal(evaluateAccess({ agentId: 'a', role: 'guest' }, matches), 'allow'); // default
-  assert.equal(evaluateAccess({ agentId: 'a', role: 'guest' }, matches, 'deny'), 'deny');
+  assert.equal(evaluateAccess({ agentId: 'a', role: 'guest' }, matches), 'deny');
+  assert.equal(evaluateAccess({ agentId: 'a', role: 'guest' }, matches, 'allow'), 'deny');
+  assert.equal(evaluateAccess({ agentId: 'a', role: 'owner' }, matches), 'allow');
 });
 
 test('evaluateAccess: empty matches returns default', () => {
@@ -209,24 +212,23 @@ test('buildPrincipal includes provided fields', () => {
 
 // ── fixed vs configurable ToolPolicy ────────────────────────────────────
 
-test('resolveToolGrants: fixed policy ignores DB rows', () => {
-  const fixedPolicy: ToolPolicy = { kind: 'fixed', grants: [{ type: 'role', value: 'owner' }] };
+test('resolveToolGrants: declared default grants apply when no DB row matches the tool', () => {
+  const declared: ToolPolicy = { defaultGrants: [{ type: 'role', value: 'owner' }] };
   const rows: PolicyRow[] = [{
     agentId: 'a',
     resourceType: 'tool',
     scope: {},
-    resourceKey: 'my_tool',
+    resourceKey: 'other_tool',
     effect: 'allow',
     grants: [{ type: 'any' }],
   }];
-  const grants = resolveToolGrants(rows, 'my_tool', fixedPolicy);
+  const grants = resolveToolGrants(rows, 'my_tool', declared);
   assert.ok(!canAccess({ agentId: 'a', role: 'guest' }, grants));
   assert.ok(canAccess({ agentId: 'a', role: 'owner' }, grants));
 });
 
 test('resolveToolGrants: configurable policy uses DB row when present', () => {
   const configurablePolicy: ToolPolicy = {
-    kind: 'configurable',
     defaultGrants: [{ type: 'role', value: 'owner' }],
   };
   const rows: PolicyRow[] = [{
@@ -243,7 +245,6 @@ test('resolveToolGrants: configurable policy uses DB row when present', () => {
 
 test('resolveToolGrants: configurable policy falls back to defaultGrants', () => {
   const configurablePolicy: ToolPolicy = {
-    kind: 'configurable',
     defaultGrants: [{ type: 'role', value: 'owner' }],
   };
   const grants = resolveToolGrants([], 'my_tool', configurablePolicy);

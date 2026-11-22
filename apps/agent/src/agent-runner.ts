@@ -4368,6 +4368,9 @@ export class AgentRunner implements SessionRuntime {
         type: 'error',
         sessionId: session.spec.sessionId,
         message: buildUserFacingModelError(message, session.currentTurnUserText),
+        // Same `kind` contract as the stream/model error paths, so consumers
+        // can render e.g. a missing-key failure as an auth problem.
+        kind: classifyModelError(message),
       });
       await this.events.publish({
         type: 'agent_end',

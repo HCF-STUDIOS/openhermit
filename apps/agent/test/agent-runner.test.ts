@@ -19,6 +19,7 @@ import {
 import type { SessionAttachment } from '@openhermit/protocol';
 
 import { AgentRunner } from '../src/agent-runner.js';
+import { FALLBACK_DEFAULT_MODEL } from '../src/core/index.js';
 import type { LangfuseClientLike } from '../src/langfuse.js';
 import { DbAttachmentStore, DbInternalStateStore, LocalAttachmentStorage } from '@openhermit/store';
 
@@ -328,7 +329,7 @@ class FakeLangfuseClient implements LangfuseClientLike {
 test('AgentRunner publishes SSE text events and writes minimal logs', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -392,7 +393,7 @@ test('AgentRunner publishes SSE text events and writes minimal logs', async (t) 
 test('AgentRunner builds dynamic system prompt based on available tools', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -445,7 +446,7 @@ test('AgentRunner builds dynamic system prompt based on available tools', async 
 test('AgentRunner injects additionalInstruction into the system prompt for that turn only', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -509,7 +510,7 @@ test('AgentRunner injects additionalInstruction into the system prompt for that 
 test('AgentRunner injects session working memory but not long-term memory', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -565,7 +566,7 @@ test('AgentRunner injects session working memory but not long-term memory', asyn
 test('AgentRunner compacts older context when the estimated prompt budget is exceeded', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -630,7 +631,7 @@ test('AgentRunner compacts older context when the estimated prompt budget is exc
 test('AgentRunner retains the assistant tool call when compaction keeps a trailing tool result', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -698,7 +699,7 @@ test('AgentRunner retains the assistant tool call when compaction keeps a traili
 test('AgentRunner executes built-in tools through pi-agent-core', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -788,7 +789,7 @@ test('AgentRunner executes built-in tools through pi-agent-core', async (t) => {
 test('AgentRunner ignores whitespace-only assistant messages emitted before tool use', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -857,7 +858,7 @@ test('AgentRunner promotes thinking to text when stopReason=toolUse but no tool_
   // adapter would never see a text_final — looking like an interrupted reply.
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -906,6 +907,14 @@ test('AgentRunner promotes thinking to text when stopReason=toolUse but no tool_
 });
 
 test('AgentRunner surfaces a missing API key as an error event instead of crashing', async (t) => {
+  // Keys exported in the developer's shell are a fallback key source; scrub
+  // them so this test never reaches a real provider.
+  for (const name of Object.keys(process.env)) {
+    if (!/_API_KEY$/.test(name)) continue;
+    const saved = process.env[name];
+    delete process.env[name];
+    t.after(() => { process.env[name] = saved; });
+  }
   const { workspace, security } = await createSecurityFixture(t);
   await security.load();
 
@@ -929,10 +938,13 @@ test('AgentRunner surfaces a missing API key as an error event instead of crashi
   const backlog = runner.events.getBacklog('cli:no-key-session');
   const errorEvent = backlog.find((entry) => entry.event.type === 'error');
 
+  // The user sees the classified, actionable message; the raw provider text
+  // (which names env vars and agent ids) only goes to the persisted log.
   assert.ok(errorEvent);
-  assert.match(
+  assert.equal(errorEvent?.event.type === 'error' ? errorEvent.event.kind : undefined, 'auth');
+  assert.doesNotMatch(
     errorEvent?.event.type === 'error' ? errorEvent.event.message : '',
-    /Missing API key for provider "anthropic"/,
+    /Missing API key/,
   );
 
   const sessionEntries = await readSessionLog(runner, 'cli:no-key-session');
@@ -942,7 +954,7 @@ test('AgentRunner surfaces a missing API key as an error event instead of crashi
       (entry) =>
         entry.role === 'error' &&
         typeof entry.message === 'string' &&
-        entry.message.includes('Missing API key for provider "anthropic"'),
+        entry.message.includes('Missing API key for provider "'),
     ),
   );
 });
@@ -950,7 +962,7 @@ test('AgentRunner surfaces a missing API key as an error event instead of crashi
 test('AgentRunner salvages a stream cut that already produced text instead of erroring', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1008,7 +1020,7 @@ test('AgentRunner salvages a stream cut that already produced text instead of er
 test('AgentRunner still surfaces a stream cut with no produced text as an error', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1046,7 +1058,7 @@ test('AgentRunner still surfaces a stream cut with no produced text as an error'
 test('AgentRunner publishes detailed tool failure messages', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1099,7 +1111,7 @@ test('AgentRunner publishes detailed tool failure messages', async (t) => {
 test('AgentRunner rebuilds and reuses persisted session index across restarts', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1176,7 +1188,7 @@ test('AgentRunner rebuilds and reuses persisted session index across restarts', 
 test('AgentRunner injects session resumption context when reopening a persisted session', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1249,7 +1261,7 @@ test('AgentRunner restores history when a WARM session lost its in-memory messag
   // resumed is false, so the restore never runs.
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1310,7 +1322,7 @@ test('AgentRunner does not duplicate the new user message on the first turn afte
   // in-memory `messages` list both included it, and they were concatenated.
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1388,7 +1400,7 @@ test('AgentRunner restores user-message attachments on the first turn after resu
   // as a kimi-k2.6 reply of literally "&" (thinking-only fallback).
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1509,7 +1521,7 @@ test('AgentRunner restores user-message attachments on the first turn after resu
 test('AgentRunner emits Langfuse traces for LLM steps', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1546,9 +1558,11 @@ test('AgentRunner emits Langfuse traces for LLM steps', async (t) => {
     langfuse.traces[0]?.client.generations[0]?.body.name,
     'llm_call',
   );
+  // The generation records the configured model (the fixture has none, so the
+  // fallback default); the stubbed stream's own model shows up in the output.
   assert.equal(
     langfuse.traces[0]?.client.generations[0]?.body.model,
-    'claude-opus-4-5',
+    FALLBACK_DEFAULT_MODEL.model,
   );
   assert.equal(
     ((langfuse.traces[0]?.client.generations[0]?.body.input as Record<string, unknown>)?.messages as Array<Record<string, unknown>>)[0]?.role,
@@ -1569,7 +1583,7 @@ test('AgentRunner emits Langfuse traces for LLM steps', async (t) => {
 test('AgentRunner uses a dedicated Langfuse trace name for internal checkpoints', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1616,7 +1630,7 @@ test('AgentRunner uses a dedicated Langfuse trace name for internal checkpoints'
 
 test('AgentRunner denies memory tools when no user role is resolved (guest-level)', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1647,7 +1661,7 @@ test('AgentRunner denies memory tools when no user role is resolved (guest-level
 
 test('AgentRunner populates userIds on session open and reopen', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1660,7 +1674,7 @@ test('AgentRunner populates userIds on session open and reopen', async (t) => {
     ]),
   });
 
-  // CLI source bootstraps owner
+  // CLI caller is resolved (auto-guest on a public agent)
   await runner.openSession({
     sessionId: 'cli:userids-test',
     source: { kind: 'cli', interactive: true },
@@ -1675,12 +1689,18 @@ test('AgentRunner populates userIds on session open and reopen', async (t) => {
   assert.ok(session, 'session should exist in DB');
   assert.ok(Array.isArray(session.userIds), 'userIds should be an array');
   assert.ok(session.userIds!.length > 0, 'userIds should have at least one entry');
-  assert.ok(session.userIds!.includes('usr-owner'), 'userIds should include the owner');
+  // Users are global and the caller resolves to a real user id; owners come
+  // from provisioning only, so an unknown CLI caller on a public agent gets a
+  // guest binding, never owner.
+  const bindings = await store.users.listByAgent({ agentId });
+  assert.equal(bindings.length, 1, 'the CLI caller gets exactly one binding');
+  assert.equal(bindings[0]!.role, 'guest', 'CLI caller must not self-bootstrap as owner');
+  assert.ok(session.userIds!.includes(bindings[0]!.userId), 'userIds should include the caller');
 });
 
 test('AgentRunner.appendMessage with appendAs=assistant stores synthetic assistant entry without user_message', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1725,7 +1745,7 @@ test('AgentRunner.appendMessage with appendAs=assistant stores synthetic assista
 
 test('AgentRunner.appendMessage is idempotent by messageId', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1766,7 +1786,7 @@ test('AgentRunner.postMessage is idempotent by messageId (safe re-delivery)', as
   // the same messageId. The second delivery must be a no-op: no duplicate log
   // entry and no second turn triggered (otherwise a retried order runs twice).
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1808,7 +1828,7 @@ test('AgentRunner.postMessage is idempotent by messageId (safe re-delivery)', as
 
 test('AgentRunner.appendMessage honours occurredAt as the persisted ts', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1841,7 +1861,7 @@ test('AgentRunner.appendMessage honours occurredAt as the persisted ts', async (
 
 test('AgentRunner.appendMessage bumps messageCount and lastActivityAt', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -1926,7 +1946,7 @@ test('AgentRunner.appendMessage bumps messageCount and lastActivityAt', async (t
 test('AgentRunner strips a copied [Name] tag and transcodes @mentions in a group reply', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -1995,7 +2015,7 @@ test('AgentRunner strips a copied [Name] tag and transcodes @mentions in a group
 test('AgentRunner emits no mentions when a group reply addresses nobody', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -2040,7 +2060,7 @@ test('AgentRunner emits no mentions when a group reply addresses nobody', async 
 test('AgentRunner resets stale persisted running sessions to idle at hydration', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -2092,7 +2112,7 @@ test('turn watchdog aborts a wedged turn so the session queue is released', asyn
 
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
@@ -2152,7 +2172,7 @@ test('turn watchdog force-releases a turn whose wedged await ignores the abort',
   });
 
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
@@ -2199,7 +2219,7 @@ test('turn watchdog rebuilds the SDK agent so the session recovers without a res
   });
 
   const { workspace, security } = await createSecurityFixture(t, {
-    secrets: { ANTHROPIC_API_KEY: 'test-anthropic-key' },
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
   });
   await security.load();
 
