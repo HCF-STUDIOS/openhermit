@@ -43,6 +43,11 @@ jobs:
           node-version: '22.x'
           cache: npm
 
+      # @napi-rs/canvas only draws text with a system font; without one the
+      # OCR tests render blank images and tesseract finds nothing.
+      - name: Install fonts
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core
+
       - run: npm ci
 
       # Clean build: tsc project references + gateway/web UI bundles.

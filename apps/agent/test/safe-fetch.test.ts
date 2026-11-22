@@ -191,6 +191,9 @@ test('safeFetch: body under the cap is untouched', async (t) => {
 
 // ─── Timeout and abort ─────────────────────────────────────────────────────
 
+// A real hanging request holds a socket open; this stub holds nothing, and
+// AbortSignal.timeout's timer is unref'd, so without a ref'd keep-alive the
+// event loop can drain before the timeout fires and the test is cancelled.
 const hangUntilAborted = (init: RequestInit): Promise<Response> =>
   new Promise((_, reject) => {
     const signal = init.signal!;
@@ -198,7 +201,11 @@ const hangUntilAborted = (init: RequestInit): Promise<Response> =>
       reject(signal.reason);
       return;
     }
-    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    const keepAlive = setTimeout(() => {}, 30_000);
+    signal.addEventListener('abort', () => {
+      clearTimeout(keepAlive);
+      reject(signal.reason);
+    }, { once: true });
   });
 
 test('safeFetch: wall-clock timeout', async (t) => {
