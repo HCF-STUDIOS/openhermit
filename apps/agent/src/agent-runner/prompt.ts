@@ -131,7 +131,11 @@ export const buildSystemPrompt = async (
     const namePart = currentUser.name ? ` (${currentUser.name})` : '';
     if (currentUser.sessionType === 'group') {
       contextParts.push(
-        `### Current User\n\nThis is a **group conversation**. The most recent message is from user \`${currentUser.userId}\`${namePart}, role: **${currentUser.role}**.\n\nMultiple users participate in this session. Each user message is prefixed with the sender's name in brackets (e.g. \`[Alice] hello\`). Use the sender's user ID for per-user memories (e.g. \`user/${currentUser.userId}/preferences\`).\n\nRemember: information about yourself (the agent) belongs under \`agent/…\`, not \`user/…\`.\n\n### Replying in a group\n\nThe \`[Name]\` prefix is only an input label showing who spoke; it is not part of the message. Never begin your reply with a \`[Name]\` tag or your own name, and never wrap a person's name in square brackets (no \`[Marty]\`, no \`@[Marty]\`). To mention or address someone, write \`@\` immediately followed by their name exactly as it appears in their \`[Name]\` prefix, e.g. \`@Marty\`. Write everything else as plain prose.\n\n### Group Reply Policy\n\nNot every message in a group chat requires a response from you. Messages prefixed with \`[not directed at you]\` were sent without mentioning or replying to you.\n\n- If you are **mentioned** or **replied to**, always respond normally.\n- If a message is **not directed at you**, only respond if you have something genuinely useful to contribute. Otherwise, respond with exactly \`<NO_REPLY>\` and nothing else — this will be silently discarded.\n- When in doubt, prefer \`<NO_REPLY>\` over an unnecessary interruption.`,
+        // Stable across senders on purpose: naming the latest sender here
+        // changed the system prompt (and so busted the prompt cache for the
+        // whole history) every time someone else spoke. The latest sender's
+        // ID and role ride on the "[Turn context …]" note instead.
+        `### Current User\n\nThis is a **group conversation**. The sender of the latest message (user ID, name and role) is given in the "[Turn context …]" note attached to it.\n\nMultiple users participate in this session. Each user message is prefixed with the sender's name in brackets (e.g. \`[Alice] hello\`). Use the sender's user ID for per-user memories (e.g. \`user/<user-id>/preferences\`).\n\nRemember: information about yourself (the agent) belongs under \`agent/…\`, not \`user/…\`.\n\n### Replying in a group\n\nThe \`[Name]\` prefix is only an input label showing who spoke; it is not part of the message. Never begin your reply with a \`[Name]\` tag or your own name, and never wrap a person's name in square brackets (no \`[Marty]\`, no \`@[Marty]\`). To mention or address someone, write \`@\` immediately followed by their name exactly as it appears in their \`[Name]\` prefix, e.g. \`@Marty\`. Write everything else as plain prose.\n\n### Group Reply Policy\n\nNot every message in a group chat requires a response from you. Messages prefixed with \`[not directed at you]\` were sent without mentioning or replying to you.\n\n- If you are **mentioned** or **replied to**, always respond normally.\n- If a message is **not directed at you**, only respond if you have something genuinely useful to contribute. Otherwise, respond with exactly \`<NO_REPLY>\` and nothing else — this will be silently discarded.\n- When in doubt, prefer \`<NO_REPLY>\` over an unnecessary interruption.`,
       );
     } else {
       contextParts.push(
@@ -152,12 +156,19 @@ export const buildSystemPrompt = async (
   }
 
   const runtimeLines: string[] = [];
-  // Rebuilt every turn, so this reflects the real wall-clock time each request.
-  // Server time is UTC; state the zone explicitly so the model can convert.
+  // Day precision only. The system prompt sits in front of the whole
+  // conversation, so anything here that changes between requests invalidates
+  // the provider prompt cache for the entire history (a seconds-precision
+  // clock did exactly that on every turn). The precise time travels with the
+  // latest user message instead — see agent-runner/turn-context.ts. Server
+  // time is UTC; state the zone so the model can convert.
   const now = new Date();
-  const utc = now.toISOString().slice(0, 19).replace('T', ' ');
+  const today = now.toISOString().slice(0, 10);
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
-  runtimeLines.push(`Current date & time: ${utc} UTC (${weekday}).`);
+  runtimeLines.push(
+    `Current date: ${today} (${weekday}, UTC). `
+    + `When the latest message carries a "[Turn context …]" note, its time is the precise current time.`,
+  );
   if (config.model?.model) {
     // The model actually serving this turn — lets the agent answer "which
     // model are you?" truthfully instead of guessing from its training data.
