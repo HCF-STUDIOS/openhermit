@@ -1,4 +1,4 @@
-import type { Agent, AgentMessage } from '@mariozechner/pi-agent-core';
+import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core';
 import type { InternalStateStore, StoreScope } from '@openhermit/store';
 
 import type { AgentConfig } from '../core/index.js';

@@ -1,4 +1,4 @@
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 
 import { AgentSecurity } from '../core/index.js';
 import type { AgentEventBus } from '../events.js';

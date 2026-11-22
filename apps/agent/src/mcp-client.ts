@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { Type } from '@mariozechner/pi-ai';
+import { Type } from 'typebox';
 import type { McpServerRecord } from '@openhermit/store';
 import { asTextContent, type PolicyAwareTool, type Toolset } from './tools/shared.js';
 

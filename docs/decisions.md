@@ -57,3 +57,19 @@ Adapters use the OpenHermit SDK over gateway agent routes instead of reaching in
 ## ADR-010: Execution Backends Are Pluggable
 
 The `exec` tool runs through an `ExecBackendManager`, built from per-agent rows in the `sandboxes` table. Four backends are implemented: `docker`, `host`, `e2b`, and `daytona`. Gateway-created agents auto-provision a sandbox from the preset named by `autoProvisionSandbox` in `gateway.json` (default: `docker-ubuntu`); the `host` backend is reserved for the privileged "devops" agent (see [`sandbox-model.md`](./sandbox-model.md)).
+
+## ADR-011: Track Upstream pi (`@earendil-works/pi-*`), Delete What Upstream Solves
+
+The agent loop, provider adapters and model registry come from pi (`@earendil-works/pi-ai`, `pi-agent-core`, `pi-tui`, 1.x; formerly `@mariozechner/pi-*` 0.x). We stay on the current upstream line and treat our own provider workarounds as debt: when upstream covers a case, our copy goes.
+
+pi 1.x carries the system prompt and tool declarations inside the transcript as `role: "system"` messages. The runner keeps that system head intact across its in-place transcript rewrites (`agent-runner/system-message.ts`); resumption, compaction and the wire-shape repairs work on the conversation part only. Provider-facing calls take a `TranscriptContext` built with `normalizeContext`.
+
+Removed in the 1.x migration because upstream now handles them:
+
+- `downgradeImagesForTextModel`: pi-ai's `transformMessages` replaces image blocks with a placeholder for models whose `input` lacks `image`.
+- The DeepSeek `reasoning_content` replay hack (placeholder thinking blocks and assistant provider/model rewriting): openai-completions auto-detects `requiresReasoningContentOnAssistantMessages` for DeepSeek and replays thinking for same-model turns. Resumed assistant turns now carry the active model's `api`, so pi treats them as same-model.
+- The `LOCAL_MODELS` registry overrides (`deepseek-flash`, MiniMax-M3): the 1.x registry carries them.
+
+Kept because upstream still does not cover them: inline `<think>` tag parsing, the stream idle timeout, pre-token stream retry and stream-cut salvage, user/assistant alternation merging and the interleaved tool-result hoist (MiniMax error 2013), orphan tool-result dropping (upstream only synthesizes missing results), the image payload byte cap, thinking-only promotion, and the OpenRouter thinking-format pin for gateways that proxy OpenRouter under another base URL.
+
+pi 1.x prunes retired model ids from its registry. `resolveModel` falls back to the closest same-provider sibling (shared family words, then shared prefix) and keeps the configured id on the wire, so an agent configured with a pruned id (e.g. `deepseek-v4-flash`) still resolves instead of failing at session open. The fallback only covers our side: whether the request succeeds is up to the provider, and an id the provider itself has retired still errors and needs a config migration to a current model. Upstream requires Node.js 22.19 or newer.

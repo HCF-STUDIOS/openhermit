@@ -2,17 +2,18 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import type { StreamFn } from '@mariozechner/pi-agent-core';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 import {
-  complete,
-  streamSimple,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type AssistantMessage,
   type Context,
   type Message,
   type Model,
   type ProviderStreamOptions,
   type Tool,
-} from '@mariozechner/pi-ai';
+} from '@earendil-works/pi-ai';
+import { complete, streamSimple } from '@earendil-works/pi-ai/compat';
 import { getErrorMessage } from '@openhermit/shared';
 import { LangfuseOtelSpanAttributes, serializeValue } from '@langfuse/core';
 import { LangfuseSpanProcessor } from '@langfuse/otel';
@@ -129,7 +130,7 @@ const sanitizeMessageContent = (content: Message['content']) => {
 };
 
 const sanitizeMessages = (messages: Context['messages']) =>
-  messages.map((message) => {
+  messages.filter((message) => message.role !== 'system').map((message) => {
     if (message.role === 'user') {
       return {
         role: message.role,
@@ -164,11 +165,18 @@ const sanitizeTools = (tools: Tool[] | undefined) =>
     parameters: tool.parameters,
   }));
 
-const sanitizeContext = (context: Context) => ({
-  ...(context.systemPrompt ? { systemPrompt: context.systemPrompt } : {}),
-  messages: sanitizeMessages(context.messages),
-  ...(context.tools ? { tools: sanitizeTools(context.tools) } : {}),
-});
+// pi-ai 1.x carries the system prompt and tool declarations as `role:
+// "system"` transcript messages; replay them back into the flat
+// systemPrompt/tools shape the Langfuse input view has always shown.
+const sanitizeContext = (context: Context) => {
+  const systemPrompt = context.systemPrompt ?? getCurrentSystemPrompt(context.messages);
+  const tools = context.tools ?? getCurrentTools(context.messages);
+  return {
+    ...(systemPrompt ? { systemPrompt } : {}),
+    messages: sanitizeMessages(context.messages),
+    ...(tools.length > 0 ? { tools: sanitizeTools(tools) } : {}),
+  };
+};
 
 const serializeAssistantMessage = (message: AssistantMessage) => ({
   role: message.role,

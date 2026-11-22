@@ -1,6 +1,6 @@
 import type { AgentLocalClient } from '@openhermit/sdk';
 import process from 'node:process';
-import { Key, matchesKey } from '@mariozechner/pi-tui';
+import { Key, matchesKey } from '@earendil-works/pi-tui';
 
 import { HELP_TEXT, OPENHERMIT_ASCII_ART } from '../constants.js';
 import {

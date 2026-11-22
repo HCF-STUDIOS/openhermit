@@ -153,7 +153,7 @@ test('schedule_create defaults sessionMode to dedicated', async (t) => {
   let capturedInput: Record<string, unknown> = {};
   const { tools } = await setupContext(t, {
     create: async (_scope, input) => {
-      capturedInput = input as Record<string, unknown>;
+      capturedInput = input as unknown as Record<string, unknown>;
       return makeRecord();
     },
   });
@@ -166,7 +166,7 @@ test('schedule_create with session_mode=ephemeral passes through', async (t) => 
   let capturedInput: Record<string, unknown> = {};
   const { tools } = await setupContext(t, {
     create: async (_scope, input) => {
-      capturedInput = input as Record<string, unknown>;
+      capturedInput = input as unknown as Record<string, unknown>;
       return makeRecord({ sessionMode: { kind: 'ephemeral' } });
     },
   });
@@ -184,7 +184,7 @@ test('schedule_update with session_mode passes through to store', async (t) => {
   let capturedPatch: Record<string, unknown> = {};
   const { tools } = await setupContext(t, {
     update: async (_scope, id, input) => {
-      capturedPatch = input as Record<string, unknown>;
+      capturedPatch = input as unknown as Record<string, unknown>;
       return makeRecord({ scheduleId: id, sessionMode: { kind: 'ephemeral' } });
     },
   });
@@ -197,7 +197,7 @@ test('schedule_create with delivery config passes through correctly', async (t) 
   let capturedInput: Record<string, unknown> = {};
   const { tools } = await setupContext(t, {
     create: async (_scope, input) => {
-      capturedInput = input as Record<string, unknown>;
+      capturedInput = input as unknown as Record<string, unknown>;
       return makeRecord({ delivery: { kind: 'session', sessionId: 'sess-abc' } });
     },
   });

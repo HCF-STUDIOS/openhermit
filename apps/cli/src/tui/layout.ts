@@ -4,8 +4,9 @@ import {
   Markdown,
   ProcessTerminal,
   Text,
-  TUI,
-} from '@mariozechner/pi-tui';
+  TuiMainScreen,
+  type TUI,
+} from '@earendil-works/pi-tui';
 
 import { formatDebugValue } from '../formatting.js';
 import {
@@ -50,7 +51,7 @@ export interface StatusLineHandle {
 
 export const createTuiLayout = (): TuiLayout => {
   const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal);
+  const tui = new TuiMainScreen(terminal);
 
   // Header row
   const header = new Text('', 1, 0);

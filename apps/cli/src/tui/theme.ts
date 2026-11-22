@@ -1,4 +1,4 @@
-import type { EditorTheme, MarkdownTheme, SelectListTheme } from '@mariozechner/pi-tui';
+import type { EditorTheme, MarkdownTheme, SelectListTheme } from '@earendil-works/pi-tui';
 
 // ─── ANSI helpers ────────────────────────────────────────────────────────────
 

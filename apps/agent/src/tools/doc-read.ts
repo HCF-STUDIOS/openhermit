@@ -1,4 +1,4 @@
-import { Type, type Static } from '@mariozechner/pi-ai';
+import { Type, type Static } from 'typebox';
 import { ValidationError } from '@openhermit/shared';
 import { formatFromBytes, formatFromPath, toDocument, toMarkdownBytes, type Format } from '@firecrawl/anydoc';
 import { classifyPdf, extractPagesMarkdown } from '@firecrawl/pdf-inspector';

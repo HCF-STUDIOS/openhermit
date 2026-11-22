@@ -1,5 +1,5 @@
-import type { StreamFn } from '@mariozechner/pi-agent-core';
-import { streamSimple } from '@mariozechner/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 
 const OPENROUTER_REFERER = 'https://openhermit.ai';
 const OPENROUTER_TITLE = 'OpenHermit';

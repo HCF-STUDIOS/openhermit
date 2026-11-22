@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import type { AssistantMessage, Model } from '@mariozechner/pi-ai';
+import { normalizeContext, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 
 import {
   createLangfuseClientFromEnv,
@@ -143,7 +143,7 @@ const runTracedStream = async (message: AssistantMessage) => {
   });
   const stream = await streamFn!(
     { id: message.model, provider: message.provider, api: 'openai-completions' } as Model<any>,
-    { messages: [] },
+    normalizeContext({ messages: [] }),
     undefined,
   );
   await stream.result();
@@ -261,7 +261,7 @@ test('the generation-create is flushed at start, before the stream completes', a
   });
   // Obtaining the stream runs the wrapper body (which fires the start flush)
   // but does NOT iterate or await result() — mirroring a request that then hangs.
-  await streamFn!(model, { messages: [] }, undefined);
+  await streamFn!(model, normalizeContext({ messages: [] }), undefined);
   // Give the fire-and-forget flush a microtask/macrotask to be invoked.
   await new Promise((r) => setTimeout(r, 0));
 
@@ -286,7 +286,7 @@ test('a stream that throws mid-iteration records the error even if result() is n
   const streamFn = createLangfuseTracedStreamFn(mock.langfuse, throwingBase, {
     currentTrace: mock.trace,
   });
-  const stream = await streamFn!(model, { messages: [] }, undefined);
+  const stream = await streamFn!(model, normalizeContext({ messages: [] }), undefined);
 
   await assert.rejects(async () => {
     for await (const _ of stream as AsyncIterable<unknown>) {

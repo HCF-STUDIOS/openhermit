@@ -109,7 +109,7 @@ Agents hydrate on demand: the first request that targets an agent constructs its
 - channel outbound adapters for proactive `session_send`
 - the Deep Research orchestrator (see below)
 
-The main model loop is backed by `@mariozechner/pi-agent-core` and `@mariozechner/pi-ai`.
+The main model loop is backed by `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`.
 
 ## Deep Research
 

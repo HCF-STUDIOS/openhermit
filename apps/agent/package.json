@@ -52,13 +52,13 @@
   },
   "dependencies": {
     "@daytonaio/sdk": "^0.171.0",
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
     "@firecrawl/anydoc": "^0.1.7",
     "@firecrawl/pdf-inspector": "^1.12.0",
     "@langfuse/core": "^6.1.1",
     "@langfuse/otel": "^6.1.1",
     "@langfuse/tracing": "^6.1.1",
-    "@mariozechner/pi-agent-core": "^0.70.6",
-    "@mariozechner/pi-ai": "^0.70.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@napi-rs/canvas": "^0.1.100",
     "@openhermit/protocol": "0.2.0",
@@ -80,6 +80,7 @@
     "mime-types": "^3.0.2",
     "prom-client": "^15.1.3",
     "tesseract.js": "^7.0.0",
+    "typebox": "1.1.34",
     "undici": "^7.25.0",
     "unpdf": "^1.6.2",
     "zod": "^4.3.6"

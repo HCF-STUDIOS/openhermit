@@ -171,7 +171,7 @@ test('attachment_fetch auto: image/png returns image content block', async (t) =
   });
   const tool = createAttachmentFetchTool(baseCtx);
   const out = await tool.execute('tc-1', { attachment_id: id });
-  const blocks = out.content as Array<Record<string, unknown>>;
+  const blocks = out.content as unknown as Array<Record<string, unknown>>;
   const image = blocks.find((b) => b.type === 'image');
   assert.ok(image, 'expected an image content block');
   assert.equal(image!.mimeType, 'image/png');

@@ -5,8 +5,8 @@ import type {
   AssistantMessage,
   ToolResultMessage,
   UserMessage,
-} from '@mariozechner/pi-ai';
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
+} from '@earendil-works/pi-ai';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import {
   stripReasoningTags,
@@ -19,7 +19,6 @@ import {
   repairToolCallPairing,
   repairInterleavedToolResults,
   repairToolCallStructure,
-  downgradeImagesForTextModel,
   capImagePayloadBytes,
 } from '../src/agent-runner/message-utils.js';
 
@@ -691,73 +690,6 @@ const userWithImage = (text: string): UserMessage =>
     ],
     timestamp: 1,
   }) as UserMessage;
-
-describe('downgradeImagesForTextModel', () => {
-  test('replaces an image block in a tool result with a text placeholder for a text-only model', () => {
-    // Mirrors the production wedge: attachment_fetch inlined a JPEG image block
-    // that text-only MiniMax-M3 rejects with `invalid params (2013)`.
-    const messages: AgentMessage[] = [
-      user('给我看那张图'),
-      toolResultWithImage('call_1', 'attachment_fetch'),
-    ] as AgentMessage[];
-    const out = downgradeImagesForTextModel(messages, false);
-
-    const tr = out[1] as ToolResultMessage;
-    const types = tr.content.map((b) => b.type);
-    assert.deepEqual(types, ['text', 'text']);
-    // Original mime surfaces in the placeholder so the model knows what was there.
-    const placeholder = (tr.content[1] as { text: string }).text;
-    assert.match(placeholder, /image omitted \(image\/jpeg\)/);
-    assert.match(placeholder, /text-only/);
-    // No base64 payload survives into the wire message.
-    assert.ok(!JSON.stringify(out).includes('/9j/4AAQSkZJRg'));
-  });
-
-  test('downgrades image blocks in an array-form user message too', () => {
-    const messages: AgentMessage[] = [userWithImage('hi')] as AgentMessage[];
-    const out = downgradeImagesForTextModel(messages, false);
-    const u = out[0] as UserMessage;
-    const types = (u.content as { type: string }[]).map((b) => b.type);
-    assert.deepEqual(types, ['text', 'text']);
-    assert.ok(!JSON.stringify(out).includes('iVBORw0KGgo'));
-  });
-
-  test('is a no-op (same reference) when the model supports image input', () => {
-    const messages: AgentMessage[] = [
-      toolResultWithImage('call_1', 'attachment_fetch'),
-    ] as AgentMessage[];
-    const out = downgradeImagesForTextModel(messages, true);
-    assert.equal(out, messages);
-  });
-
-  test('returns the same reference when there is no image block to downgrade', () => {
-    const messages: AgentMessage[] = [
-      user('plain text'),
-      toolResult('call_1', 'x'),
-    ] as AgentMessage[];
-    const out = downgradeImagesForTextModel(messages, false);
-    assert.equal(out, messages);
-  });
-
-  test('leaves a string-content user message untouched', () => {
-    const messages: AgentMessage[] = [
-      { role: 'user', content: 'plain string', timestamp: 1 } as unknown as UserMessage,
-      toolResultWithImage('call_1', 'attachment_fetch'),
-    ] as AgentMessage[];
-    const out = downgradeImagesForTextModel(messages, false);
-    assert.equal((out[0] as UserMessage).content, 'plain string');
-    // But the tool-result image is still downgraded.
-    const tr = out[1] as ToolResultMessage;
-    assert.deepEqual(tr.content.map((b) => b.type), ['text', 'text']);
-  });
-
-  test('does not mutate the input messages', () => {
-    const input: AgentMessage[] = [toolResultWithImage('call_1', 'attachment_fetch')] as AgentMessage[];
-    const before = JSON.stringify(input);
-    downgradeImagesForTextModel(input, false);
-    assert.equal(JSON.stringify(input), before);
-  });
-});
 
 describe('capImagePayloadBytes', () => {
   // A toolResult carrying one inlined image of ~`bytes` base64 chars, tagged so

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { Api, Provider, StopReason, Usage } from '@mariozechner/pi-ai';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { Api, StopReason, Usage } from '@earendil-works/pi-ai';
 
 import {
   estimateTextTokens,
@@ -58,7 +58,7 @@ const stubUsage: Usage = {
 
 const assistantDefaults = {
   api: 'anthropic-messages' as Api,
-  provider: 'anthropic' as Provider,
+  provider: 'anthropic',
   model: 'claude-sonnet-4-20250514',
   usage: stubUsage,
   stopReason: 'stop' as StopReason,

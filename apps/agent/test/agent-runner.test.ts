@@ -6,14 +6,15 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
 
-import type { StreamFn } from '@mariozechner/pi-agent-core';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 import {
+  getCurrentSystemPrompt,
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
   type ToolCall,
   type Usage,
-} from '@mariozechner/pi-ai';
+} from '@earendil-works/pi-ai';
 
 import type { SessionAttachment } from '@openhermit/protocol';
 
@@ -402,7 +403,7 @@ test('AgentRunner builds dynamic system prompt based on available tools', async 
     security,
     streamFn: createSequentialStreamFn([
       (context) => {
-        capturedSystemPrompt = context.systemPrompt ?? '';
+        capturedSystemPrompt = getCurrentSystemPrompt(context.messages);
         return createTextResponseStream('captured');
       },
     ]),
@@ -455,11 +456,11 @@ test('AgentRunner injects additionalInstruction into the system prompt for that 
     security,
     streamFn: createSequentialStreamFn([
       (context) => {
-        capturedPrompts.push(context.systemPrompt ?? '');
+        capturedPrompts.push(getCurrentSystemPrompt(context.messages));
         return createTextResponseStream('one');
       },
       (context) => {
-        capturedPrompts.push(context.systemPrompt ?? '');
+        capturedPrompts.push(getCurrentSystemPrompt(context.messages));
         return createTextResponseStream('two');
       },
     ]),
@@ -519,7 +520,7 @@ test('AgentRunner injects session working memory but not long-term memory', asyn
     security,
     streamFn: createSequentialStreamFn([
       (context) => {
-        capturedMessages = context.messages;
+        capturedMessages = context.messages.filter((m) => m.role !== 'system');
         return createTextResponseStream('captured');
       },
     ]),

@@ -1,6 +1,6 @@
-import type { StreamFn } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, AssistantMessageEvent } from '@mariozechner/pi-ai';
-import { streamSimple } from '@mariozechner/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 
 /**
  * Transparent pre-first-token retry for provider streams.

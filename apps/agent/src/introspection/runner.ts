@@ -1,4 +1,4 @@
-import type { Agent, AgentEvent } from '@mariozechner/pi-agent-core';
+import type { Agent, AgentEvent } from '@earendil-works/pi-agent-core';
 
 import type { InternalStateStore, StoreScope } from '@openhermit/store';
 

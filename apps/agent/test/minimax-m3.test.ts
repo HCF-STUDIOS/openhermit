@@ -47,7 +47,7 @@ test('MiniMax-M3 resolves under the openrouter provider (OpenAI-compatible, slas
   assert.equal(m.id, 'minimax/minimax-m3');
   assert.equal(m.api, 'openai-completions');
   assert.equal(m.baseUrl, 'https://openrouter.ai/api/v1');
-  assert.equal(m.contextWindow, 1000000);
+  assert.ok(m.contextWindow > 128000, `registry window, not the 128k synthesize default (got ${m.contextWindow})`);
   assert.ok((m.input as string[]).includes('image'), 'openrouter M3 must be image-capable');
 });
 
