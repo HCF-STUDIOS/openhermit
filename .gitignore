@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .env.local
+.env.railway
+.env.*.local
+# incident forensics / rotation scratch — never commit
+.incident-backup-*/
 *.log
 *.tsbuildinfo
 .cloudmind-dev/
