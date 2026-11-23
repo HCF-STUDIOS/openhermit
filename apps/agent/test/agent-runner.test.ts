@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import {
   getCurrentSystemPrompt,
+  getCurrentTools,
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
@@ -2326,4 +2327,114 @@ test('turn watchdog rebuilds the SDK agent so the session recovers without a res
     'the rebuilt agent replied to the follow-up message',
   );
   assert.equal(calls, 2, 'the follow-up ran a fresh stream call on the rebuilt agent');
+});
+
+test('AgentRunner.postMessage dedupes concurrent re-deliveries of the same messageId', async (t) => {
+  // Two re-deliveries racing each other must not both pass the DB-backed
+  // dedupe check (neither has written its entry yet) and trigger two turns.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('only reply'),
+    ]),
+  });
+
+  const sessionId = 'cli:post-concurrent-dup';
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  const [a, b] = await Promise.all([
+    runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' }),
+    runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' }),
+  ]);
+  assert.equal(
+    [a.triggered, b.triggered].filter(Boolean).length,
+    1,
+    'exactly one of the concurrent deliveries triggers a turn',
+  );
+  await runner.waitForSessionIdle(sessionId);
+
+  const entries = await readSessionLog(runner, sessionId);
+  assert.equal(entries.filter((e) => e.messageId === 'race-dup').length, 1);
+
+  // The in-flight claim is released afterwards: a later re-delivery is still
+  // deduped (by the DB check) rather than wedged.
+  const later = await runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' });
+  assert.equal(later.triggered, false);
+});
+
+test('AgentRunner runs a queued group turn with its own sender role, not the next poster role', async (t) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  // A known owner on this agent, reachable via a channel identity.
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'web', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  // Turn 1 blocks until released, so the guest + owner turns queue behind it.
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const toolsPerCall: string[][] = [];
+  let calls = 0;
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      calls += 1;
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      if (calls === 1) await firstGate;
+      return createTextResponseStream(`reply ${calls}`);
+    },
+  });
+
+  const sessionId = 'group:queued-caller-role';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+
+  const guestSender = (id: string, name: string) =>
+    ({ channel: 'web', channelUserId: `${id}-${randomBytes(4).toString('hex')}`, displayName: name });
+
+  await runner.postMessage(sessionId, {
+    messageId: 'q-1', text: 'first', mentioned: true, sender: guestSender('g-first', 'First'),
+  });
+  // Queued behind turn 1: a guest message, then an owner message.
+  await runner.postMessage(sessionId, {
+    messageId: 'q-2', text: 'guest asks', mentioned: true, sender: guestSender('g-second', 'Guest'),
+  });
+  await runner.postMessage(sessionId, {
+    messageId: 'q-3',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+
+  releaseFirst();
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(toolsPerCall.length, 3, 'three turns ran');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'queued guest turn must not run with the later owner toolset',
+  );
+  assert.ok(
+    toolsPerCall[2]!.includes('memory_add'),
+    'owner turn runs with the owner toolset',
+  );
 });

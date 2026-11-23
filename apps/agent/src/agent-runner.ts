@@ -161,6 +161,27 @@ const addUserIdToList = (existing: string[], userId: string | undefined): string
 
 /** Default per-turn inactivity watchdog budget (10 min). Far longer than any
  *  normal model stream gap, so it only trips on a genuinely wedged turn. */
+/** Caller identity of one inbound message, captured at post time. */
+interface TurnCaller {
+  userId?: string;
+  role?: UserRole;
+  name?: string;
+  channel?: string;
+  channelUserId?: string;
+}
+
+/** Restore a captured caller onto the session's resolved* fields. Fields the
+ *  caller lacks are cleared, so a previous sender's identity never leaks into
+ *  this turn. */
+const applyTurnCaller = (session: RunnerSession, caller: TurnCaller): void => {
+  if (caller.userId) session.resolvedUserId = caller.userId; else delete session.resolvedUserId;
+  if (caller.role) session.resolvedUserRole = caller.role; else delete session.resolvedUserRole;
+  if (caller.name) session.resolvedUserName = caller.name; else delete session.resolvedUserName;
+  if (caller.channel) session.resolvedChannel = caller.channel; else delete session.resolvedChannel;
+  if (caller.channelUserId) session.resolvedChannelUserId = caller.channelUserId;
+  else delete session.resolvedChannelUserId;
+};
+
 const DEFAULT_TURN_WATCHDOG_MS = 10 * 60_000;
 
 /** After the watchdog aborts a presumed-wedged turn, wait this long for it to
@@ -1776,6 +1797,31 @@ export class AgentRunner implements SessionRuntime {
     // or trigger a second turn. Without this, a retried command (e.g. a trading
     // order) would execute twice. Mirrors appendMessage's dedup; the check runs
     // before any session mutation so a duplicate leaves no trace.
+    //
+    // The DB lookup alone is racy: two concurrent re-deliveries can both miss
+    // it before either writes the user entry. So we first claim the messageId
+    // in an in-memory in-flight set — checked and added synchronously, before
+    // any await — and release it once the entry is persisted (or we bail).
+    const inflightId = message.messageId;
+    if (inflightId) {
+      const inflight = (session.inflightMessageIds ??= new Set<string>());
+      if (inflight.has(inflightId)) {
+        return { sessionId, messageId: inflightId, triggered: false };
+      }
+      inflight.add(inflightId);
+    }
+    try {
+      return await this.postMessageClaimed(session, sessionId, message);
+    } finally {
+      if (inflightId) session.inflightMessageIds?.delete(inflightId);
+    }
+  }
+
+  private async postMessageClaimed(
+    session: RunnerSession,
+    sessionId: string,
+    message: SessionMessage,
+  ): Promise<{ sessionId: string; messageId?: string; triggered: boolean }> {
     if (message.messageId) {
       const existingEntryId = await this.store.messages.findEntryIdByMessageId(
         this.scope, session.spec.sessionId, message.messageId,
@@ -1920,14 +1966,23 @@ export class AgentRunner implements SessionRuntime {
       : message.text;
     const promptMessage = { ...message, text: promptText };
 
-    // Capture this message's sender now: `run` may be queued behind an
-    // in-flight turn, by which time a later message can have overwritten the
-    // session's resolvedUser* fields.
-    const turnSender = isGroup && session.resolvedUserId
+    // Capture this message's caller identity now: `run` may be queued behind
+    // an in-flight turn, by which time a later message (possibly from a
+    // different user with a different role) can have overwritten the
+    // session's resolved* fields. The turn must execute with ITS OWN sender's
+    // role/tools/approval — never the next poster's.
+    const turnCaller: TurnCaller = {
+      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
+      ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
+      ...(session.resolvedUserName ? { name: session.resolvedUserName } : {}),
+      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
+      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+    };
+    const turnSender = isGroup && turnCaller.userId
       ? {
-          userId: session.resolvedUserId,
-          name: session.resolvedUserName,
-          role: session.resolvedUserRole,
+          userId: turnCaller.userId,
+          name: turnCaller.name,
+          role: turnCaller.role,
         }
       : undefined;
 
@@ -1941,7 +1996,11 @@ export class AgentRunner implements SessionRuntime {
         // Time + group sender for this turn, snapshotted once so every LLM call
         // in the turn's tool loop sends identical bytes (see turn-context.ts).
         session.currentTurnContext = { at: new Date(), sender: turnSender };
-        await this.refreshAgentConfiguration(session);
+        // Restore this message's sender onto the session for the duration of
+        // the turn, so anything else reading session.resolved* mid-turn
+        // (approval, rebuilds, plugins) sees the right caller.
+        applyTurnCaller(session, turnCaller);
+        await this.refreshAgentConfiguration(session, turnCaller);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
         session.latestAssistantText = undefined;
@@ -3185,12 +3244,21 @@ export class AgentRunner implements SessionRuntime {
     });
   }
 
-  private async refreshAgentConfiguration(session: RunnerSession): Promise<void> {
+  private async refreshAgentConfiguration(
+    session: RunnerSession,
+    caller: TurnCaller = {
+      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
+      ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
+      ...(session.resolvedUserName ? { name: session.resolvedUserName } : {}),
+      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
+      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+    },
+  ): Promise<void> {
     await this.options.security.load();
     const config = await this.options.security.readConfig();
     this.ensureProviderApiKey(config.model.provider);
 
-    const isOwnerInteractive = session.spec.source.interactive && session.resolvedUserRole === 'owner';
+    const isOwnerInteractive = session.spec.source.interactive && caller.role === 'owner';
     const approvalCallback = isOwnerInteractive
       ? this.makeApprovalCallback(session.spec.sessionId, session.approvalGate)
       : undefined;
@@ -3201,11 +3269,11 @@ export class AgentRunner implements SessionRuntime {
       contextSessionId: session.spec.sessionId,
       ...(approvalCallback ? { approvalCallback } : {}),
       onToolCall: this.makeToolCallCallback(session),
-      ...(session.resolvedUserRole ? { userRole: session.resolvedUserRole } : {}),
-      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
-      ...(session.resolvedUserName ? { userName: session.resolvedUserName } : {}),
-      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
-      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+      ...(caller.role ? { userRole: caller.role } : {}),
+      ...(caller.userId ? { userId: caller.userId } : {}),
+      ...(caller.name ? { userName: caller.name } : {}),
+      ...(caller.channel ? { channel: caller.channel } : {}),
+      ...(caller.channelUserId ? { channelUserId: caller.channelUserId } : {}),
       ...(session.spec.source.type ? { sessionType: session.spec.source.type } : {}),
       sourceKind: session.spec.source.kind,
       ...(session.spec.customInstruction ? { customInstruction: session.spec.customInstruction } : {}),
