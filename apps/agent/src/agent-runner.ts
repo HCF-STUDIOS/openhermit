@@ -180,14 +180,19 @@ const applyTurnCaller = (session: RunnerSession, caller: TurnCaller): void => {
   else delete session.resolvedChannelUserId;
 };
 
-/** Snapshot the session's current resolved* identity. Must be taken
- *  synchronously (no await between it and the state it describes). */
-const snapshotTurnCaller = (session: RunnerSession): TurnCaller => ({
-  ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
-  ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
-  ...(session.resolvedUserName ? { name: session.resolvedUserName } : {}),
-  ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
-  ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+/** Build a caller from a resolved identity, dropping empty fields. */
+const toTurnCaller = (identity: {
+  userId?: string | undefined;
+  role?: UserRole | undefined;
+  userName?: string | undefined;
+  channel?: string | undefined;
+  channelUserId?: string | undefined;
+}): TurnCaller => ({
+  ...(identity.userId ? { userId: identity.userId } : {}),
+  ...(identity.role ? { role: identity.role } : {}),
+  ...(identity.userName ? { name: identity.userName } : {}),
+  ...(identity.channel ? { channel: identity.channel } : {}),
+  ...(identity.channelUserId ? { channelUserId: identity.channelUserId } : {}),
 });
 
 /** Default per-turn inactivity watchdog budget (10 min). Far longer than any
@@ -980,6 +985,14 @@ export class AgentRunner implements SessionRuntime {
         throw new NotFoundError(`Session not found: ${spec.sessionId}`);
       }
 
+      // The principal is the identity of the authenticated caller that
+      // (re)opened the session. Messages without a sender of their own run as
+      // it; per-message senders never change it.
+      if (userId) {
+        existing.sessionPrincipal = toTurnCaller({
+          userId, role, userName, channel: reChannel, channelUserId: reChannelUserId,
+        });
+      }
       if (userId) existing.resolvedUserId = userId;
       if (role) existing.resolvedUserRole = role;
       if (userName) existing.resolvedUserName = userName;
@@ -1118,6 +1131,13 @@ export class AgentRunner implements SessionRuntime {
       ...(resolvedUserName ? { resolvedUserName } : {}),
       ...(resolvedChannel ? { resolvedChannel } : {}),
       ...(resolvedChannelUserId ? { resolvedChannelUserId } : {}),
+      sessionPrincipal: toTurnCaller({
+        userId: resolvedUserId,
+        role: resolvedUserRole,
+        userName: resolvedUserName,
+        channel: resolvedChannel,
+        channelUserId: resolvedChannelUserId,
+      }),
       ...(langfuseTurnContext ? { langfuseTurnContext } : {}),
     };
 
@@ -1841,12 +1861,16 @@ export class AgentRunner implements SessionRuntime {
     sessionId: string,
     message: SessionMessage,
   ): Promise<{ sessionId: string; messageId?: string; triggered: boolean }> {
-    // This message's caller identity is built from message-local values only.
-    // session.resolved* is shared by every concurrent post on the session and
-    // can be rewritten by another sender during any await below, so it is
-    // read once here, before the first await, as the fallback for messages
-    // that carry no sender of their own.
-    let turnCaller: TurnCaller = snapshotTurnCaller(session);
+    // This message's caller identity comes only from the message itself:
+    //  - with a sender: that sender, resolved below. A sender that doesn't
+    //    resolve (non-member on a protected/private agent) is rejected — it
+    //    never falls back to another identity.
+    //  - without one: the session principal, i.e. the authenticated caller
+    //    that opened the session (gateway user/channel callers always attach
+    //    a sender; only admin and internal posts such as schedules omit it).
+    // session.resolved* is NOT consulted: it is shared by every concurrent
+    // post and reflects whichever sender ran last.
+    let turnCaller: TurnCaller = message.sender ? {} : { ...(session.sessionPrincipal ?? {}) };
 
     if (message.messageId) {
       const existingEntryId = await this.store.messages.findEntryIdByMessageId(
@@ -1857,14 +1881,28 @@ export class AgentRunner implements SessionRuntime {
       }
     }
 
+    // Resolve the sender before touching any session state, so a rejected
+    // sender leaves the session exactly as it was.
+    if (message.sender) {
+      const resolved = await this.resolveMessageSender(message.sender, new Date().toISOString());
+      if (!resolved.userId) {
+        throw new NotFoundError(`Session not found: ${sessionId}`);
+      }
+      turnCaller = toTurnCaller({
+        ...resolved,
+        channel: message.sender.channel,
+        channelUserId: message.sender.channelUserId,
+      });
+    }
+
     // Plugin transform hook — plugins may rewrite (or scrub) the
     // incoming text before it lands in the session log.
     const transformed = await this.bus.transform('session.message.received@v1', {
       agentId: this.scope.agentId,
       sessionId,
       text: message.text,
-      ...(session.resolvedUserId ? { senderUserId: session.resolvedUserId } : {}),
-      ...(session.resolvedUserRole ? { senderRole: session.resolvedUserRole } : {}),
+      ...(turnCaller.userId ? { senderUserId: turnCaller.userId } : {}),
+      ...(turnCaller.role ? { senderRole: turnCaller.role } : {}),
       ...(message.sender?.channel ? { senderChannel: message.sender.channel } : {}),
       ...(message.metadata ? { metadata: message.metadata } : {}),
     });
@@ -1901,39 +1939,12 @@ export class AgentRunner implements SessionRuntime {
     }
     session.lastMessagePreview = message.text;
 
-    // Per-message sender resolution (for group sessions or any message with sender info)
-    if (message.sender) {
-      const now = new Date().toISOString();
-      // Track the raw channel identity of THIS message's sender. The toolset
-      // is rebuilt every turn (refreshAgentConfiguration) from these fields,
-      // so caller-scoped tools (e.g. identity_link_*) must reflect who sent
-      // the current message — not whoever opened the session. Matters in
-      // group sessions where a later, different sender joins, and for external
-      // channels (e.g. amiko) whose per-session id can't be derived.
-      if (message.sender.channel) session.resolvedChannel = message.sender.channel;
-      if (message.sender.channelUserId) session.resolvedChannelUserId = message.sender.channelUserId;
-      const resolved = await this.resolveMessageSender(message.sender, now);
-      turnCaller = {
-        ...turnCaller,
-        ...(message.sender.channel ? { channel: message.sender.channel } : {}),
-        ...(message.sender.channelUserId ? { channelUserId: message.sender.channelUserId } : {}),
-      };
-      if (resolved.userId) {
-        // A resolved sender fully replaces the fallback identity: never carry
-        // another user's role or name over to this one.
-        turnCaller = {
-          ...(turnCaller.channel ? { channel: turnCaller.channel } : {}),
-          ...(turnCaller.channelUserId ? { channelUserId: turnCaller.channelUserId } : {}),
-          userId: resolved.userId,
-          ...(resolved.role ? { role: resolved.role } : {}),
-          ...(resolved.userName ? { name: resolved.userName } : {}),
-        };
-        // Update session's current user so system prompt reflects the latest sender
-        session.resolvedUserId = resolved.userId;
-        if (resolved.role) session.resolvedUserRole = resolved.role;
-        if (resolved.userName) session.resolvedUserName = resolved.userName;
-        session.userIds = addUserIdToList(session.userIds, resolved.userId);
-      }
+    // Mirror this message's caller onto the shared session fields (persisted
+    // index, idle-time prompt). The turn itself re-applies `turnCaller` when it
+    // runs, so a later post overwriting these can't change this turn's role.
+    if (message.sender && turnCaller.userId) {
+      applyTurnCaller(session, turnCaller);
+      session.userIds = addUserIdToList(session.userIds, turnCaller.userId);
     }
 
     await this.persistSessionIndex(session);

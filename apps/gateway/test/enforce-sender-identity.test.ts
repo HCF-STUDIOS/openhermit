@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { UnauthorizedError } from '@openhermit/shared';
 
-import { enforceSenderIdentity, type AuthContext } from '../src/auth.js';
+import { authenticatedSender, enforceSenderIdentity, type AuthContext } from '../src/auth.js';
 
 const user = (channel: string, channelUserId: string): AuthContext => ({
   mode: 'user',
@@ -70,4 +70,25 @@ test('channel token without a namespace fails closed', () => {
     () => enforceSenderIdentity(channel(undefined), { channel: 'telegram', channelUserId: '1' }),
     UnauthorizedError,
   );
+});
+
+test('authenticatedSender: a user token always carries its own identity', () => {
+  assert.deepEqual(authenticatedSender(user('web', 'w1'), undefined), { channel: 'web', channelUserId: 'w1' });
+  assert.deepEqual(
+    authenticatedSender(user('web', 'w1'), { channel: 'web', channelUserId: 'w1', displayName: 'W' }),
+    { channel: 'web', channelUserId: 'w1', displayName: 'W' },
+  );
+});
+
+test('authenticatedSender: a channel token without a sender falls back to its user header', () => {
+  const withHeader: AuthContext = { mode: 'channel', channel: 'telegram', channelUserId: 'tg1', channelNamespace: 'telegram' };
+  assert.deepEqual(authenticatedSender(withHeader, undefined), { channel: 'telegram', channelUserId: 'tg1' });
+  const declared = { channel: 'telegram', channelUserId: 'tg2' };
+  assert.equal(authenticatedSender(withHeader, declared), declared);
+  const noHeader: AuthContext = { mode: 'channel', channel: 'telegram', channelUserId: '', channelNamespace: 'telegram' };
+  assert.equal(authenticatedSender(noHeader, undefined), undefined);
+});
+
+test('authenticatedSender: admin passes the sender through unchanged', () => {
+  assert.equal(authenticatedSender(admin, undefined), undefined);
 });

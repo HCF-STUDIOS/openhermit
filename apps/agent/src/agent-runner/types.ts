@@ -9,6 +9,14 @@ import type { ReasoningTagStreamState, SpeakerTagStreamState } from './message-u
 import type { ModelErrorKind } from './user-facing-error.js';
 import type { TurnContext } from './turn-context.js';
 
+export interface SessionPrincipal {
+  userId?: string;
+  role?: UserRole;
+  name?: string;
+  channel?: string;
+  channelUserId?: string;
+}
+
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
   /** Detaches the current `agent`'s event listener (the return of
@@ -65,6 +73,10 @@ export interface RunnerSession extends SessionDescriptor {
   resolvedUserName?: string;
   resolvedChannel?: string;
   resolvedChannelUserId?: string;
+  /** Identity of the authenticated caller that opened (or last reopened) the
+   *  session. Messages that carry no sender of their own run as this — never
+   *  as whichever per-message sender happened to run last. */
+  sessionPrincipal?: SessionPrincipal;
   /** messageIds currently being accepted by `postMessage` (between the dedupe
    *  check and the user-entry write), mapped to that original acceptance.
    *  Checked/added synchronously before any await so two concurrent

@@ -2560,3 +2560,89 @@ test('AgentRunner builds a turn caller from its own sender even when another pos
     'guest turn must not pick up the interleaved owner identity',
   );
 });
+
+const setupOwnerGroupSession = async (t: import('node:test').TestContext, sessionId: string) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'telegram', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  const toolsPerCall: string[][] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      return createTextResponseStream('ok');
+    },
+  });
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', platform: 'telegram', interactive: false, type: 'group' },
+  });
+
+  // The owner speaks first, so the session's shared resolved* fields hold
+  // the owner's identity when the next message arrives.
+  await runner.postMessage(sessionId, {
+    messageId: 'owner-1',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'telegram', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+  assert.ok(toolsPerCall[0]!.includes('memory_add'), 'owner turn has the owner toolset');
+  return { runner, security, store, toolsPerCall };
+};
+
+test('AgentRunner: a message without a sender never inherits the previous owner caller', async (t) => {
+  const sessionId = 'group:no-sender-after-owner';
+  const { runner, toolsPerCall } = await setupOwnerGroupSession(t, sessionId);
+
+  await runner.postMessage(sessionId, { messageId: 'anon-1', text: 'who am i', mentioned: true });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(toolsPerCall.length, 2, 'the no-sender turn ran');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'a no-sender message runs as the session principal, not the last (owner) sender',
+  );
+});
+
+test('AgentRunner: an unresolvable sender is rejected instead of inheriting the previous owner caller', async (t) => {
+  const sessionId = 'group:unresolved-after-owner';
+  const { runner, security, store, toolsPerCall } = await setupOwnerGroupSession(t, sessionId);
+
+  // A globally-known user with no membership on this agent does not resolve
+  // on a private agent (unknown senders are auto-created as guests instead).
+  const strangerId = `usr-stranger-${randomBytes(4).toString('hex')}`;
+  const strangerChannelUserId = `stranger-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: strangerId, name: 'Stranger', createdAt: now, updatedAt: now });
+  await store.users.linkIdentity({
+    userId: strangerId, channel: 'telegram', channelUserId: strangerChannelUserId, createdAt: now,
+  });
+  (security as unknown as { getAccessLevel: () => string }).getAccessLevel = () => 'private';
+
+  await assert.rejects(
+    runner.postMessage(sessionId, {
+      messageId: 'stranger-1',
+      text: 'stranger asks',
+      mentioned: true,
+      sender: { channel: 'telegram', channelUserId: strangerChannelUserId },
+    }),
+    /not found/i,
+  );
+  await runner.waitForSessionIdle(sessionId);
+  assert.equal(toolsPerCall.length, 1, 'no turn ran for the unresolved sender');
+});
