@@ -40,6 +40,7 @@ test('AgentSecurity resolves configured secrets', async (t) => {
 test('AgentSecurity loads policy with legacy autonomy_level gracefully', async (t) => {
   const { security, configStore, agentId } = await createSecurityFixture(t);
 
+  // Legacy keys left in stored documents must be tolerated (ignored).
   await configStore.setSecurity(agentId, {
     autonomy_level: 'readonly',
     require_approval_for: ['exec'],

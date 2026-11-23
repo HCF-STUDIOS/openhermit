@@ -605,6 +605,35 @@ export const main = async (): Promise<void> => {
     logStartup('LRU eviction disabled');
   }
 
+  // Store housekeeping: purge consumed exchange-token jtis past their JWT
+  // expiry (the token itself is rejected by then, so the ledger row is dead)
+  // and mark pending approval requests past their TTL as expired. Best-effort:
+  // failures are logged, never thrown; the timer never holds the process open.
+  const STORE_SWEEP_INTERVAL_MS = 10 * 60_000;
+  const runStoreSweep = async (): Promise<void> => {
+    if (consumedJtiStore) {
+      try {
+        const n = await consumedJtiStore.sweepExpired(Math.floor(Date.now() / 1000));
+        if (n > 0) logStartup(`store sweep: purged ${n} expired jti(s)`);
+      } catch (err) {
+        logStartup(`store sweep: jti sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (approvalRequestStore) {
+      try {
+        const n = await approvalRequestStore.expireOld();
+        if (n > 0) logStartup(`store sweep: expired ${n} approval request(s)`);
+      } catch (err) {
+        logStartup(`store sweep: approval expiry failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  };
+  let storeSweepTimer: ReturnType<typeof setInterval> | undefined;
+  if (consumedJtiStore || approvalRequestStore) {
+    storeSweepTimer = setInterval(() => void runStoreSweep(), STORE_SWEEP_INTERVAL_MS);
+    storeSweepTimer.unref();
+  }
+
   const rawPort = process.env.GATEWAY_PORT ?? process.env.PORT;
   const port = rawPort ? Number.parseInt(rawPort, 10) : 4000;
 
@@ -684,6 +713,7 @@ export const main = async (): Promise<void> => {
     shuttingDown = true;
     logStartup('shutting down...');
 
+    if (storeSweepTimer) clearInterval(storeSweepTimer);
     await centralScheduler?.stop();
     instances.stopEviction();
     await channelPool?.stopAll();

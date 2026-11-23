@@ -24,7 +24,7 @@ export const DEFAULT_CONTEXT_COMPACTION_SAFETY_MARGIN_TOKENS = 2_048;
 // text-extraction summary — so the user gets a reply in bounded time instead
 // of staring at silence. Generous enough (90s) that a normally-loaded provider
 // still produces a real LLM summary; only pathological stalls hit the fallback.
-export const DEFAULT_CONTEXT_COMPACTION_SUMMARY_TIMEOUT_MS = 90_000;
+const DEFAULT_CONTEXT_COMPACTION_SUMMARY_TIMEOUT_MS = 90_000;
 
 // Hard ceiling on the auto-derived compaction threshold. Without this,
 // models with huge context windows (e.g. Gemini's 1M) would only compact
@@ -50,7 +50,7 @@ export const DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS = 32_000;
 // Upper bound on the retention target as a fraction of the token budget, so
 // a compaction always leaves at least this much headroom before the next one
 // (mirrors opencode clamping its recent tail to a share of usable context).
-export const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
+const COMPACTION_KEEP_RECENT_MAX_BUDGET_RATIO = 0.5;
 
 // Compaction triggers purely on the token budget, matching the wider
 // ecosystem (pi, opencode, codex) — none of which use a message-count
@@ -422,7 +422,7 @@ export const getContextCompactionKeepRecentTokens = (
   options.contextCompactionKeepRecentTokens
     ?? DEFAULT_CONTEXT_COMPACTION_KEEP_RECENT_TOKENS;
 
-export const getContextCompactionSummaryTimeoutMs = (
+const getContextCompactionSummaryTimeoutMs = (
   options: CompactionOptions,
 ): number =>
   options.contextCompactionSummaryTimeoutMs
@@ -430,7 +430,7 @@ export const getContextCompactionSummaryTimeoutMs = (
 
 // ── LLM compaction summary ────────────────────────────────────────────
 
-export type CreateCompactionAgentFn = (sessionId: string) => Promise<Agent>;
+type CreateCompactionAgentFn = (sessionId: string) => Promise<Agent>;
 
 // A line starting with one of the summary template's own section headings. Used
 // to recognise an envelope-free summary: flash-tier summarizers (deepseek-flash,
@@ -727,7 +727,7 @@ export interface CompactionDeps {
   logRuntime: (message: string) => void;
 }
 
-export interface CompactionResult {
+interface CompactionResult {
   /** The context to send to the model this turn (compacted or not). */
   messages: AgentMessage[];
   /**

@@ -1,4 +1,4 @@
-import { getProviders, getModels } from '@earendil-works/pi-ai/compat';
+import { getBuiltinProviders, getBuiltinModels } from '@earendil-works/pi-ai/providers/all';
 
 export interface ProviderCatalogEntry {
   provider: string;
@@ -16,9 +16,9 @@ export interface ProviderCatalogEntry {
  * needs it server-side.
  */
 export const listProviderCatalog = (): ProviderCatalogEntry[] => {
-  const providers = getProviders();
+  const providers = getBuiltinProviders();
   return providers.map((provider) => {
-    const models = getModels(provider).map((m) => ({
+    const models = getBuiltinModels(provider).map((m) => ({
       id: m.id,
       reasoning: Boolean((m as { reasoning?: boolean }).reasoning),
     }));
@@ -108,7 +108,7 @@ const fetchDynamicProvider = async (
 
 /**
  * Static pi-ai catalog plus any reachable dynamic providers, sorted by
- * provider name (codepoint order — getProviders() insertion order is not
+ * provider name (codepoint order — getBuiltinProviders() insertion order is not
  * guaranteed alphabetical). A dynamic provider that is unreachable or empty
  * is simply omitted — the picker never breaks because a remote catalogue is
  * down.

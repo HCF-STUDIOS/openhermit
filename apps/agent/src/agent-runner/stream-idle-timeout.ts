@@ -23,7 +23,7 @@ import { streamSimple } from '@earendil-works/pi-ai/compat';
  * long-but-live completions are never killed; only genuine stalls are.
  */
 
-export const STREAM_IDLE_TIMEOUT_ENV = 'STREAM_IDLE_TIMEOUT_MS';
+const STREAM_IDLE_TIMEOUT_ENV = 'STREAM_IDLE_TIMEOUT_MS';
 
 // Conservative default: real minimax-cn first-token latency in production sits
 // at 1–17s; 120s of complete silence is unambiguously a stall, while staying

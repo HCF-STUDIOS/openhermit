@@ -98,10 +98,6 @@ export function computeBackoffMs(
   return Math.round(capped * (0.8 + random() * 0.4));
 }
 
-export const internalStateFiles = {
-  config: 'config.json',
-} as const;
-
 export const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
@@ -139,16 +135,6 @@ export const joinUrl = (baseUrl: string, path: string): string => {
   const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const suffix = path.startsWith('/') ? path : `/${path}`;
   return `${base}${suffix}`;
-};
-
-export const requireEnv = (name: string): string => {
-  const value = process.env[name];
-
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-
-  return value;
 };
 
 export {

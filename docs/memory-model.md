@@ -43,11 +43,10 @@ At turn start, the prompt can include:
 - agent instructions
 - recent session history
 - current session working memory
-- recent long-term memory context from `getContextBlock`
 - skill index
 - user/role context
 
-`memory.context_entry_limit` controls how many recent memory entries are included in the context block.
+Long-term memories are not auto-injected; the agent retrieves them on demand with the memory tools above. (`memory.context_entry_limit` is still accepted in config but is currently unused.)
 
 ## Introspection
 

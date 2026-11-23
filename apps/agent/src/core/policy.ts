@@ -135,26 +135,6 @@ export const resolveToolMatches = (
   return [{ effect: 'allow', grants: OPEN }];
 };
 
-/** @deprecated Use resolveToolMatches + evaluateAccess instead. */
-export const resolveToolGrants = (
-  policyRows: PolicyRow[] | undefined,
-  toolName: string,
-  declaredPolicy?: ToolPolicy,
-): Grant[] => {
-  if (policyRows) {
-    const rows = policyRows.filter(
-      (r) => r.resourceType === 'tool' && r.effect === 'allow',
-    );
-    const row = rows.find((r) => r.resourceKey === toolName)
-      ?? rows.find(
-        (r) => r.resourceKey.endsWith('*') && toolName.startsWith(r.resourceKey.slice(0, -1)),
-      );
-    if (row) return row.grants as Grant[];
-  }
-  if (declaredPolicy) return declaredPolicy.defaultGrants;
-  return OPEN;
-};
-
 // ── File path policy ───────────────────────────────────────────────────
 
 export type FileMode = 'read' | 'write';
@@ -208,35 +188,6 @@ export const resolveFilePathMatches = (
     effect: (row.effect ?? 'allow') as PolicyEffect,
     grants: row.grants as Grant[],
   }));
-};
-
-/** @deprecated Use resolveFilePathMatches + evaluateAccess instead. */
-export const resolveFilePathGrants = (
-  fileRows: PolicyRow[],
-  sandbox: string,
-  mode: FileMode,
-  path: string,
-): Grant[] | undefined => {
-  if (fileRows.length === 0) return undefined;
-
-  let bestMatch: PolicyRow | undefined;
-  let bestLen = -1;
-
-  for (const row of fileRows) {
-    if (row.effect !== 'allow') continue;
-    const scope = parseFileScope(row);
-    if (!scope) continue;
-    if (scope.mode !== mode) continue;
-    if (scope.sandbox !== '*' && scope.sandbox !== sandbox) continue;
-    if (!path.startsWith(scope.path)) continue;
-    if (scope.path.length > bestLen) {
-      bestLen = scope.path.length;
-      bestMatch = row;
-    }
-  }
-
-  if (bestMatch) return bestMatch.grants as Grant[];
-  return [];
 };
 
 // ── Exec command policy ────────────────────────────────────────────────
@@ -309,48 +260,6 @@ export const resolveExecMatches = (
   }));
 };
 
-/** @deprecated Use resolveExecMatches + evaluateAccess instead. */
-export const resolveExecGrants = (
-  execRows: PolicyRow[],
-  sandbox: string,
-  command: string,
-  cwd?: string,
-): Grant[] | undefined => {
-  if (execRows.length === 0) return undefined;
-
-  const normalized = normalizeCommand(command);
-  let bestMatch: PolicyRow | undefined;
-  let bestSpecificity = -1;
-
-  for (const row of execRows) {
-    if (row.effect !== 'allow') continue;
-    const s = row.scope;
-    if (typeof s.sandbox !== 'string' || typeof s.command !== 'string') continue;
-    if (s.sandbox !== '*' && s.sandbox !== sandbox) continue;
-
-    const cwdScope = typeof s.cwd === 'string' ? s.cwd : undefined;
-    if (cwdScope && cwdScope !== '*' && cwd) {
-      if (!cwd.startsWith(cwdScope)) continue;
-    } else if (cwdScope && cwdScope !== '*' && !cwd) {
-      continue;
-    }
-
-    const commandMatch = s.command === '*' || normalizeCommand(s.command) === normalized;
-    if (!commandMatch) continue;
-
-    let specificity = 0;
-    if (s.command !== '*') specificity += 2;
-    if (cwdScope && cwdScope !== '*') specificity += 1;
-    if (specificity > bestSpecificity) {
-      bestSpecificity = specificity;
-      bestMatch = row;
-    }
-  }
-
-  if (bestMatch) return bestMatch.grants as Grant[];
-  return [];
-};
-
 // ── MCP server policy ─────────────────────────────────────────────────
 
 /**
@@ -390,23 +299,6 @@ export const resolveMcpMatches = (
 
   if (matches.length === 0) return [];
   return matches;
-};
-
-/** @deprecated Use resolveMcpMatches + evaluateAccess instead. */
-export const resolveMcpGrants = (
-  mcpRows: PolicyRow[],
-  serverId: string,
-): Grant[] | undefined => {
-  if (mcpRows.length === 0) return undefined;
-
-  for (const row of mcpRows) {
-    if (row.resourceKey === serverId && row.effect === 'allow') return row.grants as Grant[];
-  }
-  for (const row of mcpRows) {
-    if (row.resourceKey === '*' && row.effect === 'allow') return row.grants as Grant[];
-  }
-
-  return [];
 };
 
 /**

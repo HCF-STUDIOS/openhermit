@@ -55,23 +55,3 @@ export const createFallbackDescription = (text: string): string | undefined => {
     ? normalized
     : `${normalized.slice(0, 77)}...`;
 };
-
-export const normalizeGeneratedDescription = (
-  value: string | undefined,
-): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-
-  const normalized = toSingleLine(value)
-    .replace(/^["'`]+|["'`]+$/g, '')
-    .replace(/^[#*\-\s]+/, '');
-
-  if (!normalized) {
-    return undefined;
-  }
-
-  return normalized.length <= 80
-    ? normalized
-    : `${normalized.slice(0, 77)}...`;
-};

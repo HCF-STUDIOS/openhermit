@@ -657,6 +657,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       if (!consumed) {
         throw new UnauthorizedError('Exchange token has already been used.');
       }
+      // Re-check expiry AFTER the consume write: verification happened
+      // before an await, and once the token is past `exp` the store sweep may
+      // already have purged an earlier redemption's jti — a delayed request
+      // would then insert it afresh. An expired token never mints a session.
+      if (payload.exp <= Math.floor(Date.now() / 1000)) {
+        throw new UnauthorizedError('Exchange token is invalid or expired.');
+      }
 
       const userId = await userStore.resolve(payload.channel, payload.channelUserId);
       const user = userId ? await userStore.get(userId) : undefined;
