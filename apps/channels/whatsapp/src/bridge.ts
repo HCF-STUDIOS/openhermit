@@ -85,6 +85,14 @@ export class WhatsAppBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
+  /**
+   * Per session: turns whose wait ended before their own `agent_end` (idle
+   * timeout, dropped stream). Those turns keep running, so their late events
+   * sit ahead of the cursor; the next wait must skip that many `agent_end`s
+   * before collecting, or it would deliver the old turn's reply as the answer
+   * to the new message.
+   */
+  private readonly staleTurns = new Map<string, number>();
   private readonly chatSessions = new Map<string, string>();
   private readonly chatLocks = new Map<string, Promise<void>>();
 
@@ -374,9 +382,16 @@ export class WhatsAppBridge implements ChannelOutbound {
     }, openOpts);
   }
 
+  private recordStaleTurns(sessionId: string, count: number): void {
+    if (count > 0) this.staleTurns.set(sessionId, count);
+    else this.staleTurns.delete(sessionId);
+  }
+
   private async waitForAgentResponse(sessionId: string, target: string): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
+    let staleTurnsToSkip = this.staleTurns.get(sessionId) ?? 0;
+    let ownTurnEnded = false;
     const controller = new AbortController();
     const timeoutTimer = setTimeout(() => controller.abort(), AGENT_RESPONSE_TIMEOUT_MS);
     let response: Response;
@@ -387,6 +402,7 @@ export class WhatsAppBridge implements ChannelOutbound {
       });
     } catch (err) {
       clearTimeout(timeoutTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
       const message = err instanceof Error ? err.message : String(err);
       const reason = controller.signal.aborted
         ? `agent event stream timed out after ${AGENT_RESPONSE_TIMEOUT_MS}ms`
@@ -395,6 +411,7 @@ export class WhatsAppBridge implements ChannelOutbound {
     }
     if (!response.ok || !response.body) {
       clearTimeout(timeoutTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
       return { text: undefined, error: `Failed to open event stream (${response.status})` };
     }
 
@@ -429,6 +446,7 @@ export class WhatsAppBridge implements ChannelOutbound {
                   : {};
                 if (typeof data.nextEventId === 'number' && data.nextEventId <= nextLastEventId) {
                   nextLastEventId = 0;
+                  staleTurnsToSkip = 0;
                 }
               } catch {
                 // ignore
@@ -437,6 +455,12 @@ export class WhatsAppBridge implements ChannelOutbound {
             continue;
           }
           if (frame.event === 'ping') continue;
+
+          // Late frames of turns whose waits already gave up (see staleTurns).
+          if (staleTurnsToSkip > 0) {
+            if (frame.event === 'agent_end') staleTurnsToSkip -= 1;
+            continue;
+          }
 
           const payload = frame.data.length > 0
             ? (JSON.parse(frame.data) as Record<string, unknown>)
@@ -466,7 +490,11 @@ export class WhatsAppBridge implements ChannelOutbound {
           }
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
-            continue;
+            ownTurnEnded = true;
+            // Stop at our own agent_end: any later frames in this chunk
+            // belong to the next turn, so neither consume them nor move
+            // the cursor past them.
+            break;
           }
         }
         if (sawAgentEnd) break;
@@ -484,6 +512,7 @@ export class WhatsAppBridge implements ChannelOutbound {
     }
 
     this.lastEventIds.set(sessionId, nextLastEventId);
+    this.recordStaleTurns(sessionId, ownTurnEnded ? 0 : staleTurnsToSkip + 1);
     const responseText = finalText ?? (accumulatedText.trim() || undefined);
     if (responseText === undefined) {
       return { text: undefined, error };

@@ -41,6 +41,14 @@ export class DiscordBridge implements ChannelOutbound {
   private readonly clientToken: string;
   private readonly log: (message: string) => void;
   private readonly lastEventIds = new Map<string, number>();
+  /**
+   * Per session: turns whose wait ended before their own `agent_end` (idle
+   * timeout, dropped stream). Those turns keep running, so their late events
+   * sit ahead of the cursor; the next wait must skip that many `agent_end`s
+   * before collecting, or it would deliver the old turn's reply as the answer
+   * to the new message.
+   */
+  private readonly staleTurns = new Map<string, number>();
   private readonly channelSessions = new Map<string, string>();
   private readonly turnQueues = new Map<string, Promise<void>>();
 
@@ -309,12 +317,19 @@ export class DiscordBridge implements ChannelOutbound {
     });
   }
 
+  private recordStaleTurns(sessionId: string, count: number): void {
+    if (count > 0) this.staleTurns.set(sessionId, count);
+    else this.staleTurns.delete(sessionId);
+  }
+
   private async waitForAgentResponse(
     sessionId: string,
     channelId: string,
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
+    let staleTurnsToSkip = this.staleTurns.get(sessionId) ?? 0;
+    let ownTurnEnded = false;
 
     const controller = new AbortController();
     let idleTimer = setTimeout(() => controller.abort(), this.agentStreamIdleTimeoutMs);
@@ -332,12 +347,14 @@ export class DiscordBridge implements ChannelOutbound {
       });
     } catch (err) {
       clearTimeout(idleTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
       if (controller.signal.aborted) return { text: undefined, error: idleError, };
       throw err;
     }
 
     if (!response.ok || !response.body) {
       clearTimeout(idleTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
       return { text: undefined, error: `Failed to open event stream (${response.status})` };
     }
 
@@ -385,6 +402,7 @@ export class DiscordBridge implements ChannelOutbound {
                   : {};
                 if (typeof data.nextEventId === 'number' && data.nextEventId <= nextLastEventId) {
                   nextLastEventId = 0;
+                  staleTurnsToSkip = 0;
                 }
               } catch { /* ignore */ }
             }
@@ -392,11 +410,21 @@ export class DiscordBridge implements ChannelOutbound {
           }
           if (frame.event === 'ping') continue;
 
+          // Late frames of turns whose waits already gave up (see staleTurns).
+          if (staleTurnsToSkip > 0) {
+            if (frame.event === 'agent_end') staleTurnsToSkip -= 1;
+            continue;
+          }
+
           // Terminal before payload parsing: agent_end's payload is unused, and a
           // malformed one must not leave the waiter reading pings forever.
           if (frame.event === 'agent_end') {
             sawAgentEnd = true;
-            continue;
+            ownTurnEnded = true;
+            // Stop at our own agent_end: any later frames in this chunk
+            // belong to the next turn, so neither consume them nor move
+            // the cursor past them.
+            break;
           }
 
           let payload: Record<string, unknown> = {};
@@ -469,6 +497,7 @@ export class DiscordBridge implements ChannelOutbound {
     }
 
     this.lastEventIds.set(sessionId, nextLastEventId);
+    this.recordStaleTurns(sessionId, ownTurnEnded ? 0 : staleTurnsToSkip + 1);
 
     const rawResponseText = finalText ?? (accumulatedText.trim() || undefined);
     const stripped =
