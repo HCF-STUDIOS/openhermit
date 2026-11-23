@@ -86,7 +86,17 @@ interface TurnResult {
   error: string | undefined;
 }
 
+/**
+ * Give up on the agent event stream after this long with no bytes at all.
+ * Re-armed for every read — the gateway pings every few seconds, so this
+ * only fires on a dead/half-open connection, never on a long tool run.
+ * Without it a stalled stream blocks this chat's turn queue forever.
+ */
+const AGENT_STREAM_IDLE_TIMEOUT_MS = 120_000;
+
 export class TelegramBridge implements ChannelOutbound {
+  /** Overridable in tests. */
+  agentStreamIdleTimeoutMs = AGENT_STREAM_IDLE_TIMEOUT_MS;
   readonly channel = 'telegram';
 
   private readonly client: AgentLocalClient;
@@ -597,11 +607,28 @@ export class TelegramBridge implements ChannelOutbound {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
 
-    const response = await fetch(eventsUrl, {
-      headers: { authorization: `Bearer ${this.clientToken}` },
-    });
+    const controller = new AbortController();
+    let idleTimer = setTimeout(() => controller.abort(), this.agentStreamIdleTimeoutMs);
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), this.agentStreamIdleTimeoutMs);
+    };
+    const idleError = `agent event stream idle for ${this.agentStreamIdleTimeoutMs}ms`;
+
+    let response: Response;
+    try {
+      response = await fetch(eventsUrl, {
+        headers: { authorization: `Bearer ${this.clientToken}` },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(idleTimer);
+      if (controller.signal.aborted) return { text: undefined, error: idleError, };
+      throw err;
+    }
 
     if (!response.ok || !response.body) {
+      clearTimeout(idleTimer);
       return {
         text: undefined,
         error: `Failed to open event stream (${response.status})`,
@@ -629,7 +656,11 @@ export class TelegramBridge implements ChannelOutbound {
 
     try {
       while (true) {
+        // Only time the wait for bytes — not our own frame handling (media
+        // uploads, message edits), which can legitimately take a while.
+        resetIdleTimer();
         const { done, value } = await reader.read();
+        clearTimeout(idleTimer);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -667,10 +698,15 @@ export class TelegramBridge implements ChannelOutbound {
             continue;
           }
 
-          const payload =
-            frame.data.length > 0
-              ? (JSON.parse(frame.data) as Record<string, unknown>)
-              : {};
+          let payload: Record<string, unknown> = {};
+          if (frame.data.length > 0) {
+            try {
+              payload = JSON.parse(frame.data) as Record<string, unknown>;
+            } catch {
+              this.log(`skipping malformed ${frame.event} frame from agent stream`);
+              continue;
+            }
+          }
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
@@ -750,7 +786,11 @@ export class TelegramBridge implements ChannelOutbound {
 
         if (sawAgentEnd) break;
       }
+    } catch (err) {
+      if (!controller.signal.aborted) throw err;
+      error ??= idleError;
     } finally {
+      clearTimeout(idleTimer);
       clearInterval(typingInterval);
       await reader.cancel().catch(() => undefined);
     }
