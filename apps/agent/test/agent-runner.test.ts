@@ -510,7 +510,7 @@ test('AgentRunner injects additionalInstruction into the system prompt for that 
 test('AgentRunner keeps the prompt-cache prefix byte-stable across turns', async (t) => {
   const { workspace, security } = await createSecurityFixture(t, {
     secrets: {
-      ANTHROPIC_API_KEY: 'test-anthropic-key',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
     },
   });
   await security.load();
