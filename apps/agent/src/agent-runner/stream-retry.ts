@@ -137,14 +137,17 @@ export const withStreamRetry = (
 
         // Phase 1 — establish the stream and pull its first meaningful event.
         // Any failure here is pre-first-token, so it is eligible for a retry.
-        // `start` markers carry no output, so they are held back (not yielded)
-        // until something real arrives. pi-ai providers don't throw on failure:
+        // `start` markers and the empty `text_start` / `thinking_start` block
+        // openers carry no output, so they are held back (not yielded) until
+        // something real arrives. pi-ai providers don't throw on failure:
         // they catch and emit `{ type: 'error' }` as an event (often right
         // after `start`), so an error event that arrives before any output is
         // treated exactly like a thrown pre-first-token failure.
         let iterator: AsyncIterator<AssistantMessageEvent>;
         let first: IteratorResult<AssistantMessageEvent>;
         const heldStarts: AssistantMessageEvent[] = [];
+        const isEmptyMarker = (event: AssistantMessageEvent): boolean =>
+          event.type === 'start' || event.type === 'text_start' || event.type === 'thinking_start';
         try {
           const inner = await Promise.resolve(
             next(model, context, { ...(callOptions ?? {}), signal: controller.signal }),
@@ -152,7 +155,7 @@ export const withStreamRetry = (
           committed = inner;
           iterator = inner[Symbol.asyncIterator]();
           first = await iterator.next();
-          while (!first.done && first.value.type === 'start') {
+          while (!first.done && isEmptyMarker(first.value)) {
             heldStarts.push(first.value);
             first = await iterator.next();
           }

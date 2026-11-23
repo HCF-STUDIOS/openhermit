@@ -71,7 +71,12 @@ export const isStreamCutError = (raw: string): boolean => CONNECTION_DROP_PATTER
  */
 export const isRetryableModelError = (raw: string): boolean =>
   classifyModelError(raw) === 'unavailable'
+  // Checked first: a routing error can quote an upstream 5xx ("404 No
+  // endpoints found. Last provider error: 503 ...") and is still permanent.
+  && !PERMANENT_UNAVAILABLE_PATTERN.test(raw)
   && (CONNECTION_DROP_PATTERN.test(raw) || TRANSIENT_UNAVAILABLE_PATTERN.test(raw));
+
+const PERMANENT_UNAVAILABLE_PATTERN = /no endpoints found|\b404\b/i;
 
 /** Languages we can phrase the notice in. Extend the table below to add one. */
 export type UserLanguage = 'zh' | 'en';

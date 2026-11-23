@@ -187,7 +187,10 @@ test('resolveStreamMaxRetries: default, override, disable, and invalid', () => {
 
 // pi-ai providers never throw: they catch the failure and push an `error`
 // event (usually right after a `start` marker) carrying the AssistantMessage.
-const piErrorStream = (errorMessage: string, opts: { withStart?: boolean; text?: string } = {}) => {
+const piErrorStream = (
+  errorMessage: string,
+  opts: { withStart?: boolean; text?: string; emptyBlocks?: Array<'text_start' | 'thinking_start'> } = {},
+) => {
   const message = {
     role: 'assistant',
     content: opts.text ? [{ type: 'text', text: opts.text }] : [],
@@ -197,6 +200,7 @@ const piErrorStream = (errorMessage: string, opts: { withStart?: boolean; text?:
   return {
     async *[Symbol.asyncIterator]() {
       if (opts.withStart !== false) yield { type: 'start', partial: message } as never;
+      for (const type of opts.emptyBlocks ?? []) yield { type, contentIndex: 0, partial: message } as never;
       if (opts.text) yield { type: 'text_delta', delta: opts.text } as never;
       yield { type: 'error', reason: 'error', error: message } as never;
     },
@@ -238,6 +242,25 @@ test('retries a pi-style error event even without a preceding start marker', asy
   const stream = await withStreamRetry(base, { maxRetries: 2, sleep: noSleep })(model, context, undefined);
   assert.deepEqual(await drainTypes(stream), ['text_delta:ok']);
   assert.equal(attempts, 2);
+});
+
+test('retries a pi-style error event that follows only empty text/thinking block openers', async () => {
+  let attempts = 0;
+  const base: StreamFn = (() => {
+    attempts += 1;
+    if (attempts === 1) return piErrorStream('terminated', { emptyBlocks: ['thinking_start', 'text_start'] });
+    return fakeStream(['ok']);
+  }) as StreamFn;
+
+  const stream = await withStreamRetry(base, { maxRetries: 2, sleep: noSleep })(model, context, undefined);
+  assert.deepEqual(await drainTypes(stream), ['text_delta:ok'], 'the failed attempt\'s empty openers never leak');
+  assert.equal(attempts, 2);
+});
+
+test('passes held empty block openers through in order when real output follows', async () => {
+  const base: StreamFn = (() => piErrorStream('429 Too Many Requests', { emptyBlocks: ['text_start'], text: 'hi' })) as StreamFn;
+  const stream = await withStreamRetry(base, { maxRetries: 2, sleep: noSleep })(model, context, undefined);
+  assert.deepEqual(await drainTypes(stream), ['start', 'text_start', 'text_delta:hi', 'error']);
 });
 
 test('does NOT retry a non-retryable pi-style error event; it is passed through', async () => {
@@ -295,7 +318,11 @@ test('retry decision is consistent with the user-facing classifier', () => {
     assert.equal(isRetryableStreamError(new Error(raw)), true, raw);
     assert.equal(classifyModelError(raw), 'unavailable', raw);
   }
-  for (const raw of ['402 Payment Required', '429 rate limit', '401 Unauthorized', 'prompt is too long', '404 no endpoints found']) {
+  for (const raw of [
+    '402 Payment Required', '429 rate limit', '401 Unauthorized', 'prompt is too long', '404 no endpoints found',
+    // A permanent routing error quoting an upstream 5xx is still permanent.
+    '404 No endpoints found. Last provider error: 503 Service Unavailable',
+  ]) {
     assert.equal(isRetryableStreamError(new Error(raw)), false, raw);
   }
   // A quota message that happens to mention a 5xx-looking number is quota, not retryable.
