@@ -66,10 +66,11 @@ export interface RunnerSession extends SessionDescriptor {
   resolvedChannel?: string;
   resolvedChannelUserId?: string;
   /** messageIds currently being accepted by `postMessage` (between the dedupe
-   *  check and the user-entry write). Checked/added synchronously before any
-   *  await so two concurrent re-deliveries of the same messageId can't both
-   *  pass the DB-backed dedupe check and trigger two turns. */
-  inflightMessageIds?: Set<string>;
+   *  check and the user-entry write), mapped to that original acceptance.
+   *  Checked/added synchronously before any await so two concurrent
+   *  re-deliveries of the same messageId can't both pass the DB-backed dedupe
+   *  check and trigger two turns; a duplicate awaits the original's outcome. */
+  inflightMessageIds?: Map<string, Promise<unknown>>;
   langfuseTurnContext?: LangfuseTurnContext;
   turnStartMs?: number;
   /** Per-turn inactivity watchdog. Armed at turn start, re-armed on every

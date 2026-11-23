@@ -1810,20 +1810,29 @@ export class AgentRunner implements SessionRuntime {
     //
     // The DB lookup alone is racy: two concurrent re-deliveries can both miss
     // it before either writes the user entry. So we first claim the messageId
-    // in an in-memory in-flight set — checked and added synchronously, before
+    // in an in-memory in-flight map — checked and added synchronously, before
     // any await — and release it once the entry is persisted (or we bail).
+    //
+    // A duplicate that hits the claim waits for the original's outcome rather
+    // than answering "not triggered" while it is still unknown: if the
+    // original fails, the duplicate fails the same way so the sender knows to
+    // retry instead of treating the message as accepted.
     const inflightId = message.messageId;
-    if (inflightId) {
-      const inflight = (session.inflightMessageIds ??= new Set<string>());
-      if (inflight.has(inflightId)) {
-        return { sessionId, messageId: inflightId, triggered: false };
-      }
-      inflight.add(inflightId);
+    if (!inflightId) {
+      return this.postMessageClaimed(session, sessionId, message);
     }
+    const inflight = (session.inflightMessageIds ??= new Map<string, Promise<unknown>>());
+    const original = inflight.get(inflightId);
+    if (original) {
+      await original;
+      return { sessionId, messageId: inflightId, triggered: false };
+    }
+    const accepted = this.postMessageClaimed(session, sessionId, message);
+    inflight.set(inflightId, accepted);
     try {
-      return await this.postMessageClaimed(session, sessionId, message);
+      return await accepted;
     } finally {
-      if (inflightId) session.inflightMessageIds?.delete(inflightId);
+      if (inflight.get(inflightId) === accepted) inflight.delete(inflightId);
     }
   }
 

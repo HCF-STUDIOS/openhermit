@@ -2368,6 +2368,48 @@ test('AgentRunner.postMessage dedupes concurrent re-deliveries of the same messa
   assert.equal(later.triggered, false);
 });
 
+test('AgentRunner.postMessage: a concurrent re-delivery fails when the original acceptance fails', async (t) => {
+  // A duplicate must not report a final "not triggered" while the original is
+  // still in flight: if the original then fails, the sender would believe the
+  // message was accepted and never retry.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([() => createTextResponseStream('reply')]),
+  });
+  const sessionId = 'cli:post-dup-original-fails';
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  const internals = runner as unknown as { persistSessionIndex: (s: unknown) => Promise<void> };
+  const persist = internals.persistSessionIndex.bind(runner);
+  let failNext = true;
+  internals.persistSessionIndex = async (session) => {
+    if (failNext) {
+      failNext = false;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      throw new Error('store unavailable');
+    }
+    return persist(session);
+  };
+
+  const [original, duplicate] = await Promise.allSettled([
+    runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' }),
+    runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' }),
+  ]);
+  assert.equal(original.status, 'rejected');
+  assert.equal(duplicate.status, 'rejected', 'the duplicate surfaces the failure instead of a silent no-op');
+
+  // Nothing was persisted and the claim was released: a retry is accepted.
+  const retry = await runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' });
+  assert.equal(retry.triggered, true);
+  await runner.waitForSessionIdle(sessionId);
+});
+
 test('AgentRunner runs a queued group turn with its own sender role, not the next poster role', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
