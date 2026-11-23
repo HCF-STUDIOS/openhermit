@@ -1,3 +1,5 @@
+import { posix } from 'node:path';
+
 import type { UserRole } from '@openhermit/store';
 
 // ── Grant ───────────────────────────────────────────────────────────────
@@ -243,6 +245,22 @@ const normalizeCommand = (cmd: string): string =>
   cmd.trim().replace(/\s+/g, ' ');
 
 /**
+ * Does `cwd` fall inside the policy's `cwdScope` directory? Both sides are
+ * normalized (so `/data/../etc` can't pass as `/data`) and matched on path
+ * segment boundaries (so a `/data` rule doesn't also cover `/data-secret`).
+ */
+export const cwdWithinScope = (cwd: string, cwdScope: string): boolean => {
+  const strip = (p: string): string => {
+    const n = posix.normalize(p);
+    return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
+  };
+  const dir = strip(cwd);
+  const scope = strip(cwdScope);
+  if (scope === '/') return dir.startsWith('/');
+  return dir === scope || dir.startsWith(`${scope}/`);
+};
+
+/**
  * Resolve exec command-level matches. Returns `undefined` when no exec row
  * applies to this (sandbox, command, cwd) — caller falls back to tool-level
  * policy. An unrelated command rule must not silently deny other commands.
@@ -265,7 +283,7 @@ export const resolveExecMatches = (
 
     const cwdScope = typeof s.cwd === 'string' ? s.cwd : undefined;
     if (cwdScope && cwdScope !== '*' && cwd) {
-      if (!cwd.startsWith(cwdScope)) continue;
+      if (!cwdWithinScope(cwd, cwdScope)) continue;
     } else if (cwdScope && cwdScope !== '*' && !cwd) {
       continue;
     }

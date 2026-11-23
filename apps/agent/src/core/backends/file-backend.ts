@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
   appendFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -123,28 +125,50 @@ export class HostFileBackend implements FileBackend {
     try {
       real = await realpath(hostPath);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !mustExist) {
-        const parent = path.dirname(hostPath);
-        try {
-          const realParent = await realpath(parent);
-          if (realParent !== root && !realParent.startsWith(`${root}/`)) {
-            throw new ValidationError(
-              `path resolves outside the sandbox root (symlink escape in parent directory).`,
-            );
-          }
-        } catch (parentErr) {
-          if (parentErr instanceof ValidationError) throw parentErr;
-        }
-        return hostPath;
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT' || mustExist) throw err;
+      // Target doesn't exist yet. A dangling symlink lands here too (realpath
+      // fails on its missing target) but a write would follow it out of the
+      // root, so refuse any symlink at the final component.
+      const own = await lstat(hostPath).catch(() => undefined);
+      if (own?.isSymbolicLink()) {
+        throw new ValidationError('path is a symlink to a missing target; refusing to write through it.');
       }
-      throw err;
+      // Check the nearest EXISTING ancestor, not just the immediate parent:
+      // with `a/link/new/file` where `link` points outside the root, the
+      // parent `a/link/new` doesn't exist and mkdir -p would create it on
+      // the far side of the link.
+      await this.assertNearestAncestorInside(path.dirname(hostPath), root);
+      return hostPath;
     }
-    if (real !== root && !real.startsWith(`${root}/`)) {
-      throw new ValidationError(
-        `path resolves outside the sandbox root (symlink escape detected).`,
-      );
-    }
+    this.assertInsideRoot(real, root, 'path resolves outside the sandbox root (symlink escape detected).');
     return real;
+  }
+
+  private assertInsideRoot(real: string, root: string, message: string): void {
+    if (real !== root && !real.startsWith(`${root}/`)) {
+      throw new ValidationError(message);
+    }
+  }
+
+  private async assertNearestAncestorInside(dir: string, root: string): Promise<void> {
+    let current = dir;
+    for (;;) {
+      try {
+        const realDir = await realpath(current);
+        this.assertInsideRoot(
+          realDir,
+          root,
+          'path resolves outside the sandbox root (symlink escape in parent directory).',
+        );
+        return;
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        const up = path.dirname(current);
+        if (up === current) return;
+        current = up;
+      }
+    }
   }
 
   async read(filePath: string): Promise<FileReadResult> {
@@ -163,9 +187,20 @@ export class HostFileBackend implements FileBackend {
   async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
     const resolved = await this.resolve(filePath, false);
     await mkdir(path.dirname(resolved), { recursive: true });
+    // Re-check after mkdir: a dangling-symlink path component (or a swap
+    // since resolve) could have redirected the created directories.
+    this.assertInsideRoot(
+      await realpath(path.dirname(resolved)),
+      await this.getRealHostRoot(),
+      'path resolves outside the sandbox root (symlink escape in parent directory).',
+    );
+    // O_NOFOLLOW: never write through a symlink planted at the final
+    // component between the check above and the open.
+    const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+    const { O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_EXCL } = fsConstants;
     if (mode === 'create') {
       try {
-        await writeFile(resolved, data, { flag: 'wx' });
+        await writeFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_EXCL | noFollow });
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
           throw new ValidationError(`File already exists (mode=create): ${filePath}`);
@@ -173,9 +208,9 @@ export class HostFileBackend implements FileBackend {
         throw err;
       }
     } else if (mode === 'append') {
-      await appendFile(resolved, data);
+      await appendFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_APPEND | noFollow });
     } else {
-      await writeFile(resolved, data);
+      await writeFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_TRUNC | noFollow });
     }
   }
 

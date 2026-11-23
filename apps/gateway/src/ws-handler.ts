@@ -24,10 +24,10 @@ import {
 import type { AgentRunner, SessionEventEnvelope } from '@openhermit/agent/agent-runner';
 
 import type { AgentInstanceManager } from './agent-instance.js';
-import { UnauthorizedError } from '@openhermit/shared';
+import { UnauthorizedError, ValidationError } from '@openhermit/shared';
 
 import type { AuthContext, AuthResolverOptions } from './auth.js';
-import { enforceSenderIdentity, resolveAuth } from './auth.js';
+import { enforceSenderIdentity, enforceSessionNamespace, resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
 import {
   researchEvidenceToWire,
@@ -106,6 +106,9 @@ const requireSessionAccess = async (
   callerUserId: string | undefined,
   sessionId: string,
 ): Promise<void> => {
+  // Channel tokens are confined to their own `<namespace>:` sessions on
+  // both transports (HTTP routes call the same helper).
+  if (conn.auth) enforceSessionNamespace(conn.auth, sessionId);
   if (conn.auth?.mode === 'admin') return;
   if (!callerUserId) {
     throw new SessionAccessDeniedError(`Session not found: ${sessionId}`);
@@ -148,6 +151,7 @@ const handleRequest = async (
         // Pass the caller's channel identity directly so the runtime can
         // pin the current speaker without round-tripping through session
         // metadata (which historically caused cross-channel pollution).
+        enforceSessionNamespace(conn.auth, p.sessionId);
         const caller = conn.auth.mode === 'user' && conn.auth.channelUserId
           ? { channel: conn.auth.channel, channelUserId: conn.auth.channelUserId }
           : undefined;
@@ -459,6 +463,10 @@ const handleRequest = async (
       sendError(ws, id, 'UNAUTHORIZED', message);
       return;
     }
+    if (error instanceof ValidationError) {
+      sendError(ws, id, 'INVALID_PARAMS', message);
+      return;
+    }
     sendError(ws, id, 'INTERNAL_ERROR', message);
   }
 };
@@ -510,7 +518,9 @@ export const attachGatewayWs = (
       if (resolved) auth = resolved;
     }
 
-    if (!auth) {
+    // A channel token is minted for exactly one agent; refuse to let it
+    // open a socket on any other (mirrors requireAuth on the HTTP side).
+    if (!auth || (auth.mode === 'channel' && auth.agentId && auth.agentId !== agentId)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
