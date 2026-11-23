@@ -2646,3 +2646,101 @@ test('AgentRunner: an unresolvable sender is rejected instead of inheriting the 
   await runner.waitForSessionIdle(sessionId);
   assert.equal(toolsPerCall.length, 1, 'no turn ran for the unresolved sender');
 });
+
+test('AgentRunner: a duplicate delivery during concurrent cold loads triggers exactly one turn', async (t) => {
+  // Two deliveries of one messageId reach a runner that does not have the
+  // session in memory (gateway restart / eviction). Both cold-load it at once;
+  // they must share one RunnerSession, or each copy's private dedupe map lets
+  // its delivery through and the message runs twice.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const sessionId = 'cli:cold-load-dedupe';
+  const seeding = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => createTextResponseStream('unused'),
+  });
+  await seeding.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  let calls = 0;
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => {
+      calls += 1;
+      return createTextResponseStream('reply');
+    },
+  });
+
+  // Script the losing interleaving deterministically through store hooks:
+  //  1. both deliveries' ensureSessionLoaded reads land together, so both see
+  //     a cold session and both start opening it;
+  //  2. the second open is held until the first delivery has already been
+  //     posted (reached the persisted-log dedupe lookup) on its session;
+  //  3. both dedupe lookups are held until both have run, so neither sees the
+  //     other's entry in the log.
+  // With separate RunnerSessions each delivery passes its own session's
+  // in-flight claim and both run a turn. With opens of one id sharing a
+  // single in-flight load, the second delivery reuses the first's session,
+  // waits on its claim and never reaches the lookup (the holds then fall
+  // through on a short timeout).
+  const store = (runner as unknown as {
+    store: {
+      sessions: { get: (...args: unknown[]) => Promise<unknown> };
+      messages: { findEntryIdByMessageId: (...args: unknown[]) => Promise<unknown> };
+    };
+  }).store;
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const hold = (p: Promise<void>) =>
+    Promise.race([p, new Promise((resolve) => setTimeout(resolve, 300))]);
+  const bothLoadReads = deferred();
+  const firstLookup = deferred();
+  const bothLookups = deferred();
+
+  const realGet = store.sessions.get.bind(store.sessions);
+  let gets = 0;
+  store.sessions.get = async (...args: unknown[]) => {
+    const n = ++gets;
+    const result = await realGet(...args);
+    if (n <= 2) {
+      if (n === 2) bothLoadReads.resolve();
+      await hold(bothLoadReads.promise);
+    } else if (n === 4) {
+      await hold(firstLookup.promise);
+    }
+    return result;
+  };
+  const realLookup = store.messages.findEntryIdByMessageId.bind(store.messages);
+  let lookups = 0;
+  store.messages.findEntryIdByMessageId = async (...args: unknown[]) => {
+    const n = ++lookups;
+    const result = await realLookup(...args);
+    if (n === 1) firstLookup.resolve();
+    if (n === 2) bothLookups.resolve();
+    await hold(bothLookups.promise);
+    return result;
+  };
+
+  const deliver = async () => {
+    await runner.ensureSessionLoaded(sessionId);
+    return runner.postMessage(sessionId, { messageId: 'cold-dup', text: 'buy 1 eth' });
+  };
+  const results = await Promise.all([deliver(), deliver()]);
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(
+    results.filter((r) => r.triggered).length,
+    1,
+    'exactly one delivery triggers a turn',
+  );
+  assert.equal(calls, 1, 'the model ran once');
+  const entries = await readSessionLog(runner, sessionId);
+  assert.equal(entries.filter((e) => e.messageId === 'cold-dup').length, 1);
+});

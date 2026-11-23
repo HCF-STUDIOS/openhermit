@@ -262,6 +262,13 @@ export class AgentRunner implements SessionRuntime {
   private readonly scope: StoreScope;
 
   private readonly sessions = new Map<string, RunnerSession>();
+  /**
+   * In-flight openSession calls per session id. Opens of one id are
+   * serialized on this chain so two concurrent cold loads cannot each build
+   * a RunnerSession (each with its own messageId dedupe map, queue and
+   * Agent): the first creates it, later ones take the reopen branch.
+   */
+  private readonly openingSessions = new Map<string, Promise<unknown>>();
 
   /** Channel outbound adapters registered after startup (keyed by channel name). */
   private readonly channelOutbound = new Map<string, import('@openhermit/protocol').ChannelOutbound>();
@@ -952,6 +959,23 @@ export class AgentRunner implements SessionRuntime {
   }
 
   async openSession(spec: SessionSpec, caller?: Caller): Promise<SessionDescriptor> {
+    const sessionId = spec.sessionId;
+    const previous = this.openingSessions.get(sessionId);
+    const opening = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      return this.openSessionSerialized(spec, caller);
+    })();
+    this.openingSessions.set(sessionId, opening);
+    try {
+      return await opening;
+    } finally {
+      if (this.openingSessions.get(sessionId) === opening) {
+        this.openingSessions.delete(sessionId);
+      }
+    }
+  }
+
+  private async openSessionSerialized(spec: SessionSpec, caller?: Caller): Promise<SessionDescriptor> {
     const existing = this.sessions.get(spec.sessionId);
     const now = new Date().toISOString();
 
@@ -1205,6 +1229,10 @@ export class AgentRunner implements SessionRuntime {
    * NotFoundError when no persisted row exists either.
    */
   async ensureSessionLoaded(sessionId: string, caller?: Caller): Promise<void> {
+    // A concurrent cold load of the same session may be in flight: wait for
+    // it rather than building a second RunnerSession alongside it.
+    const pending = this.openingSessions.get(sessionId);
+    if (pending) await pending.catch(() => undefined);
     if (this.sessions.has(sessionId)) return;
     const persisted = await this.store.sessions.get(this.scope, sessionId);
     if (!persisted) {
