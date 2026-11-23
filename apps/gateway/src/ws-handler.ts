@@ -27,8 +27,9 @@ import type { AgentInstanceManager } from './agent-instance.js';
 import { UnauthorizedError } from '@openhermit/shared';
 
 import type { AuthContext, AuthResolverOptions } from './auth.js';
-import { authenticatedSender, enforceSenderIdentity, resolveAuth } from './auth.js';
+import { enforceSenderIdentity, resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
+import { authenticatedSender } from './auth.js';
 import {
   researchEvidenceToWire,
   researchRunToWire,
