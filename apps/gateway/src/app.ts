@@ -3956,9 +3956,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     },
   });
 
-  app.post(gatewayRoutes.agentVoiceSttPattern, sttBodyLimit, async (c) => {
+  // Authorize first, so a caller with no binding on the agent never gets
+  // the gateway to read (up to the limit of) a body it will reject anyway.
+  app.post(gatewayRoutes.agentVoiceSttPattern, async (c, next) => {
+    await requireVoiceAccess(c, c.req.param('agentId') ?? '');
+    await next();
+  }, sttBodyLimit, async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    await requireVoiceAccess(c, agentId);
     const body = await c.req.json().catch(() => null) as
       | { bytes?: string; mimeType?: string; languageHint?: string }
       | null;

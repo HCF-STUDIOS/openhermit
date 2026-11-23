@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import {
-  appendFile,
   lstat,
   mkdir,
+  open as fsOpen,
+  readlink,
   readdir,
-  readFile,
+  type FileHandle,
   realpath,
   stat as fsStat,
   unlink,
-  writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -174,8 +174,12 @@ export class HostFileBackend implements FileBackend {
   async read(filePath: string): Promise<FileReadResult> {
     const resolved = await this.resolve(filePath);
     try {
-      const data = await readFile(resolved);
-      return { data };
+      const handle = await this.openVerified(resolved, fsConstants.O_RDONLY);
+      try {
+        return { data: await handle.readFile() };
+      } finally {
+        await handle.close();
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new NotFoundError(`File not found: ${filePath}`);
@@ -194,13 +198,15 @@ export class HostFileBackend implements FileBackend {
       await this.getRealHostRoot(),
       'path resolves outside the sandbox root (symlink escape in parent directory).',
     );
-    // O_NOFOLLOW: never write through a symlink planted at the final
-    // component between the check above and the open.
-    const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-    const { O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_EXCL } = fsConstants;
+    // Open WITHOUT truncating, verify where the descriptor really landed,
+    // and only then modify the file. O_NOFOLLOW guards the final component;
+    // openVerified() catches a parent directory swapped for a symlink
+    // between the checks above and the open (Node has no openat()).
+    const { O_WRONLY, O_CREAT, O_APPEND, O_EXCL } = fsConstants;
+    let handle: FileHandle;
     if (mode === 'create') {
       try {
-        await writeFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_EXCL | noFollow });
+        handle = await this.openVerified(resolved, O_WRONLY | O_CREAT | O_EXCL);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
           throw new ValidationError(`File already exists (mode=create): ${filePath}`);
@@ -208,9 +214,49 @@ export class HostFileBackend implements FileBackend {
         throw err;
       }
     } else if (mode === 'append') {
-      await appendFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_APPEND | noFollow });
+      handle = await this.openVerified(resolved, O_WRONLY | O_CREAT | O_APPEND);
     } else {
-      await writeFile(resolved, data, { flag: O_WRONLY | O_CREAT | O_TRUNC | noFollow });
+      handle = await this.openVerified(resolved, O_WRONLY | O_CREAT);
+    }
+    try {
+      if (mode === 'overwrite') await handle.truncate(0);
+      await handle.writeFile(data);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * Open `resolved` with O_NOFOLLOW, then confirm the opened descriptor is
+   * inside the sandbox root. On Linux the kernel's /proc/self/fd link gives
+   * the descriptor's true path; elsewhere the re-resolved path must be inside
+   * the root AND be the very inode we opened (a swap-and-swap-back race
+   * yields a different inode). On failure the handle is closed and nothing
+   * is read or written through it.
+   */
+  private async openVerified(resolved: string, flags: number): Promise<FileHandle> {
+    const handle = await fsOpen(resolved, flags | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+    try {
+      const root = await this.getRealHostRoot();
+      const escape = 'path resolves outside the sandbox root (symlink escape in parent directory).';
+      let fdPath: string | undefined;
+      if (process.platform === 'linux') {
+        fdPath = await readlink(`/proc/self/fd/${handle.fd}`).catch(() => undefined);
+      }
+      if (fdPath !== undefined) {
+        this.assertInsideRoot(fdPath, root, escape);
+      } else {
+        const real = await realpath(resolved);
+        this.assertInsideRoot(real, root, escape);
+        const [opened, current] = await Promise.all([handle.stat(), fsStat(real)]);
+        if (opened.dev !== current.dev || opened.ino !== current.ino) {
+          throw new ValidationError(`Access denied: ${escape}`);
+        }
+      }
+      return handle;
+    } catch (err) {
+      await handle.close().catch(() => {});
+      throw err;
     }
   }
 

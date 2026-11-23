@@ -75,6 +75,30 @@ test('HostFileBackend: nested new directories inside the root still work', async
   });
 });
 
+test('HostFileBackend: an open whose parent was swapped for an outside symlink is refused', async () => {
+  // Simulates the state right after a parent-directory swap: the checks in
+  // resolve()/write() passed earlier, but by open() time `dir` points out of
+  // the root. openVerified must reject the descriptor before any I/O.
+  await withDirs(async (root, outside) => {
+    await writeFile(path.join(outside, 'victim'), 'original');
+    await symlink(outside, path.join(root, 'dir'));
+    const files = new HostFileBackend(root, root) as unknown as {
+      openVerified: (p: string, flags: number) => Promise<unknown>;
+    };
+    const { constants } = await import('node:fs');
+    await assert.rejects(
+      () => files.openVerified(path.join(root, 'dir', 'victim'), constants.O_WRONLY | constants.O_CREAT),
+      ValidationError,
+    );
+    await assert.rejects(
+      () => files.openVerified(path.join(root, 'dir', 'victim'), constants.O_RDONLY),
+      ValidationError,
+    );
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(path.join(outside, 'victim'), 'utf8'), 'original');
+  });
+});
+
 // ── exec policy cwd scoping ─────────────────────────────────────────────
 
 test('cwdWithinScope: matches on segment boundaries after normalization', () => {

@@ -14,6 +14,8 @@ import {
   evaluateAccess,
   resolveExecMatches,
 } from '../core/policy.js';
+import { posix } from 'node:path';
+
 import { ValidationError } from '@openhermit/shared';
 
 const SandboxExecParams = Type.Object({
@@ -61,11 +63,16 @@ export const createSandboxExecTool = (
     }
 
     const backend = context.execBackendManager.get(args.alias);
+    // Resolve the cwd once (relative → under agent home, `..`/`.` collapsed)
+    // and use that same value for policy, approval and execution, so the
+    // directory that was authorized is the directory the command runs in.
+    const cwd = args.cwd === undefined
+      ? undefined
+      : posix.resolve(backend.agentHome, args.cwd);
 
     if (context.policyStore && context.agentId) {
       const execRows = await context.policyStore.list(context.agentId, 'exec');
-      const cwd = args.cwd ?? backend.agentHome;
-      const matches = resolveExecMatches(execRows, backend.id, args.command, cwd);
+      const matches = resolveExecMatches(execRows, backend.id, args.command, cwd ?? backend.agentHome);
       if (matches !== undefined) {
         const principal = buildPrincipal(context.agentId, context.currentUserId, context.currentUserRole);
         const decision = evaluateAccess(principal, matches, 'deny');
@@ -76,7 +83,7 @@ export const createSandboxExecTool = (
           await checkApprovalOrRequest(context, 'exec', `${backend.id}:${args.command}`, {
             sandbox: backend.id,
             command: args.command,
-            ...(args.cwd ? { cwd: args.cwd } : {}),
+            ...(cwd ? { cwd } : {}),
           }, args);
         }
       }
@@ -92,7 +99,7 @@ export const createSandboxExecTool = (
       ...(context.agentId ? { OPENHERMIT_AGENT_ID: context.agentId } : {}),
     };
     const result = await backend.exec(args.command, {
-      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(cwd ? { cwd } : {}),
       ...(Object.keys(sessionEnv).length > 0 ? { env: sessionEnv } : {}),
     });
 

@@ -282,3 +282,26 @@ test('voice: an oversized chunked STT body (no Content-Length) is refused', asyn
   assert.equal(res.status, 400);
   assert.ok(sent < 40, `stream should be abandoned at the limit, read ${sent} MB`);
 });
+
+test('voice: STT from a caller with no binding is refused before the body is read', async () => {
+  const h = buildHarness({ identities: { 'web:stranger': 'usr-stranger' } });
+  let pulled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > 20) return controller.close();
+      controller.enqueue(new Uint8Array(1024 * 1024));
+    },
+  });
+  const res = await h.request(`/api/agents/${AGENT}/voice/stt`, {
+    method: 'POST',
+    token: await userToken('web', 'stranger'),
+    headers: { 'content-type': 'application/json' },
+    body,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' });
+  assert.equal(res.status, 401);
+  // ReadableStream pre-pulls to fill its queue (highWaterMark 1); nothing
+  // beyond that should have been consumed.
+  assert.ok(pulled <= 1, `body should not be read, pulled ${pulled} chunks`);
+});
