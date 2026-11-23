@@ -5,6 +5,7 @@ import { syncSkillMounts } from './skill-mounts.js';
 import { Hono } from 'hono';
 import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 
 import {
@@ -3181,10 +3182,13 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // namespace, and identities are global — so a namespace that collides
     // with a builtin bridge or a first-party login channel would let the
     // token speak as those users. Reserve them.
+    const lowered = namespace.toLowerCase();
     if (
-      RESERVED_CHANNEL_NAMESPACES.has(namespace.toLowerCase()) ||
-      options.manifestRegistry.has(namespace) ||
-      Object.prototype.hasOwnProperty.call(BUILTIN_CHANNEL_DEFS, namespace)
+      RESERVED_CHANNEL_NAMESPACES.has(lowered) ||
+      Object.keys(BUILTIN_CHANNEL_DEFS).some((k) => k.toLowerCase() === lowered) ||
+      options.manifestRegistry
+        .all()
+        .some((m) => m.key.toLowerCase() === lowered || m.namespace?.toLowerCase() === lowered)
     ) {
       throw new ValidationError(`Channel namespace "${namespace}" is reserved.`);
     }
@@ -3943,13 +3947,18 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   const MAX_STT_BASE64_CHARS = 34 * 1024 * 1024;
   const MAX_TTS_TEXT_CHARS = 10_000;
 
-  app.post(gatewayRoutes.agentVoiceSttPattern, async (c) => {
+  // Enforced on the actual bytes read (covers chunked bodies with no
+  // Content-Length), before c.req.json() buffers the whole payload.
+  const sttBodyLimit = bodyLimit({
+    maxSize: MAX_STT_BASE64_CHARS + 4096,
+    onError: () => {
+      throw new ValidationError('Audio payload too large (max ~25 MB).');
+    },
+  });
+
+  app.post(gatewayRoutes.agentVoiceSttPattern, sttBodyLimit, async (c) => {
     const agentId = c.req.param('agentId') ?? '';
     await requireVoiceAccess(c, agentId);
-    const declaredLength = Number(c.req.header('content-length') ?? 0);
-    if (declaredLength > MAX_STT_BASE64_CHARS + 4096) {
-      throw new ValidationError('Audio payload too large (max ~25 MB).');
-    }
     const body = await c.req.json().catch(() => null) as
       | { bytes?: string; mimeType?: string; languageHint?: string }
       | null;

@@ -27,6 +27,7 @@ const buildHarness = (opts: {
   roles?: Record<string, 'owner' | 'user' | 'guest'>;
   /** sessionId → participant user ids */
   participants?: Record<string, string[]>;
+  manifests?: ChannelManifestRegistry;
 } = {}): Harness => {
   const identities = opts.identities ?? {};
   const roles = opts.roles ?? {};
@@ -79,7 +80,7 @@ const buildHarness = (opts: {
     instances: instances as never,
     userStore: userStore as never,
     agentChannelStore: agentChannelStore as never,
-    manifestRegistry: new ChannelManifestRegistry(),
+    manifestRegistry: opts.manifests ?? new ChannelManifestRegistry(),
     channelRegistry: channels,
     adminToken: ADMIN,
     auth: { userProviders: [], channels, jwt, adminToken: ADMIN },
@@ -237,4 +238,47 @@ test('channels: external namespace may not shadow a builtin or first-party chann
   });
   assert.equal(ok.status, 201);
   assert.equal(h.created.length, 1);
+});
+
+test('channels: a plugin manifest namespace is reserved even when it differs from its key', async () => {
+  const manifests = new ChannelManifestRegistry();
+  manifests.register({ manifestVersion: 1, key: 'plugin-chat', namespace: 'vendor-chat', displayName: 'Vendor' } as never);
+  const h = buildHarness({ manifests });
+  for (const namespace of ['plugin-chat', 'vendor-chat', 'Vendor-Chat']) {
+    const res = await h.request(`/api/agents/${AGENT}/channels`, {
+      method: 'POST',
+      token: ADMIN,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ namespace }),
+    });
+    assert.equal(res.status, 400, namespace);
+  }
+  assert.deepEqual(h.created, []);
+});
+
+test('voice: an oversized chunked STT body (no Content-Length) is refused', async () => {
+  const h = buildHarness({ identities: { 'web:alice': 'usr-alice' }, roles: { 'usr-alice': 'user' } });
+  const chunk = new TextEncoder().encode('A'.repeat(1024 * 1024));
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent === 0) controller.enqueue(new TextEncoder().encode('{"mimeType":"audio/ogg","bytes":"'));
+      if (sent >= 40) {
+        controller.enqueue(new TextEncoder().encode('"}'));
+        controller.close();
+        return;
+      }
+      sent += 1;
+      controller.enqueue(chunk);
+    },
+  });
+  const res = await h.request(`/api/agents/${AGENT}/voice/stt`, {
+    method: 'POST',
+    token: await userToken('web', 'alice'),
+    headers: { 'content-type': 'application/json' },
+    body,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' });
+  assert.equal(res.status, 400);
+  assert.ok(sent < 40, `stream should be abandoned at the limit, read ${sent} MB`);
 });
