@@ -271,6 +271,16 @@ export class ChannelPool {
       // (never overwriting) the agent's handle list: an enableChannel that ran
       // concurrently during boot must not have its handle dropped untracked.
       await this.withChannelLock(agentId, row.channelType, async () => {
+        // `row` was captured before the lock (and before loadSecurity). An
+        // enable/disable/delete that completed in between must win: re-read
+        // the row and skip if it is gone, disabled, or replaced. A row's token
+        // is immutable (rows are created/revoked, never re-keyed), so an
+        // unchanged id means the captured token is still current.
+        const current = await this.opts.channelStore.findBuiltin(agentId, row.channelType);
+        if (!current || !current.enabled || current.id !== row.id) {
+          this.opts.log(`[${agentId}] [${row.channelType}] channel changed during boot — skipping stale start`);
+          return;
+        }
         const manifest = this.opts.manifestRegistry.get(row.channelType);
         if (!manifest) {
           const errMsg = `no manifest registered for channel "${row.channelType}"`;
@@ -282,7 +292,7 @@ export class ChannelPool {
         // Never stack pollers: stop whatever is already running for this
         // channel before starting a new bridge.
         await this.stopExistingHandle(agentId, row.channelType);
-        const resolved = await security.expandSecrets({ ...row.config, enabled: true });
+        const resolved = await security.expandSecrets({ ...current.config, enabled: true });
         const { handle, status } = await startSingleChannel(manifest, resolved, {
           agentBaseUrl,
           publicAgentBaseUrl,

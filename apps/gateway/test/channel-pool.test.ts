@@ -10,14 +10,16 @@ import { ChannelPool, type ChannelPoolOptions } from '../src/channel-pool.js';
  * interleave) and counts live bridges: +1 on start, -1 on stop. A leaked
  * poller shows up as `live > 1` for one channel, or `live > 0` after disable.
  */
-const createHarness = () => {
+const createHarness = (hooks: { afterLoadActive?: (rows: Array<Record<string, unknown>>) => void } = {}) => {
   const live = new Map<string, number>();
+  const started: Array<{ key: string; token: unknown }> = [];
   const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
   const manifest = (key: string): ChannelManifest =>
     ({
       key,
       namespace: key,
-      start: async () => {
+      start: async (_config: unknown, context: { agentTokens?: Record<string, string> }) => {
+        started.push({ key, token: context.agentTokens?.[key] });
         await tick();
         live.set(key, (live.get(key) ?? 0) + 1);
         let stopped = false;
@@ -49,7 +51,10 @@ const createHarness = () => {
   const channelStore = {
     loadActive: async () => {
       await tick();
-      return rows;
+      // A snapshot, like the real store: later row changes don't reach it.
+      const snapshot = rows.map((r) => ({ ...r }));
+      hooks.afterLoadActive?.(rows);
+      return snapshot;
     },
     findBuiltin: async (_agentId: string, name: string) => {
       await tick();
@@ -78,7 +83,7 @@ const createHarness = () => {
     await tick();
     return { expandSecrets: async <T>(value: T) => value };
   };
-  return { pool, live };
+  return { pool, live, started };
 };
 
 test('ChannelPool: enable racing boot never leaves an untracked poller', async () => {
@@ -119,4 +124,30 @@ test('ChannelPool: concurrent enables of the same channel run one poller', async
   ]);
   assert.equal(live.get('telegram'), 0, 'disable stopped the poller');
   assert.equal(pool.getOutbounds('agent-1').length, 0);
+});
+
+test('ChannelPool: boot never starts a bridge from a row replaced after it was loaded', async () => {
+  // The telegram row is deleted and recreated (new id, new token) right after
+  // boot snapshotted the active rows, before boot takes the channel lock.
+  const { pool, live, started } = createHarness({
+    afterLoadActive: (rows) => {
+      const telegram = rows.find((r) => r.channelType === 'telegram')!;
+      telegram.id = 'row-telegram-2';
+      telegram.token = 'tok-telegram-new';
+    },
+  });
+
+  await pool.start();
+  assert.equal(
+    started.filter((s) => s.key === 'telegram').length,
+    0,
+    'boot skips the replaced row instead of starting it with the stale token',
+  );
+  assert.equal(live.get('slack'), 1, 'unchanged rows still start');
+
+  await pool.enableChannel('agent-1', 'telegram');
+  assert.deepEqual(started.filter((s) => s.key === 'telegram').map((s) => s.token), ['tok-telegram-new']);
+  assert.equal(live.get('telegram'), 1);
+
+  await pool.stopAll();
 });
