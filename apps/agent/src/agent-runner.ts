@@ -159,8 +159,6 @@ const addUserIdToList = (existing: string[], userId: string | undefined): string
   return existing.includes(userId) ? existing : [...existing, userId];
 };
 
-/** Default per-turn inactivity watchdog budget (10 min). Far longer than any
- *  normal model stream gap, so it only trips on a genuinely wedged turn. */
 /** Caller identity of one inbound message, captured at post time. */
 interface TurnCaller {
   userId?: string;
@@ -182,6 +180,18 @@ const applyTurnCaller = (session: RunnerSession, caller: TurnCaller): void => {
   else delete session.resolvedChannelUserId;
 };
 
+/** Snapshot the session's current resolved* identity. Must be taken
+ *  synchronously (no await between it and the state it describes). */
+const snapshotTurnCaller = (session: RunnerSession): TurnCaller => ({
+  ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
+  ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
+  ...(session.resolvedUserName ? { name: session.resolvedUserName } : {}),
+  ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
+  ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
+});
+
+/** Default per-turn inactivity watchdog budget (10 min). Far longer than any
+ *  normal model stream gap, so it only trips on a genuinely wedged turn. */
 const DEFAULT_TURN_WATCHDOG_MS = 10 * 60_000;
 
 /** After the watchdog aborts a presumed-wedged turn, wait this long for it to
@@ -1822,6 +1832,13 @@ export class AgentRunner implements SessionRuntime {
     sessionId: string,
     message: SessionMessage,
   ): Promise<{ sessionId: string; messageId?: string; triggered: boolean }> {
+    // This message's caller identity is built from message-local values only.
+    // session.resolved* is shared by every concurrent post on the session and
+    // can be rewritten by another sender during any await below, so it is
+    // read once here, before the first await, as the fallback for messages
+    // that carry no sender of their own.
+    let turnCaller: TurnCaller = snapshotTurnCaller(session);
+
     if (message.messageId) {
       const existingEntryId = await this.store.messages.findEntryIdByMessageId(
         this.scope, session.spec.sessionId, message.messageId,
@@ -1876,7 +1893,6 @@ export class AgentRunner implements SessionRuntime {
     session.lastMessagePreview = message.text;
 
     // Per-message sender resolution (for group sessions or any message with sender info)
-    let messageUserId = session.resolvedUserId;
     if (message.sender) {
       const now = new Date().toISOString();
       // Track the raw channel identity of THIS message's sender. The toolset
@@ -1888,8 +1904,21 @@ export class AgentRunner implements SessionRuntime {
       if (message.sender.channel) session.resolvedChannel = message.sender.channel;
       if (message.sender.channelUserId) session.resolvedChannelUserId = message.sender.channelUserId;
       const resolved = await this.resolveMessageSender(message.sender, now);
+      turnCaller = {
+        ...turnCaller,
+        ...(message.sender.channel ? { channel: message.sender.channel } : {}),
+        ...(message.sender.channelUserId ? { channelUserId: message.sender.channelUserId } : {}),
+      };
       if (resolved.userId) {
-        messageUserId = resolved.userId;
+        // A resolved sender fully replaces the fallback identity: never carry
+        // another user's role or name over to this one.
+        turnCaller = {
+          ...(turnCaller.channel ? { channel: turnCaller.channel } : {}),
+          ...(turnCaller.channelUserId ? { channelUserId: turnCaller.channelUserId } : {}),
+          userId: resolved.userId,
+          ...(resolved.role ? { role: resolved.role } : {}),
+          ...(resolved.userName ? { name: resolved.userName } : {}),
+        };
         // Update session's current user so system prompt reflects the latest sender
         session.resolvedUserId = resolved.userId;
         if (resolved.role) session.resolvedUserRole = resolved.role;
@@ -1901,7 +1930,8 @@ export class AgentRunner implements SessionRuntime {
     await this.persistSessionIndex(session);
 
     const receivedAt = new Date().toISOString();
-    const messageUserName = session.resolvedUserName;
+    const messageUserId = turnCaller.userId;
+    const messageUserName = turnCaller.name;
     await this.queueSideEffect(session, async () => {
       await this.store.messages.appendLogEntry(this.scope, session.spec.sessionId, {
         ts: receivedAt,
@@ -1966,18 +1996,11 @@ export class AgentRunner implements SessionRuntime {
       : message.text;
     const promptMessage = { ...message, text: promptText };
 
-    // Capture this message's caller identity now: `run` may be queued behind
-    // an in-flight turn, by which time a later message (possibly from a
-    // different user with a different role) can have overwritten the
-    // session's resolved* fields. The turn must execute with ITS OWN sender's
-    // role/tools/approval — never the next poster's.
-    const turnCaller: TurnCaller = {
-      ...(session.resolvedUserId ? { userId: session.resolvedUserId } : {}),
-      ...(session.resolvedUserRole ? { role: session.resolvedUserRole } : {}),
-      ...(session.resolvedUserName ? { name: session.resolvedUserName } : {}),
-      ...(session.resolvedChannel ? { channel: session.resolvedChannel } : {}),
-      ...(session.resolvedChannelUserId ? { channelUserId: session.resolvedChannelUserId } : {}),
-    };
+    // `run` may be queued behind an in-flight turn, by which time a later
+    // message (possibly from a different user with a different role) can have
+    // overwritten the session's resolved* fields. The turn executes with ITS
+    // OWN sender's role/tools/approval (turnCaller, built above from
+    // message-local values) — never the next poster's.
     const turnSender = isGroup && turnCaller.userId
       ? {
           userId: turnCaller.userId,

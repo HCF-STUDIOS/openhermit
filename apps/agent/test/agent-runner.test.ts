@@ -2438,3 +2438,83 @@ test('AgentRunner runs a queued group turn with its own sender role, not the nex
     'owner turn runs with the owner toolset',
   );
 });
+
+test('AgentRunner builds a turn caller from its own sender even when another post interleaves', async (t) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'web', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  const toolsPerCall: string[][] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      return createTextResponseStream('ok');
+    },
+  });
+
+  const sessionId = 'group:interleaved-caller';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+
+  // Hold the guest's post inside its first post-resolution await (after it
+  // wrote its identity into the shared session.resolved* fields) while the
+  // owner's post runs to completion and overwrites those fields.
+  let releaseGuest!: () => void;
+  const guestGate = new Promise<void>((resolve) => { releaseGuest = resolve; });
+  let guestHeld!: () => void;
+  const guestIsHeld = new Promise<void>((resolve) => { guestHeld = resolve; });
+  const internals = runner as unknown as {
+    persistSessionIndex: (s: { resolvedUserRole?: string }) => Promise<void>;
+  };
+  const persist = internals.persistSessionIndex.bind(runner);
+  let gated = false;
+  internals.persistSessionIndex = async (session) => {
+    if (!gated && session.resolvedUserRole === 'guest') {
+      gated = true;
+      guestHeld();
+      await guestGate;
+    }
+    return persist(session);
+  };
+
+  const guestPost = runner.postMessage(sessionId, {
+    messageId: 'i-1',
+    text: 'guest asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: `g-${randomBytes(4).toString('hex')}`, displayName: 'Guest' },
+  });
+  await guestIsHeld;
+  await runner.postMessage(sessionId, {
+    messageId: 'i-2',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+  releaseGuest();
+  await guestPost;
+  await runner.waitForSessionIdle(sessionId);
+
+  // The owner's turn was queued first, the guest's second.
+  assert.equal(toolsPerCall.length, 2, 'both turns ran');
+  assert.ok(toolsPerCall[0]!.includes('memory_add'), 'owner turn has the owner toolset');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'guest turn must not pick up the interleaved owner identity',
+  );
+});
