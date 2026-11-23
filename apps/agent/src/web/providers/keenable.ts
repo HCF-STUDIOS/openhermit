@@ -28,6 +28,8 @@ interface KeenableFetchResponse {
   url?: string;
   title?: string;
   content?: string;
+  truncated?: boolean;
+  total_chars?: number;
 }
 
 /**
@@ -91,22 +93,41 @@ export class KeenableWebProvider implements WebProvider {
           title: r.title || r.url,
           url: r.url,
           snippet: text.slice(0, 300),
-          ...(options?.contentMode === 'full' && text ? { content: text } : {}),
         };
       });
 
-    return filterResultsByDomains(
+    const results = filterResultsByDomains(
       mapped,
       options?.includeDomains,
       options?.excludeDomains,
     ).slice(0, limit);
+
+    if (options?.contentMode === 'full') {
+      await Promise.all(results.map(async (result) => {
+        try {
+          const page = await this.fetch(result.url, {
+            output: 'markdown',
+            maxBytes: 50_000,
+            timeoutMs: options?.timeoutMs,
+            signal: options?.signal,
+          });
+          Object.assign(result, { content: page.content });
+        } catch {
+          // Like Defuddle, page enrichment is best-effort; retain the snippet.
+        }
+      }));
+    }
+    return results;
   }
 
   async fetch(url: string, options?: WebFetchOptions): Promise<WebFetchResult> {
+    if (options?.output === 'raw') {
+      throw new Error('Keenable fetch supports markdown only; raw output is not available');
+    }
     const maxBytes = Math.min(options?.maxBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
 
     const response = await fetch(
-      `${this.endpoint('/v1/fetch')}?url=${encodeURIComponent(url)}`,
+      `${this.endpoint('/v1/fetch')}?url=${encodeURIComponent(url)}&max_chars=${maxBytes}`,
       {
         method: 'GET',
         headers: this.headers(false),
@@ -126,8 +147,9 @@ export class KeenableWebProvider implements WebProvider {
     const content = data.content ?? '';
     const encoded = new TextEncoder().encode(content);
     const contentBytes = encoded.byteLength;
-    const truncated = contentBytes > maxBytes;
-    const returnedContent = truncated
+    const localTruncated = contentBytes > maxBytes;
+    const truncated = data.truncated === true || localTruncated;
+    const returnedContent = localTruncated
       ? new TextDecoder('utf-8', { fatal: false }).decode(encoded.slice(0, maxBytes))
       : content;
     const finalUrl = data.url || url;
@@ -138,6 +160,7 @@ export class KeenableWebProvider implements WebProvider {
       content: returnedContent,
       contentBytes,
       truncated,
+      metadata: { output: 'markdown', ...(data.total_chars !== undefined ? { totalChars: data.total_chars } : {}) },
       acquisition: {
         canonicalUrl: finalUrl,
         retrievedAt: new Date().toISOString(),

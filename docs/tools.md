@@ -72,7 +72,7 @@ mcp__{serverId}__{toolName}
 
 ### Web providers
 
-`web_search` and `web_fetch` use the provider set in `config_json.web.provider`. `defuddle` is the default and needs no key. `exa` and `tavily` need `EXA_API_KEY` / `TAVILY_API_KEY` and are skipped without one. `keenable` works with or without `KEENABLE_API_KEY`: with a key it calls Keenable's keyed endpoints, without one its keyless public endpoints (shared per-IP limit of 1,000 requests/hour). Keenable logs queries and fetched URLs on its default data policy whether or not a key is sent; see [docs.keenable.ai/data-privacy](https://docs.keenable.ai/data-privacy).
+`web_search` and `web_fetch` use the provider set in `config_json.web.provider`. `defuddle` is the default and needs no key. `exa` and `tavily` need `EXA_API_KEY` / `TAVILY_API_KEY` and are skipped without one. `keenable` works with or without `KEENABLE_API_KEY`: with a key it calls Keenable's keyed endpoints, without one its keyless public endpoints (shared per-IP limit of 1,000 requests/hour). Keenable logs queries and fetched URLs on its default data policy whether or not a key is sent; see [docs.keenable.ai/data-privacy](https://docs.keenable.ai/data-privacy). Keenable `web_fetch` returns Markdown only, so `output: "raw"` returns an error. With `content_mode: "full"`, `web_search` fetches each result page.
 
 ## Access Policy
 

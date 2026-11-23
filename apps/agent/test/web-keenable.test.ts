@@ -92,7 +92,7 @@ test('keenable fetch: keyless GET with encoded url, truncates to maxBytes', asyn
 
   assert.equal(
     captured.urls[0],
-    'https://api.keenable.ai/v1/fetch/public?url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26b%3D2',
+    'https://api.keenable.ai/v1/fetch/public?url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26b%3D2&max_chars=4',
   );
   assert.equal(captured.inits[0]!.method, 'GET');
   assert.equal(headersOf(captured.inits[0]!)['X-Keenable-Title'], 'OpenHermit');
@@ -110,4 +110,46 @@ test('keenable: HTTP errors surface with status', async (t) => {
     globalThis.fetch = realFetch;
   });
   await assert.rejects(new KeenableWebProvider().search('q'), /Keenable search failed: HTTP 429/);
+});
+
+test('keenable search: full content fetches only domain-filtered pages', async (t) => {
+  const captured = stubFetch(t, { results: [
+    { title: 'in', url: 'https://docs.example.com/a', snippet: 'excerpt' },
+    { title: 'out', url: 'https://spam.net/b', snippet: 'excluded' },
+  ] });
+  const provider = new KeenableWebProvider();
+  const calls: string[] = [];
+  provider.fetch = async (url, options) => {
+    calls.push(url);
+    assert.equal(options?.output, 'markdown');
+    return { url, content: 'full page', contentBytes: 9, truncated: false };
+  };
+  const results = await provider.search('q', {
+    contentMode: 'full', includeDomains: ['example.com'],
+  });
+  assert.equal(captured.urls.length, 1);
+  assert.deepEqual(calls, ['https://docs.example.com/a']);
+  assert.equal(results[0]!.content, 'full page');
+});
+
+test('keenable fetch: rejects raw without a network call', async (t) => {
+  const captured = stubFetch(t, {});
+  await assert.rejects(
+    new KeenableWebProvider().fetch('https://example.com', { output: 'raw' }),
+    /supports markdown only/,
+  );
+  assert.equal(captured.urls.length, 0);
+});
+
+test('keenable fetch: preserves upstream truncation and character count', async (t) => {
+  const captured = stubFetch(t, {
+    content: 'short...', truncated: true, total_chars: 100_000,
+  });
+  const result = await new KeenableWebProvider().fetch('https://example.com', {
+    maxBytes: 100_000,
+  });
+  assert.equal(new URL(captured.urls[0]!).searchParams.get('max_chars'), '100000');
+  assert.equal(result.truncated, true);
+  assert.equal(result.metadata?.totalChars, 100_000);
+  assert.equal(result.contentBytes, 8);
 });
