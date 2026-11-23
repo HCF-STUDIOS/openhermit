@@ -194,6 +194,37 @@ test('UserStore: re-linking moves an orphaned owner onto a guest target without 
   assert.equal(await users.getAgentRole(scope, survivor), 'owner');
 });
 
+test('UserStore: concurrent links moving an orphan\'s last identities still prune it', async (t) => {
+  const { users } = await createTestStore(t);
+  // Two links race to move the orphan's last two identities to different
+  // users. Exactly one of them must see the orphan empty and clean it up;
+  // otherwise its owner membership is stranded on an unreachable user.
+  for (let round = 0; round < 10; round += 1) {
+    const orphan = uid('orphan');
+    const b = uid('b');
+    const c = uid('c');
+    const x = chanId();
+    const y = chanId();
+    const scope = uniqueScope();
+    for (const id of [orphan, b, c]) {
+      await users.upsert({ userId: id, createdAt: now(), updatedAt: now() });
+    }
+    await users.linkIdentity({ userId: orphan, channel: 'telegram', channelUserId: x, createdAt: now() });
+    await users.linkIdentity({ userId: orphan, channel: 'telegram', channelUserId: y, createdAt: now() });
+    await users.assignAgent(scope, orphan, 'owner', now());
+
+    await Promise.all([
+      users.linkIdentity({ userId: b, channel: 'telegram', channelUserId: x, createdAt: now() }),
+      users.linkIdentity({ userId: c, channel: 'telegram', channelUserId: y, createdAt: now() }),
+    ]);
+
+    assert.equal(await users.get(orphan), undefined, `round ${round}: orphan pruned`);
+    const owners = [await users.getAgentRole(scope, b), await users.getAgentRole(scope, c)]
+      .filter((role) => role === 'owner');
+    assert.equal(owners.length, 1, `round ${round}: owner membership carried over`);
+  }
+});
+
 test('UserStore: unlink identity', async (t) => {
   const { users } = await createTestStore(t);
   const alice = uid('alice');

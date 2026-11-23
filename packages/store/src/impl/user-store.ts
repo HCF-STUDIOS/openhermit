@@ -234,6 +234,14 @@ export class DbUserStore implements UserStore {
   }
 
   private async cleanupOrphanedUser(tx: Tx, orphanUserId: string, newUserId: string): Promise<void> {
+    // Serialize the orphan decision per orphan user. Under READ COMMITTED two
+    // concurrent links moving the orphan's last two identities would each
+    // still see the other's (uncommitted) identity, both skip cleanup, and
+    // strand the orphan's memberships (possibly the agent's owner row). With
+    // the row lock the second link waits, then counts with a fresh snapshot.
+    await tx.select({ userId: users.userId }).from(users)
+      .where(eq(users.userId, orphanUserId))
+      .for('update');
     const [row] = await tx.select({ count: sql<number>`count(*)::int` }).from(userIdentities)
       .where(eq(userIdentities.userId, orphanUserId));
     if ((row?.count ?? 0) > 0) return;
@@ -275,10 +283,12 @@ export class DbUserStore implements UserStore {
         eq(userAgents.userId, fromUserId),
         eq(userAgents.agentId, membership.agentId),
       ));
+      // Lock the target row so a concurrent assignAgent can't change its role
+      // between this read and the rank comparison/upgrade below.
       const [existing] = await tx.select().from(userAgents).where(and(
         eq(userAgents.userId, intoUserId),
         eq(userAgents.agentId, membership.agentId),
-      ));
+      )).for('update');
       if (!existing) {
         await tx.insert(userAgents).values({
           userId: intoUserId,
