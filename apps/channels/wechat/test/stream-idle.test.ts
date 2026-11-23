@@ -47,3 +47,28 @@ test('WechatBridge gives up on a stalled agent event stream and skips malformed 
   assert.equal(result.text, 'hello', 'frames received before the stall are kept');
   assert.ok(logs.some((l) => l.includes('malformed')), 'the malformed frame is logged and skipped');
 });
+
+test('WechatBridge ends the turn on a malformed agent_end frame', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  globalThis.fetch = stallingFetch(
+    'event: text_final\ndata: {"text":"hello"}\n\n'
+      + 'event: agent_end\ndata: {not json\n\n',
+  );
+
+  const logs: string[] = [];
+  const bridge = Object.assign(Object.create(WechatBridge.prototype), {
+    client: { buildEventsUrl: () => 'http://agent.invalid/events' },
+    clientToken: 'tok',
+    lastEventIds: new Map(),
+    log: (msg: string) => logs.push(msg),
+    agentStreamIdleTimeoutMs: 2_000,
+  }) as { waitForAgentResponse: (...args: unknown[]) => Promise<{ text?: string; error?: string }> };
+
+  const result = await bridge.waitForAgentResponse('s1');
+
+  assert.equal(result.error, undefined, 'agent_end ends the turn even with an unparseable payload');
+  assert.equal(result.text, 'hello');
+});

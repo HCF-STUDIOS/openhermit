@@ -392,6 +392,13 @@ export class DiscordBridge implements ChannelOutbound {
           }
           if (frame.event === 'ping') continue;
 
+          // Terminal before payload parsing: agent_end's payload is unused, and a
+          // malformed one must not leave the waiter reading pings forever.
+          if (frame.event === 'agent_end') {
+            sawAgentEnd = true;
+            continue;
+          }
+
           let payload: Record<string, unknown> = {};
           if (frame.data.length > 0) {
             try {
@@ -446,11 +453,6 @@ export class DiscordBridge implements ChannelOutbound {
                 `attachment delivery failed: ${err instanceof Error ? err.message : String(err)}`,
               );
             }
-            continue;
-          }
-
-          if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
             continue;
           }
         }
