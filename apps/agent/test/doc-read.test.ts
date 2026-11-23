@@ -6,6 +6,11 @@ import zlib from 'node:zlib';
 
 import { createCanvas } from '@napi-rs/canvas';
 
+// Name real text fonts: the generic `sans-serif` can resolve to an emoji-only
+// font (Noto Color Emoji on GitHub's ubuntu runners), which has no Latin
+// glyphs, so the "scan" renders blank and OCR finds nothing.
+const TEXT_FONT = '"DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif';
+
 import { createDocReadTool } from '../src/tools/doc-read.js';
 import type { ToolContext } from '../src/tools/shared.js';
 
@@ -51,7 +56,7 @@ function makeScanPdf(label: string, w = 300, h = 200): Buffer {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = '#000000';
-  ctx.font = `${Math.round(h / 6)}px sans-serif`;
+  ctx.font = `${Math.round(h / 6)}px ${TEXT_FONT}`;
   ctx.fillText(label, 20, h / 2);
   const jpg = canvas.toBuffer('image/jpeg', 90);
 
@@ -410,7 +415,7 @@ function pngWithText(text: string): Buffer {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, 360, 120);
   ctx.fillStyle = '#000000';
-  ctx.font = '48px sans-serif';
+  ctx.font = `48px ${TEXT_FONT}`;
   ctx.fillText(text, 20, 75);
   return canvas.toBuffer('image/png');
 }
