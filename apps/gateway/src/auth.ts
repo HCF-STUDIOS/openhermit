@@ -20,7 +20,7 @@
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { UnauthorizedError } from '@openhermit/shared';
+import { UnauthorizedError, ValidationError } from '@openhermit/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -107,6 +107,22 @@ export function enforceSenderIdentity(
     throw new UnauthorizedError(
       'A user token may only send messages as its own identity.',
     );
+  }
+}
+
+/**
+ * Enforce that channel-authenticated callers only touch sessions inside
+ * their own namespace (`<namespace>:...`). Shared by the HTTP routes and the
+ * WebSocket RPC handler so neither transport can skip it.
+ */
+export function enforceSessionNamespace(auth: AuthContext, sessionId: string): void {
+  if (auth.mode === 'channel' && auth.channelNamespace) {
+    const prefix = `${auth.channelNamespace}:`;
+    if (!sessionId.startsWith(prefix)) {
+      throw new ValidationError(
+        `Channel "${auth.channelNamespace}" can only access sessions with prefix "${prefix}".`,
+      );
+    }
   }
 }
 

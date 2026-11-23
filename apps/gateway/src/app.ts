@@ -5,6 +5,7 @@ import { syncSkillMounts } from './skill-mounts.js';
 import { Hono } from 'hono';
 import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 import { serveStatic } from '@hono/node-server/serve-static';
 
 import {
@@ -83,6 +84,7 @@ import {
   type JwtConfig,
   type UserAuthProvider,
   enforceSenderIdentity,
+  enforceSessionNamespace,
   resolveAuth,
   signJwt,
   tokensMatch,
@@ -230,18 +232,6 @@ const requireAuth = (c: any, agentId?: string): AuthContext => {
   return auth;
 };
 
-/** Enforce that channel-authenticated requests only access sessions within their namespace. */
-const enforceSessionNamespace = (auth: AuthContext, sessionId: string): void => {
-  if (auth.mode === 'channel' && auth.channelNamespace) {
-    const prefix = `${auth.channelNamespace}:`;
-    if (!sessionId.startsWith(prefix)) {
-      throw new ValidationError(
-        `Channel "${auth.channelNamespace}" can only access sessions with prefix "${prefix}".`,
-      );
-    }
-  }
-};
-
 /**
  * Resolve the caller's userId and verify they are a participant of the
  * session. Branches on auth mode so the access check can't be bypassed:
@@ -263,6 +253,9 @@ const requireSessionAccessHttp = async (
   await runtime.verifySessionAccess(sessionId, userId);
   return userId;
 };
+
+/** First-party identity channels an external channel may never claim. */
+const RESERVED_CHANNEL_NAMESPACES = new Set(['web', 'cli', 'admin', 'system', 'inbox']);
 
 // ─── App options ──────────────────────────────────────────────────────────────
 
@@ -844,7 +837,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
         }
         if (accessLevel === 'protected') {
           const expectedToken = securityDoc?.access_token as string | undefined;
-          if (!expectedToken || body.accessToken !== expectedToken) {
+          if (!expectedToken || typeof body.accessToken !== 'string' || !tokensMatch(body.accessToken, expectedToken)) {
             throw new UnauthorizedError('Invalid or missing agent access token.');
           }
         }
@@ -1674,8 +1667,11 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     const auth = requireAuth(c, agentId);
     enforceSessionNamespace(auth, sessionId);
     const runtime = await resolveRunner(instances, agentId);
-    const callerUserId = await runtime.resolveCallerUserId({ channel: auth.channel, channelUserId: auth.channelUserId });
-    await runtime.deleteSession(sessionId, callerUserId ?? undefined);
+    // Fail closed: a non-admin caller that doesn't resolve to a session
+    // participant gets 404 (previously an unresolved caller skipped the
+    // access check entirely and could delete any session).
+    const callerUserId = await requireSessionAccessHttp(auth, runtime, sessionId);
+    await runtime.deleteSession(sessionId, callerUserId);
     return c.json({ deleted: true });
   });
 
@@ -2103,7 +2099,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   // for ownership claim on connection.
   app.get('/api/agents/:agentId/ownership', async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    requireAuth(c, agentId);
+    const auth = requireAuth(c, agentId);
     if (!userStore) {
       throw new OpenHermitError('User store is not configured.', 'not_configured', 500);
     }
@@ -2117,6 +2113,18 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
     const channel = c.req.query('channel');
     const channelUserId = c.req.query('channelUserId');
+    // The identity lookup resolves (channel, channelUserId) → global user id
+    // and name, so it must not be an oracle over other people's identities:
+    // a user token may only look up itself, a channel token only identities
+    // in its own namespace. Admin is unrestricted.
+    if (channel && channelUserId) {
+      const allowed = auth.mode === 'admin'
+        || (auth.mode === 'user' && channel === auth.channel && channelUserId === auth.channelUserId)
+        || (auth.mode === 'channel' && !!auth.channelNamespace && channel === auth.channelNamespace);
+      if (!allowed) {
+        throw new UnauthorizedError('You may only look up your own identity.');
+      }
+    }
     let me: { userId: string; role: string | null; name: string | null } | null = null;
     if (channel && channelUserId) {
       const userId = await userStore.resolve(channel, channelUserId);
@@ -3170,6 +3178,20 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     if (!namespace) {
       throw new ValidationError('namespace is required.');
     }
+    // An external channel token may assert any sender identity inside its
+    // namespace, and identities are global — so a namespace that collides
+    // with a builtin bridge or a first-party login channel would let the
+    // token speak as those users. Reserve them.
+    const lowered = namespace.toLowerCase();
+    if (
+      RESERVED_CHANNEL_NAMESPACES.has(lowered) ||
+      Object.keys(BUILTIN_CHANNEL_DEFS).some((k) => k.toLowerCase() === lowered) ||
+      options.manifestRegistry
+        .all()
+        .some((m) => m.key.toLowerCase() === lowered || m.namespace?.toLowerCase() === lowered)
+    ) {
+      throw new ValidationError(`Channel namespace "${namespace}" is reserved.`);
+    }
     const existing = await store.listForAgent(agentId);
     if (existing.some((ch) => ch.namespace === namespace && !ch.revokedAt)) {
       throw new ValidationError(
@@ -3909,9 +3931,38 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
   // (channel token or user JWT), so a Telegram bridge can submit voice
   // from a chat-scoped token without needing the agent's secrets.
 
-  app.post(gatewayRoutes.agentVoiceSttPattern, async (c) => {
+  // Voice spends the agent's provider keys, so a bare gateway JWT is not
+  // enough: a user must have an explicit binding (any role) on this agent.
+  // Channel tokens are already agent-scoped by requireAuth.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const requireVoiceAccess = async (c: any, agentId: string): Promise<void> => {
+    const auth = requireAuth(c, agentId);
+    if (auth.mode !== 'user') return;
+    const userStore = options.userStore;
+    const userId = userStore ? await userStore.resolve(auth.channel, auth.channelUserId) : undefined;
+    const role = userId && userStore ? await userStore.getAgentRole({ agentId }, userId) : undefined;
+    if (!role) throw new UnauthorizedError('Not a member of this agent.');
+  };
+  /** ~25 MB of audio (the common STT provider ceiling) as base64. */
+  const MAX_STT_BASE64_CHARS = 34 * 1024 * 1024;
+  const MAX_TTS_TEXT_CHARS = 10_000;
+
+  // Enforced on the actual bytes read (covers chunked bodies with no
+  // Content-Length), before c.req.json() buffers the whole payload.
+  const sttBodyLimit = bodyLimit({
+    maxSize: MAX_STT_BASE64_CHARS + 4096,
+    onError: () => {
+      throw new ValidationError('Audio payload too large (max ~25 MB).');
+    },
+  });
+
+  // Authorize first, so a caller with no binding on the agent never gets
+  // the gateway to read (up to the limit of) a body it will reject anyway.
+  app.post(gatewayRoutes.agentVoiceSttPattern, async (c, next) => {
+    await requireVoiceAccess(c, c.req.param('agentId') ?? '');
+    await next();
+  }, sttBodyLimit, async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    requireAuth(c, agentId);
     const body = await c.req.json().catch(() => null) as
       | { bytes?: string; mimeType?: string; languageHint?: string }
       | null;
@@ -3920,6 +3971,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     }
     if (typeof body.bytes !== 'string' || body.bytes.length === 0) {
       throw new ValidationError('bytes (base64) is required.');
+    }
+    if (body.bytes.length > MAX_STT_BASE64_CHARS) {
+      throw new ValidationError('Audio payload too large (max ~25 MB).');
     }
 
     const runner = await resolveRunner(instances, agentId);
@@ -3946,7 +4000,7 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
 
   app.post(gatewayRoutes.agentVoiceTtsPattern, async (c) => {
     const agentId = c.req.param('agentId') ?? '';
-    requireAuth(c, agentId);
+    await requireVoiceAccess(c, agentId);
     const body = await c.req.json().catch(() => null) as
       | {
           text?: string;
@@ -3958,6 +4012,9 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
       | null;
     if (!body || typeof body.text !== 'string' || body.text.length === 0) {
       throw new ValidationError('text is required.');
+    }
+    if (body.text.length > MAX_TTS_TEXT_CHARS) {
+      throw new ValidationError(`text exceeds ${MAX_TTS_TEXT_CHARS} characters.`);
     }
     if (typeof body.outputMimeType !== 'string' || body.outputMimeType.length === 0) {
       throw new ValidationError('outputMimeType is required.');
