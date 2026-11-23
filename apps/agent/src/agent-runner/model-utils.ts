@@ -15,6 +15,7 @@ const SECRET_NAME_CANDIDATES: Record<string, string[]> = {
   zai: ['ZAI_API_KEY'],
   exa: ['EXA_API_KEY'],
   tavily: ['TAVILY_API_KEY'],
+  keenable: ['KEENABLE_API_KEY'],
 };
 
 export const createProviderSecretCandidates = (provider: string): string[] => {

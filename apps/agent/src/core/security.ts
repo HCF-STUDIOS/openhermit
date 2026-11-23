@@ -112,7 +112,7 @@ const ExecConfigSchema = z.object({
 });
 
 const WebConfigSchema = z.object({
-  provider: z.enum(['defuddle', 'exa', 'tavily']),
+  provider: z.enum(['defuddle', 'exa', 'tavily', 'keenable']),
 });
 
 const TelegramChannelSchema = z.object({

@@ -3804,6 +3804,10 @@ export class AgentRunner implements SessionRuntime {
     }
 
     const apiKey = this.resolveApiKey(providerName);
+    if (providerName === 'keenable') {
+      // Keenable works without a key (keyless public endpoints).
+      return createWebProvider('keenable', apiKey);
+    }
     if (!apiKey) {
       this.logRuntime(`web provider "${providerName}" skipped: no API key found`);
       return undefined;

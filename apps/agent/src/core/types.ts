@@ -101,7 +101,7 @@ export interface WorkspaceContainerConfig {
   lifecycle?: WorkspaceContainerLifecycle;
 }
 
-export type WebProviderName = 'defuddle' | 'exa' | 'tavily';
+export type WebProviderName = 'defuddle' | 'exa' | 'tavily' | 'keenable';
 
 export interface WebConfig {
   provider: WebProviderName;
