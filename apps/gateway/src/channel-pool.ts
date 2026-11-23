@@ -68,8 +68,71 @@ export class ChannelPool {
    * from `null` which means the last report was a "cleared" success.
    */
   private readonly lastReportedError = new Map<string, string | null>();
+  /**
+   * Per-(agentId, channel) promise-chain mutex. Boot (`start`), `enableChannel`
+   * and `disableChannel` each await several times between "is a bridge
+   * already running?" and "record the new one", so without serialization two
+   * overlapping calls could both start a poller for the same channel (e.g.
+   * Telegram getUpdates conflicts) and one would never be stopped.
+   */
+  private readonly channelLocks = new Map<string, Promise<unknown>>();
 
   constructor(private readonly opts: ChannelPoolOptions) {}
+
+  private withChannelLock<T>(agentId: string, channelName: string, work: () => Promise<T>): Promise<T> {
+    const key = `${agentId}\u0000${channelName}`;
+    const previous = this.channelLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(work, work);
+    const tail = run.catch(() => undefined);
+    this.channelLocks.set(key, tail);
+    void tail.then(() => {
+      if (this.channelLocks.get(key) === tail) this.channelLocks.delete(key);
+    });
+    return run;
+  }
+
+  /**
+   * Stop and forget any live handle for `channelName` on `agentId` (and drop
+   * its outbound from a hot runner). Callers hold the channel lock.
+   */
+  private async stopExistingHandle(agentId: string, channelName: string, label = 'stale '): Promise<void> {
+    const handles = this.handles.get(agentId) ?? [];
+    const idx = handles.findIndex((h) => h.name === channelName);
+    if (idx === -1) return;
+    const stale = handles[idx]!;
+    handles.splice(idx, 1);
+    if (handles.length === 0) this.handles.delete(agentId);
+    try {
+      await stale.stop();
+    } catch (err) {
+      this.opts.log(
+        `[${agentId}] error stopping ${label}${channelName}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const runner = this.opts.getRunner(agentId);
+    if (runner) runner.getChannelOutbound().delete(channelName);
+  }
+
+  /** Record a freshly started handle, merging with (never overwriting) the
+   *  agent's other channels. Callers hold the channel lock and have already
+   *  stopped any previous handle for the same channel. */
+  private installHandle(agentId: string, handle: ChannelHandle): void {
+    const handles = this.handles.get(agentId) ?? [];
+    const dup = handles.findIndex((h) => h.name === handle.name);
+    if (dup !== -1) handles.splice(dup, 1);
+    handles.push(handle);
+    this.handles.set(agentId, handles);
+    const runner = this.opts.getRunner(agentId);
+    if (runner && handle.outbound) runner.registerChannelOutbound(handle.outbound);
+  }
+
+  private setStatus(agentId: string, status: ChannelStatus): void {
+    const statuses = this.statuses.get(agentId) ?? [];
+    const existingIdx = statuses.findIndex((s) => s.name === status.name);
+    if (existingIdx !== -1) statuses[existingIdx] = status;
+    else statuses.push(status);
+    this.statuses.set(agentId, statuses);
+  }
 
   /**
    * Update in-memory status + DB error for a runtime error reported by a
@@ -201,43 +264,51 @@ export class ChannelPool {
   ): Promise<void> {
     const security = await this.loadSecurity(agentId);
     const { agentBaseUrl, publicAgentBaseUrl } = this.agentBaseUrls(agentId);
-    const startedHandles: ChannelHandle[] = [];
-    const startedStatuses: ChannelStatus[] = [];
+    const startedNames: string[] = [];
 
     for (const row of rows) {
-      const manifest = this.opts.manifestRegistry.get(row.channelType);
-      if (!manifest) {
-        const errMsg = `no manifest registered for channel "${row.channelType}"`;
-        this.opts.log(`[${agentId}] [${row.channelType}] ${errMsg} — skipping`);
-        startedStatuses.push({ name: row.channelType, status: 'error', error: errMsg });
-        await this.persistRuntime(row.id, errMsg);
-        continue;
-      }
-      const resolved = await security.expandSecrets({ ...row.config, enabled: true });
-      const { handle, status } = await startSingleChannel(manifest, resolved, {
-        agentBaseUrl,
-        publicAgentBaseUrl,
-        agentTokens: { [manifest.key]: row.token },
-        logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
-        reportRuntimeError: (error) =>
-          void this.handleRuntimeError(agentId, row.channelType, row.id, error),
-        ...(this.opts.channelCredentialStore
-          ? { credentialStore: this.opts.channelCredentialStore.scoped(agentId, row.channelType) }
-          : {}),
+      // Serialized with enable/disable for the same channel, and merged into
+      // (never overwriting) the agent's handle list: an enableChannel that ran
+      // concurrently during boot must not have its handle dropped untracked.
+      await this.withChannelLock(agentId, row.channelType, async () => {
+        const manifest = this.opts.manifestRegistry.get(row.channelType);
+        if (!manifest) {
+          const errMsg = `no manifest registered for channel "${row.channelType}"`;
+          this.opts.log(`[${agentId}] [${row.channelType}] ${errMsg} — skipping`);
+          this.setStatus(agentId, { name: row.channelType, status: 'error', error: errMsg });
+          await this.persistRuntime(row.id, errMsg);
+          return;
+        }
+        // Never stack pollers: stop whatever is already running for this
+        // channel before starting a new bridge.
+        await this.stopExistingHandle(agentId, row.channelType);
+        const resolved = await security.expandSecrets({ ...row.config, enabled: true });
+        const { handle, status } = await startSingleChannel(manifest, resolved, {
+          agentBaseUrl,
+          publicAgentBaseUrl,
+          agentTokens: { [manifest.key]: row.token },
+          logger: (channel, msg) => this.opts.log(`[${agentId}] [${channel}] ${msg}`),
+          reportRuntimeError: (error) =>
+            void this.handleRuntimeError(agentId, row.channelType, row.id, error),
+          ...(this.opts.channelCredentialStore
+            ? { credentialStore: this.opts.channelCredentialStore.scoped(agentId, row.channelType) }
+            : {}),
+        });
+        if (handle) {
+          this.installHandle(agentId, handle);
+          startedNames.push(handle.name);
+        }
+        this.setStatus(agentId, status);
+        const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
+        if (await this.persistRuntime(row.id, startErr)) {
+          this.lastReportedError.set(row.id, startErr);
+        }
       });
-      if (handle) startedHandles.push(handle);
-      startedStatuses.push(status);
-      const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
-      if (await this.persistRuntime(row.id, startErr)) {
-        this.lastReportedError.set(row.id, startErr);
-      }
     }
 
-    if (startedHandles.length > 0) this.handles.set(agentId, startedHandles);
-    if (startedStatuses.length > 0) this.statuses.set(agentId, startedStatuses);
-    if (startedHandles.length > 0) {
+    if (startedNames.length > 0) {
       this.opts.log(
-        `[${agentId}] pool started ${startedHandles.length} channel(s): ${startedHandles.map((h) => h.name).join(', ')}`,
+        `[${agentId}] pool started ${startedNames.length} channel(s): ${startedNames.join(', ')}`,
       );
     }
   }
@@ -302,6 +373,10 @@ export class ChannelPool {
    * applied via PATCH take effect on the next enable call).
    */
   async enableChannel(agentId: string, channelName: string): Promise<ChannelStatus> {
+    return this.withChannelLock(agentId, channelName, () => this.enableChannelLocked(agentId, channelName));
+  }
+
+  private async enableChannelLocked(agentId: string, channelName: string): Promise<ChannelStatus> {
     if (!this.opts.gatewayBaseUrl) {
       return { name: channelName, status: 'error', error: 'gateway base url not set' };
     }
@@ -318,21 +393,7 @@ export class ChannelPool {
     // Stop any existing handle for this channel so we never stack pollers.
     // Telegram getUpdates conflicts and stale-token 401s both trace back
     // to multiple bridges running for the same row.
-    const existingHandles = this.handles.get(agentId) ?? [];
-    const staleIdx = existingHandles.findIndex((h) => h.name === channelName);
-    if (staleIdx !== -1) {
-      const stale = existingHandles[staleIdx]!;
-      try {
-        await stale.stop();
-      } catch (err) {
-        this.opts.log(
-          `[${agentId}] error stopping stale ${channelName}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      existingHandles.splice(staleIdx, 1);
-      const runner = this.opts.getRunner(agentId);
-      if (runner) runner.getChannelOutbound().delete(channelName);
-    }
+    await this.stopExistingHandle(agentId, channelName);
 
     this.opts.channelRegistry.register({
       channelId: row.id,
@@ -348,11 +409,7 @@ export class ChannelPool {
         status: 'error',
         error: `no manifest registered for channel "${channelName}"`,
       };
-      const statuses = this.statuses.get(agentId) ?? [];
-      const existingIdx = statuses.findIndex((s) => s.name === channelName);
-      if (existingIdx !== -1) statuses[existingIdx] = errorStatus;
-      else statuses.push(errorStatus);
-      this.statuses.set(agentId, statuses);
+      this.setStatus(agentId, errorStatus);
       await this.persistRuntime(row.id, errorStatus.error ?? 'no manifest');
       return errorStatus;
     }
@@ -374,19 +431,11 @@ export class ChannelPool {
     });
 
     if (handle) {
-      const handles = this.handles.get(agentId) ?? [];
-      handles.push(handle);
-      this.handles.set(agentId, handles);
-      const runner = this.opts.getRunner(agentId);
-      if (runner && handle.outbound) runner.registerChannelOutbound(handle.outbound);
+      this.installHandle(agentId, handle);
       this.opts.log(`[${agentId}] pool started channel: ${channelName}`);
     }
 
-    const statuses = this.statuses.get(agentId) ?? [];
-    const existingIdx = statuses.findIndex((s) => s.name === channelName);
-    if (existingIdx !== -1) statuses[existingIdx] = status;
-    else statuses.push(status);
-    this.statuses.set(agentId, statuses);
+    this.setStatus(agentId, status);
 
     const startErr = status.status === 'error' ? status.error ?? 'unknown error' : null;
     if (await this.persistRuntime(row.id, startErr)) {
@@ -401,23 +450,11 @@ export class ChannelPool {
    * hot runner if one exists.
    */
   async disableChannel(agentId: string, channelName: string): Promise<void> {
-    const handles = this.handles.get(agentId) ?? [];
-    const idx = handles.findIndex((h) => h.name === channelName);
-    if (idx !== -1) {
-      const handle = handles[idx]!;
-      try {
-        await handle.stop();
-      } catch (err) {
-        this.opts.log(
-          `[${agentId}] error stopping ${channelName}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      handles.splice(idx, 1);
-      if (handles.length === 0) this.handles.delete(agentId);
+    return this.withChannelLock(agentId, channelName, () => this.disableChannelLocked(agentId, channelName));
+  }
 
-      const runner = this.opts.getRunner(agentId);
-      if (runner) runner.getChannelOutbound().delete(channelName);
-    }
+  private async disableChannelLocked(agentId: string, channelName: string): Promise<void> {
+    await this.stopExistingHandle(agentId, channelName, '');
 
     this.opts.channelRegistry.unregister(`${agentId}:${channelName}:builtin`);
 
