@@ -10,6 +10,11 @@ import * as schema from '../schema.js';
 import { users, userAgents, userIdentities, sessionEvents, schedules } from '../schema.js';
 import type { DrizzleDb } from './index.js';
 
+type Tx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
+
+/** Role strength for merges: a merge must never demote the surviving user. */
+const ROLE_RANK: Record<string, number> = { owner: 3, user: 2, guest: 1 };
+
 export class DbUserStore implements UserStore {
   private pool?: pg.Pool;
 
@@ -64,26 +69,31 @@ export class DbUserStore implements UserStore {
   }
 
   async linkIdentity(identity: UserIdentity): Promise<void> {
-    const [previous] = await this.db.select().from(userIdentities)
-      .where(and(
-        eq(userIdentities.channel, identity.channel),
-        eq(userIdentities.channelUserId, identity.channelUserId),
-      ));
-    const previousUserId = previous?.userId;
+    // Select-previous + upsert + orphan cleanup in ONE transaction: a crash or
+    // concurrent link between the steps must not strand the previous owner of
+    // this identity half-migrated (deleted user, dangling references).
+    await this.db.transaction(async (tx) => {
+      const [previous] = await tx.select().from(userIdentities)
+        .where(and(
+          eq(userIdentities.channel, identity.channel),
+          eq(userIdentities.channelUserId, identity.channelUserId),
+        ));
+      const previousUserId = previous?.userId;
 
-    await this.db.insert(userIdentities).values({
-      userId: identity.userId,
-      channel: identity.channel,
-      channelUserId: identity.channelUserId,
-      createdAt: identity.createdAt,
-    }).onConflictDoUpdate({
-      target: [userIdentities.channel, userIdentities.channelUserId],
-      set: { userId: identity.userId },
+      await tx.insert(userIdentities).values({
+        userId: identity.userId,
+        channel: identity.channel,
+        channelUserId: identity.channelUserId,
+        createdAt: identity.createdAt,
+      }).onConflictDoUpdate({
+        target: [userIdentities.channel, userIdentities.channelUserId],
+        set: { userId: identity.userId },
+      });
+
+      if (previousUserId && previousUserId !== identity.userId) {
+        await this.cleanupOrphanedUser(tx, previousUserId, identity.userId);
+      }
     });
-
-    if (previousUserId && previousUserId !== identity.userId) {
-      await this.cleanupOrphanedUser(previousUserId, identity.userId);
-    }
   }
 
   async resolve(channel: string, channelUserId: string): Promise<string | undefined> {
@@ -142,31 +152,7 @@ export class DbUserStore implements UserStore {
     await this.db.transaction(async (tx) => {
       await tx.update(userIdentities).set({ userId: intoUserId })
         .where(eq(userIdentities.userId, fromUserId));
-
-      const fromAgents = await tx.select().from(userAgents)
-        .where(eq(userAgents.userId, fromUserId));
-      // Delete the source rows BEFORE re-inserting under the target user. If
-      // fromUser owns an agent and we inserted intoUser as owner first, both
-      // owner rows would coexist mid-transaction and trip the one-owner partial
-      // unique index (migration 0036), aborting the merge. Freeing the slot
-      // first keeps the merge valid.
-      await tx.delete(userAgents).where(eq(userAgents.userId, fromUserId));
-      for (const ua of fromAgents) {
-        const [exists] = await tx.select().from(userAgents)
-          .where(and(eq(userAgents.userId, intoUserId), eq(userAgents.agentId, ua.agentId)));
-        if (!exists) {
-          await tx.insert(userAgents).values({
-            userId: intoUserId,
-            agentId: ua.agentId,
-            role: ua.role,
-            createdAt: ua.createdAt,
-          });
-        }
-      }
-
-      await tx.update(sessionEvents).set({ userId: intoUserId })
-        .where(eq(sessionEvents.userId, fromUserId));
-
+      await this.reassignUser(tx, fromUserId, intoUserId);
       await tx.delete(users).where(eq(users.userId, fromUserId));
     });
   }
@@ -247,64 +233,68 @@ export class DbUserStore implements UserStore {
     return grouped;
   }
 
-  private async cleanupOrphanedUser(orphanUserId: string, newUserId: string): Promise<void> {
-    const [row] = await this.db.select({ count: sql<number>`count(*)::int` }).from(userIdentities)
+  private async cleanupOrphanedUser(tx: Tx, orphanUserId: string, newUserId: string): Promise<void> {
+    const [row] = await tx.select({ count: sql<number>`count(*)::int` }).from(userIdentities)
       .where(eq(userIdentities.userId, orphanUserId));
     if ((row?.count ?? 0) > 0) return;
 
-    // The orphan is about to be deleted, so every reference to it must be
-    // re-pointed at the surviving user first. Leaving one dangling is not
-    // cosmetic: schedules.created_by is resolved on every scheduled firing
-    // to decide the turn's role — a deleted creator falls through to guest,
-    // silently stripping owner-gated tools (exec/CLI) from all of the
-    // agent's cron work (2026-07-31 罗洪 incident; hert's 07-17 schedule
-    // failure was the same class).
+    await this.reassignUser(tx, orphanUserId, newUserId);
+    await tx.delete(users).where(eq(users.userId, orphanUserId));
+  }
+
+  /**
+   * Re-point every reference to `fromUserId` at `intoUserId` ahead of deleting
+   * `fromUserId`. Shared by merge() and the linkIdentity orphan cleanup so the
+   * two can't drift.
+   *
+   * Leaving a reference dangling is not cosmetic: schedules.created_by is
+   * resolved on every scheduled firing to decide the turn's role — a deleted
+   * creator falls through to guest, silently stripping owner-gated tools
+   * (exec/CLI) from all of the agent's cron work (2026-07-31 罗洪 incident;
+   * hert's 07-17 schedule failure was the same class).
+   */
+  private async reassignUser(tx: Tx, fromUserId: string, intoUserId: string): Promise<void> {
+    await tx.update(sessionEvents).set({ userId: intoUserId })
+      .where(eq(sessionEvents.userId, fromUserId));
+    await tx.update(schedules).set({ createdBy: intoUserId })
+      .where(eq(schedules.createdBy, fromUserId));
+
+    // Agent roles: move each of the source's memberships to the target. Where
+    // both have a role on the same agent, keep the stronger one (owner > user
+    // > guest) — a merge must never demote the surviving user, and dropping a
+    // source owner row in favour of the target's guest row would leave the
+    // agent ownerless.
     //
-    // One transaction, like merge() below: a crash mid-migration must not
-    // leave the user deleted (or deletable) with references still dangling.
-    await this.db.transaction(async (tx) => {
-      await tx.update(sessionEvents).set({ userId: newUserId })
-        .where(eq(sessionEvents.userId, orphanUserId));
-      await tx.update(schedules).set({ createdBy: newUserId })
-        .where(eq(schedules.createdBy, orphanUserId));
-
-      // Agent roles: move each of the orphan's memberships to the survivor.
-      // Where both users have a role on the same agent, keep the stronger one
-      // (owner > user > guest) on the survivor and drop the orphan's row —
-      // a merge must never demote the surviving identity.
-      const rank: Record<string, number> = { owner: 3, user: 2, guest: 1 };
-      const orphanRoles = await tx.select().from(userAgents)
-        .where(eq(userAgents.userId, orphanUserId));
-      for (const membership of orphanRoles) {
-        const [existing] = await tx.select().from(userAgents).where(and(
-          eq(userAgents.userId, newUserId),
-          eq(userAgents.agentId, membership.agentId),
-        ));
-        if (!existing) {
-          await tx.update(userAgents)
-            .set({ userId: newUserId })
-            .where(and(
-              eq(userAgents.userId, orphanUserId),
-              eq(userAgents.agentId, membership.agentId),
-            ));
-          continue;
-        }
-        if ((rank[membership.role] ?? 0) > (rank[existing.role] ?? 0)) {
-          await tx.update(userAgents)
-            .set({ role: membership.role })
-            .where(and(
-              eq(userAgents.userId, newUserId),
-              eq(userAgents.agentId, membership.agentId),
-            ));
-        }
-        await tx.delete(userAgents).where(and(
-          eq(userAgents.userId, orphanUserId),
-          eq(userAgents.agentId, membership.agentId),
-        ));
+    // Each source row is deleted BEFORE the target row is inserted/upgraded:
+    // otherwise two owner rows would coexist mid-transaction and trip the
+    // one-owner partial unique index (migration 0036).
+    const sourceRoles = await tx.select().from(userAgents)
+      .where(eq(userAgents.userId, fromUserId));
+    for (const membership of sourceRoles) {
+      await tx.delete(userAgents).where(and(
+        eq(userAgents.userId, fromUserId),
+        eq(userAgents.agentId, membership.agentId),
+      ));
+      const [existing] = await tx.select().from(userAgents).where(and(
+        eq(userAgents.userId, intoUserId),
+        eq(userAgents.agentId, membership.agentId),
+      ));
+      if (!existing) {
+        await tx.insert(userAgents).values({
+          userId: intoUserId,
+          agentId: membership.agentId,
+          role: membership.role,
+          createdAt: membership.createdAt,
+        });
+      } else if ((ROLE_RANK[membership.role] ?? 0) > (ROLE_RANK[existing.role] ?? 0)) {
+        await tx.update(userAgents)
+          .set({ role: membership.role })
+          .where(and(
+            eq(userAgents.userId, intoUserId),
+            eq(userAgents.agentId, membership.agentId),
+          ));
       }
-
-      await tx.delete(users).where(eq(users.userId, orphanUserId));
-    });
+    }
   }
 
   private rowToUserRecord(row: typeof users.$inferSelect): UserRecord {
