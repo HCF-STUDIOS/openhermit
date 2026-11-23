@@ -73,11 +73,10 @@ export interface SafeFetchOptions {
   /** Injectable resolver for tests; drives the SSRF connection pinning. */
   resolveHost?: HostResolver | undefined;
   /**
-   * Long-lived SSRF-safe dispatcher (from `createSafeDispatcher`) shared
-   * across calls — one TLS/DNS pool per research run instead of one per
-   * fetch. Caller owns its lifecycle; when omitted a per-call dispatcher is
-   * created and closed. Must be SSRF-safe: passing a plain undici Agent here
-   * would bypass the resolve-validate-pin layer.
+   * Optional caller-owned dispatcher to reuse across calls (no caller does
+   * today). When omitted a per-call SSRF-safe dispatcher is created and
+   * closed. Must be SSRF-safe (e.g. `createSsrfSafeAgent`): passing a plain
+   * undici Agent here would bypass the resolve-validate-pin layer.
    */
   dispatcher?: Dispatcher | undefined;
 }
@@ -93,14 +92,6 @@ export interface SafeFetchResult {
   finalUrl: string;
   redirects: number;
 }
-
-/**
- * Build a shareable SSRF-safe dispatcher for callers that make many
- * `safeFetch` calls (one per research run, not one per page).
- * Caller must `await dispatcher.close()` when done.
- */
-export const createSafeDispatcher = (resolveHost?: HostResolver): Agent =>
-  createSsrfSafeAgent(resolveHost);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_REDIRECTS = 5;

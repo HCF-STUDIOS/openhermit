@@ -1028,8 +1028,8 @@ export class GatewayClient {
   }
 
   /**
-   * Read or write the agent's security policy (autonomy, approvals,
-   * `access` level, `access_token`, channel tokens). Owner / admin only.
+   * Read or write the agent's security policy (`access`
+   * level, `access_token`, channel tokens). Owner / admin only.
    */
   async getAgentSecurity(agentId: string): Promise<Record<string, unknown>> {
     return this.getJson(`/api/agents/${encodeURIComponent(agentId)}/security`);

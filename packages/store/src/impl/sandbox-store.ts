@@ -120,19 +120,11 @@ export class DbSandboxStore implements SandboxStore {
 
   async delete(id: string): Promise<void> {
     // Soft delete: keep the row for audit, but it stops being selected by
-    // listByAgent / getByAlias / findAgentByType.
+    // listByAgent / getByAlias.
     await this.db
       .update(sandboxes)
       .set({ status: 'deleted', updatedAt: new Date().toISOString() })
       .where(eq(sandboxes.id, id));
-  }
-
-  async findAgentByType(type: string, excludeAgentId?: string): Promise<string | null> {
-    const where = excludeAgentId
-      ? and(eq(sandboxes.type, type), ne(sandboxes.agentId, excludeAgentId), ne(sandboxes.status, 'deleted'))
-      : and(eq(sandboxes.type, type), ne(sandboxes.status, 'deleted'));
-    const [row] = await this.db.select({ agentId: sandboxes.agentId }).from(sandboxes).where(where).limit(1);
-    return row?.agentId ?? null;
   }
 
   private rowToRecord(row: typeof sandboxes.$inferSelect): SandboxRecord {

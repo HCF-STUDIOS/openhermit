@@ -5,7 +5,7 @@ import { api } from '../api';
  * Raw JSON editor for the agent's security policy. Same shape as
  * ConfigDialog; backed by GET/PUT /api/agents/:id/security. Lets owners
  * flip `access` between public/protected/private, set `access_token`,
- * tweak `autonomy_level`, etc. without going through the database.
+ * edit `channel_tokens`, etc. without going through the database.
  *
  * The gateway validates `access` is one of the three known values and
  * the runtime reloads its in-memory policy after a successful PUT.
@@ -58,8 +58,8 @@ export function SecurityDialog({ agentId, onClose }: { agentId: string; onClose:
           <code>access</code> ∈ <code>"public"</code> / <code>"protected"</code> /{' '}
           <code>"private"</code>. <code>"protected"</code> requires an{' '}
           <code>access_token</code>. Other fields:{' '}
-          <code>autonomy_level</code>, <code>require_approval_for</code>,{' '}
-          <code>channel_tokens</code>.
+          <code>channel_tokens</code>. Tool approval / deny rules live in
+          policy rows, not here.
         </p>
         <textarea
           className="config-editor"

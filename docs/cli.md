@@ -217,7 +217,7 @@ channel tokens. See [User Model — Access Levels](user-model.md#access-levels).
 hermit config security show --agent main
 hermit config security set access private --agent main
 hermit config security set access_token "shared-secret" --agent main
-echo '{"autonomy_level":"full","access":"public","require_approval_for":[]}' \
+echo '{"access":"public"}' \
   | hermit config security write --agent main
 ```
 

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import pg from 'pg';
 import { createStorePool } from './pool.js';
 
@@ -137,26 +137,21 @@ export class DbApprovalRequestStore implements ApprovalRequestStore {
     return updated;
   }
 
-  async expireOld(): Promise<number> {
-    const now = new Date();
-    const pending = await this.db
-      .select()
-      .from(approvalRequests)
-      .where(eq(approvalRequests.status, 'pending'));
-
-    let count = 0;
-    for (const row of pending) {
-      const created = new Date(row.createdAt);
-      const expiresAt = new Date(created.getTime() + (row.ttlMinutes ?? 60) * 60_000);
-      if (now > expiresAt) {
-        await this.db
-          .update(approvalRequests)
-          .set({ status: 'expired', resolvedAt: now.toISOString() })
-          .where(eq(approvalRequests.id, row.id));
-        count++;
-      }
-    }
-    return count;
+  /**
+   * Mark every pending request whose TTL has elapsed as `expired`, in a
+   * single UPDATE. Returns the number of rows expired.
+   */
+  async expireOld(now: Date = new Date()): Promise<number> {
+    const nowIso = now.toISOString();
+    const expired = await this.db
+      .update(approvalRequests)
+      .set({ status: 'expired', resolvedAt: nowIso })
+      .where(and(
+        eq(approvalRequests.status, 'pending'),
+        sql`${approvalRequests.createdAt}::timestamptz + ${approvalRequests.ttlMinutes} * interval '1 minute' < ${nowIso}::timestamptz`,
+      ))
+      .returning({ id: approvalRequests.id });
+    return expired.length;
   }
 }
 

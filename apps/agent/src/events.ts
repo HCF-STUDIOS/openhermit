@@ -378,8 +378,3 @@ export class AgentEventBus {
     }
   }
 }
-
-/** Convenience type for plugin authors: a scoped subset of the bus. */
-export interface PluginEventApi {
-  on: AgentEventBus['on'];
-}

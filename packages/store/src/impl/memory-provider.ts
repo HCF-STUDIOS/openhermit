@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 
 import type { MemoryProvider } from '../interfaces.js';
 import type { MemoryAddInput, MemoryEntry, MemorySearchOptions, MemoryUpdateInput, StoreScope } from '../types.js';
@@ -229,16 +229,5 @@ export class DbMemoryProvider implements MemoryProvider {
   async delete(scope: StoreScope, id: string): Promise<void> {
     await this.db.delete(memories)
       .where(and(eq(memories.agentId, scope.agentId), eq(memories.memoryKey, id)));
-  }
-
-  async getContextBlock(scope: StoreScope, options?: { limit?: number | undefined }): Promise<string | undefined> {
-    const limit = Math.max(1, Math.min(50, options?.limit ?? 10));
-    const rows = await this.db.select({ memoryKey: memories.memoryKey, content: memories.content })
-      .from(memories)
-      .where(eq(memories.agentId, scope.agentId))
-      .orderBy(desc(memories.updatedAt))
-      .limit(limit);
-    if (rows.length === 0) return undefined;
-    return rows.map((row) => `## ${row.memoryKey}\n${row.content}`).join('\n\n');
   }
 }

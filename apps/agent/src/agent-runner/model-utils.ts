@@ -1,4 +1,5 @@
-import { getModel, getModels, type Model } from '@earendil-works/pi-ai/compat';
+import type { Model } from '@earendil-works/pi-ai';
+import { getBuiltinModel, getBuiltinModels } from '@earendil-works/pi-ai/providers/all';
 
 import { ValidationError } from '@openhermit/shared';
 
@@ -105,7 +106,7 @@ const applyDeepseekFlashCaps = (model: Model<any>): Model<any> => {
 /** Resolve a Model from pi-ai's built-in registry, if it carries it. */
 const tryRegistry = (provider: string, modelId: string): Model<any> | undefined => {
   try {
-    return getModel(provider as never, modelId as never) as Model<any> | undefined;
+    return getBuiltinModel(provider as never, modelId as never) as Model<any> | undefined;
   } catch {
     return undefined;
   }
@@ -134,7 +135,7 @@ const familyWords = (id: string): string[] =>
 const tryRetiredSibling = (provider: string, modelId: string): Model<any> | undefined => {
   let models: Model<any>[];
   try {
-    models = getModels(provider as never) as Model<any>[];
+    models = getBuiltinModels(provider as never) as Model<any>[];
   } catch {
     return undefined;
   }

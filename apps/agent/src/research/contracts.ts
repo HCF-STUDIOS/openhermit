@@ -34,13 +34,6 @@ export const TERMINAL_RESEARCH_STATUSES: readonly ResearchRunStatus[] = [
   'cancelled',
 ];
 
-/** Stopped but resumable through explicit user action. */
-export const STOPPED_RESEARCH_STATUSES: readonly ResearchRunStatus[] = [
-  'paused',
-  'failed',
-  'budget_exhausted',
-];
-
 /** Actively executing on the runner — chat turns conflict (409). */
 export const ACTIVE_RESEARCH_STATUSES: readonly ResearchRunStatus[] = [
   'planning',
@@ -151,16 +144,6 @@ export interface SourceQualityAssessment {
   independenceCluster: string;
   notes: string[];
 }
-
-export const unknownQuality = (independenceCluster = ''): SourceQualityAssessment => ({
-  sourceClass: 'unknown',
-  authority: 'unknown',
-  proximityToClaim: 'unknown',
-  recency: 'unknown',
-  methodologyTransparency: 'unknown',
-  independenceCluster,
-  notes: [],
-});
 
 /** Locator into a normalized web snapshot (MVP web-only locator kind). */
 export interface ResearchLocator {

@@ -238,11 +238,6 @@ export interface CallerIdentity {
   channelUserId: string;
 }
 
-export const isCallerIdentity = (value: unknown): value is CallerIdentity =>
-  isRecord(value) &&
-  typeof value.channel === 'string' &&
-  typeof value.channelUserId === 'string';
-
 /**
  * Body of an outbound event without the per-event identifier. Producers emit
  * this shape; the runtime mints `eventId` before delivering to consumers.
@@ -960,49 +955,34 @@ export const agentLocalRoutes = {
    * the client's agent-scoped base URL, so the agent is implicit in the token.
    */
   channelClaim: '/channel-claim',
-  sessionEventsPattern: '/sessions/:sessionId/events',
   sessionEvents: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
-  sessionMessagesPattern: '/sessions/:sessionId/messages',
   sessionMessages: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/messages`,
-  sessionApprovePattern: '/sessions/:sessionId/approve',
   sessionApprove: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/approve`,
-  sessionCheckpointPattern: '/sessions/:sessionId/checkpoint',
   sessionCheckpoint: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/checkpoint`,
-  sessionAttachmentsPattern: '/sessions/:sessionId/attachments',
   sessionAttachments: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/attachments`,
-  sessionAttachmentByIdPattern: '/sessions/:sessionId/attachments/:attachmentId',
   sessionAttachmentById: (sessionId: string, attachmentId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
-  sessionAttachmentBytesPattern: '/sessions/:sessionId/attachments/:attachmentId/bytes',
   sessionAttachmentBytes: (sessionId: string, attachmentId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
   eventsUrl: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/events`,
-  sessionResearchRunsPattern: '/sessions/:sessionId/research-runs',
   sessionResearchRuns: (sessionId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs`,
-  sessionResearchRunByIdPattern: '/sessions/:sessionId/research-runs/:runId',
   sessionResearchRunById: (sessionId: string, runId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}`,
-  sessionResearchRunPlanPattern: '/sessions/:sessionId/research-runs/:runId/plan',
   sessionResearchRunPlan: (sessionId: string, runId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/plan`,
-  sessionResearchRunActionsPattern: '/sessions/:sessionId/research-runs/:runId/actions',
   sessionResearchRunActions: (sessionId: string, runId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/actions`,
-  sessionResearchRunStepsPattern: '/sessions/:sessionId/research-runs/:runId/steps',
   sessionResearchRunSteps: (sessionId: string, runId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/steps`,
-  sessionResearchRunSourcesPattern: '/sessions/:sessionId/research-runs/:runId/sources',
   sessionResearchRunSources: (sessionId: string, runId: string): string =>
     `/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources`,
-  sessionResearchRunSourceByIdPattern:
-    '/sessions/:sessionId/research-runs/:runId/sources/:sourceId',
   sessionResearchRunSourceById: (
     sessionId: string,
     runId: string,
@@ -1055,27 +1035,15 @@ export const gatewayRoutes = {
   agentHealth: (agentId: string): string =>
     `/api/agents/${encodeURIComponent(agentId)}/health`,
   agentHealthPattern: '/api/agents/:agentId/health',
-  agentSessions: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions`,
   agentSessionsPattern: '/api/agents/:agentId/sessions',
-  agentSessionMessages: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
   agentSessionMessagesPattern:
     '/api/agents/:agentId/sessions/:sessionId/messages',
-  agentSessionEvents: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/events`,
   agentSessionEventsPattern:
     '/api/agents/:agentId/sessions/:sessionId/events',
-  agentSessionApprove: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/approve`,
   agentSessionApprovePattern:
     '/api/agents/:agentId/sessions/:sessionId/approve',
-  agentSessionCheckpoint: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/checkpoint`,
   agentSessionCheckpointPattern:
     '/api/agents/:agentId/sessions/:sessionId/checkpoint',
-  agentSessionInterrupt: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`,
   agentSessionInterruptPattern:
     '/api/agents/:agentId/sessions/:sessionId/interrupt',
   agentSessionAttachments: (agentId: string, sessionId: string): string =>
@@ -1090,12 +1058,6 @@ export const gatewayRoutes = {
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
   agentSessionAttachmentByIdPattern:
     '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId',
-  agentSessionAttachmentBytes: (
-    agentId: string,
-    sessionId: string,
-    attachmentId: string,
-  ): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/bytes`,
   agentSessionAttachmentBytesPattern:
     '/api/agents/:agentId/sessions/:sessionId/attachments/:attachmentId/bytes',
   agentManage: (agentId: string, action: string): string =>
@@ -1109,70 +1071,34 @@ export const gatewayRoutes = {
    * to run a manual cross-channel identity link. See the gateway handler for
    * the full guard set.
    */
-  agentChannelClaim: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/channel-claim`,
   agentChannelClaimPattern: '/api/agents/:agentId/channel-claim',
 
   /** Sandbox CRUD per agent. */
-  agentSandboxes: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sandboxes`,
   agentSandboxesPattern: '/api/agents/:agentId/sandboxes',
-  agentSandboxByAlias: (agentId: string, alias: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sandboxes/${encodeURIComponent(alias)}`,
   agentSandboxByAliasPattern: '/api/agents/:agentId/sandboxes/:alias',
 
   /** Voice STT/TTS pass-through endpoints; consumed by channel adapters. */
-  agentVoiceStt: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/voice/stt`,
   agentVoiceSttPattern: '/api/agents/:agentId/voice/stt',
-  agentVoiceTts: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/voice/tts`,
   agentVoiceTtsPattern: '/api/agents/:agentId/voice/tts',
 
   /** Gateway-level token exchange (device key → user JWT). */
   authToken: '/api/auth/token',
   /** Admin-only global user create (CLI bootstrap). */
   users: '/api/users',
-  /** Membership ops on an agent. */
-  agentMembers: (agentId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/members`,
-  agentMemberByUser: (agentId: string, userId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/members/${encodeURIComponent(userId)}`,
-  /** List the current JWT subject's agent memberships. */
-  meAgents: '/api/users/me/agents',
 
   /** Deep Research runs, nested under sessions (docs/deep-research-design.md §16). */
-  agentSessionResearchRuns: (agentId: string, sessionId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs`,
   agentSessionResearchRunsPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs',
-  agentSessionResearchRunById: (agentId: string, sessionId: string, runId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}`,
   agentSessionResearchRunByIdPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId',
-  agentSessionResearchRunPlan: (agentId: string, sessionId: string, runId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/plan`,
   agentSessionResearchRunPlanPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/plan',
-  agentSessionResearchRunActions: (agentId: string, sessionId: string, runId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/actions`,
   agentSessionResearchRunActionsPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/actions',
-  agentSessionResearchRunSteps: (agentId: string, sessionId: string, runId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/steps`,
   agentSessionResearchRunStepsPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/steps',
-  agentSessionResearchRunSources: (agentId: string, sessionId: string, runId: string): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources`,
   agentSessionResearchRunSourcesPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources',
-  agentSessionResearchRunSourceById: (
-    agentId: string,
-    sessionId: string,
-    runId: string,
-    sourceId: string,
-  ): string =>
-    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/research-runs/${encodeURIComponent(runId)}/sources/${encodeURIComponent(sourceId)}`,
   agentSessionResearchRunSourceByIdPattern:
     '/api/agents/:agentId/sessions/:sessionId/research-runs/:runId/sources/:sourceId',
 } as const;
@@ -1353,20 +1279,6 @@ export const isSessionMessage = (value: unknown): value is SessionMessage => {
   return true;
 };
 
-export const createTextFinalEvent = (
-  sessionId: string,
-  text: string,
-): OutboundEventBody => ({
-  type: 'text_final',
-  sessionId,
-  text,
-});
-
-export const createAgentEndEvent = (sessionId: string): OutboundEventBody => ({
-  type: 'agent_end',
-  sessionId,
-});
-
 export const isToolApprovalRequest = (
   value: unknown,
 ): value is ToolApprovalRequest => {
@@ -1522,7 +1434,6 @@ export interface WsEvent {
 }
 
 export type WsServerMessage = WsResponse | WsEvent;
-export type WsClientMessage = WsRequest;
 
 export const isWsRequest = (value: unknown): value is WsRequest => {
   if (!isRecord(value)) return false;

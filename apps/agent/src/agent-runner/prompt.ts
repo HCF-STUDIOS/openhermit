@@ -49,7 +49,7 @@ const formatModalityLine = (modalities: string[]): string => {
 
 // ── Prompt builder ───────────────────────────────────────────────────
 
-export interface CurrentUserContext {
+interface CurrentUserContext {
   userId: string;
   role: import('@openhermit/store').UserRole;
   name?: string;
@@ -58,12 +58,12 @@ export interface CurrentUserContext {
   sourceKind?: string;
 }
 
-export interface InstructionSource {
+interface InstructionSource {
   instructionStore?: InstructionStore;
   storeScope?: StoreScope;
 }
 
-export interface PromptAssembleHookContext {
+interface PromptAssembleHookContext {
   bus: AgentEventBus;
   agentId: string;
   sessionId: string;

@@ -105,7 +105,6 @@ export interface MemoryProvider {
   get(scope: StoreScope, id: string): Promise<MemoryEntry | undefined>;
   update(scope: StoreScope, id: string, input: MemoryUpdateInput): Promise<MemoryEntry>;
   delete(scope: StoreScope, id: string): Promise<void>;
-  getContextBlock(scope: StoreScope, options?: { limit?: number | undefined }): Promise<string | undefined>;
 }
 
 export interface InstructionStore {
@@ -308,8 +307,6 @@ export interface SandboxStore {
     }>,
   ): Promise<SandboxRecord | undefined>;
   delete(id: string): Promise<void>;
-  /** Find the agent (if any) that already has a sandbox of the given type. */
-  findAgentByType(type: string, excludeAgentId?: string): Promise<string | null>;
 }
 
 export interface PolicyStore {
@@ -348,7 +345,8 @@ export interface ApprovalRequestStore {
     resolution?: ApprovalResolution,
     reason?: string,
   ): Promise<ApprovalRequestRecord>;
-  expireOld(): Promise<number>;
+  /** Expire pending requests past their TTL (single UPDATE). */
+  expireOld(now?: Date): Promise<number>;
 }
 
 /**
