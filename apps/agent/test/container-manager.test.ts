@@ -138,7 +138,8 @@ test('stopWorkspaceContainer stops a running container', async (t) => {
 
 test('execInWorkspace throws when container not running', async (t) => {
   const { workspace } = await createWorkspaceFixture(t);
-  const runner = new FakeDockerRunner([]);
+  // execInWorkspace re-probes `docker ps` before giving up; no live container.
+  const runner = new FakeDockerRunner([okResult({ stdout: '' })]);
   const manager = new DockerContainerManager(workspace, { runner });
 
   await assert.rejects(

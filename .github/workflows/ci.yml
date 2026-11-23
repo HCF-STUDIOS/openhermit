@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openhermit
+          POSTGRES_PASSWORD: openhermit
+          POSTGRES_DB: openhermit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openhermit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://openhermit:openhermit@localhost:5432/openhermit_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      # @napi-rs/canvas only draws text with a system font; without one the
+      # OCR tests render blank images and tesseract finds nothing.
+      - name: Install fonts
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core
+
+      - run: npm ci
+
+      # Clean build: tsc project references + gateway/web UI bundles.
+      - run: npm run build
+
+      - run: npm run db:migrate
+
+      # No provider API keys are set here on purpose: tests stub the model
+      # stream and must never reach a real provider.
+      - run: npm run test:all

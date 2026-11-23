@@ -73,8 +73,7 @@ test('withApproval forwards signal and onUpdate to the wrapped tool', async (t) 
   let capturedSignal: AbortSignal | undefined;
   let capturedOnUpdate: AgentToolUpdateCallback<{ status: string }> | undefined;
   let approvalArgs: unknown;
-  const requestedCalls: Array<{ toolName: string; toolCallId: string; args: unknown }> = [];
-  const startedCalls: Array<{ toolName: string; toolCallId: string; args: unknown }> = [];
+  const toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown }> = [];
 
   const tool: AgentTool<typeof Params, { status: string }> = {
     name: 'dangerous_tool',
@@ -96,6 +95,9 @@ test('withApproval forwards signal and onUpdate to the wrapped tool', async (t) 
     },
   };
 
+  // Approval is decided by the policy layer (ApprovalRequiredError) now, so
+  // the legacy approval callback is never consulted; onToolCall fires once
+  // before the wrapped tool runs.
   const wrapped = withApproval(
     tool,
     security,
@@ -104,10 +106,7 @@ test('withApproval forwards signal and onUpdate to the wrapped tool', async (t) 
       return 'approved';
     },
     async (toolName, toolCallId, args) => {
-      requestedCalls.push({ toolName, toolCallId, args });
-    },
-    async (toolName, toolCallId, args) => {
-      startedCalls.push({ toolName, toolCallId, args });
+      toolCalls.push({ toolName, toolCallId, args });
     },
   );
 
@@ -125,15 +124,8 @@ test('withApproval forwards signal and onUpdate to the wrapped tool', async (t) 
 
   assert.equal(capturedSignal, abortController.signal);
   assert.ok(capturedOnUpdate);
-  assert.deepEqual(approvalArgs, { value: 'payload' });
-  assert.deepEqual(requestedCalls, [
-    {
-      toolName: 'dangerous_tool',
-      toolCallId: 'call-1',
-      args: { value: 'payload' },
-    },
-  ]);
-  assert.deepEqual(startedCalls, [
+  assert.equal(approvalArgs, undefined, 'legacy approval callback is not consulted');
+  assert.deepEqual(toolCalls, [
     {
       toolName: 'dangerous_tool',
       toolCallId: 'call-1',
@@ -272,7 +264,7 @@ test('web_fetch returns status headers and body for a successful GET', async (t)
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await withMockFetch(
     makeFetchMock(200, 'Hello, world!', { 'content-type': 'text/plain' }),
@@ -304,7 +296,7 @@ test('web_fetch truncates large responses at max_bytes', async (t) => {
   await security.load();
 
   const bigBody = 'x'.repeat(500);
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await withMockFetch(makeFetchMock(200, bigBody), async () => {
     const result = await tool.execute('call-web-3', {
@@ -326,7 +318,7 @@ test('web_fetch caps max_bytes at the hard 200 KB limit', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await withMockFetch(makeFetchMock(200, 'small body'), async () => {
     const result = await tool.execute('call-web-4', {
@@ -347,7 +339,7 @@ test('web_fetch rejects non-http/https URLs', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await assert.rejects(
     () =>
@@ -365,7 +357,7 @@ test('web_fetch rejects malformed URLs', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await assert.rejects(() =>
     tool.execute('call-web-6', { url: 'not a url at all', output: 'raw' }),
@@ -378,7 +370,7 @@ test('web_fetch rejects non-positive max_bytes', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await assert.rejects(
     () =>
@@ -397,13 +389,13 @@ test('web_fetch surfaces network errors as thrown exceptions', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await withMockFetch(makeFetchError('ECONNREFUSED'), async () => {
     await assert.rejects(
       () =>
         tool.execute('call-web-8', {
-          url: 'https://localhost:9/',
+          url: 'https://example.com/unreachable',
           output: 'raw',
         }),
       (error: unknown) => {
@@ -421,7 +413,7 @@ test('web_fetch returns non-200 status without throwing', async (t) => {
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   await withMockFetch(makeFetchMock(404, 'Not Found'), async () => {
     const result = await tool.execute('call-web-9', {
@@ -441,7 +433,7 @@ test('web_fetch output markdown extracts main content as Markdown', async (t) =>
   });
   await security.load();
 
-  const tool = findTool(tools, 'web_fetch');
+  const tool = findTool(createBuiltInTools({ security, webProvider: defaultWebProvider }), 'web_fetch');
 
   const html = `
 <!DOCTYPE html>

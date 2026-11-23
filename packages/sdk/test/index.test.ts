@@ -18,7 +18,7 @@ test('AgentLocalClient surfaces network failures with a helpful local-agent mess
   );
   await assert.rejects(
     () => client.listSessions(),
-    /npm run dev:agent/,
+    /Make sure the gateway is running/,
   );
 });
 
