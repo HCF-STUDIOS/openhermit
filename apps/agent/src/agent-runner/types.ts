@@ -7,6 +7,7 @@ import type { SessionDescriptor } from '../runtime.js';
 import type { ApprovalGate } from './approval-gate.js';
 import type { ReasoningTagStreamState, SpeakerTagStreamState } from './message-utils.js';
 import type { ModelErrorKind } from './user-facing-error.js';
+import type { TurnContext } from './turn-context.js';
 
 export interface RunnerSession extends SessionDescriptor {
   agent: Agent;
@@ -46,6 +47,10 @@ export interface RunnerSession extends SessionDescriptor {
    *  for this turn's LLM call(s) only, then overwritten at the next turn's
    *  `refreshAgentConfiguration`. Never persisted to session history. */
   currentTurnAdditionalInstruction?: string | undefined;
+  /** Per-turn facts (wall-clock time, group sender) snapshotted at turn start
+   *  and attached to the latest user message at request time only — kept out
+   *  of the system prompt so the prompt-cache prefix stays stable. */
+  currentTurnContext?: TurnContext | undefined;
   approvalGate: ApprovalGate;
   status: SessionStatus;
   messageCount: number;

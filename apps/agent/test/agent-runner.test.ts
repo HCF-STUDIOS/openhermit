@@ -507,6 +507,65 @@ test('AgentRunner injects additionalInstruction into the system prompt for that 
   );
 });
 
+test('AgentRunner keeps the prompt-cache prefix byte-stable across turns', async (t) => {
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: {
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+    },
+  });
+  await security.load();
+
+  const captured: Context['messages'][] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      (context) => {
+        captured.push(structuredClone(context.messages));
+        return createTextResponseStream('one');
+      },
+      (context) => {
+        captured.push(structuredClone(context.messages));
+        return createTextResponseStream('two');
+      },
+    ]),
+  });
+
+  const sessionId = 'cli:prompt-cache-prefix';
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  await runner.postMessage(sessionId, { text: 'first' });
+  await runner.waitForSessionIdle(sessionId);
+  // Cross a second boundary so a seconds-precision clock would show up.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await runner.postMessage(sessionId, { text: 'second' });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(captured.length, 2);
+  const [turn1, turn2] = captured as [Context['messages'], Context['messages']];
+
+  // The system prompt (head of every request) must not change between turns.
+  assert.equal(getCurrentSystemPrompt(turn2), getCurrentSystemPrompt(turn1));
+
+  // Everything turn 1 sent before its latest user message is resent unchanged.
+  const lastUser = (messages: Context['messages']) =>
+    messages.map((m) => m.role).lastIndexOf('user');
+  const stable = lastUser(turn1);
+  assert.deepEqual(
+    turn2.slice(0, stable).map((m) => ({ role: m.role, content: m.content })),
+    turn1.slice(0, stable).map((m) => ({ role: m.role, content: m.content })),
+  );
+
+  // The precise time rides on the latest user message only.
+  const note = /\[Turn context, added by the runtime, not written by the user\] Current time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/;
+  assert.match(JSON.stringify(turn2[lastUser(turn2)]?.content), note);
+  assert.doesNotMatch(JSON.stringify(turn2.slice(0, lastUser(turn2))), /\[Turn context, added by the runtime/);
+
+  // And it is never written to session history.
+  const entries = await readSessionLog(runner, sessionId);
+  assert.ok(!entries.some((e) => typeof e.content === 'string' && e.content.includes('[Turn context, added by the runtime')));
+});
+
 test('AgentRunner injects session working memory but not long-term memory', async (t) => {
   const { workspace, security, agentId } = await createSecurityFixture(t, {
     secrets: {
@@ -1369,19 +1428,25 @@ test('AgentRunner does not duplicate the new user message on the first turn afte
   // the new turn input. Content may be a string or an array of parts; the
   // resumption context block is a long "Session resumption context: ..."
   // string and won't be miscounted.
+  // The runtime's per-turn "[Turn context …]" note rides on the latest user
+  // message (request-only); strip it so we compare the user's own text.
+  const stripTurnContext = (text: string): string =>
+    text.replace(/\s*\[Turn context, added by the runtime[^\]]*\][^\n]*$/, '');
   const userTexts = capturedMessages
     .filter((msg) => msg.role === 'user')
     .map((msg) => {
-      if (typeof msg.content === 'string') return msg.content.trim();
+      if (typeof msg.content === 'string') return stripTurnContext(msg.content).trim();
       if (Array.isArray(msg.content)) {
-        return msg.content
+        return stripTurnContext(msg.content
           .map((c) => (typeof c === 'object' && c && 'text' in c ? String((c as { text: unknown }).text) : ''))
-          .join('')
+          .join(''))
           .trim();
       }
       return '';
     });
   const hiUserCount = userTexts.filter((t) => t === 'hi').length;
+  const turnContextNotes = JSON.stringify(capturedMessages).match(/\[Turn context, added by the runtime/g) ?? [];
+  assert.equal(turnContextNotes.length, 1, 'exactly one turn-context note, on the latest user message');
   assert.equal(
     hiUserCount,
     1,

@@ -66,18 +66,39 @@ test('buildSystemPrompt includes all sections when all toolsets are present', as
   assert.match(prompt, /### Instructions Management/);
 });
 
-test('buildSystemPrompt states the current date & time in the Runtime section', async (t) => {
+test('buildSystemPrompt states the current date (day precision only) in the Runtime section', async (t) => {
   const { security } = await createSecurityFixture(t);
   await security.load();
   const config = await security.readConfig();
 
   const prompt = await buildSystemPrompt(config, security, allToolsets);
 
-  // e.g. "Current date & time: 2026-09-23 12:34:56 UTC (Tuesday)."
-  assert.match(
-    prompt,
-    /### Runtime[\s\S]*Current date & time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \([A-Za-z]+\)\./,
-  );
+  // e.g. "Current date: 2026-09-23 (Tuesday, UTC)."
+  assert.match(prompt, /### Runtime[\s\S]*Current date: \d{4}-\d{2}-\d{2} \([A-Za-z]+, UTC\)\./);
+  // No clock time: it would change the cached prefix on every request.
+  assert.doesNotMatch(prompt, /\d{2}:\d{2}(:\d{2})? UTC/);
+});
+
+test('buildSystemPrompt is byte-identical across requests and group senders (prompt-cache prefix)', async (t) => {
+  const { security } = await createSecurityFixture(t);
+  await security.load();
+  const config = await security.readConfig();
+
+  const group = (userId: string, name: string, role: 'owner' | 'user' | 'guest') =>
+    buildSystemPrompt(config, security, allToolsets, undefined, {
+      userId,
+      name,
+      role,
+      sessionType: 'group',
+      sessionId: 'sess-1',
+    });
+
+  const first = await group('usr-alice', 'Alice', 'owner');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const second = await group('usr-bob', 'Bob', 'guest');
+
+  assert.equal(first, second);
+  assert.doesNotMatch(first, /usr-alice|usr-bob/);
 });
 
 test('buildSystemPrompt states the running model in the Runtime section', async (t) => {

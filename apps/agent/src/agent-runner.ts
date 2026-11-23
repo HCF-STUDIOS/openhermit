@@ -95,6 +95,7 @@ import type { ModelErrorKind } from './agent-runner/user-facing-error.js';
 import { withAmikoTwinAttribution } from './agent-runner/amiko-attribution.js';
 import { withStreamIdleTimeout } from './agent-runner/stream-idle-timeout.js';
 import { withStreamRetry } from './agent-runner/stream-retry.js';
+import { attachTurnContextNote, formatTurnContextNote } from './agent-runner/turn-context.js';
 import {
   awaitTriggeredTurn,
   surfaceRunError,
@@ -1919,6 +1920,17 @@ export class AgentRunner implements SessionRuntime {
       : message.text;
     const promptMessage = { ...message, text: promptText };
 
+    // Capture this message's sender now: `run` may be queued behind an
+    // in-flight turn, by which time a later message can have overwritten the
+    // session's resolvedUser* fields.
+    const turnSender = isGroup && session.resolvedUserId
+      ? {
+          userId: session.resolvedUserId,
+          name: session.resolvedUserName,
+          role: session.resolvedUserRole,
+        }
+      : undefined;
+
     const run = async (): Promise<void> => {
       try {
         // Per-turn system-prompt steering. Set BEFORE refreshAgentConfiguration
@@ -1926,6 +1938,9 @@ export class AgentRunner implements SessionRuntime {
         // reset every turn (to the new message's value, or undefined). Never
         // persisted to history, so it doesn't accumulate on stored messages.
         session.currentTurnAdditionalInstruction = message.additionalInstruction;
+        // Time + group sender for this turn, snapshotted once so every LLM call
+        // in the turn's tool loop sends identical bytes (see turn-context.ts).
+        session.currentTurnContext = { at: new Date(), sender: turnSender };
         await this.refreshAgentConfiguration(session);
         // Snapshot this turn's roster
         session.turnGroupParticipants = message.participants ?? undefined;
@@ -3696,6 +3711,15 @@ export class AgentRunner implements SessionRuntime {
       finalMessages,
       Number.isFinite(imagePayloadCap) ? imagePayloadCap : undefined,
     );
+
+    // Per-turn time / group sender, kept out of the system prompt so the
+    // prompt-cache prefix (system prompt + history) stays byte-stable across
+    // turns. Request-only like the guards above; main agent only (side agents
+    // share contextSessionId but aren't answering the user's turn).
+    const turnContext = isMainSessionAgent ? session?.currentTurnContext : undefined;
+    if (turnContext) {
+      finalMessages = attachTurnContextNote(finalMessages, formatTurnContextNote(turnContext));
+    }
 
     if (AgentRunner.DEBUG) {
       const budget = getContextCompactionMaxTokens(config, {
