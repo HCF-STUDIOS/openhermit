@@ -163,6 +163,35 @@ export interface ChannelRegistration {
   agentId: string;
 }
 
+/**
+ * The sender a message must carry, given the authenticated caller. The runtime
+ * runs each turn as the message's own sender; a message without one runs as
+ * the session's opener, which is only right for callers that have no per-user
+ * identity of their own (admin, a channel token without a user header).
+ *
+ *  - user mode: always the token's own identity (enforceSenderIdentity has
+ *    already rejected a divergent one), keeping any display name supplied.
+ *  - channel mode: the declared sender, else the `x-channel-user-id` identity.
+ *  - admin: unchanged.
+ */
+export function authenticatedSender<T extends { channel?: string; channelUserId?: string; displayName?: string }>(
+  auth: AuthContext,
+  sender: T | undefined,
+): { channel: string; channelUserId: string; displayName?: string } | T | undefined {
+  if (auth.mode === 'user' && auth.channelUserId) {
+    const displayName = sender?.displayName ?? auth.displayName;
+    return {
+      channel: auth.channel,
+      channelUserId: auth.channelUserId,
+      ...(displayName ? { displayName } : {}),
+    };
+  }
+  if (auth.mode === 'channel' && !sender && auth.channelUserId) {
+    return { channel: auth.channel, channelUserId: auth.channelUserId };
+  }
+  return sender;
+}
+
 // ── Channel registry ───────────────────────────────────────────────────────
 
 export class ChannelRegistry {

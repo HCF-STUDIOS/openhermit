@@ -29,6 +29,7 @@ import { UnauthorizedError, ValidationError } from '@openhermit/shared';
 import type { AuthContext, AuthResolverOptions } from './auth.js';
 import { enforceSenderIdentity, enforceSessionNamespace, resolveAuth } from './auth.js';
 import { listSessionsForCaller } from './session-listing.js';
+import { authenticatedSender } from './auth.js';
 import {
   researchEvidenceToWire,
   researchRunToWire,
@@ -176,11 +177,15 @@ const handleRequest = async (
         // (see enforceSenderIdentity). Blocks owner impersonation via a
         // forged `cli:root` sender.
         enforceSenderIdentity(conn.auth, p.sender as { channel?: string; channelUserId?: string } | undefined);
+        const sender = authenticatedSender(
+          conn.auth,
+          p.sender as { channel?: string; channelUserId?: string; displayName?: string } | undefined,
+        );
         const message = {
           text: p.text,
           ...(p.messageId !== undefined ? { messageId: p.messageId } : {}),
           ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
-          ...(p.sender !== undefined ? { sender: p.sender } : {}),
+          ...(sender !== undefined ? { sender } : {}),
           ...(p.participants !== undefined ? { participants: p.participants } : {}),
           ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
           ...(p.additionalInstruction !== undefined ? { additionalInstruction: p.additionalInstruction } : {}),

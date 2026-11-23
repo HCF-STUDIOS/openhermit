@@ -18,6 +18,16 @@ export type ModelErrorKind =
   | 'unavailable'
   | 'generic';
 
+/**
+ * A torn-down streaming connection (as opposed to a semantic model error).
+ * Single source for both the stream-cut salvage check and pre-first-token
+ * retry (stream-retry.ts), and part of the `unavailable` classification.
+ */
+const CONNECTION_DROP_PATTERN = /terminated|und_err|econn|socket hang ?up|network error|stream (closed|disconnected)|premature close/i;
+
+/** Transient provider-side availability failures (5xx, overload). */
+const TRANSIENT_UNAVAILABLE_PATTERN = /\b5\d\d\b|overloaded|service unavailable|bad gateway|internal (server )?error/i;
+
 /** Order matters: more specific patterns run first (e.g. "403 Key limit
  *  exceeded" must classify as quota, not auth). */
 const CLASSIFIERS: Array<{ kind: ModelErrorKind; pattern: RegExp }> = [
@@ -25,7 +35,13 @@ const CLASSIFIERS: Array<{ kind: ModelErrorKind; pattern: RegExp }> = [
   { kind: 'quota', pattern: /key limit exceeded|insufficient[\s\w]{0,20}credit|out of credit|quota exceeded|spend(ing)? limit|payment required|\b402\b/i },
   { kind: 'rate_limit', pattern: /\b429\b|rate.?limit|too many requests/i },
   { kind: 'auth', pattern: /invalid.{0,10}(api.?key|token)|missing.{0,15}(api.?key|token)|add one of \[|unauthorized|authentication|\b401\b|no auth credentials/i },
-  { kind: 'unavailable', pattern: /\b5\d\d\b|overloaded|service unavailable|timed?.?out|econn|network error|internal (server )?error|bad gateway|no endpoints found|\b404\b|terminated|und_err|socket hang ?up/i },
+  {
+    kind: 'unavailable',
+    pattern: new RegExp(
+      `${CONNECTION_DROP_PATTERN.source}|${TRANSIENT_UNAVAILABLE_PATTERN.source}|timed?.?out|no endpoints found|\\b404\\b`,
+      'i',
+    ),
+  },
 ];
 
 export const classifyModelError = (raw: string): ModelErrorKind => {
@@ -43,9 +59,24 @@ export const classifyModelError = (raw: string): ModelErrorKind => {
  * than surfaced as an error. Kept narrow: only connection-drop signatures, so
  * we never mistake a real model failure for a recoverable cut.
  */
-const STREAM_CUT_PATTERN = /terminated|und_err|econnreset|socket hang ?up|network error|stream (closed|disconnected)|premature close/i;
+export const isStreamCutError = (raw: string): boolean => CONNECTION_DROP_PATTERN.test(raw);
 
-export const isStreamCutError = (raw: string): boolean => STREAM_CUT_PATTERN.test(raw);
+/**
+ * Whether a failure that happened BEFORE any output is worth re-issuing the
+ * identical request: a connection drop or a transient provider availability
+ * error. Derived from the classifier, so anything it ranks as more specific
+ * (quota, rate limit, auth, context length) is never retried — an immediate
+ * retry of those is pointless or counterproductive — and 404 / "no endpoints"
+ * (unavailable, but not transient) is excluded too.
+ */
+export const isRetryableModelError = (raw: string): boolean =>
+  classifyModelError(raw) === 'unavailable'
+  // Checked first: a routing error can quote an upstream 5xx ("404 No
+  // endpoints found. Last provider error: 503 ...") and is still permanent.
+  && !PERMANENT_UNAVAILABLE_PATTERN.test(raw)
+  && (CONNECTION_DROP_PATTERN.test(raw) || TRANSIENT_UNAVAILABLE_PATTERN.test(raw));
+
+const PERMANENT_UNAVAILABLE_PATTERN = /no endpoints found|\b404\b/i;
 
 /** Languages we can phrase the notice in. Extend the table below to add one. */
 export type UserLanguage = 'zh' | 'en';

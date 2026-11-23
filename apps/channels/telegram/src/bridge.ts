@@ -86,7 +86,17 @@ interface TurnResult {
   error: string | undefined;
 }
 
+/**
+ * Give up on the agent event stream after this long with no bytes at all.
+ * Re-armed for every read — the gateway pings every few seconds, so this
+ * only fires on a dead/half-open connection, never on a long tool run.
+ * Without it a stalled stream blocks this chat's turn queue forever.
+ */
+const AGENT_STREAM_IDLE_TIMEOUT_MS = 120_000;
+
 export class TelegramBridge implements ChannelOutbound {
+  /** Overridable in tests. */
+  agentStreamIdleTimeoutMs = AGENT_STREAM_IDLE_TIMEOUT_MS;
   readonly channel = 'telegram';
 
   private readonly client: AgentLocalClient;
@@ -94,6 +104,14 @@ export class TelegramBridge implements ChannelOutbound {
   private readonly log: (message: string) => void;
   /** Tracks last event ID per session for SSE deduplication. */
   private readonly lastEventIds = new Map<string, number>();
+  /**
+   * Per session: turns whose wait ended before their own `agent_end` (idle
+   * timeout, dropped stream). Those turns keep running, so their late events
+   * sit ahead of the cursor; the next wait must skip that many `agent_end`s
+   * before collecting, or it would deliver the old turn's reply as the answer
+   * to the new message.
+   */
+  private readonly staleTurns = new Map<string, number>();
   /** Current sessionId per chat. */
   private readonly chatSessions = new Map<number, string>();
   /** Bot user info, lazily fetched via getMe(). */
@@ -584,6 +602,11 @@ export class TelegramBridge implements ChannelOutbound {
     });
   }
 
+  private recordStaleTurns(sessionId: string, count: number): void {
+    if (count > 0) this.staleTurns.set(sessionId, count);
+    else this.staleTurns.delete(sessionId);
+  }
+
   /**
    * Open the SSE event stream and collect the agent's response for one turn.
    * Supports streaming edits: sends an initial message on first text_delta,
@@ -596,12 +619,33 @@ export class TelegramBridge implements ChannelOutbound {
   ): Promise<TurnResult> {
     const eventsUrl = this.client.buildEventsUrl(sessionId);
     const lastEventId = this.lastEventIds.get(sessionId) ?? 0;
+    let staleTurnsToSkip = this.staleTurns.get(sessionId) ?? 0;
+    let ownTurnEnded = false;
 
-    const response = await fetch(eventsUrl, {
-      headers: { authorization: `Bearer ${this.clientToken}` },
-    });
+    const controller = new AbortController();
+    let idleTimer = setTimeout(() => controller.abort(), this.agentStreamIdleTimeoutMs);
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), this.agentStreamIdleTimeoutMs);
+    };
+    const idleError = `agent event stream idle for ${this.agentStreamIdleTimeoutMs}ms`;
+
+    let response: Response;
+    try {
+      response = await fetch(eventsUrl, {
+        headers: { authorization: `Bearer ${this.clientToken}` },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(idleTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
+      if (controller.signal.aborted) return { text: undefined, error: idleError, };
+      throw err;
+    }
 
     if (!response.ok || !response.body) {
+      clearTimeout(idleTimer);
+      this.recordStaleTurns(sessionId, staleTurnsToSkip + 1);
       return {
         text: undefined,
         error: `Failed to open event stream (${response.status})`,
@@ -629,7 +673,11 @@ export class TelegramBridge implements ChannelOutbound {
 
     try {
       while (true) {
+        // Only time the wait for bytes — not our own frame handling (media
+        // uploads, message edits), which can legitimately take a while.
+        resetIdleTimer();
         const { done, value } = await reader.read();
+        clearTimeout(idleTimer);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -658,6 +706,7 @@ export class TelegramBridge implements ChannelOutbound {
                   : {};
                 if (typeof data.nextEventId === 'number' && data.nextEventId <= nextLastEventId) {
                   nextLastEventId = 0;
+                  staleTurnsToSkip = 0;
                 }
               } catch { /* ignore — fall back to stored cursor */ }
             }
@@ -667,10 +716,32 @@ export class TelegramBridge implements ChannelOutbound {
             continue;
           }
 
-          const payload =
-            frame.data.length > 0
-              ? (JSON.parse(frame.data) as Record<string, unknown>)
-              : {};
+          // Late frames of turns whose waits already gave up (see staleTurns).
+          if (staleTurnsToSkip > 0) {
+            if (frame.event === 'agent_end') staleTurnsToSkip -= 1;
+            continue;
+          }
+
+          // Terminal before payload parsing: agent_end's payload is unused, and a
+          // malformed one must not leave the waiter reading pings forever.
+          if (frame.event === 'agent_end') {
+            sawAgentEnd = true;
+            ownTurnEnded = true;
+            // Stop at our own agent_end: any later frames in this chunk
+            // belong to the next turn, so neither consume them nor move
+            // the cursor past them.
+            break;
+          }
+
+          let payload: Record<string, unknown> = {};
+          if (frame.data.length > 0) {
+            try {
+              payload = JSON.parse(frame.data) as Record<string, unknown>;
+            } catch {
+              this.log(`skipping malformed ${frame.event} frame from agent stream`);
+              continue;
+            }
+          }
 
           if (frame.event === 'text_delta') {
             accumulatedText += String(payload.text ?? '');
@@ -740,22 +811,22 @@ export class TelegramBridge implements ChannelOutbound {
             continue;
           }
 
-          if (frame.event === 'agent_end') {
-            sawAgentEnd = true;
-            continue;
-          }
-
           // tool_call, tool_result — skip for now.
         }
 
         if (sawAgentEnd) break;
       }
+    } catch (err) {
+      if (!controller.signal.aborted) throw err;
+      error ??= idleError;
     } finally {
+      clearTimeout(idleTimer);
       clearInterval(typingInterval);
       await reader.cancel().catch(() => undefined);
     }
 
     this.lastEventIds.set(sessionId, nextLastEventId);
+    this.recordStaleTurns(sessionId, ownTurnEnded ? 0 : staleTurnsToSkip + 1);
 
     const rawResponseText = finalText ?? (accumulatedText.trim() || undefined);
     const stripped =

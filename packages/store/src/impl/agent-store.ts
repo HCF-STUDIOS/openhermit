@@ -42,7 +42,15 @@ import * as schema from '../schema.js';
 import {
   agents,
   agentChannels,
+  agentChannelCredentials,
+  agentPolicies,
   agentSecrets,
+  approvalRequests,
+  researchEvidence,
+  researchRuns,
+  researchSources,
+  researchSteps,
+  sessionAttachments,
   agentSkills,
   agentMcpServers,
   sandboxes,
@@ -583,20 +591,36 @@ export class DbAgentStore implements AgentStore {
    * and is rarely worth automating.
    */
   async delete(agentId: string): Promise<void> {
-    const where = eq(sessionEvents.agentId, agentId);
-    await this.db.delete(sessionEvents).where(where);
-    await this.db.delete(sessions).where(eq(sessions.agentId, agentId));
-    await this.db.delete(scheduleRuns).where(eq(scheduleRuns.agentId, agentId));
-    await this.db.delete(schedules).where(eq(schedules.agentId, agentId));
-    await this.db.delete(agentChannels).where(eq(agentChannels.agentId, agentId));
-    await this.db.delete(agentSecrets).where(eq(agentSecrets.agentId, agentId));
-    await this.db.delete(agentSkills).where(eq(agentSkills.agentId, agentId));
-    await this.db.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
-    await this.db.delete(memories).where(eq(memories.agentId, agentId));
-    await this.db.delete(sandboxes).where(eq(sandboxes.agentId, agentId));
-    await this.db.delete(instructions).where(eq(instructions.agentId, agentId));
-    // user_agents has ON DELETE CASCADE — it goes away with the agents row.
-    await this.db.delete(agents).where(eq(agents.agentId, agentId));
+    // One transaction: a failure part-way must not leave a half-deleted agent
+    // (e.g. the agents row gone but credentials/secrets still present).
+    //
+    // The schema declares no FKs (repo convention), so nothing cascades —
+    // every agent-scoped table is cleared explicitly, children before parents
+    // (research children → runs, session children → sessions, schedule runs →
+    // schedules, channel credentials → channels), agents row last.
+    await this.db.transaction(async (tx) => {
+      await tx.delete(researchEvidence).where(eq(researchEvidence.agentId, agentId));
+      await tx.delete(researchSources).where(eq(researchSources.agentId, agentId));
+      await tx.delete(researchSteps).where(eq(researchSteps.agentId, agentId));
+      await tx.delete(researchRuns).where(eq(researchRuns.agentId, agentId));
+      await tx.delete(approvalRequests).where(eq(approvalRequests.agentId, agentId));
+      await tx.delete(sessionAttachments).where(eq(sessionAttachments.agentId, agentId));
+      await tx.delete(sessionEvents).where(eq(sessionEvents.agentId, agentId));
+      await tx.delete(sessions).where(eq(sessions.agentId, agentId));
+      await tx.delete(scheduleRuns).where(eq(scheduleRuns.agentId, agentId));
+      await tx.delete(schedules).where(eq(schedules.agentId, agentId));
+      await tx.delete(agentChannelCredentials).where(eq(agentChannelCredentials.agentId, agentId));
+      await tx.delete(agentChannels).where(eq(agentChannels.agentId, agentId));
+      await tx.delete(agentSecrets).where(eq(agentSecrets.agentId, agentId));
+      await tx.delete(agentPolicies).where(eq(agentPolicies.agentId, agentId));
+      await tx.delete(agentSkills).where(eq(agentSkills.agentId, agentId));
+      await tx.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
+      await tx.delete(memories).where(eq(memories.agentId, agentId));
+      await tx.delete(sandboxes).where(eq(sandboxes.agentId, agentId));
+      await tx.delete(instructions).where(eq(instructions.agentId, agentId));
+      await tx.delete(userAgents).where(eq(userAgents.agentId, agentId));
+      await tx.delete(agents).where(eq(agents.agentId, agentId));
+    });
   }
 
   private toRecord(row: typeof agents.$inferSelect): AgentRecord {

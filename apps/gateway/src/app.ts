@@ -83,6 +83,7 @@ import {
   type AuthResolverOptions,
   type JwtConfig,
   type UserAuthProvider,
+  authenticatedSender,
   enforceSenderIdentity,
   enforceSessionNamespace,
   resolveAuth,
@@ -1330,6 +1331,10 @@ export const createGatewayApp = (options: GatewayAppOptions): Hono => {
     // so a low-privilege token can't impersonate the owner (e.g. forge
     // `cli:root`) and unlock owner-gated tools.
     enforceSenderIdentity(auth, payload.sender);
+    {
+      const sender = authenticatedSender(auth, payload.sender);
+      if (sender) payload.sender = sender as NonNullable<typeof payload.sender>;
+    }
 
     // URL-passthrough: convert `{ url, !id }` attachments into real
     // session_attachments rows (fetch + persist + materialize) before

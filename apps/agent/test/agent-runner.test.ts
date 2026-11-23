@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import {
   getCurrentSystemPrompt,
+  getCurrentTools,
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
@@ -2326,4 +2327,420 @@ test('turn watchdog rebuilds the SDK agent so the session recovers without a res
     'the rebuilt agent replied to the follow-up message',
   );
   assert.equal(calls, 2, 'the follow-up ran a fresh stream call on the rebuilt agent');
+});
+
+test('AgentRunner.postMessage dedupes concurrent re-deliveries of the same messageId', async (t) => {
+  // Two re-deliveries racing each other must not both pass the DB-backed
+  // dedupe check (neither has written its entry yet) and trigger two turns.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([
+      () => createTextResponseStream('only reply'),
+    ]),
+  });
+
+  const sessionId = 'cli:post-concurrent-dup';
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  const [a, b] = await Promise.all([
+    runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' }),
+    runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' }),
+  ]);
+  assert.equal(
+    [a.triggered, b.triggered].filter(Boolean).length,
+    1,
+    'exactly one of the concurrent deliveries triggers a turn',
+  );
+  await runner.waitForSessionIdle(sessionId);
+
+  const entries = await readSessionLog(runner, sessionId);
+  assert.equal(entries.filter((e) => e.messageId === 'race-dup').length, 1);
+
+  // The in-flight claim is released afterwards: a later re-delivery is still
+  // deduped (by the DB check) rather than wedged.
+  const later = await runner.postMessage(sessionId, { messageId: 'race-dup', text: 'buy 1 eth' });
+  assert.equal(later.triggered, false);
+});
+
+test('AgentRunner.postMessage: a concurrent re-delivery fails when the original acceptance fails', async (t) => {
+  // A duplicate must not report a final "not triggered" while the original is
+  // still in flight: if the original then fails, the sender would believe the
+  // message was accepted and never retry.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: createSequentialStreamFn([() => createTextResponseStream('reply')]),
+  });
+  const sessionId = 'cli:post-dup-original-fails';
+  await runner.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  const internals = runner as unknown as { persistSessionIndex: (s: unknown) => Promise<void> };
+  const persist = internals.persistSessionIndex.bind(runner);
+  let failNext = true;
+  internals.persistSessionIndex = async (session) => {
+    if (failNext) {
+      failNext = false;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      throw new Error('store unavailable');
+    }
+    return persist(session);
+  };
+
+  const [original, duplicate] = await Promise.allSettled([
+    runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' }),
+    runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' }),
+  ]);
+  assert.equal(original.status, 'rejected');
+  assert.equal(duplicate.status, 'rejected', 'the duplicate surfaces the failure instead of a silent no-op');
+
+  // Nothing was persisted and the claim was released: a retry is accepted.
+  const retry = await runner.postMessage(sessionId, { messageId: 'dup-fail', text: 'buy 1 eth' });
+  assert.equal(retry.triggered, true);
+  await runner.waitForSessionIdle(sessionId);
+});
+
+test('AgentRunner runs a queued group turn with its own sender role, not the next poster role', async (t) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  // A known owner on this agent, reachable via a channel identity.
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'web', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  // Turn 1 blocks until released, so the guest + owner turns queue behind it.
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const toolsPerCall: string[][] = [];
+  let calls = 0;
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      calls += 1;
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      if (calls === 1) await firstGate;
+      return createTextResponseStream(`reply ${calls}`);
+    },
+  });
+
+  const sessionId = 'group:queued-caller-role';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+
+  const guestSender = (id: string, name: string) =>
+    ({ channel: 'web', channelUserId: `${id}-${randomBytes(4).toString('hex')}`, displayName: name });
+
+  await runner.postMessage(sessionId, {
+    messageId: 'q-1', text: 'first', mentioned: true, sender: guestSender('g-first', 'First'),
+  });
+  // Queued behind turn 1: a guest message, then an owner message.
+  await runner.postMessage(sessionId, {
+    messageId: 'q-2', text: 'guest asks', mentioned: true, sender: guestSender('g-second', 'Guest'),
+  });
+  await runner.postMessage(sessionId, {
+    messageId: 'q-3',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+
+  releaseFirst();
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(toolsPerCall.length, 3, 'three turns ran');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'queued guest turn must not run with the later owner toolset',
+  );
+  assert.ok(
+    toolsPerCall[2]!.includes('memory_add'),
+    'owner turn runs with the owner toolset',
+  );
+});
+
+test('AgentRunner builds a turn caller from its own sender even when another post interleaves', async (t) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'web', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  const toolsPerCall: string[][] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      return createTextResponseStream('ok');
+    },
+  });
+
+  const sessionId = 'group:interleaved-caller';
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', interactive: false, type: 'group' },
+  });
+
+  // Hold the guest's post inside its first post-resolution await (after it
+  // wrote its identity into the shared session.resolved* fields) while the
+  // owner's post runs to completion and overwrites those fields.
+  let releaseGuest!: () => void;
+  const guestGate = new Promise<void>((resolve) => { releaseGuest = resolve; });
+  let guestHeld!: () => void;
+  const guestIsHeld = new Promise<void>((resolve) => { guestHeld = resolve; });
+  const internals = runner as unknown as {
+    persistSessionIndex: (s: { resolvedUserRole?: string }) => Promise<void>;
+  };
+  const persist = internals.persistSessionIndex.bind(runner);
+  let gated = false;
+  internals.persistSessionIndex = async (session) => {
+    if (!gated && session.resolvedUserRole === 'guest') {
+      gated = true;
+      guestHeld();
+      await guestGate;
+    }
+    return persist(session);
+  };
+
+  const guestPost = runner.postMessage(sessionId, {
+    messageId: 'i-1',
+    text: 'guest asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: `g-${randomBytes(4).toString('hex')}`, displayName: 'Guest' },
+  });
+  await guestIsHeld;
+  await runner.postMessage(sessionId, {
+    messageId: 'i-2',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'web', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+  releaseGuest();
+  await guestPost;
+  await runner.waitForSessionIdle(sessionId);
+
+  // The owner's turn was queued first, the guest's second.
+  assert.equal(toolsPerCall.length, 2, 'both turns ran');
+  assert.ok(toolsPerCall[0]!.includes('memory_add'), 'owner turn has the owner toolset');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'guest turn must not pick up the interleaved owner identity',
+  );
+});
+
+const setupOwnerGroupSession = async (t: import('node:test').TestContext, sessionId: string) => {
+  const { workspace, security, agentId } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const store = await DbInternalStateStore.open();
+  t.after(() => store.close());
+  const ownerId = `usr-owner-${randomBytes(4).toString('hex')}`;
+  const ownerChannelUserId = `owner-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: ownerId, name: 'Owner', createdAt: now, updatedAt: now });
+  await store.users.assignAgent({ agentId }, ownerId, 'owner', now);
+  await store.users.linkIdentity({
+    userId: ownerId, channel: 'telegram', channelUserId: ownerChannelUserId, createdAt: now,
+  });
+
+  const toolsPerCall: string[][] = [];
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async (_model, context) => {
+      toolsPerCall.push(getCurrentTools(context.messages).map((tool) => tool.name));
+      return createTextResponseStream('ok');
+    },
+  });
+  await runner.openSession({
+    sessionId,
+    source: { kind: 'channel', platform: 'telegram', interactive: false, type: 'group' },
+  });
+
+  // The owner speaks first, so the session's shared resolved* fields hold
+  // the owner's identity when the next message arrives.
+  await runner.postMessage(sessionId, {
+    messageId: 'owner-1',
+    text: 'owner asks',
+    mentioned: true,
+    sender: { channel: 'telegram', channelUserId: ownerChannelUserId, displayName: 'Owner' },
+  });
+  await runner.waitForSessionIdle(sessionId);
+  assert.ok(toolsPerCall[0]!.includes('memory_add'), 'owner turn has the owner toolset');
+  return { runner, security, store, toolsPerCall };
+};
+
+test('AgentRunner: a message without a sender never inherits the previous owner caller', async (t) => {
+  const sessionId = 'group:no-sender-after-owner';
+  const { runner, toolsPerCall } = await setupOwnerGroupSession(t, sessionId);
+
+  await runner.postMessage(sessionId, { messageId: 'anon-1', text: 'who am i', mentioned: true });
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(toolsPerCall.length, 2, 'the no-sender turn ran');
+  assert.ok(
+    !toolsPerCall[1]!.includes('memory_add'),
+    'a no-sender message runs as the session principal, not the last (owner) sender',
+  );
+});
+
+test('AgentRunner: an unresolvable sender is rejected instead of inheriting the previous owner caller', async (t) => {
+  const sessionId = 'group:unresolved-after-owner';
+  const { runner, security, store, toolsPerCall } = await setupOwnerGroupSession(t, sessionId);
+
+  // A globally-known user with no membership on this agent does not resolve
+  // on a private agent (unknown senders are auto-created as guests instead).
+  const strangerId = `usr-stranger-${randomBytes(4).toString('hex')}`;
+  const strangerChannelUserId = `stranger-${randomBytes(4).toString('hex')}`;
+  const now = new Date().toISOString();
+  await store.users.upsert({ userId: strangerId, name: 'Stranger', createdAt: now, updatedAt: now });
+  await store.users.linkIdentity({
+    userId: strangerId, channel: 'telegram', channelUserId: strangerChannelUserId, createdAt: now,
+  });
+  (security as unknown as { getAccessLevel: () => string }).getAccessLevel = () => 'private';
+
+  await assert.rejects(
+    runner.postMessage(sessionId, {
+      messageId: 'stranger-1',
+      text: 'stranger asks',
+      mentioned: true,
+      sender: { channel: 'telegram', channelUserId: strangerChannelUserId },
+    }),
+    /not found/i,
+  );
+  await runner.waitForSessionIdle(sessionId);
+  assert.equal(toolsPerCall.length, 1, 'no turn ran for the unresolved sender');
+});
+
+test('AgentRunner: a duplicate delivery during concurrent cold loads triggers exactly one turn', async (t) => {
+  // Two deliveries of one messageId reach a runner that does not have the
+  // session in memory (gateway restart / eviction). Both cold-load it at once;
+  // they must share one RunnerSession, or each copy's private dedupe map lets
+  // its delivery through and the message runs twice.
+  const { workspace, security } = await createSecurityFixture(t, {
+    secrets: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+  });
+  await security.load();
+
+  const sessionId = 'cli:cold-load-dedupe';
+  const seeding = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => createTextResponseStream('unused'),
+  });
+  await seeding.openSession({ sessionId, source: { kind: 'cli', interactive: true } });
+
+  let calls = 0;
+  const runner = await AgentRunner.create({
+    workspace,
+    security,
+    streamFn: async () => {
+      calls += 1;
+      return createTextResponseStream('reply');
+    },
+  });
+
+  // Script the losing interleaving deterministically through store hooks:
+  //  1. both deliveries' ensureSessionLoaded reads land together, so both see
+  //     a cold session and both start opening it;
+  //  2. the second open is held until the first delivery has already been
+  //     posted (reached the persisted-log dedupe lookup) on its session;
+  //  3. both dedupe lookups are held until both have run, so neither sees the
+  //     other's entry in the log.
+  // With separate RunnerSessions each delivery passes its own session's
+  // in-flight claim and both run a turn. With opens of one id sharing a
+  // single in-flight load, the second delivery reuses the first's session,
+  // waits on its claim and never reaches the lookup (the holds then fall
+  // through on a short timeout).
+  const store = (runner as unknown as {
+    store: {
+      sessions: { get: (...args: unknown[]) => Promise<unknown> };
+      messages: { findEntryIdByMessageId: (...args: unknown[]) => Promise<unknown> };
+    };
+  }).store;
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const hold = (p: Promise<void>) =>
+    Promise.race([p, new Promise((resolve) => setTimeout(resolve, 300))]);
+  const bothLoadReads = deferred();
+  const firstLookup = deferred();
+  const bothLookups = deferred();
+
+  const realGet = store.sessions.get.bind(store.sessions);
+  let gets = 0;
+  store.sessions.get = async (...args: unknown[]) => {
+    const n = ++gets;
+    const result = await realGet(...args);
+    if (n <= 2) {
+      if (n === 2) bothLoadReads.resolve();
+      await hold(bothLoadReads.promise);
+    } else if (n === 4) {
+      await hold(firstLookup.promise);
+    }
+    return result;
+  };
+  const realLookup = store.messages.findEntryIdByMessageId.bind(store.messages);
+  let lookups = 0;
+  store.messages.findEntryIdByMessageId = async (...args: unknown[]) => {
+    const n = ++lookups;
+    const result = await realLookup(...args);
+    if (n === 1) firstLookup.resolve();
+    if (n === 2) bothLookups.resolve();
+    await hold(bothLookups.promise);
+    return result;
+  };
+
+  const deliver = async () => {
+    await runner.ensureSessionLoaded(sessionId);
+    return runner.postMessage(sessionId, { messageId: 'cold-dup', text: 'buy 1 eth' });
+  };
+  const results = await Promise.all([deliver(), deliver()]);
+  await runner.waitForSessionIdle(sessionId);
+
+  assert.equal(
+    results.filter((r) => r.triggered).length,
+    1,
+    'exactly one delivery triggers a turn',
+  );
+  assert.equal(calls, 1, 'the model ran once');
+  const entries = await readSessionLog(runner, sessionId);
+  assert.equal(entries.filter((e) => e.messageId === 'cold-dup').length, 1);
 });
