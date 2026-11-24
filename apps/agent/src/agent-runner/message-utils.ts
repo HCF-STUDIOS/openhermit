@@ -428,7 +428,7 @@ export const repairToolCallStructure = (messages: AgentMessage[]): AgentMessage[
  * so the user just sees "model temporarily unavailable"). 6 MiB keeps the most
  * recent image (or a handful of small ones) while trimming the rest.
  */
-export const DEFAULT_MAX_IMAGE_PAYLOAD_BYTES = 6 * 1024 * 1024;
+const DEFAULT_MAX_IMAGE_PAYLOAD_BYTES = 6 * 1024 * 1024;
 
 /**
  * Bound the total inlined image payload on the wire by keeping the most recent
@@ -441,7 +441,7 @@ export const DEFAULT_MAX_IMAGE_PAYLOAD_BYTES = 6 * 1024 * 1024;
  * `attachment_fetch`/`doc_read` produce on a vision-capable model) escapes both
  * and accumulates unbounded across a turn's tool loop and the rolling window.
  * The user-message-attachment route is already capped to the latest entry in
- * `rebuildMessagesFromEntries`; this closes the same gap for the tool-result
+ * `AgentRunner.buildResumptionMessages`; this closes the same gap for the tool-result
  * route.
  *
  * Newest-first: the current turn's most-recent image is always kept (even if it
@@ -895,7 +895,7 @@ export interface GroupParticipant {
   handle?: string;
 }
 
-export interface MentionRef {
+interface MentionRef {
   id: string;
   type: string;
 }
@@ -1024,7 +1024,7 @@ const INLINE_IMAGE_MIMES = new Set([
   'image/webp',
 ]);
 
-export interface PrepareAttachmentContentOptions {
+interface PrepareAttachmentContentOptions {
   /** Hard cap on bytes embedded per attachment. Default 1 MiB. */
   maxInlineBytes?: number;
   /** Max number of image attachments to embed inline. Default 4. */

@@ -10,7 +10,7 @@ import { getCurrentSystemMessage, type SystemMessage } from '@earendil-works/pi-
  * intact across every in-place rewrite of the live transcript.
  */
 
-export const isSystemMessage = (message: AgentMessage): message is SystemMessage =>
+const isSystemMessage = (message: AgentMessage): message is SystemMessage =>
   (message as { role?: unknown }).role === 'system';
 
 export const splitSystemMessages = (

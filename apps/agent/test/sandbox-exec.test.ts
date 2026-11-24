@@ -99,3 +99,30 @@ test('exec allows non-guest roles (owner) through the guest gate', async () => {
   assert.equal(rec.ensured, 1);
   assert.equal(rec.lastCommand, 'echo hi');
 });
+
+test('exec authorizes and runs the same normalized cwd', async () => {
+  const rec: Recorder = { ensured: 0, lastCommand: undefined, lastOpts: undefined };
+  const denyRow = {
+    effect: 'deny',
+    scope: { sandbox: 'default', command: '*', cwd: '/home/agent/secrets' },
+    grants: [{ type: 'any' }],
+  };
+  const ctx = makeContext(rec, {
+    agentId: 'agent-c',
+    currentUserId: 'usr-o',
+    currentUserRole: 'owner',
+    policyStore: { list: async () => [denyRow] } as never,
+  });
+  const tool = createSandboxExecTool(ctx);
+
+  // Both a dot-dot path and a relative path land in the denied directory,
+  // so policy must see them there (not as raw strings) and refuse.
+  for (const cwd of ['/home/agent/work/../secrets', 'secrets', './secrets/keys']) {
+    await assert.rejects(() => tool.execute('tc-1', { command: 'ls', cwd }), /Access denied/, cwd);
+  }
+  assert.equal(rec.lastCommand, undefined);
+
+  // An allowed cwd is executed exactly as it was evaluated.
+  await tool.execute('tc-1', { command: 'ls', cwd: 'work/./sub/../proj' });
+  assert.equal(rec.lastOpts?.cwd, '/home/agent/work/proj');
+});

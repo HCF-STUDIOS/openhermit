@@ -1,15 +1,3 @@
-export type HookPoint =
-  | 'onSessionStart'
-  | 'onSessionEnd'
-  | 'beforeInbound'
-  | 'beforeToolCall'
-  | 'afterToolCall'
-  | 'beforeOutbound'
-  | 'onScheduleTrigger'
-  | 'onError';
-
-export type AutonomyLevel = 'readonly' | 'supervised' | 'full';
-
 export interface AgentModelConfig {
   provider: string;
   model: string;
@@ -22,12 +10,6 @@ export interface AgentModelConfig {
    */
   api?: string;
   thinking?: ThinkingLevel;
-}
-
-export interface ContainerDefaultsConfig {
-  memory_limit: string;
-  cpu_shares: number;
-  network: string;
 }
 
 export interface IntrospectionConfig {
@@ -232,11 +214,11 @@ export interface ChannelTokenEntry {
   token: string;
 }
 
+/**
+ * Legacy keys (`autonomy_level`, `require_approval_for`) may still exist in
+ * stored documents; they are ignored on read — use policy rows instead.
+ */
 export interface SecurityPolicy {
-  /** @deprecated Use policy rows with effect instead. Kept for backward compatibility. */
-  autonomy_level?: AutonomyLevel;
-  /** @deprecated Use policy rows with effect='require_approval' instead. */
-  require_approval_for?: string[];
   access?: AgentAccessLevel;
   access_token?: string;
   /** Per-channel API tokens for external channel adapters. */

@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
-  appendFile,
+  lstat,
   mkdir,
+  open as fsOpen,
+  readlink,
   readdir,
-  readFile,
+  type FileHandle,
   realpath,
   stat as fsStat,
   unlink,
-  writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -123,35 +125,61 @@ export class HostFileBackend implements FileBackend {
     try {
       real = await realpath(hostPath);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !mustExist) {
-        const parent = path.dirname(hostPath);
-        try {
-          const realParent = await realpath(parent);
-          if (realParent !== root && !realParent.startsWith(`${root}/`)) {
-            throw new ValidationError(
-              `path resolves outside the sandbox root (symlink escape in parent directory).`,
-            );
-          }
-        } catch (parentErr) {
-          if (parentErr instanceof ValidationError) throw parentErr;
-        }
-        return hostPath;
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT' || mustExist) throw err;
+      // Target doesn't exist yet. A dangling symlink lands here too (realpath
+      // fails on its missing target) but a write would follow it out of the
+      // root, so refuse any symlink at the final component.
+      const own = await lstat(hostPath).catch(() => undefined);
+      if (own?.isSymbolicLink()) {
+        throw new ValidationError('path is a symlink to a missing target; refusing to write through it.');
       }
-      throw err;
+      // Check the nearest EXISTING ancestor, not just the immediate parent:
+      // with `a/link/new/file` where `link` points outside the root, the
+      // parent `a/link/new` doesn't exist and mkdir -p would create it on
+      // the far side of the link.
+      await this.assertNearestAncestorInside(path.dirname(hostPath), root);
+      return hostPath;
     }
-    if (real !== root && !real.startsWith(`${root}/`)) {
-      throw new ValidationError(
-        `path resolves outside the sandbox root (symlink escape detected).`,
-      );
-    }
+    this.assertInsideRoot(real, root, 'path resolves outside the sandbox root (symlink escape detected).');
     return real;
+  }
+
+  private assertInsideRoot(real: string, root: string, message: string): void {
+    if (real !== root && !real.startsWith(`${root}/`)) {
+      throw new ValidationError(message);
+    }
+  }
+
+  private async assertNearestAncestorInside(dir: string, root: string): Promise<void> {
+    let current = dir;
+    for (;;) {
+      try {
+        const realDir = await realpath(current);
+        this.assertInsideRoot(
+          realDir,
+          root,
+          'path resolves outside the sandbox root (symlink escape in parent directory).',
+        );
+        return;
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        const up = path.dirname(current);
+        if (up === current) return;
+        current = up;
+      }
+    }
   }
 
   async read(filePath: string): Promise<FileReadResult> {
     const resolved = await this.resolve(filePath);
     try {
-      const data = await readFile(resolved);
-      return { data };
+      const handle = await this.openVerified(resolved, fsConstants.O_RDONLY);
+      try {
+        return { data: await handle.readFile() };
+      } finally {
+        await handle.close();
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new NotFoundError(`File not found: ${filePath}`);
@@ -163,9 +191,22 @@ export class HostFileBackend implements FileBackend {
   async write(filePath: string, data: Buffer, mode: FileWriteMode): Promise<void> {
     const resolved = await this.resolve(filePath, false);
     await mkdir(path.dirname(resolved), { recursive: true });
+    // Re-check after mkdir: a dangling-symlink path component (or a swap
+    // since resolve) could have redirected the created directories.
+    this.assertInsideRoot(
+      await realpath(path.dirname(resolved)),
+      await this.getRealHostRoot(),
+      'path resolves outside the sandbox root (symlink escape in parent directory).',
+    );
+    // Open WITHOUT truncating, verify where the descriptor really landed,
+    // and only then modify the file. O_NOFOLLOW guards the final component;
+    // openVerified() catches a parent directory swapped for a symlink
+    // between the checks above and the open (Node has no openat()).
+    const { O_WRONLY, O_CREAT, O_APPEND, O_EXCL } = fsConstants;
+    let handle: FileHandle;
     if (mode === 'create') {
       try {
-        await writeFile(resolved, data, { flag: 'wx' });
+        handle = await this.openVerified(resolved, O_WRONLY | O_CREAT | O_EXCL);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
           throw new ValidationError(`File already exists (mode=create): ${filePath}`);
@@ -173,9 +214,49 @@ export class HostFileBackend implements FileBackend {
         throw err;
       }
     } else if (mode === 'append') {
-      await appendFile(resolved, data);
+      handle = await this.openVerified(resolved, O_WRONLY | O_CREAT | O_APPEND);
     } else {
-      await writeFile(resolved, data);
+      handle = await this.openVerified(resolved, O_WRONLY | O_CREAT);
+    }
+    try {
+      if (mode === 'overwrite') await handle.truncate(0);
+      await handle.writeFile(data);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * Open `resolved` with O_NOFOLLOW, then confirm the opened descriptor is
+   * inside the sandbox root. On Linux the kernel's /proc/self/fd link gives
+   * the descriptor's true path; elsewhere the re-resolved path must be inside
+   * the root AND be the very inode we opened (a swap-and-swap-back race
+   * yields a different inode). On failure the handle is closed and nothing
+   * is read or written through it.
+   */
+  private async openVerified(resolved: string, flags: number): Promise<FileHandle> {
+    const handle = await fsOpen(resolved, flags | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+    try {
+      const root = await this.getRealHostRoot();
+      const escape = 'path resolves outside the sandbox root (symlink escape in parent directory).';
+      let fdPath: string | undefined;
+      if (process.platform === 'linux') {
+        fdPath = await readlink(`/proc/self/fd/${handle.fd}`).catch(() => undefined);
+      }
+      if (fdPath !== undefined) {
+        this.assertInsideRoot(fdPath, root, escape);
+      } else {
+        const real = await realpath(resolved);
+        this.assertInsideRoot(real, root, escape);
+        const [opened, current] = await Promise.all([handle.stat(), fsStat(real)]);
+        if (opened.dev !== current.dev || opened.ino !== current.ino) {
+          throw new ValidationError(`Access denied: ${escape}`);
+        }
+      }
+      return handle;
+    } catch (err) {
+      await handle.close().catch(() => {});
+      throw err;
     }
   }
 

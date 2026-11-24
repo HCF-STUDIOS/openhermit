@@ -63,7 +63,7 @@ Three equivalent ways to flip `access` (or any other field on the security polic
 hermit config security show --agent one
 hermit config security set access private --agent one
 hermit config security set access_token "shared-secret" --agent one
-echo '{"autonomy_level":"full","access":"private"}' \
+echo '{"access":"private"}' \
   | hermit config security write --agent one
 ```
 
@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer <token>" \
   https://gateway/api/agents/one/security              # GET current policy
 curl -X PUT -H "Authorization: Bearer <token>" \
      -H "Content-Type: application/json" \
-     -d '{"autonomy_level":"full","access":"private"}' \
+     -d '{"access":"private"}' \
   https://gateway/api/agents/one/security              # overwrite
 ```
 

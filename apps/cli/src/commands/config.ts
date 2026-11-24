@@ -246,9 +246,9 @@ export const registerConfigCommand = (program: Command): void => {
     });
 
   // ── security ──────────────────────────────────────────────────────
-  // Read / overwrite the agent's security policy: autonomy_level,
-  // require_approval_for, access ('public' | 'protected' | 'private'),
-  // access_token, channel_tokens.
+  // Read / overwrite the agent's security policy: access
+  // ('public' | 'protected' | 'private'), access_token, channel_tokens.
+  // Tool approval / deny rules are policy rows (`config policy`), not here.
 
   const security = cfg
     .command('security')

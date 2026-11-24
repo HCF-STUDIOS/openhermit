@@ -1,7 +1,3 @@
-import { promises as fs } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import {
   getCurrentSystemPrompt,
@@ -10,10 +6,9 @@ import {
   type Context,
   type Message,
   type Model,
-  type ProviderStreamOptions,
   type Tool,
 } from '@earendil-works/pi-ai';
-import { complete, streamSimple } from '@earendil-works/pi-ai/compat';
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { getErrorMessage } from '@openhermit/shared';
 import { LangfuseOtelSpanAttributes, serializeValue } from '@langfuse/core';
 import { LangfuseSpanProcessor } from '@langfuse/otel';
@@ -605,55 +600,6 @@ export const createLangfuseShutdownHandler = (
   }
 };
 
-export const completeWithLangfuseTrace = async (
-  langfuse: LangfuseClientLike | undefined,
-  model: Model<any>,
-  context: Context,
-  options: ProviderStreamOptions | undefined,
-  request: LangfuseRequestOptions,
-): Promise<AssistantMessage> => {
-  if (!langfuse) {
-    return complete(model, context, options);
-  }
-
-  const { trace, generation, metadata } = startLangfuseGeneration(
-    langfuse,
-    model,
-    context,
-    options,
-    request,
-  );
-
-  // Flush the generation-create immediately (fire-and-forget, off the request
-  // critical path) so the observation lands even if the request below never
-  // completes. Without this, a hung provider stream reaches neither
-  // recordLangfuseSuccess nor recordLangfuseError — the only flush points — so
-  // the buffered create is never sent and the wedged call is invisible in
-  // Langfuse (exactly how the minimax-cn hang left no trace).
-  void flushLangfuse(langfuse);
-
-  try {
-    const message = await complete(model, context, options);
-    return await recordLangfuseSuccess(
-      langfuse,
-      trace,
-      generation,
-      message,
-      metadata,
-      true,
-    );
-  } catch (error) {
-    return recordLangfuseError(
-      langfuse,
-      trace,
-      generation,
-      error,
-      metadata,
-      true,
-    );
-  }
-};
-
 const startGenerationOnTrace = (
   trace: LangfuseTraceLike,
   model: Model<any>,
@@ -759,63 +705,3 @@ export const createLangfuseTracedStreamFn = (
     } as unknown as Awaited<ReturnType<StreamFn>>;
   };
 };
-
-export const loadEnvironmentFile = async (
-  envFilePath: string,
-): Promise<number> => {
-  try {
-    const content = await fs.readFile(envFilePath, 'utf8');
-    let loaded = 0;
-
-    for (const rawLine of content.split(/\r?\n/u)) {
-      const line = rawLine.trim();
-
-      if (!line || line.startsWith('#')) {
-        continue;
-      }
-
-      const normalized = line.startsWith('export ')
-        ? line.slice('export '.length)
-        : line;
-      const separatorIndex = normalized.indexOf('=');
-
-      if (separatorIndex <= 0) {
-        continue;
-      }
-
-      const key = normalized.slice(0, separatorIndex).trim();
-
-      if (!key || key in process.env) {
-        continue;
-      }
-
-      let value = normalized.slice(separatorIndex + 1).trim();
-
-      if (
-        (value.startsWith('"') && value.endsWith('"'))
-        || (value.startsWith('\'') && value.endsWith('\''))
-      ) {
-        value = value.slice(1, -1);
-      }
-
-      process.env[key] = value.replace(/\\n/gu, '\n');
-      loaded += 1;
-    }
-
-    return loaded;
-  } catch (error) {
-    if (
-      error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      error.code === 'ENOENT'
-    ) {
-      return 0;
-    }
-
-    throw error;
-  }
-};
-
-export const resolveAgentEnvPath = (): string =>
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../.env');

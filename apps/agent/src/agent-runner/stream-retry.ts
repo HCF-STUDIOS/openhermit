@@ -2,6 +2,9 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 
+import { StreamIdleTimeoutError } from './stream-idle-timeout.js';
+import { isRetryableModelError } from './user-facing-error.js';
+
 /**
  * Transparent pre-first-token retry for provider streams.
  *
@@ -42,16 +45,36 @@ export const resolveStreamMaxRetries = (env: NodeJS.ProcessEnv = process.env): n
 };
 
 /**
- * Connection-drop / transient-availability signatures worth a pre-first-token
- * retry. Deliberately excludes rate limits (429 — an immediate retry is
- * counterproductive), auth, quota, and context-length errors (all terminal).
+ * Connection-drop / transient-availability failures worth a pre-first-token
+ * retry. The signature test is shared with the user-facing classifier
+ * (`isRetryableModelError`), so the two can't drift: rate limits (429 — an
+ * immediate retry is counterproductive), auth, quota, and context-length
+ * errors (all terminal) are never retried. A provider-stream idle timeout is
+ * also retryable — before any output it is just a hung connect.
  */
-const RETRYABLE = /terminated|und_err|econn|socket hang ?up|network error|\b5\d\d\b|overloaded|bad gateway|service unavailable/i;
-
 export const isRetryableStreamError = (error: unknown): boolean => {
+  if (error instanceof StreamIdleTimeoutError) return true;
+  if (error instanceof Error && error.name === 'StreamIdleTimeoutError') return true;
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return RETRYABLE.test(message);
+  return isRetryableModelError(message);
 };
+
+/** Error carried by a pi-style `error` event (providers catch failures and
+ *  emit them as an event rather than throwing). */
+export class StreamErrorEventError extends Error {
+  constructor(readonly event: Extract<AssistantMessageEvent, { type: 'error' }>) {
+    super(event.error.errorMessage ?? 'Provider stream error');
+    this.name = 'StreamErrorEventError';
+  }
+}
+
+/** True when an assistant message carries no produced output at all. */
+const hasNoOutput = (message: AssistantMessage): boolean =>
+  (message.content ?? []).every((block) => {
+    if (block.type === 'text') return block.text.trim() === '';
+    if (block.type === 'thinking') return block.thinking.trim() === '';
+    return false;
+  });
 
 export interface StreamRetryOptions {
   maxRetries?: number;
@@ -112,10 +135,19 @@ export const withStreamRetry = (
           await sleep(backoffMs(attempt));
         };
 
-        // Phase 1 — establish the stream and pull its first event. Any failure
-        // here is pre-first-token, so it is eligible for a retry.
+        // Phase 1 — establish the stream and pull its first meaningful event.
+        // Any failure here is pre-first-token, so it is eligible for a retry.
+        // `start` markers and the empty `text_start` / `thinking_start` block
+        // openers carry no output, so they are held back (not yielded) until
+        // something real arrives. pi-ai providers don't throw on failure:
+        // they catch and emit `{ type: 'error' }` as an event (often right
+        // after `start`), so an error event that arrives before any output is
+        // treated exactly like a thrown pre-first-token failure.
         let iterator: AsyncIterator<AssistantMessageEvent>;
         let first: IteratorResult<AssistantMessageEvent>;
+        const heldStarts: AssistantMessageEvent[] = [];
+        const isEmptyMarker = (event: AssistantMessageEvent): boolean =>
+          event.type === 'start' || event.type === 'text_start' || event.type === 'thinking_start';
         try {
           const inner = await Promise.resolve(
             next(model, context, { ...(callOptions ?? {}), signal: controller.signal }),
@@ -123,6 +155,23 @@ export const withStreamRetry = (
           committed = inner;
           iterator = inner[Symbol.asyncIterator]();
           first = await iterator.next();
+          while (!first.done && isEmptyMarker(first.value)) {
+            heldStarts.push(first.value);
+            first = await iterator.next();
+          }
+          if (
+            !first.done
+            && first.value.type === 'error'
+            && first.value.reason !== 'aborted'
+            && hasNoOutput(first.value.error)
+            && !callerSignal?.aborted
+            && attempt < maxRetries
+          ) {
+            const eventError = new StreamErrorEventError(first.value);
+            if (isRetryable(eventError)) {
+              throw eventError;
+            }
+          }
         } catch (error) {
           committed = undefined;
           await retryOrThrow(error);
@@ -132,6 +181,7 @@ export const withStreamRetry = (
         // Phase 2 — committed. From the first yield onward we never retry:
         // replaying a partially-consumed stream would corrupt it.
         try {
+          for (const held of heldStarts) yield held;
           if (first.done) return;
           yield first.value;
           for (;;) {

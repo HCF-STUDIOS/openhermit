@@ -20,7 +20,7 @@
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { UnauthorizedError } from '@openhermit/shared';
+import { UnauthorizedError, ValidationError } from '@openhermit/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -111,6 +111,22 @@ export function enforceSenderIdentity(
 }
 
 /**
+ * Enforce that channel-authenticated callers only touch sessions inside
+ * their own namespace (`<namespace>:...`). Shared by the HTTP routes and the
+ * WebSocket RPC handler so neither transport can skip it.
+ */
+export function enforceSessionNamespace(auth: AuthContext, sessionId: string): void {
+  if (auth.mode === 'channel' && auth.channelNamespace) {
+    const prefix = `${auth.channelNamespace}:`;
+    if (!sessionId.startsWith(prefix)) {
+      throw new ValidationError(
+        `Channel "${auth.channelNamespace}" can only access sessions with prefix "${prefix}".`,
+      );
+    }
+  }
+}
+
+/**
  * Pluggable user authentication provider.
  *
  * Implementations verify user-supplied credentials and return a verified
@@ -145,6 +161,35 @@ export interface ChannelRegistration {
   namespace?: string;
   /** The agent this channel token is scoped to. */
   agentId: string;
+}
+
+/**
+ * The sender a message must carry, given the authenticated caller. The runtime
+ * runs each turn as the message's own sender; a message without one runs as
+ * the session's opener, which is only right for callers that have no per-user
+ * identity of their own (admin, a channel token without a user header).
+ *
+ *  - user mode: always the token's own identity (enforceSenderIdentity has
+ *    already rejected a divergent one), keeping any display name supplied.
+ *  - channel mode: the declared sender, else the `x-channel-user-id` identity.
+ *  - admin: unchanged.
+ */
+export function authenticatedSender<T extends { channel?: string; channelUserId?: string; displayName?: string }>(
+  auth: AuthContext,
+  sender: T | undefined,
+): { channel: string; channelUserId: string; displayName?: string } | T | undefined {
+  if (auth.mode === 'user' && auth.channelUserId) {
+    const displayName = sender?.displayName ?? auth.displayName;
+    return {
+      channel: auth.channel,
+      channelUserId: auth.channelUserId,
+      ...(displayName ? { displayName } : {}),
+    };
+  }
+  if (auth.mode === 'channel' && !sender && auth.channelUserId) {
+    return { channel: auth.channel, channelUserId: auth.channelUserId };
+  }
+  return sender;
 }
 
 // ── Channel registry ───────────────────────────────────────────────────────

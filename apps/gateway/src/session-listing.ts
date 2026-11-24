@@ -29,7 +29,7 @@ interface SessionListingRuntime {
  * Auth-mode dispatch:
  *   - `admin`   — full agent visibility (management consoles).
  *   - `channel` — full agent visibility within the adapter's namespace
- *                 (caller can pre-set query.channel to constrain).
+ *                 (query.channel is forced to that namespace).
  *   - `user`    — strictly the caller's own participation. Owners are
  *                 *not* special here; agent tools (`session_list` /
  *                 `session_read`) widen visibility for owners
@@ -74,7 +74,9 @@ export const listSessionsForCaller = async (
 
   if (auth.mode === 'channel') {
     const effectiveQuery: SessionListQuery = { ...baseQuery };
-    if (auth.channelNamespace && !effectiveQuery.channel) {
+    // Always pin to the adapter's own namespace: a caller-supplied
+    // `channel` must not widen visibility to another adapter's sessions.
+    if (auth.channelNamespace) {
       effectiveQuery.channel = auth.channelNamespace;
     }
     return runtime.listSessions(effectiveQuery);

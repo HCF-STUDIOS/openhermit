@@ -13,7 +13,7 @@ import { streamSimple } from '@earendil-works/pi-ai/compat';
  * platform provisions a hermit twin; agents without it (self-hosted, non-twin)
  * pass through untouched. User-supplied `options.headers` win on conflict.
  */
-export const AMIKO_TWIN_ID_HEADER = 'X-Amiko-Twin-Id';
+const AMIKO_TWIN_ID_HEADER = 'X-Amiko-Twin-Id';
 
 export const withAmikoTwinAttribution = (baseStreamFn: StreamFn | undefined): StreamFn => {
   const next = baseStreamFn ?? streamSimple;

@@ -6,7 +6,7 @@ import type { AgentWorkspace } from '../core/index.js';
 // ── Constants ──────────────────────────────────────────────────────────
 
 /** Tool results larger than this (in chars) are persisted to disk. */
-export const PERSIST_THRESHOLD_CHARS = 8_000;
+const PERSIST_THRESHOLD_CHARS = 8_000;
 
 /**
  * Per-result inline budget (chars) when rehydrating a RECENT tool result from
@@ -27,10 +27,10 @@ export const RECENT_TOOL_RESULT_PREVIEW_CHARS = 20_000;
 export const RECENT_TOOL_RESULT_TOTAL_BUDGET_CHARS = 60_000;
 
 /** Characters kept from the head of the content for the inline preview. */
-export const PREVIEW_HEAD_CHARS = 3_000;
+const PREVIEW_HEAD_CHARS = 3_000;
 
 /** Characters kept from the tail of the content for the inline preview. */
-export const PREVIEW_TAIL_CHARS = 1_500;
+const PREVIEW_TAIL_CHARS = 1_500;
 
 const TOOL_RESULTS_DIR = '.openhermit/tool_results';
 
