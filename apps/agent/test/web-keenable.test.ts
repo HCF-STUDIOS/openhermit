@@ -80,21 +80,24 @@ test('keenable search: one include domain becomes site:, filters stay strict', a
   assert.deepEqual(results.map((r) => r.url), ['https://docs.example.com/a']);
 });
 
-test('keenable fetch: keyless GET with encoded url, truncates to maxBytes', async (t) => {
+test('keenable fetch: keyless POST with urls, truncates to maxBytes', async (t) => {
   const captured = stubFetch(t, {
-    url: 'https://example.com/',
-    title: 'Example',
-    content: 'abcdef',
+    results: [{
+      url: 'https://example.com/',
+      title: 'Example',
+      content: 'abcdef',
+    }],
   });
   const result = await new KeenableWebProvider().fetch('https://example.com/?a=1&b=2', {
     maxBytes: 4,
   });
 
-  assert.equal(
-    captured.urls[0],
-    'https://api.keenable.ai/v1/fetch/public?url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26b%3D2&max_chars=4',
-  );
-  assert.equal(captured.inits[0]!.method, 'GET');
+  assert.equal(captured.urls[0], 'https://api.keenable.ai/v1/fetch/public');
+  assert.equal(captured.inits[0]!.method, 'POST');
+  assert.deepEqual(JSON.parse(String(captured.inits[0]!.body)), {
+    urls: ['https://example.com/?a=1&b=2'],
+    content: { max_chars: 4 },
+  });
   assert.equal(headersOf(captured.inits[0]!)['X-Keenable-Title'], 'OpenHermit');
   assert.equal(result.url, 'https://example.com/');
   assert.equal(result.title, 'Example');
@@ -143,12 +146,12 @@ test('keenable fetch: rejects raw without a network call', async (t) => {
 
 test('keenable fetch: preserves upstream truncation and character count', async (t) => {
   const captured = stubFetch(t, {
-    content: 'short...', truncated: true, total_chars: 100_000,
+    results: [{ content: 'short...', truncated: true, total_chars: 100_000 }],
   });
   const result = await new KeenableWebProvider().fetch('https://example.com', {
     maxBytes: 100_000,
   });
-  assert.equal(new URL(captured.urls[0]!).searchParams.get('max_chars'), '100000');
+  assert.equal(JSON.parse(String(captured.inits[0]!.body)).content.max_chars, 100000);
   assert.equal(result.truncated, true);
   assert.equal(result.metadata?.totalChars, 100_000);
   assert.equal(result.contentBytes, 8);

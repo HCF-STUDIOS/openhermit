@@ -24,12 +24,17 @@ interface KeenableSearchResponse {
   results?: KeenableSearchResult[];
 }
 
-interface KeenableFetchResponse {
+interface KeenableFetchPage {
   url?: string;
   title?: string;
   content?: string;
   truncated?: boolean;
   total_chars?: number;
+  error?: { status?: number; message?: string; error?: string };
+}
+
+interface KeenableFetchResponse {
+  results?: KeenableFetchPage[];
 }
 
 /**
@@ -126,25 +131,32 @@ export class KeenableWebProvider implements WebProvider {
     }
     const maxBytes = Math.min(options?.maxBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
 
-    const response = await fetch(
-      `${this.endpoint('/v1/fetch')}?url=${encodeURIComponent(url)}&max_chars=${maxBytes}`,
-      {
-        method: 'GET',
-        headers: this.headers(false),
-        signal: combineTimeoutSignal(
-          options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-          options?.signal,
-        ),
-      },
-    );
+    const response = await fetch(this.endpoint('/v1/fetch'), {
+      method: 'POST',
+      headers: this.headers(true),
+      body: JSON.stringify({
+        urls: [url],
+        content: { max_chars: maxBytes },
+      }),
+      signal: combineTimeoutSignal(
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+      ),
+    });
 
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Keenable fetch failed: HTTP ${response.status} — ${text.slice(0, 200)}`);
     }
 
-    const data = await response.json() as KeenableFetchResponse;
-    const content = data.content ?? '';
+    const body = await response.json() as KeenableFetchResponse;
+    const data = body.results?.[0];
+    if (data?.error) {
+      throw new Error(
+        `Keenable fetch failed: ${data.error.message || data.error.error || 'page error'}`,
+      );
+    }
+    const content = data?.content ?? '';
     const encoded = new TextEncoder().encode(content);
     const contentBytes = encoded.byteLength;
     const localTruncated = contentBytes > maxBytes;
@@ -152,15 +164,15 @@ export class KeenableWebProvider implements WebProvider {
     const returnedContent = localTruncated
       ? new TextDecoder('utf-8', { fatal: false }).decode(encoded.slice(0, maxBytes))
       : content;
-    const finalUrl = data.url || url;
+    const finalUrl = data?.url || url;
 
     return {
       url: finalUrl,
-      ...(data.title ? { title: data.title } : {}),
+      ...(data?.title ? { title: data.title } : {}),
       content: returnedContent,
       contentBytes,
       truncated,
-      metadata: { output: 'markdown', ...(data.total_chars !== undefined ? { totalChars: data.total_chars } : {}) },
+      metadata: { output: 'markdown', ...(data?.total_chars !== undefined ? { totalChars: data.total_chars } : {}) },
       acquisition: {
         canonicalUrl: finalUrl,
         retrievedAt: new Date().toISOString(),
