@@ -67,6 +67,8 @@ export class KeenableWebProvider implements WebProvider {
 
   async search(query: string, options?: WebSearchOptions): Promise<WebSearchResult[]> {
     const limit = Math.max(1, Math.min(10, options?.limit ?? 5));
+    // One wall-clock budget for the search request and any page enrichment.
+    const deadline = Date.now() + (options?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     // A single include domain can be narrowed upstream with `site:`; every
     // filter is still enforced by the strict post-filter below.
@@ -78,7 +80,7 @@ export class KeenableWebProvider implements WebProvider {
       headers: this.headers(true),
       body: JSON.stringify({ query: q, max_results: limit }),
       signal: combineTimeoutSignal(
-        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        Math.max(1, deadline - Date.now()),
         options?.signal,
       ),
     });
@@ -113,7 +115,7 @@ export class KeenableWebProvider implements WebProvider {
           const page = await this.fetch(result.url, {
             output: 'markdown',
             maxBytes: 50_000,
-            timeoutMs: options?.timeoutMs,
+            timeoutMs: Math.max(1, deadline - Date.now()),
             signal: options?.signal,
           });
           Object.assign(result, { content: page.content });
@@ -160,9 +162,13 @@ export class KeenableWebProvider implements WebProvider {
     const encoded = new TextEncoder().encode(content);
     const contentBytes = encoded.byteLength;
     const localTruncated = contentBytes > maxBytes;
-    const truncated = data.truncated === true || localTruncated;
+    const truncated = data?.truncated === true || localTruncated;
+    // Cut at a UTF-8 character boundary so the result stays within maxBytes
+    // and never ends in a replacement character.
+    let cut = Math.min(maxBytes, contentBytes);
+    while (localTruncated && cut > 0 && (encoded[cut]! & 0xc0) === 0x80) cut -= 1;
     const returnedContent = localTruncated
-      ? new TextDecoder('utf-8', { fatal: false }).decode(encoded.slice(0, maxBytes))
+      ? new TextDecoder('utf-8', { fatal: false }).decode(encoded.slice(0, cut))
       : content;
     const finalUrl = data?.url || url;
 

@@ -156,3 +156,33 @@ test('keenable fetch: preserves upstream truncation and character count', async 
   assert.equal(result.metadata?.totalChars, 100_000);
   assert.equal(result.contentBytes, 8);
 });
+
+test('keenable fetch: truncates at a UTF-8 boundary and tolerates an empty result list', async (t) => {
+  stubFetch(t, { results: [{ url: 'https://a.example.com', content: '€€' }] });
+  const page = await new KeenableWebProvider().fetch('https://a.example.com', { maxBytes: 4 });
+  assert.equal(page.content, '€');
+  assert.equal(page.truncated, true);
+  assert.ok(!page.content.includes('\uFFFD'));
+
+  stubFetch(t, { results: [] });
+  const empty = await new KeenableWebProvider().fetch('https://a.example.com');
+  assert.equal(empty.content, '');
+  assert.equal(empty.truncated, false);
+});
+
+test('keenable search: page enrichment shares the search deadline', async (t) => {
+  const timeouts: number[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown) => {
+    timeouts.push(Date.now());
+    const body = String(input).includes('/v1/search')
+      ? { results: [{ title: 'A', url: 'https://a.example.com', snippet: 's' }] }
+      : { results: [{ url: 'https://a.example.com', content: 'page' }] };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  const results = await new KeenableWebProvider().search('q', { contentMode: 'full', timeoutMs: 5000 });
+  assert.equal(results[0]!.content, 'page');
+});
