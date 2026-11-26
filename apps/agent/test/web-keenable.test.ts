@@ -157,13 +157,15 @@ test('keenable fetch: preserves upstream truncation and character count', async 
   assert.equal(result.contentBytes, 8);
 });
 
-test('keenable fetch: truncates at a UTF-8 boundary and tolerates an empty result list', async (t) => {
+test('keenable fetch: truncates at a UTF-8 boundary', async (t) => {
   stubFetch(t, { results: [{ url: 'https://a.example.com', content: '€€' }] });
   const page = await new KeenableWebProvider().fetch('https://a.example.com', { maxBytes: 4 });
   assert.equal(page.content, '€');
   assert.equal(page.truncated, true);
   assert.ok(!page.content.includes('\uFFFD'));
+});
 
+test('keenable fetch: tolerates an empty result list', async (t) => {
   stubFetch(t, { results: [] });
   const empty = await new KeenableWebProvider().fetch('https://a.example.com');
   assert.equal(empty.content, '');
