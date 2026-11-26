@@ -176,7 +176,7 @@ Agent access can be `public`, `protected`, or `private`. `protected` requires th
 - **Skills:** prompt instructions and supporting files, registered in DB and synced into each backend's sandbox via `runner.syncSkills`
 - **Channels:** Telegram, Discord, Slack as bundled built-ins; additional adapters loaded as npm plugins via `channelPackages` (e.g. `@openhermit/channel-wechat`). All registered through the `ChannelManifestRegistry`. See [`channel-adapter.md`](channel-adapter.md) and [`channel-plugin-design.md`](channel-plugin-design.md).
 - **Schedules:** cron/once jobs that post prompts into dedicated or configured sessions
-- **Web providers:** Defuddle, Exa, Tavily
+- **Web providers:** Defuddle (default), Exa, Tavily, Keenable (key optional)
 
 ## Development Commands
 
